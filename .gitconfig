@@ -1,0 +1,18 @@
+[user]
+	email = lavrishkovlad@gmail.com
+	name = Vlad Lavrishko
+[credential]
+	helper = cache
+[url "git@github.com:"]
+    insteadOf = https://github.com/
+[url "git@gitlab.com:"]
+    insteadOf = https://gitlab.com/
+[init]
+	defaultBranch = master
+[core]
+	editor = nvim
+[filter "lfs"]
+	process = git-lfs filter-process
+	required = true
+	clean = git-lfs clean -- %f
+	smudge = git-lfs smudge -- %f
