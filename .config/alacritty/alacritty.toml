@@ -1,0 +1,54 @@
+[colors.normal]
+black = "#44475a"
+blue = "#b4befe"
+cyan = "#94e2d5"
+green = "#a6e3a1"
+magenta = "#f5c2e7"
+red = "#f38ba8"
+white = "#bbbbbb"
+yellow = "#f9e2af"
+
+[colors.primary]
+background = "#000000"
+foreground = "#ffffff"
+
+[font.bold]
+family = "JetBrainsMono Nerd Font"
+style = "Bold"
+
+[font.bold_italic]
+family = "JetBrainsMono Nerd Font"
+style = "Bold Italic"
+
+[font.italic]
+family = "JetBrainsMono Nerd Font"
+style = "Italic"
+
+[font.normal]
+family = "JetBrainsMono Nerd Font"
+style = "Regular"
+
+[terminal]
+shell = "zsh"
+
+[[keyboard.bindings]]
+action = "SpawnNewInstance"
+key = "Return"
+mods = "Super|Shift"
+
+[selection]
+save_to_clipboard = false
+
+[window]
+opacity = 0.8
+
+[font]
+size = 16.5
+
+[window.class]
+general = "Alacritty"
+instance = "Alacritty"
+
+[window.padding]
+x = 1
+y = 1
