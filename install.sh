@@ -89,6 +89,10 @@ if ! command -v rustc &>/dev/null; then
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 fi
 
+echo "Installing Astro Nvim..."
+git clone --depth 1 https://github.com/AstroNvim/template ~/.config/nvim
+rm -rf ~/.config/nvim/.git
+
 echo "Setting up dotfiles with Stow..."
 sudo pacman -S --noconfirm stow
 cd ~/dotfiles
