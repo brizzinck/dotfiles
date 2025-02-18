@@ -1,7 +1,7 @@
 export HOME="/home/skalse"
 export WGPU_BACKEND=vulkan
-export ZSH="$HOME/.oh-my-zsh"
 
+export ZSH="$HOME/.oh-my-zsh"
 export PATH="$PATH:$HOME/go/bin"
 export PATH="$HOME/.local/bin:$PATH"
 export PATH="$HOME/.bun/bin:$PATH"
@@ -28,12 +28,6 @@ export GIT_EDITOR="nvim"
 export VISUAL="nvim"
 export TERMINAL="alacritty"
 export BROWSER="firefox-developer-edition"
-export FILE_EXPLORER="ranger"
-export FILE_MANAGER="ranger"
-export VIDEO_PLAYER="mpv"
-export SCREENCAST_TOOL="obs"
-export PDF_VIEWER="zathura"
-export IMAGE_VIEWER="imv"
 
 export MOZ_ENABLE_WAYLAND=1
 export MOZ_GTK_TITLEBAR_DECORATION=client
@@ -61,12 +55,10 @@ alias vi="nvim"
 alias vim="nvim"
 alias c="clear"
 
-# Navigation Aliases
-alias gtp="cd $HOME/Dev && clear && ls -a"
+alias gtj="cd $HOME/job && clear && ls -a"
 alias gtd="cd $HOME/dotfiles"
 alias gtc="cd $HOME/.config"
 
-# Git Aliases
 alias g="git"
 alias gs="git status"
 alias ga="git add"
@@ -80,18 +72,12 @@ alias gcl="git clone"
 alias gbd="git branch -D"
 alias gbs="git switch"
 
-# Custom Scripts
 alias f="$HOME/.local/bin/fzfman.sh"
 alias cht="$HOME/.local/bin/chtman.sh"
 
-# ============================
-#  Fix Plugin Paths
-# ============================
-#
-
 center_text() {
   local text="$1"
-  local columns=$(tput cols) # Get terminal width
+  local columns=$(tput cols) 
   local text_length=${#text}
   local padding=$(( (columns - text_length) / 2 ))
 
@@ -113,5 +99,3 @@ center_text "╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚
 echo -e "\e[0m" 
 
 source "$ZSH/custom/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
-
-

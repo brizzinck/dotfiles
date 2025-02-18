@@ -72,7 +72,7 @@ flatpak install -y com.google.Chrome \
     us.zoom.Zoom
 
 echo "Creating directories..."
-mkdir -p ~/Dev ~/Documents/books ~/Pictures/{walls,screenshots} ~/Videos/screencaptures ~/.local/bin
+mkdir -p ~/job ~/Documents/books ~/Pictures/{walls,screenshots} ~/Videos/screencaptures ~/.local/bin
 
 echo "Setting up Oh My Zsh..."
 if [ ! -d "$HOME/.oh-my-zsh" ]; then
