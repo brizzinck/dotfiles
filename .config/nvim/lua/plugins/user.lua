@@ -24,21 +24,22 @@ return {
       local capabilities = require("cmp_nvim_lsp").default_capabilities()
       capabilities.offsetEncoding = { "utf-16" }
 
+            
       lspconfig.gopls.setup({
         cmd = { "gopls" },
         filetypes = { "go", "gomod", "gowork", "gotmpl" },
         root_dir = lspconfig.util.root_pattern("go.work", "go.mod", ".git"),
         settings = {
           gopls = {
+            completeUnimported = true,
+            usePlaceholders = true,
             analyses = {
               unusedparams = true,
             },
-            staticcheck = true,
           },
         },
         on_attach = function(client, bufnr)
           local opts = { buffer = bufnr }
-
           vim.keymap.set("n", "<leader>ra", vim.lsp.buf.code_action, opts)
           vim.keymap.set("n", "<leader>rr", vim.lsp.buf.rename, opts)
           vim.keymap.set("n", "<leader>rf", function()
@@ -50,25 +51,32 @@ return {
           vim.keymap.set("n", "<leader>ri", vim.lsp.buf.implementation, opts)
           vim.keymap.set("n", "<leader>rR", vim.lsp.buf.references, opts)
           vim.keymap.set("n", "<leader>rc", vim.lsp.codelens.run, opts)
-
           vim.keymap.set("n", "gt", vim.lsp.buf.type_definition, opts)
           vim.keymap.set("n", "gr", vim.lsp.buf.references, opts)
           vim.keymap.set("n", "gd", vim.lsp.buf.definition, opts)
           vim.keymap.set("n", "gD", vim.lsp.buf.declaration, opts)
           vim.keymap.set("n", "K", vim.lsp.buf.hover, opts)
 
-          if client.server_capabilities.documentFormattingProvider then
-            vim.api.nvim_create_autocmd("BufWritePre", {
-              buffer = bufnr,
-              callback = function()
-                vim.lsp.buf.format({ async = false })
-              end,
-            })
-          end
+          client.server_capabilities.documentFormattingProvider = false
+
+          local augroup = vim.api.nvim_create_augroup("LspFormatting", { clear = true })
+          vim.api.nvim_create_autocmd("BufWritePre", {
+            group = augroup,
+            buffer = bufnr,
+            callback = function()
+              vim.lsp.buf.format({
+                bufnr = bufnr,
+                async = false,
+                filter = function(cl)
+                  return cl.name == "null-ls"
+                end,
+              })
+            end,
+          })
         end,
       })
 
-      
+           
       lspconfig.pyright.setup({
         capabilities = require("cmp_nvim_lsp").default_capabilities(),
         on_attach = function(client, bufnr)
@@ -134,6 +142,7 @@ return {
       lspconfig.rust_analyzer.setup({
         settings = {
         ["rust-analyzer"] = {
+            procMacro = { enable = true },
             checkOnSave = {
               command = "clippy", 
             },
@@ -149,6 +158,7 @@ return {
           local opts = { buffer = bufnr }
 
           vim.keymap.set("n", "<leader>ra", vim.lsp.buf.code_action, opts)
+          vim.keymap.set("n", "<leader>fe", vim.lsp.buf.code_action, opts)
           vim.keymap.set("n", "<leader>rr", vim.lsp.buf.rename, opts)
           vim.keymap.set("n", "<leader>rf", function()
             vim.lsp.buf.format({ async = true })
@@ -159,6 +169,7 @@ return {
           vim.keymap.set("n", "<leader>ri", vim.lsp.buf.implementation, opts)
           vim.keymap.set("n", "<leader>rR", vim.lsp.buf.references, opts)
           vim.keymap.set("n", "<leader>rc", vim.lsp.codelens.run, opts)
+          
 
           vim.keymap.set("n", "gt", vim.lsp.buf.type_definition, opts)
           vim.keymap.set("n", "gr", vim.lsp.buf.references, opts)
@@ -177,6 +188,7 @@ return {
         end,
       })
 
+      
       vim.diagnostic.config({
         virtual_text = false,  
         signs = true,
@@ -198,6 +210,47 @@ return {
   {
     "tpope/vim-dadbod",
     cmd = { "DB", "DBUI", "DBUIToggle", "DBUIAddConnection" },
+  },
+
+
+  {
+    "jose-elias-alvarez/null-ls.nvim",
+    ft = "go",
+    config = function()
+      local null_ls = require("null-ls")
+
+      null_ls.setup({
+        sources = {
+          null_ls.builtins.formatting.gofumpt,
+          null_ls.builtins.formatting.goimports_reviser,
+          null_ls.builtins.formatting.golines,
+        },
+      })
+    end,
+  },
+
+
+  {
+    "olexsmir/gopher.nvim",
+    ft = "go",
+    config = function(_, opts)
+      require("gopher").setup(opts)
+    end,
+    build = function()
+      vim.cmd [[silent! GoInstallDeps]]
+    end,
+  },
+
+  {
+    "dreamsofcode-io/nvim-dap-go",
+    ft = "go",
+    dependencies = "mfussenegger/nvim-dap",
+    config = function(_, opts)
+      require("dap-go").setup(opts)
+
+      vim.keymap.set("n", "<leader>dt", ":DapToggleBreakpoint<CR>", { desc = "Toggle Breakpoint" })
+      vim.keymap.set("n", "<leader>dc", ":DapContinue<CR>", { desc = "Continue Debugging" })
+    end
   },
 
   {
@@ -286,7 +339,11 @@ return {
           on_attach = function(client, bufnr)
             local opts = { buffer = bufnr }
 
+            client.offset_encoding = "utf-16"
+
             vim.keymap.set("n", "<leader>ra", vim.lsp.buf.code_action, opts)
+            vim.keymap.set("v", "<leader>fe", vim.lsp.buf.code_action, opts)
+
             vim.keymap.set("n", "<leader>rr", vim.lsp.buf.rename, opts)
             vim.keymap.set("n", "<leader>rf", function()
               vim.lsp.buf.format({ async = true })
@@ -466,7 +523,7 @@ return {
     build = ":TSUpdate",
     config = function()
       require("nvim-treesitter.configs").setup({
-        ensure_installed = { "rust", "lua", "c", "python", "javascript" }, 
+        ensure_installed = { "rust", "lua", "c", "python", "javascript", "go" }, 
         highlight = { enable = true },
         indent = { enable = true },
       })
