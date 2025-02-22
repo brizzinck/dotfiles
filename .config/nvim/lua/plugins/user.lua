@@ -54,7 +54,7 @@ return {
 
       local capabilities = require("cmp_nvim_lsp").default_capabilities()
       capabilities.offsetEncoding = { "utf-16" }
-            
+           
       lspconfig.gopls.setup({
         cmd = { "gopls" },
         filetypes = { "go", "gomod", "gowork", "gotmpl" },
