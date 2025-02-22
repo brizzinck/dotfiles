@@ -36,22 +36,6 @@ return {
         capabilities = lspconfig.util.default_config.capabilities,
       })
 
-      lspconfig.bufls.setup({
-        cmd = { "bufls", "serve" },
-        filetypes = { "proto" },
-        root_dir = lspconfig.util.root_pattern("buf.yaml", "buf.gen.yaml", ".git"),
-        settings = {},
-        on_attach = function(client, bufnr)
-          local opts = { buffer = bufnr }
-          vim.keymap.set("n", "K", vim.lsp.buf.hover, opts)
-          vim.keymap.set("n", "gd", vim.lsp.buf.definition, opts)
-          vim.keymap.set("n", "gr", vim.lsp.buf.references, opts)
-          vim.keymap.set("n", "gi", vim.lsp.buf.implementation, opts)
-          vim.keymap.set("n", "<leader>rn", vim.lsp.buf.rename, opts)
-          vim.keymap.set("n", "<leader>ca", vim.lsp.buf.code_action, opts)
-        end,
-      })
-
       local capabilities = require("cmp_nvim_lsp").default_capabilities()
       capabilities.offsetEncoding = { "utf-16" }
            
@@ -106,7 +90,22 @@ return {
         end,
       })
 
-           
+      lspconfig.bufls.setup({
+        cmd = { "bufls", "serve" },
+        filetypes = { "proto" },
+        root_dir = lspconfig.util.root_pattern("buf.yaml", "buf.gen.yaml", ".git"),
+        settings = {},
+        on_attach = function(client, bufnr)
+          local opts = { buffer = bufnr }
+          vim.keymap.set("n", "K", vim.lsp.buf.hover, opts)
+          vim.keymap.set("n", "gd", vim.lsp.buf.definition, opts)
+          vim.keymap.set("n", "gr", vim.lsp.buf.references, opts)
+          vim.keymap.set("n", "gi", vim.lsp.buf.implementation, opts)
+          vim.keymap.set("n", "<leader>rn", vim.lsp.buf.rename, opts)
+          vim.keymap.set("n", "<leader>ca", vim.lsp.buf.code_action, opts)
+        end,
+      })
+
       lspconfig.pyright.setup({
         capabilities = require("cmp_nvim_lsp").default_capabilities(),
         on_attach = function(client, bufnr)
