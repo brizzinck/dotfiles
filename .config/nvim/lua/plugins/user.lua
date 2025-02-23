@@ -90,8 +90,8 @@ return {
         end,
       })
 
-      lspconfig.bufls.setup({
-        cmd = { "bufls", "serve" },
+      lspconfig.buf_ls.setup({
+        cmd = { "buf_ls", "serve" },
         filetypes = { "proto" },
         root_dir = lspconfig.util.root_pattern("buf.yaml", "buf.gen.yaml", ".git"),
         settings = {},
