@@ -1,4 +1,5 @@
 export HOME="/home/skalse"
+
 export WGPU_BACKEND=vulkan
 
 export ZSH="$HOME/.oh-my-zsh"
@@ -59,6 +60,9 @@ alias gtj="cd $HOME/job && clear && ls -a"
 alias gtd="cd $HOME/dotfiles"
 alias gtc="cd $HOME/.config"
 
+alias gtjr="cd $HOME/job/rust && clear && ls -a"
+alias gtjg="cd $HOME/job/go && clear && ls -a"
+
 alias g="git"
 alias gs="git status"
 alias ga="git add"
@@ -71,6 +75,11 @@ alias gps="git push"
 alias gcl="git clone"
 alias gbd="git branch -D"
 alias gbs="git switch"
+
+alias rr="cargo r"
+alias rc="cargo clippy"
+alias rf="cargo fmt"
+alias rt="cargo t"
 
 alias f="$HOME/.local/bin/fzfman.sh"
 alias cht="$HOME/.local/bin/chtman.sh"
