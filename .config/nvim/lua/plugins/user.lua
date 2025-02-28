@@ -339,7 +339,7 @@ return {
     end,
   },
 
-   {
+  {
     "sainnhe/everforest",
     lazy = false,
     priority = 10000,

@@ -80,6 +80,7 @@ alias rr="cargo r"
 alias rc="cargo clippy"
 alias rf="cargo fmt"
 alias rt="cargo t"
+alias rb="cargo b"
 
 alias f="$HOME/.local/bin/fzfman.sh"
 alias cht="$HOME/.local/bin/chtman.sh"
