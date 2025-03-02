@@ -1,0 +1,76 @@
+window {
+    font-family: "JetBrainsMono Nerd Font";
+    font-size: 18px;
+    font-weight: bold;
+    background-color: rgba(0, 0, 0, 0.8);
+    border-radius: 8px;
+    border: 2px solid #FFFFFF;
+    padding: 8px;
+}
+
+#input {
+    color: #FFFFFF;
+    background-color: transparent;
+    border: none;
+    padding: 8px;
+    margin: 0;
+    text-align: left;
+}
+
+#outer-box {
+    padding: 8px;
+    spacing: 10px;
+    align: start;
+}
+
+#inner-box {
+    spacing: 10px;
+    align: start;
+}
+
+#scroll {
+    margin: 0;
+    align: start;
+}
+
+#entry {
+    color: #FFFFFF;
+    background-color: transparent;
+    padding: 8px;
+    margin: 0;
+    border-radius: 8px;
+    text-align: left;
+    width: 100%;  /* Ensure full width */
+    padding-left: 12px; /* Push text to left */
+}
+
+#entry:selected {
+    background-color: #FFFFFF;
+    color: #000000;
+    text-align: left;
+    width: 100%;  /* Ensure full width */
+    padding-left: 12px; /* Push text to left */
+    display: flex;
+    justify-content: flex-start; /* Ensure text is left-aligned */
+}
+
+#entry:alternate {
+    background-color: #111111;
+    text-align: left;
+}
+
+#text {
+    color: #FFFFFF;
+    text-align: left;
+}
+
+#text:selected {
+    color: #000000;
+    text-align: left;
+}
+
+#message {
+    background-color: red;
+    border: none;
+    text-align: left;
+}

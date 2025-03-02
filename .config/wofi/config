@@ -1,0 +1,32 @@
+width=400
+height=400
+
+no_actions=true
+hide_scroll=true
+
+columns=1
+image_size=20
+prompt=search
+term=alacritty
+
+gtk_dark=true 
+
+# Key bindings
+# key_up=KEY 
+# key_down=KEY 
+# key_left=KEY 
+# key_right=KEY 
+# key_forward=KEY 
+# key_backward=KEY 
+# key_submit=KEY 
+# key_exit=KEY 
+# key_pgup=KEY 
+# key_pgdn=KEY 
+# key_expand=KEY 
+# key_hide_search=KEY 
+
+halign=fill
+content_halign=start
+
+term="sh -c 'wofi --dmenu | grep -i'"
+
