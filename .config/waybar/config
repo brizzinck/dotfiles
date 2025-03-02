@@ -1,0 +1,63 @@
+{
+	"layer": "top",
+	"position": "top",
+	"height": 27,
+	"width": 1900,
+	"margin": 0,
+
+	"modules-left": ["cpu", "memory"],
+	"modules-center": ["hyprland/workspaces"],
+	"modules-right": ["tray", "pulseaudio", "hyprland/language",  "clock"],
+
+	"cpu": {
+		"format": "  {usage}%",
+		"tooltip": false
+	},
+
+	"memory": {
+		"format": "  {}%",
+		"tooltip": false
+	},
+
+	"hyprland/workspaces": {
+		"format": "{icon}",
+		"on-click": "activate",
+		"format-icons": {
+			"1": "",
+			"2": "",
+			"3": "",
+			"4": "󰊗",
+			"5": "󰖟",
+			"6": "󰳫",
+			"7": "",
+			},
+		"tooltip": false
+	},
+
+	"hyprland/language": {
+	  	"format": "{}",
+	  	"format-en": "EN",
+	  	"format-ru": "RU",
+	  	"format-uk": "UA",
+	},
+
+	"tray": {
+		"icon-size": 16,
+		"spacing": 16
+	},
+
+	"clock": {
+		"tooltip-format": "<big>{:%Y %B}</big>\n<tt><small>{calendar}</small></tt>",
+		"format-alt": "{:%Y-%m-%d}"
+	},
+
+	"pulseaudio": {
+			"scroll-step": 5,
+			"format": "{icon}  {volume}%",
+			"format-icons": {
+				"default": ["", "", ""]
+			},
+			"on-click": "pavucontrol"
+	},
+}
+
