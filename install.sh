@@ -138,6 +138,35 @@ echo "Installing Astro Nvim..."
 git clone --depth 1 https://github.com/AstroNvim/template ~/.config/nvim
 rm -rf ~/.config/nvim/.git
 
+echo "Deleting existing dotfiles..."
+
+CONFIG_DIR="$HOME/.config"
+
+FILES=(
+    "alacritty/alacritty.toml"
+    "dunst/dunstrc"
+    "hypr/hypridle.conf"
+    "hypr/hyprland.conf"
+    "hypr/hyprlock.conf"
+    "hypr/hyprpaper.conf"
+    "nvim/lua/plugins/user.lua"
+    "rofi/config.rasi"
+    "waybar/config"
+    "waybar/style.css"
+    "wofi/config"
+    "wofi/style.css"
+)
+
+for file in "${FILES[@]}"; do
+    full_path="$CONFIG_DIR/$file"
+    if [ -f "$full_path" ]; then
+        rm "$full_path"
+        echo "Deleted file: $full_path"
+    else
+        echo "File not found: $full_path"
+    fi
+done
+
 echo "Setting up dotfiles with Stow..."
 sudo pacman -S --noconfirm stow
 cd ~/dotfiles
