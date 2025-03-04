@@ -15,9 +15,28 @@ return {
   },
 
   {
+    "simrat39/inlay-hints.nvim",
+    config = function()
+      require("inlay-hints").setup({
+        only_current_line = false, 
+        eol = { right_align = true }, 
+      })
+    end
+  },
+
+  {
     "neovim/nvim-lspconfig",
     config = function()
       local lspconfig = require("lspconfig")
+      local inlay_hints = require("inlay-hints")
+
+      local function enable_inlay_hints(client, bufnr)
+        if client.server_capabilities.inlayHintProvider then
+          vim.lsp.inlay_hint.enable(bufnr, inlay_hint_enabled)
+          print("Inlay hints enabled for " .. client.name)
+        end
+      end
+
       lspconfig.ts_ls.setup({
         cmd = { "typescript-language-server", "--stdio" },
         on_attach = function(client, bufnr)
@@ -39,6 +58,7 @@ return {
       local capabilities = require("cmp_nvim_lsp").default_capabilities()
       capabilities.offsetEncoding = { "utf-16" }
            
+
       lspconfig.gopls.setup({
         cmd = { "gopls" },
         filetypes = { "go", "gomod", "gowork", "gotmpl" },
@@ -47,12 +67,22 @@ return {
           gopls = {
             completeUnimported = true,
             usePlaceholders = true,
-            analyses = {
-              unusedparams = true,
+            hints = {
+              assignVariableTypes = true,
+              compositeLiteralFields = true,
+              compositeLiteralTypes = true,
+              constantValues = true,
+              functionTypeParameters = true,
+              parameterNames = true,
+              rangeVariableTypes = true,
             },
           },
-        },
+        },     
         on_attach = function(client, bufnr)
+          if client.server_capabilities.inlayHintProvider then
+            inlay_hints.on_attach(client, bufnr)
+          end
+
           local opts = { buffer = bufnr }
           vim.keymap.set("n", "<leader>ra", vim.lsp.buf.code_action, opts)
           vim.keymap.set("n", "<leader>rr", vim.lsp.buf.rename, opts)
@@ -108,6 +138,20 @@ return {
 
       lspconfig.pyright.setup({
         capabilities = require("cmp_nvim_lsp").default_capabilities(),
+        settings = {
+          python = {
+            analysis = {
+              typeCheckingMode = "basic",
+              autoSearchPaths = true,
+              useLibraryCodeForTypes = true,
+              inlayHints = {
+                functionReturnTypes = true,
+                variableTypes = true,
+                parameterNames = true,
+              },
+            },
+          },
+        },
         on_attach = function(client, bufnr)
           local opts = { buffer = bufnr }
           vim.keymap.set("n", "<leader>ra", vim.lsp.buf.code_action, opts)
@@ -136,6 +180,16 @@ return {
         cmd = { "clangd", "--background-index", "--clang-tidy" },
         filetypes = { "c", "cpp", "objc", "objcpp" }, 
         capabilities = capabilities,
+        settings = {
+          clangd = {
+            inlayHints = {
+              enabled = true,
+              parameterNames = true,
+              returnTypes = true,
+              variableTypes = true,
+            },
+          },
+        },
         on_attach = function(client, bufnr)
           client.offset_encoding = "utf-16"
           local opts = { buffer = bufnr }
