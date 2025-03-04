@@ -144,33 +144,38 @@ echo "Deleting existing dotfiles..."
 CONFIG_DIR="$HOME/.config"
 
 FILES=(
-    "alacritty/alacritty.toml"
-    "dunst/dunstrc"
-    "hypr/hypridle.conf"
-    "hypr/hyprland.conf"
-    "hypr/hyprlock.conf"
-    "hypr/hyprpaper.conf"
-    "nvim/lua/plugins/user.lua"
-    "rofi/config.rasi"
-    "waybar/config"
-    "waybar/style.css"
-    "wofi/config"
-    "wofi/style.css"
+    "$CONFIG_DIR/alacritty/alacritty.toml"
+    "$CONFIG_DIR/dunst/dunstrc"
+    "$CONFIG_DIR/hypr/hypridle.conf"
+    "$CONFIG_DIR/hypr/hyprland.conf"
+    "$CONFIG_DIR/hypr/hyprlock.conf"
+    "$CONFIG_DIR/hypr/hyprpaper.conf"
+    "$CONFIG_DIR/nvim/lua/plugins/user.lua"
+    "$CONFIG_DIR/rofi/config.rasi"
+    "$CONFIG_DIR/waybar/config"
+    "$CONFIG_DIR/waybar/style.css"
+    "$CONFIG_DIR/wofi/config"
+    "$CONFIG_DIR/wofi/style.css"
+    "$HOME/.gitconfig"
+    "$HOME/.zshrc"
 )
 
 for file in "${FILES[@]}"; do
-    full_path="$CONFIG_DIR/$file"
-    if [ -f "$full_path" ]; then
-        rm "$full_path"
-        echo "Deleted file: $full_path"
+    if [ -f "$file" ]; then
+        rm "$file"
+        echo "Deleted file: $file"
     else
-        echo "File not found: $full_path"
+        echo "File not found: $file"
     fi
 done
+
+echo "Removing empty directories..."
+find "$CONFIG_DIR" -type d -empty -delete
 
 echo "Setting up dotfiles with Stow..."
 sudo pacman -S --noconfirm stow
 cd ~/dotfiles
 stow .
+
 
 echo "Installation and configuration complete!"
