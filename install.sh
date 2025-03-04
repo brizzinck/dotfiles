@@ -96,6 +96,7 @@ sudo pacman -S --noconfirm \
   yay-debug \
   zathura \
   zathura-pdf-mupdf \
+  zoxide  \
   zig \
   zsh
 
