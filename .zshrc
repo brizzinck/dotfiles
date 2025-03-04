@@ -82,6 +82,8 @@ alias rf="cargo fmt"
 alias rt="cargo t"
 alias rb="cargo b"
 
+eval "$(zoxide init zsh)"
+
 alias f="$HOME/.local/bin/fzfman.sh"
 alias cht="$HOME/.local/bin/chtman.sh"
 
