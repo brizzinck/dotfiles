@@ -27,6 +27,7 @@ sudo pacman -S --noconfirm \
   github-desktop-bin-debug \
   grim \
   grub \
+  obsidian \
   hypridle \
   hyprland \
   hyprlock \
