@@ -2,7 +2,15 @@ export HOME="/home/skalse"
 
 export WGPU_BACKEND=vulkan
 
+export ANDROID_HOME="$HOME/Android/Sdk"     
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
+export ANDROID_NDK_ROOT="$ANDROID_HOME/ndk/25.2.9519653"
+export NDK_HOME="$ANDROID_NDK_ROOT"
+export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+export JAVA_HOME="/usr/lib/jvm/default"
+
 export ZSH="$HOME/.oh-my-zsh"
+
 export PATH="$PATH:$HOME/go/bin"
 export PATH="$HOME/.local/bin:$PATH"
 export PATH="$HOME/.bun/bin:$PATH"
@@ -60,7 +68,7 @@ alias gtj="cd $HOME/job && clear && ls -a"
 alias gtd="cd $HOME/dotfiles"
 alias gtc="cd $HOME/.config"
 
-alias gtjr="cd $HOME/job/rust && clear && ls -a"
+alias gtjr="td $HOME/job/rust && clear && ls -a"
 alias gtjg="cd $HOME/job/go && clear && ls -a"
 
 alias g="git"
@@ -81,6 +89,10 @@ alias rc="cargo clippy"
 alias rf="cargo fmt"
 alias rt="cargo t"
 alias rb="cargo b"
+
+alias rg="go run ."
+alias lg="golangci-lint run ./... && go mod tidy"
+alias tg="go test ./..."
 
 eval "$(zoxide init zsh)"
 
