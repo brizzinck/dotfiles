@@ -13,7 +13,7 @@ return {
       })
     end
   },
-
+  
   {
     "simrat39/inlay-hints.nvim",
     config = function()
@@ -42,6 +42,10 @@ return {
         on_attach = function(client, bufnr)
           local function buf_map(mode, lhs, rhs, desc)
             vim.keymap.set(mode, lhs, rhs, { buffer = bufnr, desc = desc })
+          end
+
+          if client.server_capabilities.textDocumentSync then
+            require("vim.lsp._changetracking").init(client, bufnr)
           end
 
           buf_map("n", "K",         vim.lsp.buf.hover,          "Hover Documentation")
@@ -81,6 +85,10 @@ return {
         on_attach = function(client, bufnr)
           if client.server_capabilities.inlayHintProvider then
             inlay_hints.on_attach(client, bufnr)
+          end
+
+          if client.server_capabilities.textDocumentSync then
+            require("vim.lsp._changetracking").init(client, bufnr)
           end
 
           local opts = { buffer = bufnr }
@@ -127,6 +135,11 @@ return {
         settings = {},
         on_attach = function(client, bufnr)
           local opts = { buffer = bufnr }
+          
+          if client.server_capabilities.textDocumentSync then
+            require("vim.lsp._changetracking").init(client, bufnr)
+          end
+
           vim.keymap.set("n", "K", vim.lsp.buf.hover, opts)
           vim.keymap.set("n", "gd", vim.lsp.buf.definition, opts)
           vim.keymap.set("n", "gr", vim.lsp.buf.references, opts)
@@ -154,6 +167,9 @@ return {
         },
         on_attach = function(client, bufnr)
           local opts = { buffer = bufnr }
+          if client.server_capabilities.textDocumentSync then
+            require("vim.lsp._changetracking").init(client, bufnr)
+          end
           vim.keymap.set("n", "<leader>ra", vim.lsp.buf.code_action, opts)
           vim.keymap.set("n", "<leader>rr", vim.lsp.buf.rename, opts)
           vim.keymap.set("n", "<leader>rf", function()
@@ -194,6 +210,9 @@ return {
           client.offset_encoding = "utf-16"
           local opts = { buffer = bufnr }
 
+          if client.server_capabilities.textDocumentSync then
+            require("vim.lsp._changetracking").init(client, bufnr)
+          end
           vim.keymap.set("n", "<leader>ra", vim.lsp.buf.code_action, opts)
           vim.keymap.set("n", "<leader>rr", vim.lsp.buf.rename, opts)
           vim.keymap.set("n", "<leader>rf", function()
@@ -223,57 +242,60 @@ return {
         end,
       })
 
-      lspconfig.rust_analyzer.setup({
-        settings = {
-        ["rust-analyzer"] = {
-            procMacro = { enable = true },
-            cargo = {
-              buildScripts = { enable = true },  
-            },
-            checkOnSave = {
-              command = "clippy", 
-            },
-            diagnostics = {
-              enable = true,     
-              disabled = {},      
-            },
-            logLevel = "off",
-          },
-        },
-
-        on_attach = function(client, bufnr)
-          local opts = { buffer = bufnr }
-
-          vim.keymap.set("n", "<leader>ra", vim.lsp.buf.code_action, opts)
-          vim.keymap.set("n", "<leader>fe", vim.lsp.buf.code_action, opts)
-          vim.keymap.set("n", "<leader>rr", vim.lsp.buf.rename, opts)
-          vim.keymap.set("n", "<leader>rf", function()
-            vim.lsp.buf.format({ async = true })
-          end, opts)
-          vim.keymap.set("n", "<leader>rh", vim.lsp.buf.hover, opts)
-          vim.keymap.set("n", "<leader>rs", vim.lsp.buf.signature_help, opts)
-          vim.keymap.set("n", "<leader>rd", vim.lsp.buf.definition, opts)
-          vim.keymap.set("n", "<leader>ri", vim.lsp.buf.implementation, opts)
-          vim.keymap.set("n", "<leader>rR", vim.lsp.buf.references, opts)
-          vim.keymap.set("n", "<leader>rc", vim.lsp.codelens.run, opts)
-          
-
-          vim.keymap.set("n", "gt", vim.lsp.buf.type_definition, opts)
-          vim.keymap.set("n", "gr", vim.lsp.buf.references, opts)
-          vim.keymap.set("n", "gd", vim.lsp.buf.definition, opts)
-          vim.keymap.set("n", "gD", vim.lsp.buf.declaration, opts)
-          vim.keymap.set("n", "K", vim.lsp.buf.hover, opts)
-
-          if client.server_capabilities.documentFormattingProvider then
-            vim.api.nvim_create_autocmd("BufWritePre", {
-              buffer = bufnr,
-              callback = function()
-                vim.lsp.buf.format({ async = false })
-              end,
-            })
-          end
-        end,
-      })
+      -- lspconfig.rust_analyzer.setup({
+      --   settings = {
+      --   ["rust-analyzer"] = {
+      --       procMacro = { enable = true },
+      --       cargo = {
+      --         buildScripts = { enable = true },  
+      --       },
+      --       checkOnSave = {
+      --         command = "clippy", 
+      --       },
+      --       diagnostics = {
+      --         enable = true,     
+      --         disabled = {},      
+      --       },
+      --       logLevel = "off",
+      --     },
+      --   },
+      --
+      --   on_attach = function(client, bufnr)
+      --     local opts = { buffer = bufnr }
+      --
+      --     if client.server_capabilities.textDocumentSync then
+      --       require("vim.lsp._changetracking").init(client, bufnr)
+      --     end
+      --     vim.keymap.set("n", "<leader>ra", vim.lsp.buf.code_action, opts)
+      --     vim.keymap.set("n", "<leader>fe", vim.lsp.buf.code_action, opts)
+      --     vim.keymap.set("n", "<leader>rr", vim.lsp.buf.rename, opts)
+      --     vim.keymap.set("n", "<leader>rf", function()
+      --       vim.lsp.buf.format({ async = true })
+      --     end, opts)
+      --     vim.keymap.set("n", "<leader>rh", vim.lsp.buf.hover, opts)
+      --     vim.keymap.set("n", "<leader>rs", vim.lsp.buf.signature_help, opts)
+      --     vim.keymap.set("n", "<leader>rd", vim.lsp.buf.definition, opts)
+      --     vim.keymap.set("n", "<leader>ri", vim.lsp.buf.implementation, opts)
+      --     vim.keymap.set("n", "<leader>rR", vim.lsp.buf.references, opts)
+      --     vim.keymap.set("n", "<leader>rc", vim.lsp.codelens.run, opts)
+      --     
+      --
+      --     vim.keymap.set("n", "gt", vim.lsp.buf.type_definition, opts)
+      --     vim.keymap.set("n", "gr", vim.lsp.buf.references, opts)
+      --     vim.keymap.set("n", "gd", vim.lsp.buf.definition, opts)
+      --     vim.keymap.set("n", "gD", vim.lsp.buf.declaration, opts)
+      --     vim.keymap.set("n", "K", vim.lsp.buf.hover, opts)
+      --
+      --     if client.server_capabilities.documentFormattingProvider then
+      --       vim.api.nvim_create_autocmd("BufWritePre", {
+      --         buffer = bufnr,
+      --         callback = function()
+      --           vim.lsp.buf.format({ async = false })
+      --         end,
+      --       })
+      --     end
+      --   end,
+      -- })
 
       
       vim.diagnostic.config({
@@ -301,7 +323,7 @@ return {
 
 
   {
-    "jose-elias-alvarez/null-ls.nvim",
+    "nvimtools/none-ls.nvim",
     ft = "go",
     config = function()
       local null_ls = require("null-ls")
@@ -411,48 +433,65 @@ return {
     ft = { "rust", "toml" },
     dependencies = { "neovim/nvim-lspconfig" },
     config = function()
-      local rt = require("rust-tools")
-      rt.setup({
-        tools = {
-          inlay_hints = {
-            auto = true,
-            only_current_line = false,
-            show_parameter_hints = true,
-            parameter_hints_prefix = "<- ",
-            other_hints_prefix = "=> ",
-          },
+     
+local capabilities = require("cmp_nvim_lsp").default_capabilities()
+capabilities.offsetEncoding = { "utf-8" }
+
+require("rust-tools").setup({
+  tools = {
+    inlay_hints = {
+      auto = true,
+      only_current_line = false,
+      show_parameter_hints = true,
+      parameter_hints_prefix = "<- ",
+      other_hints_prefix = "=> ",
+    },
+  },
+  server = {
+    capabilities = capabilities,
+    settings = {
+      ["rust-analyzer"] = {
+        procMacro = { enable = true },
+        cargo = {
+          buildScripts = { enable = true },
         },
-        server = {
-          on_attach = function(client, bufnr)
-            local opts = { buffer = bufnr }
+        checkOnSave = {
+          command = "clippy",
+        },
+        diagnostics = {
+          enable = true,
+          disabled = {},
+        },
+        logLevel = "off",
+      },
+    },
+    on_attach = function(client, bufnr)
+      local opts = { buffer = bufnr }
 
-            client.offset_encoding = "utf-16"
+      vim.keymap.set("n", "<leader>ra", vim.lsp.buf.code_action, opts)
+      vim.keymap.set("v", "<leader>fe", vim.lsp.buf.code_action, opts)
+      vim.keymap.set("n", "<leader>rr", vim.lsp.buf.rename, opts)
+      vim.keymap.set("n", "<leader>rf", function()
+        vim.lsp.buf.format({ async = true })
+      end, opts)
+      vim.keymap.set("n", "<leader>rh", vim.lsp.buf.hover, opts)
+      vim.keymap.set("n", "<leader>rs", vim.lsp.buf.signature_help, opts)
+      vim.keymap.set("n", "<leader>rd", vim.lsp.buf.definition, opts)
+      vim.keymap.set("n", "<leader>ri", vim.lsp.buf.implementation, opts)
+      vim.keymap.set("n", "<leader>rR", vim.lsp.buf.references, opts)
+      vim.keymap.set("n", "<leader>rc", vim.lsp.codelens.run, opts)
 
-            vim.keymap.set("n", "<leader>ra", vim.lsp.buf.code_action, opts)
-            vim.keymap.set("v", "<leader>fe", vim.lsp.buf.code_action, opts)
+      vim.keymap.set("n", "gt", vim.lsp.buf.type_definition, opts)
+      vim.keymap.set("n", "gr", vim.lsp.buf.references, opts)
+      vim.keymap.set("n", "gd", vim.lsp.buf.definition, opts)
+      vim.keymap.set("n", "gD", vim.lsp.buf.declaration, opts)
+      vim.keymap.set("n", "K", vim.lsp.buf.hover, opts)
 
-            vim.keymap.set("n", "<leader>rr", vim.lsp.buf.rename, opts)
-            vim.keymap.set("n", "<leader>rf", function()
-              vim.lsp.buf.format({ async = true })
-            end, opts)
-            vim.keymap.set("n", "<leader>rh", vim.lsp.buf.hover, opts)
-            vim.keymap.set("n", "<leader>rs", vim.lsp.buf.signature_help, opts)
-            vim.keymap.set("n", "<leader>rd", vim.lsp.buf.definition, opts)
-            vim.keymap.set("n", "<leader>ri", vim.lsp.buf.implementation, opts)
-            vim.keymap.set("n", "<leader>rR", vim.lsp.buf.references, opts)
-            vim.keymap.set("n", "<leader>rc", vim.lsp.codelens.run, opts)
-
-            vim.keymap.set("n", "gt", vim.lsp.buf.type_definition, opts)
-            vim.keymap.set("n", "gr", vim.lsp.buf.references, opts)
-            vim.keymap.set("n", "gd", vim.lsp.buf.definition, opts)
-            vim.keymap.set("n", "gD", vim.lsp.buf.declaration, opts)
-            vim.keymap.set("n", "K", vim.lsp.buf.hover, opts)
-
-            if client.server_capabilities.documentFormattingProvider then
-              vim.api.nvim_create_autocmd("BufWritePre", {
-                buffer = bufnr,
-                callback = function()
-                  vim.lsp.buf.format({ async = false })
+      if client.server_capabilities.documentFormattingProvider then
+        vim.api.nvim_create_autocmd("BufWritePre", {
+          buffer = bufnr,
+          callback = function()
+            vim.lsp.buf.format({ async = false })
                 end,
               })
             end
