@@ -70,8 +70,6 @@ sudo pacman -S --noconfirm \
   seatd \
   slurp \
   snapshot \
-  spotify \
-  steam \
   swappy \
   tecla \
   telegram-desktop \
@@ -82,19 +80,13 @@ sudo pacman -S --noconfirm \
   ttf-opensans \
   ttf-ubuntu-font-family \
   ufw \
-  vesktop \
-  video-downloader \
   vim \
   waybar \
   wl-clipboard \
-  wlroots \
-  wlogout \
   wireplumber \
   wofi \
   xdg-desktop-portal-hyprland \
   yazi \
-  yay \
-  yay-debug \
   zathura \
   zathura-pdf-mupdf \
   zoxide  \
