@@ -67,6 +67,7 @@ alias c="clear"
 alias gtj="cd $HOME/job && clear && ls -a"
 alias gtd="cd $HOME/dotfiles"
 alias gtc="cd $HOME/.config"
+alias gto="cd $HOME/job/obsidian"
 
 alias gtjr="td $HOME/job/rust && clear && ls -a"
 alias gtjg="cd $HOME/job/go && clear && ls -a"
