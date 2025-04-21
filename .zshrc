@@ -92,7 +92,7 @@ alias rt="cargo t"
 alias rb="cargo b"
 
 alias rg="go run ."
-alias lg="golangci-lint run ./...; go mod tidy"
+alias lg="golangci-lint run --fix; go mod tidy"
 alias tg="go test ./..."
 
 eval "$(zoxide init zsh)"
