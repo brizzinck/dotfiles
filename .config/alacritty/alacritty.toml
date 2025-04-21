@@ -1,3 +1,5 @@
+[env]
+TERM = "xterm-256color"
 [colors.normal]
 black = "#44475a"
 blue = "#b4befe"
