@@ -69,7 +69,7 @@ alias gtd="cd $HOME/dotfiles"
 alias gtc="cd $HOME/.config"
 alias gto="cd $HOME/job/obsidian"
 
-alias gtjr="td $HOME/job/rust && clear && ls -a"
+alias gtjr="cd $HOME/job/rust && clear && ls -a"
 alias gtjg="cd $HOME/job/go && clear && ls -a"
 
 alias g="git"
@@ -93,6 +93,7 @@ alias rb="cargo b"
 
 alias rg="go run ."
 alias lg="golangci-lint run --fix; go mod tidy"
+alias lgr='find . -name "go.mod" -execdir sh -c "golangci-lint run --fix; go mod tidy" \;'
 alias tg="go test ./..."
 
 eval "$(zoxide init zsh)"
