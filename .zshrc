@@ -96,6 +96,8 @@ alias lg="golangci-lint run --fix; go mod tidy"
 alias lgr='find . -name "go.mod" -execdir sh -c "golangci-lint run --fix; go mod tidy" \;'
 alias tg="go test ./..."
 
+alias lf="facad"
+
 eval "$(zoxide init zsh)"
 
 alias f="$HOME/.local/bin/fzfman.sh"
