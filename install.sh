@@ -103,7 +103,7 @@ if ! command -v yay &>/dev/null; then
 fi
 
 echo "Installing AUR packages..."
-yay -S --noconfirm ttf-jetbrains-mono-nerd github-desktop-bin
+yay -S --noconfirm ttf-jetbrains-mono-nerd github-desktop-bin facad
 
 flatpak install -y com.google.Chrome \
     com.mojang.Minecraft \
