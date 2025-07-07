@@ -16,7 +16,13 @@ sudo pacman -S --noconfirm \
   bash-completion \ # Programmable completion for the bash shell
   bluez \ # Daemons for the bluetooth protocol stack
   bluez-utils \ # Development and debugging utilities for the bluetooth protocol stack
+  btop \ # A monitor of system resources, bpytop ported to C++
+  htop \ # Interactive process viewer
   cmake \ # A cross-platform open-source make system
+  clang \ # C language family frontend for LLVM
+  cloc \ # Count lines of code
+  cmatrix \ # A curses-based scrolling 'Matrix'-like screen
+  curl \ # command line tool and library for transferring data with URLs
   dante \ # SOCKS v4 and v5 compatible proxy server and client
   discord \ # All-in-one voice and text chat for gamers
   dunst \ # Customizable and lightweight notification-daemon
@@ -26,6 +32,9 @@ sudo pacman -S --noconfirm \
   grub \ # GNU GRand Unified Bootloader
   go \ # Core compiler tools for the Go programming language
   obsidian \ # A powerful knowledge base that works on top of a local folder of plain text Markdown files
+  fpc \ # Free Pascal Compiler, Turbo Pascal 7.0 and Delphi compatible.
+  kotlin \ # Statically typed programming language with multiplatform support
+  lazarus \ # Delphi-like IDE for FreePascal common files
   hypridle \ # hyprland’s idle daemon
   hyprland \ # a highly customizable dynamic tiling Wayland compositor
   hyprlock \ # hyprland’s GPU-accelerated screen locking utility
@@ -58,6 +67,7 @@ sudo pacman -S --noconfirm \
   slurp \ # Select a region in a Wayland compositor
   snapshot \ # Take pictures and videos
   telegram-desktop \ # Official Telegram Desktop client
+  firefox \ # Fast, Private & Safe Web Browser
   tree \ # A directory listing program displaying a depth indented list of files
   ttf-jetbrains-mono-nerd \ # Patched font JetBrains Mono from nerd fonts library
   ufw \ # Uncomplicated and easy to use CLI tool for managing a netfilter firewall
@@ -71,6 +81,8 @@ sudo pacman -S --noconfirm \
   yazi \ # Blazing fast terminal file manager written in Rust, based on async I/O
   zoxide \ # A smarter cd command for your terminal
   zig \ # a general-purpose programming language and toolchain for maintaining robust, optimal, and reusable software
+  zip \ # Compressor/archiver for creating and modifying zipfiles
+  zellij \ # A terminal multiplexer
   zsh # A very advanced and programmable command interpreter (shell) for UNIX
 
 echo "Installing yay..."
