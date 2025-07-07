@@ -2,6 +2,12 @@ export HOME="/home/skalse"
 
 export WGPU_BACKEND=vulkan
 
+export FPCDIR="/usr/lib/fpc/3.2.2"
+export PP="/usr/lib/fpc/3.2.2/ppcx64"
+export LAZARUSDIR="/usr/lib/lazarus"   
+export FPCTARGET="x86_64-linux"
+export FPCTARGETCPU="x86_64"
+
 export ANDROID_HOME="$HOME/Android/Sdk"     
 export ANDROID_SDK_ROOT="$ANDROID_HOME"
 export ANDROID_NDK_ROOT="$ANDROID_HOME/ndk/25.2.9519653"
@@ -85,11 +91,22 @@ alias gcl="git clone"
 alias gbd="git branch -D"
 alias gbs="git switch"
 
+alias ig="lazygit"
+
+alias id="lazydocker"
+
 alias rr="cargo r"
 alias rc="cargo clippy"
 alias rf="cargo fmt"
 alias rt="cargo t"
 alias rb="cargo b"
+of() {
+  EDITION=$(grep '^edition' rustfmt.toml | cut -d'"' -f2)
+  find . -name "*.rs" | while read -r file; do
+    rustup run nightly-2025-04-02 orustfmt --edition="$EDITION" --emit=stdout < "$file" > "$file.formatted"
+    mv "$file.formatted" "$file"
+  done
+}
 
 alias rg="go run ."
 alias lg="golangci-lint run --fix; go mod tidy"
