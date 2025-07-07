@@ -65,6 +65,8 @@ sudo pacman -S --noconfirm \
   waybar \ # Highly customizable Wayland bar for Sway and Wlroots based compositors
   wireplumber \ # Session / policy manager implementation for PipeWire
   wofi \ # launcher for wlroots-based wayland compositors
+  docker \ # Pack, ship and run any application as a lightweight container 
+  docker-compose \ # Fast, isolated development environments using Docker
   xdg-desktop-portal-hyprland \ # xdg-desktop-portal backend for hyprland
   yazi \ # Blazing fast terminal file manager written in Rust, based on async I/O
   zoxide \ # A smarter cd command for your terminal
@@ -94,12 +96,15 @@ flatpak install -y com.google.Chrome \
     org.pgadmin.pgadmin4 \
     rest.insomnia.Insomnia
 
-echo "Installing Go..."
-
 echo "Installing Go packages..."
 go install github.com/jesseduffield/lazygit@latest
 go install github.com/jesseduffield/lazydocker@latest
 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.2.1
+
+echo "Setting up docker..."
+modprobe kvm
+modprobe kvm_amd
+sudo usermod -aG kvm $USER
 
 echo "Creating directories..."
 mkdir -p ~/job ~/docs/books ~/pics/{walls,screenshots} ~/vids/screencaptures ~/.local/bin
