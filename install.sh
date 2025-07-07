@@ -118,6 +118,11 @@ modprobe kvm
 modprobe kvm_amd
 sudo usermod -aG kvm $USER
 
+echo "Install npm packages..."
+npm install next
+npm install pyright
+npm install sql-formatter
+
 echo "Creating directories..."
 mkdir -p ~/job ~/docs/books ~/pics/{walls,screenshots} ~/vids/screencaptures ~/.local/bin
 
