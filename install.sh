@@ -41,7 +41,6 @@ sudo pacman -S --noconfirm \
   hyprpaper \ # a blazing fast wayland wallpaper utility with IPC controls
   imv \ # Image viewer for Wayland and X11
   ipset \ # Administration tool for IP sets
-  lib32-gcc-libs \
   linux \ # The Linux kernel and modules
   linux-firmware \ # Firmware files for Linux - Default set
   linux-headers \ # Headers and scripts for building modules for the Linux kernel
@@ -145,30 +144,24 @@ echo "Deleting existing dotfiles..."
 
 CONFIG_DIR="$HOME/.config"
 
-FILES=(
-    "$CONFIG_DIR/alacritty/alacritty.toml"
-    "$CONFIG_DIR/dunst/dunstrc"
-    "$CONFIG_DIR/hypr/hypridle.conf"
-    "$CONFIG_DIR/hypr/hyprland.conf"
-    "$CONFIG_DIR/hypr/hyprlock.conf"
-    "$CONFIG_DIR/hypr/hyprpaper.conf"
-    "$CONFIG_DIR/nvim/lua/plugins/user.lua"
-    "$CONFIG_DIR/rofi/config.rasi"
-    "$CONFIG_DIR/waybar/config"
-    "$CONFIG_DIR/waybar/style.css"
-    "$CONFIG_DIR/wofi/config"
-    "$CONFIG_DIR/wofi/style.css"
+DIR=(
+    "$CONFIG_DIR/alacritty"
+    "$CONFIG_DIR/dunst"
+    "$CONFIG_DIR/hypr"
+    "$CONFIG_DIR/rofi"
+    "$CONFIG_DIR/waybar"
+    "$CONFIG_DIR/wofi"
     "$CONFIG_DIR/nvim"
     "$HOME/.gitconfig"
     "$HOME/.zshrc"
 )
 
-for file in "${FILES[@]}"; do
-    if [ -f "$file" ]; then
-        rm -r "$file"
-        echo "Deleted file: $file"
+for dir in "${DIR[@]}"; do
+    if [ -f "$dir" ]; then
+        rm -r "$dir"
+        echo "Deleted dir: $dir"
     else
-        echo "File not found: $file"
+        echo "Dir not found: $dir"
     fi
 done
 
@@ -179,6 +172,5 @@ echo "Setting up dotfiles with Stow..."
 sudo pacman -S --noconfirm stow # Manage installation of multiple softwares in the same directory tree
 cd ~/dotfiles
 stow .
-
 
 echo "Installation and configuration complete!"
