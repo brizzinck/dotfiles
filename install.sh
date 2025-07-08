@@ -108,7 +108,7 @@ if ! command -v yay &>/dev/null; then
 fi
 
 echo "Installing AUR packages..."
-yay -S --noconfirm ttf-jetbrains-mono-nerd facad
+yes | yay -S --sudoloop --noconfirm ttf-jetbrains-mono-nerd facad
 
 sudo flatpak install -y com.google.Chrome \
   com.mojang.Minecraft \
@@ -149,12 +149,18 @@ if [ ! -d "$HOME/.oh-my-zsh" ]; then
 fi
 
 echo "Installing Zsh plugins..."
+
 ZSH_CUSTOM=${ZSH_CUSTOM:-~/.oh-my-zsh/custom}
-git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM}/plugins/zsh-autosuggestions
-git clone https://github.com/zsh-users/zsh-syntax-highlighting.git ${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting
+if [ ! -d "${ZSH_CUSTOM}/plugins/zsh-autosuggestions" ]; then
+  git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM}/plugins/zsh-autosuggestions
+fi
+if [ ! -d "${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting" ]; then
+  git clone https://github.com/zsh-users/zsh-syntax-highlighting.git ${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting
+fi
 
 echo "Installing lazy..."
-https://github.com/folke/lazy.nvim.git ~/.local/share/nvim/site/pack/lazy/start/lazy.nvim
+rm -rf -r ~/.local/share/nvim/site/pack/lazy/start/lazy.nvim
+git clone https://github.com/folke/lazy.nvim.git ~/.local/share/nvim/site/pack/lazy/start/lazy.nvim
 
 echo "Installing Rust..."
 if ! command -v rustc &>/dev/null; then
@@ -192,7 +198,7 @@ cd ~/dotfiles
 stow .
 
 echo "Generating SSH-KEY..."
-ssh-keygen -t ed25519 -C "lavrishkovlad@gmail.com"
+yes | ssh-keygen -t ed25519 -C "lavrishkovlad@gmail.com" -f ~/.ssh/id_ed25519 -N "" -q
 eval "$(ssh-agent -s)"
 ssh-add ~/.ssh/id_ed25519
 
@@ -201,4 +207,10 @@ find "$CONFIG_DIR" -type d -empty -delete
 
 echo "Installation and configuration complete!"
 
-reboot
+echo "Do reboot? [Y,n]"
+read input
+
+case "$input" in 
+  [Nn]) echo "Do it later!" ;;
+  *) echo reboot ;;
+esac
