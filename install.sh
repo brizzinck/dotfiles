@@ -30,6 +30,8 @@ packages=(
   grim # Screenshot utility for Wayland
   grub # GNU GRand Unified Bootloader
   go # Core compiler tools for the Go programming language
+  noto-fonts-cjk # Google Noto CJK fonts
+  noto-fonts-emoji # Google Noto Color Emoji font
   obsidian # A powerful knowledge base that works on top of a local folder of plain text Markdown files
   fpc # Free Pascal Compiler, Turbo Pascal 7.0 and Delphi compatible.
   protobuf # Protocol Buffers - Google's data interchange format
