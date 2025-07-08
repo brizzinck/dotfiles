@@ -33,6 +33,7 @@ packages=(
   noto-fonts-cjk # Google Noto CJK fonts
   noto-fonts-emoji # Google Noto Color Emoji font
   obsidian # A powerful knowledge base that works on top of a local folder of plain text Markdown files
+  ripgrep # A search tool that combines the usability of ag with the raw speed of grep
   fpc # Free Pascal Compiler, Turbo Pascal 7.0 and Delphi compatible.
   protobuf # Protocol Buffers - Google's data interchange format
   swaybg # Wallpaper tool for Wayland compositors
