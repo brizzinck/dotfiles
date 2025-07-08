@@ -1,0 +1,5 @@
+^/README.*
+^/LICENSE.*
+^/.gitmodules
+\.git
+^/install.sh
