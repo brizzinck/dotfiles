@@ -32,6 +32,7 @@ packages=(
   go # Core compiler tools for the Go programming language
   obsidian # A powerful knowledge base that works on top of a local folder of plain text Markdown files
   fpc # Free Pascal Compiler, Turbo Pascal 7.0 and Delphi compatible.
+  protobuf # Protocol Buffers - Google's data interchange format
   swaybg # Wallpaper tool for Wayland compositors
   kotlin # Statically typed programming language with multiplatform support
   lazarus # Delphi-like IDE for FreePascal common files
