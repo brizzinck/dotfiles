@@ -2,7 +2,7 @@
 
 ```sh
 mkdir ~/dotfiles
-git clone https://github.com/brizzinck/dotfiles.git ~/dotfiles
+git clone --recursive  https://github.com/brizzinck/dotfiles.git ~/dotfiles
 cd ~/dotfiles
 ```
 
