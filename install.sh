@@ -127,6 +127,8 @@ echo "Installing Go packages..."
 go install github.com/jesseduffield/lazygit@latest
 go install github.com/jesseduffield/lazydocker@latest
 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.2.1
+go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 
 echo "Install npm packages..."
 npm install next
