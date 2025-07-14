@@ -175,6 +175,8 @@ if ! command -v rustc &>/dev/null; then
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 fi
 
+rustup component add rust-src
+
 echo "Deleting existing dotfiles..."
 
 CONFIG_DIR="$HOME/.config"
