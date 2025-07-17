@@ -92,6 +92,7 @@ packages=(
   wl-clipboard # Command-line copy/paste utilities for Wayland
   docker # Pack, ship and run any application as a lightweight container 
   docker-compose # Fast, isolated development environments using Docker
+  docker-buildx # Docker CLI plugin for extended build capabilities with BuildKit
   xdg-desktop-portal-hyprland # xdg-desktop-portal backend for hyprland
   yazi # Blazing fast terminal file manager written in Rust, based on async I/O
   zoxide # A smarter cd command for your terminal
@@ -147,6 +148,7 @@ fi
 sudo usermod -aG docker $USER
 sudo systemctl enable docker.service
 sudo systemctl enable containerd.service
+sudo docker buildx install
 
 echo "Creating directories..."
 mkdir -p ~/job ~/docs/books ~/pics/{walls,screenshots} ~/vids/screencaptures ~/.local/bin
