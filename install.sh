@@ -104,6 +104,10 @@ packages=(
 
 sudo pacman -S --noconfirm "${packages[@]}"
 
+echo "Creating directories..."
+mkdir -p ~/job ~/docs/books ~/pics/{walls,screenshots} ~/vids/screencaptures ~/.local/bin
+flatpak override --user --filesystem=$HOME/downloads
+
 echo "Installing yay..."
 if ! command -v yay &>/dev/null; then
     git clone https://aur.archlinux.org/yay-bin.git
@@ -149,9 +153,6 @@ sudo usermod -aG docker $USER
 sudo systemctl enable docker.service
 sudo systemctl enable containerd.service
 sudo docker buildx install
-
-echo "Creating directories..."
-mkdir -p ~/job ~/docs/books ~/pics/{walls,screenshots} ~/vids/screencaptures ~/.local/bin
 
 echo "Setting up Oh My Zsh..."
 if [ ! -d "$HOME/.oh-my-zsh" ]; then
