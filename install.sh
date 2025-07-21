@@ -100,6 +100,7 @@ packages=(
   zip # Compressor/archiver for creating and modifying zipfiles
   zellij # A terminal multiplexer
   zsh # A very advanced and programmable command interpreter (shell) for UNIX
+  mpv # a free, open source, and cross-platform media player
 )
 
 sudo pacman -S --noconfirm "${packages[@]}"
