@@ -1,4 +1,5 @@
-export HOME="/home/skalse"
+export USER=$(whoami)
+export HOME="/home/$USER"
 
 export WGPU_BACKEND=vulkan
 
@@ -58,7 +59,7 @@ export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  
 
-[ -s "/home/skalse/.bun/_bun" ] && source "/home/skalse/.bun/_bun"
+[ -s "/home/$USER/.bun/_bun" ] && source "/home/$USER/.bun/_bun"
 
 wmctrl -r ":ACTIVE:" -b add,maximized_vert,maximized_horz
 
