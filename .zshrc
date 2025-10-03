@@ -43,7 +43,7 @@ export EDITOR="nvim"
 export GIT_EDITOR="nvim"
 export VISUAL="nvim"
 export TERMINAL="alacritty"
-export BROWSER="firefox-developer-edition"
+export BROWSER="firefox"
 
 export MOZ_ENABLE_WAYLAND=1
 export MOZ_GTK_TITLEBAR_DECORATION=client
@@ -63,7 +63,7 @@ export NVM_DIR="$HOME/.nvm"
 
 wmctrl -r ":ACTIVE:" -b add,maximized_vert,maximized_horz
 
-alias firefox="firefox-developer-edition --start-maximized"
+alias firefox="firefox --start-maximized"
 
 alias q="exit"
 alias v="nvim"
