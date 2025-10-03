@@ -77,7 +77,7 @@ packages=(
   slurp # Select a region in a Wayland compositor
   snapshot # Take pictures and videos
   openssh # SSH protocol implementation for remote login, command execution and file transfer
-  Telegram # Official Telegram Desktop client
+  telegram-desktop # Official Telegram Desktop client
   man-db # A utility for reading man pages
   tldr # Command line client for tldr, a collection of simplified man pages.
   wmctrl # Control your EWMH compliant window manager from command line
