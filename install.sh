@@ -89,6 +89,7 @@ packages=(
   waybar # Highly customizable Wayland bar for Sway and Wlroots based compositors
   wireplumber # Session / policy manager implementation for PipeWire
   wofi # launcher for wlroots-based wayland compositors
+  ghostty # Fast, native, feature-rich terminal emulator pushing modern features
   wl-clipboard # Command-line copy/paste utilities for Wayland
   docker # Pack, ship and run any application as a lightweight container 
   docker-compose # Fast, isolated development environments using Docker
