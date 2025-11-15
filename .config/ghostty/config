@@ -1,0 +1,13 @@
+term = xterm-256color
+
+background = #000000
+foreground = #ffffff
+
+font-family = JetBrainsMono Nerd Font
+font-size = 16.5
+font-style = Regular
+
+window-padding-x = 1
+window-padding-y = 1
+
+copy-on-select = false
