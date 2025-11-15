@@ -42,8 +42,8 @@ source $ZSH/oh-my-zsh.sh
 export EDITOR="nvim"
 export GIT_EDITOR="nvim"
 export VISUAL="nvim"
-export TERMINAL="alacritty"
-export BROWSER="firefox"
+export TERMINAL="ghostty"
+export BROWSER="flatpak run app.zen_browser.zen"
 
 export MOZ_ENABLE_WAYLAND=1
 export MOZ_GTK_TITLEBAR_DECORATION=client
