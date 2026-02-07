@@ -73,6 +73,7 @@ alias c="clear"
 
 alias gtj="cd $HOME/job && clear && ls -a"
 alias gtd="cd $HOME/dotfiles"
+alias gtn="cd $HOME/dotfiles/.config/nvim"
 alias gtc="cd $HOME/.config"
 alias gto="cd $HOME/job/obsidian"
 
