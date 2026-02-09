@@ -1,91 +1,92 @@
 * {
-    border: none;
-    border-radius: 0;
-    min-height: 0;
-    margin: 0;
-    padding: 0;
+  border: none;
+  border-radius: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
 }
 
 #waybar {
-    background-color: rgba(1, 1, 1, 1);
-    color: #cdd6f4;
-    font-family: "JetBrainsMono Nerd Font";
-    font-size: 16px;
-    font-weight: bold;
+  background-color: rgba(1, 1, 1, 1);
+  color: #cdd6f4;
+  font-family: "JetBrainsMono Nerd Font";
+  font-size: 16px;
+  font-weight: bold;
 }
 
 #clock,
 #cpu,
 #memory,
-#pulseaudio,
+#pulseaudio {
+  padding-left: 6px;
+  padding-right: 6px;
+  min-height: 0;
+  padding: 3px 10px;
+  border-radius: 7px;
+  margin: 1px 4px;
+  background-color: #000000;
+}
+
 #language {
-    padding-left: 6px;
-    padding-right: 6px;
-    min-height: 0;
-    padding: 3px 10px;
-    border-radius: 7px;
-    margin: 1px 4px;
-    background-color: #000000;
+  min-width: 10px;
 }
 
 #clock {
-    font-weight: bold;
+  font-weight: bold;
 }
 
 #cpu.warning {
-    color: orange;
+  color: orange;
 }
 
 #cpu.critical {
-    color: red;
+  color: red;
 }
 
 #memory {
-    animation-timing-function: linear;
-    animation-iteration-count: infinite;
-    animation-direction: alternate;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  animation-direction: alternate;
 }
 
 #memory.warning {
-    color: orange;
+  color: orange;
 }
 
 #memory.critical {
-    color: red;
-    animation-name: blink-critical;
-    animation-duration: 2s;
+  color: red;
+  animation-name: blink-critical;
+  animation-duration: 2s;
 }
 
 #custom-power {
-    font-weight: bold;
+  font-weight: bold;
 }
 
 #custom-power:hover {
-    box-shadow: inherit;
-    text-shadow: inherit;
-    color: #1e1e2e;
-    background-color: #cdd6f4;
+  box-shadow: inherit;
+  text-shadow: inherit;
+  color: #1e1e2e;
+  background-color: #cdd6f4;
 }
 
 #window {
-    font-weight: bold;
+  font-weight: bold;
 }
 
 #workspaces button {
-  	padding-left: 6px;
-    padding-right: 10px;
-    margin: 1px 4px;
-    border-radius: 7px;
-    background-color:  #181825;
-    color: #cdd6f4;
-    font-size: 16px;
-    font-family: "JetBrainsMono Nerd Font";
-    font-weight: bold;
+  padding-left: 6px;
+  padding-right: 10px;
+  margin: 1px 4px;
+  border-radius: 7px;
+  background-color: #181825;
+  color: #cdd6f4;
+  font-size: 16px;
+  font-family: "JetBrainsMono Nerd Font";
+  font-weight: bold;
 }
 
 #workspaces button.active {
-  	background-color: #c5c8c6;
-    color: #1e1e2e;
+  background-color: #c5c8c6;
+  color: #1e1e2e;
 }
-
-

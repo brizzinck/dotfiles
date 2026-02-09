@@ -2,12 +2,12 @@
 	"layer": "top",
 	"position": "top",
 	"height": 27,
-	"width": 1900,
+	"width": 1850,
 	"margin": 0,
 
 	"modules-left": ["cpu", "memory"],
 	"modules-center": ["hyprland/workspaces"],
-	"modules-right": ["tray", "pulseaudio", "hyprland/language",  "clock"],
+	"modules-right": ["tray", "pulseaudio", "battery", "clock", "hyprland/language"],
 
 	"cpu": {
 		"format": "  {usage}%",
@@ -50,6 +50,23 @@
 		"tooltip-format": "<big>{:%Y %B}</big>\n<tt><small>{calendar}</small></tt>",
 		"format-alt": "{:%Y-%m-%d}"
 	},
+
+  "battery": {
+    "bat": "BAT0",
+    "interval": 60,
+    "states": {
+      "warning": 30,
+      "critical": 15
+    },
+    "events": {
+      "on-discharging-warning": "notify-send -u normal 'Low Battery'",
+      "on-discharging-critical": "notify-send -u critical 'Very Low Battery'",
+      "on-charging-100": "notify-send -u normal 'Battery Full!'"
+    },
+    "format": "{icon}  {capacity}%",
+    "format-icons": ["", "", "", "", ""],
+    "max-length": 25
+  },
 
 	"pulseaudio": {
 			"scroll-step": 5,
