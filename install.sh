@@ -127,6 +127,7 @@ sudo flatpak install -y com.google.Chrome \
   com.spotify.Client \
   us.zoom.Zoom \
   app.zen_browser.zen \
+  app.ytmdesktop.ytmdesktop \
   com.google.AndroidStudio \
   com.unity.UnityHub \
   com.valvesoftware.Steam \
@@ -137,6 +138,10 @@ echo "Installing Go packages..."
 go install github.com/jesseduffield/lazygit@latest
 go install github.com/jesseduffield/lazydocker@latest
 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.2.1
+go install golang.org/x/tools/cmd/goimports@latest
+go install github.com/segmentio/golines@latest
+go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+go install github.com/bombsimon/wsl/v5/cmd/wsl@latest
 go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 go install github.com/bufbuild/buf-language-server/cmd/bufls@latest
