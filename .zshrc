@@ -57,7 +57,7 @@ esac
 
 export NVM_DIR="$HOME/.nvm"
 
-[ -f ./env.secret.sh ] && source ./env.secret.sh
+[ -f "$HOME/dotfiles/env.secret.sh" ] && source "$HOME/dotfiles/env.secret.sh"
 
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  
