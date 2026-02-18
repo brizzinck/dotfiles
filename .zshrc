@@ -113,7 +113,17 @@ of() {
   done
 }
 
-alias rg="go run ."
+rg() {
+  if [ -f "./main.go" ]; then 
+    go run .
+  elif [ -f "./cmd/main.go" ]; then
+    go run ./cmd/main.go
+  elif [ -f "./cmd/api/main.go" ]; then
+    go run ./cmd/api/main.go
+  fi
+}
+
+alias rg="rg"
 alias lg="golangci-lint run --fix; go mod tidy"
 alias lgr='find . -name "go.mod" -execdir sh -c "golangci-lint run --fix; go mod tidy" \;'
 alias tg="go test ./..."
