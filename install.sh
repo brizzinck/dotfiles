@@ -176,6 +176,8 @@ if [ ! -d "${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting" ]; then
   git clone https://github.com/zsh-users/zsh-syntax-highlighting.git ${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting
 fi
 
+chsh -s $(which zsh)
+
 echo "Installing lazy..."
 rm -rf -r ~/.local/share/nvim/site/pack/lazy/start/lazy.nvim
 git clone https://github.com/folke/lazy.nvim.git ~/.local/share/nvim/site/pack/lazy/start/lazy.nvim
