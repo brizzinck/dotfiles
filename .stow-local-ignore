@@ -4,3 +4,4 @@
 \.git
 ^/install.sh
 ^/flash.sh
+^/env.secret.sh
