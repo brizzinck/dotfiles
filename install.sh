@@ -151,6 +151,9 @@ npm install next
 npm install pyright
 npm install sql-formatter
 
+echo "Install claude..."
+curl -fsSL https://claude.ai/install.sh | bash
+
 echo "Setting up docker..."
 sudo systemctl start docker
 if ! getent group docker &>/dev/null; then
