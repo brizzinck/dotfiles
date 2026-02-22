@@ -56,7 +56,7 @@ packages=(
   networkmanager # Network connection manager and user applications
   nodejs # Evented I/O for V8 javascript
   npm # JavaScript package manager
-  nvidia # NVIDIA kernel modules
+  nvidia-open # NVIDIA kernel modules
   nvidia-utils # NVIDIA drivers utilities
   nvidia-settings # Tool for configuring the NVIDIA graphics driver
   vulkan-icd-loader # Vulkan Installable Client Driver (ICD) Loader
