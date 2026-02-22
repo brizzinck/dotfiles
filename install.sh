@@ -235,5 +235,5 @@ read input
 
 case "$input" in 
   [Nn]) echo "Do it later!" ;;
-  *) echo reboot ;;
+  *) exec reboot ;;
 esac
