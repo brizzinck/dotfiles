@@ -225,7 +225,7 @@ ssh-add ~/.ssh/id_ed25519
 echo "Removing empty directories..."
 find "$CONFIG_DIR" -type d -empty -delete
 
-echi "Creating secrets envs..."
+echo "Creating secrets envs..."
 touch ~/dotfiles/env.secret.sh && chmod +x ~/dotfiles/env.secret.sh
 
 echo "Installation and configuration complete!"
