@@ -3,3 +3,4 @@
 ^/.gitmodules
 \.git
 ^/install.sh
+^/flash.sh
