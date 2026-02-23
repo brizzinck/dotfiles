@@ -28,6 +28,8 @@ export PATH="$HOME/.local/share/cargo/bin:$PATH"
 export PATH="$HOME/.local/share/go/bin:$PATH"
 export PATH="$HOME/.local/share/rustup/bin:$PATH"
 
+export CLAUDE_CODE_MAX_OUTPUT_TOKENS=8192
+
 ZSH_THEME="robbyrussell"
 
 plugins=(
