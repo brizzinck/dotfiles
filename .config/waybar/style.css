@@ -33,6 +33,7 @@
 
 #clock {
   font-weight: bold;
+  padding-right: 3px;
 }
 
 #cpu.warning {
