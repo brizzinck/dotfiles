@@ -127,6 +127,7 @@ rg() {
 
 alias rg="rg"
 alias lg="golangci-lint run --fix; go mod tidy"
+alias lgw="golangci-lint run > lint.dev 2>&1"
 alias lgr='find . -name "go.mod" -execdir sh -c "golangci-lint run --fix; go mod tidy" \;'
 alias tg="go test ./..."
 
