@@ -219,9 +219,9 @@ done
 
 echo "Setting up dotfiles with Stow..."
 sudo pacman -S --noconfirm stow # Manage installation of multiple softwares in the same directory tree
-cd ~/dotfiles
-stow .
 cd ~/dotfiles/private
+stow .
+cd ~/dotfiles
 stow .
 
 echo "Generating SSH-KEY..."
