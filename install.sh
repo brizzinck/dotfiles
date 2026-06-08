@@ -221,6 +221,8 @@ echo "Setting up dotfiles with Stow..."
 sudo pacman -S --noconfirm stow # Manage installation of multiple softwares in the same directory tree
 cd ~/dotfiles
 stow .
+cd ~/dotfiles/private
+stow .
 
 echo "Generating SSH-KEY..."
 yes | ssh-keygen -t ed25519 -C "lavrishkovlad@gmail.com" -f ~/.ssh/id_ed25519 -N "" -q
