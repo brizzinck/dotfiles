@@ -1,256 +1,218 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# dotfiles bootstrap — Arch Linux + Hyprland + Neovim AI-agent cockpit.
+# Safe to re-run: every step is idempotent. Works for any user account: nothing here
+# assumes a username, home path or e-mail. Non-interactive runs (no TTY) skip the few
+# prompts and print what to do by hand at the end.
+set -euo pipefail
 
-set -e
+DOTFILES="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKUP_DIR="$HOME/.dotfiles-backup-$(date +%Y%m%d-%H%M%S)"
+IS_TTY=0; [ -t 0 ] && IS_TTY=1
+MANUAL_STEPS=()
 
-echo "Updating system..."
+log()  { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
+warn() { printf '\033[1;33mwarn:\033[0m %s\n' "$*"; }
+die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+have() { command -v "$1" &>/dev/null; }
+later(){ MANUAL_STEPS+=("$*"); }
+
+command -v pacman &>/dev/null || die "this bootstrap targets Arch Linux (pacman not found)"
+[ "$(id -u)" -eq 0 ] && die "run as your normal user, not root (sudo is used where needed)"
+
+# keep sudo alive for the whole run
+sudo -v
+( while true; do sudo -n true; sleep 50; kill -0 "$$" || exit; done 2>/dev/null ) &
+
+# ───────────────────────────── 1. system packages ─────────────────────────────
+log "Updating system"
 sudo pacman -Syu --noconfirm
 
-echo "Installing essential packages..."
-
+log "Installing packages"
 packages=(
-  alacritty # A cross-platform, GPU-accelerated terminal emulator
-  android-tools # Android platform tools
-  base # Minimal package set to define a basic Arch Linux installation
-  base-devel  # Basic tools to build Arch Linux packages
-  bash-completion # Programmable completion for the bash shell
-  bluez # Daemons for the bluetooth protocol stack
-  bluez-utils # Development and debugging utilities for the bluetooth protocol stack
-  btop # A monitor of system resources, bpytop ported to C++
-  htop # Interactive process viewer
-  cmake # A cross-platform open-source make system
-  clang # C language family frontend for LLVM
-  cloc # Count lines of code
-  cmatrix # A curses-based scrolling 'Matrix'-like screen
-  curl # command line tool and library for transferring data with URLs
-  dante # SOCKS v4 and v5 compatible proxy server and client
-  discord # All-in-one voice and text chat for gamers
-  dunst # Customizable and lightweight notification-daemon
-  fail2ban # Bans IPs after too many failed authentication attempts
-  git # the fast distributed version control system
-  grim # Screenshot utility for Wayland
-  grub # GNU GRand Unified Bootloader
-  go # Core compiler tools for the Go programming language
-  noto-fonts-cjk # Google Noto CJK fonts
-  noto-fonts-emoji # Google Noto Color Emoji font
-  obsidian # A powerful knowledge base that works on top of a local folder of plain text Markdown files
-  ripgrep # A search tool that combines the usability of ag with the raw speed of grep
-  fpc # Free Pascal Compiler, Turbo Pascal 7.0 and Delphi compatible.
-  protobuf # Protocol Buffers - Google's data interchange format
-  swaybg # Wallpaper tool for Wayland compositors
-  kotlin # Statically typed programming language with multiplatform support
-  lazarus # Delphi-like IDE for FreePascal common files
-  hypridle # hyprland’s idle daemon
-  hyprland # a highly customizable dynamic tiling Wayland compositor
-  hyprlock # hyprland’s GPU-accelerated screen locking utility
-  hyprpaper # a blazing fast wayland wallpaper utility with IPC controls
-  imv # Image viewer for Wayland and X11
-  ipset # Administration tool for IP sets
-  linux # The Linux kernel and modules
-  linux-firmware # Firmware files for Linux - Default set
-  linux-headers # Headers and scripts for building modules for the Linux kernel
-  less #  A terminal based program for viewing text files
-  lld # Linker from the LLVM project
-  flatpak # Linux application sandboxing and distribution framework (formerly xdg-app)
-  nano # Pico editor clone with enhancements
-  neovim # Fork of Vim aiming to improve user experience, plugins, and GUIs
-  networkmanager # Network connection manager and user applications
-  nodejs # Evented I/O for V8 javascript
-  npm # JavaScript package manager
-  nvidia-open # NVIDIA kernel modules
-  nvidia-utils # NVIDIA drivers utilities
-  nvidia-settings # Tool for configuring the NVIDIA graphics driver
-  vulkan-icd-loader # Vulkan Installable Client Driver (ICD) Loader
-  vulkan-tools # Vulkan tools and utilities
-  libgl # The GL Vendor-Neutral Dispatch library
-  mesa # Open-source OpenGL drivers
-  obs-studio # Free, open source software for live streaming and recording
-  pavucontrol # A Pulseaudio mixer in Qt (port of pavucontrol)
-  pipewire # Low-latency audio/video router and processor
-  pipewire-alsa # Low-latency audio/video router and processor - ALSA configuration
-  pipewire-pulse # Low-latency audio/video router and processor - PulseAudio replacement
-  python # The Python programming language
-  python-pip # The PyPA recommended tool for installing Python packages
-  ranger # Simple, vim-like file manager
-  rkhunter # Checks machines for the presence of rootkits and other unwanted tools.
-  rofi # A window switcher, application launcher and dmenu replacement
-  seatd # A minimal seat management daemon, and a universal seat management library
-  slurp # Select a region in a Wayland compositor
-  snapshot # Take pictures and videos
-  openssh # SSH protocol implementation for remote login, command execution and file transfer
-  telegram-desktop # Official Telegram Desktop client
-  man-db # A utility for reading man pages
-  tldr # Command line client for tldr, a collection of simplified man pages.
-  wmctrl # Control your EWMH compliant window manager from command line
-  firefox # Fast, Private & Safe Web Browser
-  tree # A directory listing program displaying a depth indented list of files
-  ttf-jetbrains-mono-nerd # Patched font JetBrains Mono from nerd fonts library
-  ufw # Uncomplicated and easy to use CLI tool for managing a netfilter firewall
-  vim # Vi Improved, a highly configurable, improved version of the vi text editor
-  waybar # Highly customizable Wayland bar for Sway and Wlroots based compositors
-  wireplumber # Session / policy manager implementation for PipeWire
-  wofi # launcher for wlroots-based wayland compositors
-  ghostty # Fast, native, feature-rich terminal emulator pushing modern features
-  wl-clipboard # Command-line copy/paste utilities for Wayland
-  docker # Pack, ship and run any application as a lightweight container 
-  docker-compose # Fast, isolated development environments using Docker
-  docker-buildx # Docker CLI plugin for extended build capabilities with BuildKit
-  xdg-desktop-portal-hyprland # xdg-desktop-portal backend for hyprland
-  yazi # Blazing fast terminal file manager written in Rust, based on async I/O
-  zoxide # A smarter cd command for your terminal
-  zig # a general-purpose programming language and toolchain for maintaining robust, optimal, and reusable software
-  zip # Compressor/archiver for creating and modifying zipfiles
-  zellij # A terminal multiplexer
-  zsh # A very advanced and programmable command interpreter (shell) for UNIX
-  mpv # a free, open source, and cross-platform media player
-  brightnessctl # Lightweight brightness control tool
+  # base / build
+  base base-devel linux linux-firmware linux-headers grub networkmanager openssh
+  git git-lfs stow curl wget less tree zip unzip man-db tldr bash-completion
+  cmake clang lld zig
+  # shell & terminal
+  zsh tmux zellij alacritty ghostty ripgrep fd fzf jq yazi ranger zoxide btop htop
+  # editors & languages
+  neovim vim nano go nodejs npm python python-pip kotlin protobuf
+  # wayland desktop
+  hyprland hypridle hyprlock hyprpaper xdg-desktop-portal-hyprland waybar wofi rofi dunst
+  swaybg grim slurp imv wl-clipboard brightnessctl wmctrl seatd
+  pipewire pipewire-alsa pipewire-pulse wireplumber pavucontrol
+  ttf-jetbrains-mono-nerd noto-fonts-cjk noto-fonts-emoji
+  # graphics
+  mesa libgl vulkan-icd-loader vulkan-tools
+  # apps
+  firefox telegram-desktop discord obsidian obs-studio mpv snapshot flatpak
+  # containers & security
+  docker docker-compose docker-buildx ufw fail2ban rkhunter ipset dante
+  # misc
+  android-tools bluez bluez-utils cloc cmatrix fpc lazarus
 )
+sudo pacman -S --needed --noconfirm "${packages[@]}"
 
-sudo pacman -S --noconfirm "${packages[@]}"
-
-echo "Creating directories..."
-mkdir -p ~/job ~/docs/books ~/pics/{walls,screenshots} ~/vids/screencaptures ~/.local/bin
-flatpak override --user --filesystem=$HOME/downloads
-
-echo "Installing yay..."
-if ! command -v yay &>/dev/null; then
-    git clone https://aur.archlinux.org/yay-bin.git
-    cd yay-bin
-    makepkg -si --noconfirm
-    cd ..
-    rm -rf yay-bin
+# NVIDIA only when the GPU is present
+if lspci 2>/dev/null | grep -qi nvidia; then
+  log "NVIDIA GPU detected — installing drivers"
+  sudo pacman -S --needed --noconfirm nvidia-open nvidia-utils nvidia-settings
 fi
 
-echo "Installing AUR packages..."
-yes | yay -S --sudoloop --noconfirm ttf-jetbrains-mono-nerd facad
+log "Creating directories"
+mkdir -p "$HOME"/{job,docs/books,pics/walls,pics/screenshots,vids/screencaptures,.local/bin,.local/state,.config}
 
-sudo flatpak install -y com.google.Chrome \
-  com.mojang.Minecraft \
-  com.spotify.Client \
-  us.zoom.Zoom \
-  app.zen_browser.zen \
-  app.ytmdesktop.ytmdesktop \
-  com.google.AndroidStudio \
-  com.unity.UnityHub \
-  com.valvesoftware.Steam \
-  org.pgadmin.pgadmin4 \
-  rest.insomnia.Insomnia
+# ───────────────────────────── 2. AUR / flatpak ───────────────────────────────
+log "Installing yay"
+if ! have yay; then
+  tmp="$(mktemp -d)"; git clone https://aur.archlinux.org/yay-bin.git "$tmp/yay-bin"
+  ( cd "$tmp/yay-bin" && makepkg -si --noconfirm ); rm -rf "$tmp"
+fi
+yay -S --needed --noconfirm --sudoloop facad || warn "AUR install failed (facad) — continuing"
 
-echo "Installing Go packages..."
+log "Flatpak apps"
+flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
+flatpak override --user --filesystem="$HOME/downloads" || true
+for app in com.google.Chrome com.spotify.Client us.zoom.Zoom app.zen_browser.zen \
+           org.pgadmin.pgadmin4 rest.insomnia.Insomnia com.google.AndroidStudio \
+           com.valvesoftware.Steam com.mojang.Minecraft com.unity.UnityHub app.ytmdesktop.ytmdesktop; do
+  sudo flatpak install -y --noninteractive flathub "$app" || warn "flatpak $app failed — continuing"
+done
+
+# ───────────────────────────── 3. toolchains ──────────────────────────────────
+log "Rust"
+if ! have rustc; then
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
+fi
+# shellcheck disable=SC1091
+[ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
+rustup component add rust-src clippy rustfmt || true
+
+log "Go tools"
+export PATH="$HOME/go/bin:$PATH"
 go install github.com/jesseduffield/lazygit@latest
 go install github.com/jesseduffield/lazydocker@latest
 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.2.1
 go install golang.org/x/tools/cmd/goimports@latest
+go install mvdan.cc/gofumpt@latest
 go install github.com/segmentio/golines@latest
-go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 go install github.com/bombsimon/wsl/v5/cmd/wsl@latest
 go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 go install github.com/bufbuild/buf-language-server/cmd/bufls@latest
-go install mvdan.cc/gofumpt@latest
 
-echo "Install npm packages..."
-npm install next
-npm install pyright
-npm install sql-formatter
+log "npm (user-local prefix, no sudo)"
+npm config set prefix "$HOME/.npm-global"
+export PATH="$HOME/.npm-global/bin:$PATH"
+npm install -g sql-formatter
 
-echo "Install claude..."
-curl -fsSL https://claude.ai/install.sh | bash
+# ───────────────────────────── 4. AI agents ───────────────────────────────────
+log "AI CLIs: Claude Code, Codex, Gemini, Copilot"
+if ! have claude; then curl -fsSL https://claude.ai/install.sh | bash; fi
+export PATH="$HOME/.local/bin:$PATH"
+npm install -g @openai/codex @google/gemini-cli @github/copilot
 
-echo "Install AI agent cockpit tooling (tmux plugins, MCP hub, ACP adapters, workmux)..."
-# tmux plugin manager — plugins listed in .config/tmux/tmux.conf
-if [ ! -d "$HOME/.tmux/plugins/tpm" ]; then
-    git clone https://github.com/tmux-plugins/tpm "$HOME/.tmux/plugins/tpm"
-fi
-# mcphub.nvim backend + Agent Client Protocol adapters used by agentic.nvim
+log "Agent cockpit backends: mcp-hub, ACP adapters, workmux"
 npm install -g mcp-hub@latest @agentclientprotocol/claude-agent-acp @zed-industries/codex-acp
-# git worktree + tmux window per agent task (needs cargo, installed below)
-command -v cargo &>/dev/null && cargo install workmux
+have workmux || cargo install workmux
 
-echo "Setting up docker..."
-sudo systemctl start docker
-if ! getent group docker &>/dev/null; then
-  sudo groupadd docker 
-fi
-sudo usermod -aG docker $USER
-sudo systemctl enable docker.service
-sudo systemctl enable containerd.service
-sudo docker buildx install
-
-echo "Setting up Oh My Zsh..."
+# ───────────────────────────── 5. shell ───────────────────────────────────────
+log "Oh My Zsh + plugins"
 if [ ! -d "$HOME/.oh-my-zsh" ]; then
-  RUNZSH=no CHSH=no sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+  RUNZSH=no CHSH=no KEEP_ZSHRC=yes sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+fi
+ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
+[ -d "$ZSH_CUSTOM/plugins/zsh-autosuggestions" ]     || git clone https://github.com/zsh-users/zsh-autosuggestions "$ZSH_CUSTOM/plugins/zsh-autosuggestions"
+[ -d "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting" ] || git clone https://github.com/zsh-users/zsh-syntax-highlighting.git "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting"
+if [ "$SHELL" != "$(command -v zsh)" ]; then
+  chsh -s "$(command -v zsh)" || warn "chsh failed — run: chsh -s $(command -v zsh)"
 fi
 
-echo "Installing Zsh plugins..."
+# ───────────────────────────── 6. docker ──────────────────────────────────────
+log "Docker"
+sudo systemctl enable --now docker.service containerd.service || warn "docker service not started"
+getent group docker >/dev/null || sudo groupadd docker
+sudo usermod -aG docker "$USER"
 
-ZSH_CUSTOM=${ZSH_CUSTOM:-~/.oh-my-zsh/custom}
-if [ ! -d "${ZSH_CUSTOM}/plugins/zsh-autosuggestions" ]; then
-  git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM}/plugins/zsh-autosuggestions
+# ───────────────────────────── 7. dotfiles (stow) ─────────────────────────────
+log "Linking dotfiles with stow (existing files are moved to $BACKUP_DIR)"
+cd "$DOTFILES"
+git submodule update --init --recursive
+# Move real files/dirs out of the way; leave symlinks (stow manages them)
+while IFS= read -r rel; do
+  target="$HOME/$rel"
+  if [ -e "$target" ] && [ ! -L "$target" ]; then
+    mkdir -p "$BACKUP_DIR/$(dirname "$rel")"
+    mv "$target" "$BACKUP_DIR/$rel"
+    echo "  backed up $rel"
+  fi
+done < <(cd "$DOTFILES" && find . -mindepth 1 -maxdepth 2 \
+           \( -path './.git*' -o -path './.config' -o -name 'README*' -o -name 'LICENSE*' -o -name 'CLAUDE.md' \
+              -o -name 'install.sh' -o -name 'flash.sh' -o -name 'env.secret.sh' -o -path './infrastructure*' \
+              -o -path './themes*' -o -path './node_modules*' -o -name 'package*.json' -o -name '.stow-local-ignore' \) -prune -o -print \
+         | sed 's|^\./||' | awk -F/ 'NF<=2')
+stow --restow .
+touch "$DOTFILES/env.secret.sh" && chmod +x "$DOTFILES/env.secret.sh"
+
+# ───────────────────────────── 8. identity ────────────────────────────────────
+log "Git identity (~/.gitconfig.local)"
+GIT_NAME="${GIT_USER_NAME:-$(git config --global --includes user.name 2>/dev/null || true)}"
+GIT_EMAIL="${GIT_USER_EMAIL:-$(git config --global --includes user.email 2>/dev/null || true)}"
+if [ "$IS_TTY" = 1 ]; then
+  read -rp "  git user.name  [${GIT_NAME:-required}]: " in; GIT_NAME="${in:-$GIT_NAME}"
+  read -rp "  git user.email [${GIT_EMAIL:-required}]: " in; GIT_EMAIL="${in:-$GIT_EMAIL}"
 fi
-if [ ! -d "${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting" ]; then
-  git clone https://github.com/zsh-users/zsh-syntax-highlighting.git ${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting
+if [ -n "$GIT_NAME" ] && [ -n "$GIT_EMAIL" ]; then
+  printf '[user]\n\tname = %s\n\temail = %s\n' "$GIT_NAME" "$GIT_EMAIL" > "$HOME/.gitconfig.local"
+else
+  later "set your git identity: printf '[user]\\n\\tname = NAME\\n\\temail = MAIL\\n' > ~/.gitconfig.local"
 fi
 
-chsh -s $(which zsh)
-
-echo "Installing lazy..."
-rm -rf -r ~/.local/share/nvim/site/pack/lazy/start/lazy.nvim
-git clone https://github.com/folke/lazy.nvim.git ~/.local/share/nvim/site/pack/lazy/start/lazy.nvim
-
-echo "Installing Rust..."
-if ! command -v rustc &>/dev/null; then
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+log "SSH key"
+if [ ! -f "$HOME/.ssh/id_ed25519" ]; then
+  mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+  ssh-keygen -t ed25519 -C "${GIT_EMAIL:-$USER@$(hostname)}" -f "$HOME/.ssh/id_ed25519" -N "" -q
+  later "add ~/.ssh/id_ed25519.pub to GitHub/GitLab: cat ~/.ssh/id_ed25519.pub"
 fi
 
-rustup component add rust-src
+# ───────────────────────────── 9. tmux ────────────────────────────────────────
+log "tmux plugins (TPM)"
+[ -d "$HOME/.tmux/plugins/tpm" ] || git clone https://github.com/tmux-plugins/tpm "$HOME/.tmux/plugins/tpm"
+"$HOME/.tmux/plugins/tpm/bin/install_plugins" || warn "TPM plugin install failed — press prefix+I inside tmux"
 
-echo "Deleting existing dotfiles..."
+# ───────────────────────────── 10. neovim ─────────────────────────────────────
+log "Neovim: plugins, Mason tools, treesitter parsers, agent hooks (headless, a few minutes)"
+nvim --headless -c "luafile $HOME/.config/nvim/scripts/bootstrap.lua" 2>&1 | grep -v '^$' || warn "nvim bootstrap reported errors — open nvim and run :Lazy restore, :MasonInstallAll, :AgentDashInstallHooks"
 
-CONFIG_DIR="$HOME/.config"
+# ───────────────────────────── 11. agents ↔ MCP hub / worktrees ──────────────
+log "Registering the MCP hub with Claude Code and Codex"
+if have claude && ! claude mcp get mcphub &>/dev/null; then
+  claude mcp add -s user --transport http mcphub http://localhost:37373/mcp || warn "claude mcp add failed"
+fi
+if have codex && ! grep -q 'mcp_servers.mcphub' "$HOME/.codex/config.toml" 2>/dev/null; then
+  codex mcp add mcphub --url http://localhost:37373/mcp || warn "codex mcp add failed"
+fi
 
-DIR=(
-    "$CONFIG_DIR/alacritty"
-    "$CONFIG_DIR/dunst"
-    "$CONFIG_DIR/hypr"
-    "$CONFIG_DIR/rofi"
-    "$CONFIG_DIR/waybar"
-    "$CONFIG_DIR/wofi"
-    "$CONFIG_DIR/nvim"
-    "$HOME/.gitconfig"
-    "$HOME/.zshrc"
-)
+log "workmux agent status hooks"
+if [ "$IS_TTY" = 1 ]; then
+  workmux setup --hooks || warn "workmux setup failed"
+else
+  later "run once in a terminal: workmux setup --hooks"
+fi
 
-for dir in "${DIR[@]}"; do
-    if [ -f "$dir" ]; then
-        rm -r "$dir"
-        echo "Deleted dir: $dir"
-    else
-        echo "Dir not found: $dir"
-    fi
-done
+# ───────────────────────────── 12. done ───────────────────────────────────────
+find "$HOME/.config" -maxdepth 1 -type d -empty -delete 2>/dev/null || true
+later "log in to the agents: claude   |   codex login   |   gemini   |   copilot"
+later "GitHub Copilot LSP (Next Edit Suggestions): open nvim, follow the sign-in notice, then :checkhealth sidekick"
+later "start working: ta   (tmux)  →  nvim  →  <leader>ac (Claude) / <leader>ax (Codex) / <leader>ad (agent dashboard)"
 
-echo "Setting up dotfiles with Stow..."
-sudo pacman -S --noconfirm stow # Manage installation of multiple softwares in the same directory tree
-cd ~/dotfiles
-stow .
+log "Installation complete"
+if [ ${#MANUAL_STEPS[@]} -gt 0 ]; then
+  printf '\nManual steps left:\n'; for s in "${MANUAL_STEPS[@]}"; do printf '  • %s\n' "$s"; done
+fi
+[ -d "$BACKUP_DIR" ] && printf '\nPrevious configs were moved to %s\n' "$BACKUP_DIR"
 
-echo "Generating SSH-KEY..."
-yes | ssh-keygen -t ed25519 -C "lavrishkovlad@gmail.com" -f ~/.ssh/id_ed25519 -N "" -q
-eval "$(ssh-agent -s)"
-ssh-add ~/.ssh/id_ed25519
-
-echo "Removing empty directories..."
-find "$CONFIG_DIR" -type d -empty -delete
-
-echo "Creating secrets envs..."
-touch ~/dotfiles/env.secret.sh && chmod +x ~/dotfiles/env.secret.sh
-
-echo "Installation and configuration complete!"
-
-echo "Do reboot? [Y,n]"
-read input
-
-case "$input" in 
-  [Nn]) echo "Do it later!" ;;
-  *) exec reboot ;;
-esac
+if [ "$IS_TTY" = 1 ]; then
+  read -rp $'\nReboot now? [y/N] ' input
+  case "$input" in [Yy]) exec sudo reboot ;; *) echo "Reboot later to finish (docker group, shell, drivers)." ;; esac
+fi

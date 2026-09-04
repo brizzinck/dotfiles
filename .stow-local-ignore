@@ -1,7 +1,14 @@
+# Repo housekeeping — never symlinked into $HOME
 ^/README.*
 ^/LICENSE.*
-^/.gitmodules
+^/CLAUDE\.md
+^/\.gitmodules
+^/\.gitignore
 \.git
-^/install.sh
-^/flash.sh
-^/env.secret.sh
+^/install\.sh
+^/flash\.sh
+^/env\.secret\.sh
+^/infrastructure
+^/themes
+^/node_modules
+^/package.*\.json

@@ -1,5 +1,4 @@
-export USER=$(whoami)
-export HOME="/home/$USER"
+export USER="${USER:-$(whoami)}"
 
 export WGPU_BACKEND=vulkan
 
@@ -162,8 +161,7 @@ source "$ZSH/custom/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
 
 
 # Added by Antigravity CLI installer
-export PATH="/home/skalse/.local/bin:$PATH"
-export PATH=~/.npm-global/bin:$PATH
+export PATH="$HOME/.npm-global/bin:$PATH"
 
 # Launch Codex without approval prompts or sandboxing.
 codex() {

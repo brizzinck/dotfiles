@@ -1,6 +1,6 @@
-[user]
-	email = lavrishkovlad@gmail.com
-	name = Vlad Lavrishko
+# Identity lives in ~/.gitconfig.local (created by install.sh, not tracked)
+[include]
+	path = ~/.gitconfig.local
 [credential]
 	helper = cache
 [init]
