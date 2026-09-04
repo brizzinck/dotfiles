@@ -1,3 +1,6 @@
 [submodule ".config/nvim"]
 	path = .config/nvim
 	url = https://github.com/brizzinck/nvchad.git
+[submodule "private"]
+	path = private
+	url = git@github.com:brizzinck/private-dotfiles.git
