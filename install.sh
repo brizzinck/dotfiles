@@ -43,7 +43,7 @@ packages=(
   pipewire pipewire-alsa pipewire-pulse wireplumber pavucontrol
   ttf-jetbrains-mono-nerd noto-fonts-cjk noto-fonts-emoji
   # graphics
-  mesa libgl vulkan-icd-loader vulkan-tools
+  mesa libgl vulkan-icd-loader vulkan-tools imagemagick ffmpegthumbnailer
   # apps
   firefox telegram-desktop discord obsidian obs-studio mpv snapshot flatpak
   # containers & security
