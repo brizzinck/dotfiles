@@ -56,7 +56,7 @@ After `stow .` it runs `.config/nvim/scripts/bootstrap.lua` headless, which rest
 (`:AgentDashInstallHooks`) into `~/.claude/settings.json` / `~/.codex/hooks.json` with backups.
 
 Neovim side (`lua/plugins/ai/*.lua`, all keys under `<leader>a`):
-- `sidekick.nvim` — Claude/Codex/Gemini/Copilot CLIs in persistent tmux windows, context prompts, Copilot NES (`<Tab>` in normal mode)
+- `sidekick.nvim` — Claude/Codex/Gemini CLIs in persistent tmux windows, context prompts
 - `claudecode.nvim` (server-only) — Claude Code IDE bridge: native diff accept/deny, `@`-mentions
 - `agentic.nvim` — ACP quick chat (`claude-agent-acp`, `codex-acp`)
 - `code-preview.nvim` — agent edits shown as a diff before they hit disk

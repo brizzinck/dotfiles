@@ -43,7 +43,7 @@ packages=(
   pipewire pipewire-alsa pipewire-pulse wireplumber pavucontrol
   ttf-jetbrains-mono-nerd noto-fonts-cjk noto-fonts-emoji
   # graphics
-  mesa libgl vulkan-icd-loader vulkan-tools imagemagick ffmpegthumbnailer
+  mesa libgl vulkan-icd-loader vulkan-tools imagemagick ffmpegthumbnailer ueberzugpp
   # apps
   firefox telegram-desktop discord obsidian obs-studio mpv snapshot flatpak
   # containers & security
@@ -107,10 +107,10 @@ export PATH="$HOME/.npm-global/bin:$PATH"
 npm install -g sql-formatter
 
 # ───────────────────────────── 4. AI agents ───────────────────────────────────
-log "AI CLIs: Claude Code, Codex, Gemini, Copilot"
+log "AI CLIs: Claude Code, Codex, Gemini"
 if ! have claude; then curl -fsSL https://claude.ai/install.sh | bash; fi
 export PATH="$HOME/.local/bin:$PATH"
-npm install -g @openai/codex @google/gemini-cli @github/copilot
+npm install -g @openai/codex @google/gemini-cli
 
 log "Agent cockpit backends: mcp-hub, ACP adapters, workmux"
 npm install -g mcp-hub@latest @agentclientprotocol/claude-agent-acp @zed-industries/codex-acp
@@ -207,8 +207,7 @@ fi
 
 # ───────────────────────────── 12. done ───────────────────────────────────────
 find "$HOME/.config" -maxdepth 1 -type d -empty -delete 2>/dev/null || true
-later "log in to the agents: claude   |   codex login   |   gemini   |   copilot"
-later "GitHub Copilot LSP (Next Edit Suggestions): open nvim, follow the sign-in notice, then :checkhealth sidekick"
+later "log in to the agents: claude   |   codex login   |   gemini"
 later "start working: ta   (tmux)  →  nvim  →  <leader>ac (Claude) / <leader>ax (Codex) / <leader>ad (agent dashboard)"
 
 log "Installation complete"
