@@ -1,0 +1,19 @@
+# workmux global config — one git worktree + one tmux window per agent task.
+# Project overrides: .workmux.yaml in the repo (`workmux init`).
+agent: claude
+
+# Keep worktrees out of the repo tree, namespaced per project.
+worktree_dir: ~/.workmux/{project}
+worktree_naming: basename
+window_prefix: "wm-"
+window_placement: rightmost
+
+# Layout: nvim on the left (focused), the agent on the right.
+panes:
+  - command: nvim
+    focus: true
+  - command: <agent>
+    split: vertical
+    size: 45
+
+merge_strategy: rebase
