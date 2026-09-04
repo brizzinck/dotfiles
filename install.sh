@@ -149,9 +149,14 @@ while IFS= read -r rel; do
 done < <(cd "$DOTFILES" && find . -mindepth 1 -maxdepth 2 \
            \( -path './.git*' -o -path './.config' -o -name 'README*' -o -name 'LICENSE*' -o -name 'CLAUDE.md' \
               -o -name 'install.sh' -o -name 'flash.sh' -o -name 'env.secret.sh' -o -path './infrastructure*' \
-              -o -path './themes*' -o -path './node_modules*' -o -name 'package*.json' -o -name '.stow-local-ignore' \) -prune -o -print \
+              -o -path './themes*' -o -path './node_modules*' -o -name 'package*.json' -o -name '.stow-local-ignore' \
+              -o -path './private*' \) -prune -o -print \
          | sed 's|^\./||' | awk -F/ 'NF<=2')
 stow --restow .
+# private submodule (secrets, machine-local configs) — stowed separately, skipped if not cloned
+if [ -d "$DOTFILES/private" ] && [ -n "$(ls -A "$DOTFILES/private" 2>/dev/null)" ]; then
+  (cd "$DOTFILES/private" && stow --restow .)
+fi
 touch "$DOTFILES/env.secret.sh" && chmod +x "$DOTFILES/env.secret.sh"
 
 # ───────────────────────────── 8. identity ────────────────────────────────────
