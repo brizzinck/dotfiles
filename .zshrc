@@ -28,7 +28,7 @@ export PATH="$HOME/.local/share/cargo/bin:$PATH"
 export PATH="$HOME/.local/share/go/bin:$PATH"
 export PATH="$HOME/.local/share/rustup/bin:$PATH"
 
-export CLAUDE_CODE_MAX_OUTPUT_TOKENS=8192
+export CLAUDE_CODE_MAX_OUTPUT_TOKENS=66384
 
 ZSH_THEME="robbyrussell"
 
@@ -159,3 +159,18 @@ center_text "└─┘┴ ┴┴ ┴┴─┘└─┘└─┘"
 echo -e "\e[0m" 
 
 source "$ZSH/custom/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
+
+
+# Added by Antigravity CLI installer
+export PATH="/home/skalse/.local/bin:$PATH"
+export PATH=~/.npm-global/bin:$PATH
+
+# Launch Codex without approval prompts or sandboxing.
+codex() {
+  command codex --dangerously-bypass-approvals-and-sandbox "$@"
+}
+
+# ── AI agent cockpit ────────────────────────────────────────────────────────
+# tmux: attach to the "main" session or create it
+ta() { tmux new-session -A -s "${1:-main}"; }
+alias wm="workmux"

@@ -102,6 +102,7 @@ packages=(
   zellij # A terminal multiplexer
   zsh # A very advanced and programmable command interpreter (shell) for UNIX
   mpv # a free, open source, and cross-platform media player
+  brightnessctl # Lightweight brightness control tool
 )
 
 sudo pacman -S --noconfirm "${packages[@]}"
@@ -145,6 +146,7 @@ go install github.com/bombsimon/wsl/v5/cmd/wsl@latest
 go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 go install github.com/bufbuild/buf-language-server/cmd/bufls@latest
+go install mvdan.cc/gofumpt@latest
 
 echo "Install npm packages..."
 npm install next
@@ -153,6 +155,16 @@ npm install sql-formatter
 
 echo "Install claude..."
 curl -fsSL https://claude.ai/install.sh | bash
+
+echo "Install AI agent cockpit tooling (tmux plugins, MCP hub, ACP adapters, workmux)..."
+# tmux plugin manager — plugins listed in .config/tmux/tmux.conf
+if [ ! -d "$HOME/.tmux/plugins/tpm" ]; then
+    git clone https://github.com/tmux-plugins/tpm "$HOME/.tmux/plugins/tpm"
+fi
+# mcphub.nvim backend + Agent Client Protocol adapters used by agentic.nvim
+npm install -g mcp-hub@latest @agentclientprotocol/claude-agent-acp @zed-industries/codex-acp
+# git worktree + tmux window per agent task (needs cargo, installed below)
+command -v cargo &>/dev/null && cargo install workmux
 
 echo "Setting up docker..."
 sudo systemctl start docker
