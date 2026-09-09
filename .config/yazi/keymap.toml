@@ -1,0 +1,4 @@
+[[mgr.prepend_keymap]]
+on = "<Enter>"
+run = 'shell -- ~/.config/yazi/scripts/open-or-play.sh "%h"'
+desc = "Play media in mpv (via nvim) without closing yazi; open everything else normally"
