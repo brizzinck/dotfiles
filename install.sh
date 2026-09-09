@@ -48,6 +48,8 @@ packages=(
   firefox telegram-desktop discord obsidian obs-studio mpv snapshot flatpak
   # containers & security
   docker docker-compose docker-buildx ufw fail2ban rkhunter ipset dante
+  # power management
+  tlp
   # misc
   android-tools bluez bluez-utils cloc cmatrix fpc lazarus
 )
@@ -131,6 +133,11 @@ fi
 # ───────────────────────────── 6. docker ──────────────────────────────────────
 log "Docker"
 sudo systemctl enable --now docker.service containerd.service || warn "docker service not started"
+
+log "Configuring battery charge thresholds (TLP)"
+sudo cp "$DOTFILES/infrastructure/tlp/61-battery-care.conf" /etc/tlp.d/61-battery-care.conf
+sudo systemctl enable --now tlp.service
+sudo systemctl restart tlp.service
 getent group docker >/dev/null || sudo groupadd docker
 sudo usermod -aG docker "$USER"
 
