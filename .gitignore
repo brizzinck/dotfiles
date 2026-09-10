@@ -2,3 +2,4 @@
 node_modules
 *.claude
 package*.json
+.config/tmux/plugins
