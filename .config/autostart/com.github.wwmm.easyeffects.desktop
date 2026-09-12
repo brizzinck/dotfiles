@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=EasyEffects
+Exec=easyeffects --service-mode --hide-window
+Icon=com.github.wwmm.easyeffects
+Comment=Audio effects for PipeWire applications
+Terminal=false
+X-GNOME-Autostart-enabled=true

@@ -41,6 +41,7 @@ packages=(
   hyprland hypridle hyprlock hyprpaper xdg-desktop-portal-hyprland waybar wofi rofi dunst
   swaybg grim slurp imv wl-clipboard brightnessctl wmctrl seatd
   pipewire pipewire-alsa pipewire-pulse wireplumber pavucontrol
+  easyeffects noise-suppression-for-voice lsp-plugins lsp-plugins-lv2
   ttf-jetbrains-mono-nerd noto-fonts-cjk noto-fonts-emoji
   # graphics
   mesa libgl vulkan-icd-loader vulkan-tools imagemagick ffmpegthumbnailer ueberzugpp
