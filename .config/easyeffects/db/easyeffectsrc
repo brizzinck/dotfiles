@@ -1,6 +1,6 @@
 [StreamInputs]
 inputDevice=alsa_input.usb-3142_fifine_Microphone-00.analog-stereo
-listenToMic=true
+listenToMic=false
 plugins=rnnoise#0
 visiblePage=pluginsPage
 visiblePlugin=rnnoise#0
@@ -11,4 +11,4 @@ outputDevice=alsa_output.pci-0000_04_00.6.HiFi__Speaker__sink
 [Window]
 height=775
 visiblePage=inputPage
-width=635
+width=1275
