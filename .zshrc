@@ -84,6 +84,8 @@ alias gto="cd $HOME/job/obsidian"
 alias gtjr="cd $HOME/job/rust && clear && ls -a"
 alias gtjg="cd $HOME/job/go && clear && ls -a"
 
+alias tdterm='ghostty -e su - td -c "tmux new-session -A -s main" &'
+
 alias g="git"
 alias gs="git status"
 alias ga="git add"

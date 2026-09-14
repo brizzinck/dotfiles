@@ -12,6 +12,9 @@ window-padding-y = 1
 
 copy-on-select = false
 
+clipboard-write = allow
+clipboard-read = allow
+
 app-notifications = no-clipboard-copy
 
 selection-background = #222222
