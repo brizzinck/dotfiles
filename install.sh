@@ -115,6 +115,11 @@ if ! have claude; then curl -fsSL https://claude.ai/install.sh | bash; fi
 export PATH="$HOME/.local/bin:$PATH"
 npm install -g @openai/codex @google/gemini-cli
 
+log "RTK (bash output compressor for LLM tools)"
+if ! have rtk; then curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh; fi
+export PATH="$HOME/.local/bin:$PATH"
+have rtk && rtk init -g || warn "rtk init failed — run manually: rtk init -g"
+
 log "Agent cockpit backends: mcp-hub, ACP adapters, workmux"
 npm install -g mcp-hub@latest @agentclientprotocol/claude-agent-acp @zed-industries/codex-acp
 have workmux || cargo install workmux
