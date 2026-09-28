@@ -84,7 +84,7 @@ alias gto="cd $HOME/job/obsidian"
 alias gtjr="cd $HOME/job/rust && clear && ls -a"
 alias gtjg="cd $HOME/job/go && clear && ls -a"
 
-alias tdterm='ghostty -e su - td -c "export XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-1; exec tmux new-session -A -s main" &'
+alias tdterm='ghostty -e su - td -c "tmux set-environment -g XDG_RUNTIME_DIR /run/user/1000; tmux set-environment -g WAYLAND_DISPLAY wayland-1; exec tmux new-session -A -s main" &'
 
 alias g="git"
 alias gs="git status"
