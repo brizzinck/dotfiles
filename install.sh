@@ -38,13 +38,14 @@ packages=(
   # editors & languages
   neovim vim nano go nodejs npm python python-pip kotlin protobuf
   # wayland desktop
-  hyprland hypridle hyprlock hyprpaper xdg-desktop-portal-hyprland waybar wofi rofi dunst
-  swaybg grim slurp imv wl-clipboard brightnessctl wmctrl seatd
+  hyprland hypridle hyprlock hyprpaper xdg-desktop-portal-hyprland xdg-desktop-portal-gtk waybar wofi rofi dunst
+  swaybg grim slurp swappy imv wl-clipboard brightnessctl wmctrl seatd
+  kanshi nemo libnotify xdg-utils xdg-user-dirs qt5ct qt6ct   # hyprland.conf: exec-once kanshi, $fileManagerGUI, notify-send, xdg-open, QT_QPA_PLATFORMTHEME
   pipewire pipewire-alsa pipewire-pulse wireplumber pavucontrol
   easyeffects noise-suppression-for-voice lsp-plugins lsp-plugins-lv2
   ttf-jetbrains-mono-nerd noto-fonts-cjk noto-fonts-emoji
   # graphics
-  mesa libgl vulkan-icd-loader vulkan-tools imagemagick ffmpegthumbnailer ueberzugpp
+  mesa libgl vulkan-icd-loader vulkan-tools imagemagick ffmpeg ffmpegthumbnailer ueberzugpp yt-dlp
   # apps
   firefox telegram-desktop discord obsidian obs-studio mpv snapshot flatpak
   # containers & security
@@ -71,12 +72,15 @@ if ! have yay; then
   tmp="$(mktemp -d)"; git clone https://aur.archlinux.org/yay-bin.git "$tmp/yay-bin"
   ( cd "$tmp/yay-bin" && makepkg -si --noconfirm ); rm -rf "$tmp"
 fi
-yay -S --needed --noconfirm --sudoloop facad || warn "AUR install failed (facad) — continuing"
+# hyprdynamicmonitors-bin: /usr/bin/hyprdynamicmonitors for infrastructure/systemd units (enable by hand, see CLAUDE.md)
+for pkg in facad hyprdynamicmonitors-bin; do
+  yay -S --needed --noconfirm --sudoloop "$pkg" || warn "AUR install failed ($pkg) — continuing"
+done
 
 log "Flatpak apps"
 flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
 flatpak override --user --filesystem="$HOME/downloads" || true
-for app in com.google.Chrome com.spotify.Client us.zoom.Zoom app.zen_browser.zen \
+for app in com.google.Chrome com.brave.Browser com.spotify.Client us.zoom.Zoom app.zen_browser.zen \
            org.pgadmin.pgadmin4 rest.insomnia.Insomnia com.google.AndroidStudio \
            com.valvesoftware.Steam com.mojang.Minecraft com.unity.UnityHub app.ytmdesktop.ytmdesktop; do
   sudo flatpak install -y --noninteractive flathub "$app" || warn "flatpak $app failed — continuing"
@@ -90,6 +94,7 @@ fi
 # shellcheck disable=SC1091
 [ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
 rustup component add rust-src clippy rustfmt || true
+have tree-sitter || cargo install tree-sitter-cli   # nvim-treesitter (main branch) compiles parsers with it
 
 log "Go tools"
 export PATH="$HOME/go/bin:$PATH"
@@ -103,6 +108,18 @@ go install github.com/bombsimon/wsl/v5/cmd/wsl@latest
 go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 go install github.com/bufbuild/buf-language-server/cmd/bufls@latest
+go install github.com/vektra/mockery/v3@latest
+go install github.com/swaggo/swag/cmd/swag@latest
+# YaCodeDev tooling (private GitHub org, needs SSH access) — used by the agent skills in private/
+# SSH rewrite is passed per-command via GIT_CONFIG_* so ~/.gitconfig (stowed from this repo) stays untouched.
+if [ -d "$DOTFILES/private/.claude" ]; then
+  for tool in yagolint yagocodegen yaagentmanager; do
+    GOPRIVATE=github.com/YaCodeDev GONOSUMDB=github.com/YaCodeDev \
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.git@github.com:YaCodeDev/.insteadOf" GIT_CONFIG_VALUE_0="https://github.com/YaCodeDev/" \
+      go install "github.com/YaCodeDev/YaCodeDevTools/$tool@latest" \
+      || warn "go install $tool failed — needs SSH read access to github.com/YaCodeDev/YaCodeDevTools"
+  done
+fi
 
 log "npm (user-local prefix, no sudo)"
 npm config set prefix "$HOME/.npm-global"
@@ -139,6 +156,9 @@ fi
 # ───────────────────────────── 6. docker ──────────────────────────────────────
 log "Docker"
 sudo systemctl enable --now docker.service containerd.service || warn "docker service not started"
+
+log "Bluetooth"
+sudo systemctl enable --now bluetooth.service || warn "bluetooth service not started"
 
 log "Configuring battery charge thresholds (TLP)"
 sudo cp "$DOTFILES/infrastructure/tlp/61-battery-care.conf" /etc/tlp.d/61-battery-care.conf
@@ -189,7 +209,7 @@ fi
 log "SSH key"
 if [ ! -f "$HOME/.ssh/id_ed25519" ]; then
   mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
-  ssh-keygen -t ed25519 -C "${GIT_EMAIL:-$USER@$(hostname)}" -f "$HOME/.ssh/id_ed25519" -N "" -q
+  ssh-keygen -t ed25519 -C "${GIT_EMAIL:-$USER@$(uname -n)}" -f "$HOME/.ssh/id_ed25519" -N "" -q
   later "add ~/.ssh/id_ed25519.pub to GitHub/GitLab: cat ~/.ssh/id_ed25519.pub"
 fi
 
