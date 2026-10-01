@@ -10,7 +10,7 @@ font-style = Regular
 window-padding-x = 1
 window-padding-y = 1
 
-copy-on-select = false
+copy-on-select = clipboard
 
 clipboard-write = allow
 clipboard-read = allow

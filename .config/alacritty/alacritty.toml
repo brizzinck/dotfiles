@@ -39,7 +39,7 @@ key = "Return"
 mods = "Super|Shift"
 
 [selection]
-save_to_clipboard = false
+save_to_clipboard = true
 
 [window]
 startup_mode = "Maximized"
