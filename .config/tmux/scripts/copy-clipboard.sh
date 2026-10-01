@@ -7,8 +7,6 @@ content=${content%x}
 
 [ -z "$content" ] && exit 0
 
-echo "$(date +%H:%M:%S) CALLED by $(whoami)" >> /tmp/copy-clipboard.log
-
 # 1. Resolve Wayland socket and runtime dir (uses exact names to work with execute-only dirs)
 if [ -z "$XDG_RUNTIME_DIR" ] || [ -z "$WAYLAND_DISPLAY" ] || [ ! -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then
     for candidate_dir in "${XDG_RUNTIME_DIR:-}" "/run/user/1000" "/run/user/$(id -u)"; do
@@ -24,12 +22,10 @@ if [ -z "$XDG_RUNTIME_DIR" ] || [ -z "$WAYLAND_DISPLAY" ] || [ ! -S "$XDG_RUNTIM
     done
 fi
 
-echo "RESOLVED: XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR WAYLAND_DISPLAY=$WAYLAND_DISPLAY" >> /tmp/copy-clipboard.log
-
 if command -v wl-copy >/dev/null 2>&1; then
-    printf '%s' "$content" | wl-copy 2>>/tmp/copy-clipboard.log
-    printf '%s' "$content" | wl-copy -p 2>>/tmp/copy-clipboard.log
+    printf '%s' "$content" | wl-copy
+    printf '%s' "$content" | wl-copy -p
 elif command -v xclip >/dev/null 2>&1; then
-    printf '%s' "$content" | xclip -in -selection clipboard 2>>/tmp/copy-clipboard.log
-    printf '%s' "$content" | xclip -in -selection primary 2>>/tmp/copy-clipboard.log
+    printf '%s' "$content" | xclip -in -selection clipboard
+    printf '%s' "$content" | xclip -in -selection primary
 fi
