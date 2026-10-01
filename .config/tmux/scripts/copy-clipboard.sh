@@ -7,19 +7,24 @@ content=${content%x}
 
 [ -z "$content" ] && exit 0
 
-# 1. Resolve Wayland socket and runtime dir
+echo "$(date +%H:%M:%S) CALLED by $(whoami)" >> /tmp/copy-clipboard.log
+
+# 1. Resolve Wayland socket and runtime dir (uses exact names to work with execute-only dirs)
 if [ -z "$XDG_RUNTIME_DIR" ] || [ -z "$WAYLAND_DISPLAY" ] || [ ! -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then
     for candidate_dir in "${XDG_RUNTIME_DIR:-}" "/run/user/1000" "/run/user/$(id -u)"; do
         [ -n "$candidate_dir" ] && [ -d "$candidate_dir" ] || continue
-        for sock in "$candidate_dir"/wayland-*; do
-            if [ -S "$sock" ]; then
+        for candidate_name in "${WAYLAND_DISPLAY:-}" "wayland-1" "wayland-0" "wayland-2"; do
+            [ -n "$candidate_name" ] || continue
+            if [ -S "$candidate_dir/$candidate_name" ]; then
                 export XDG_RUNTIME_DIR="$candidate_dir"
-                export WAYLAND_DISPLAY="$(basename "$sock")"
+                export WAYLAND_DISPLAY="$candidate_name"
                 break 2
             fi
         done
     done
 fi
+
+echo "RESOLVED: XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR WAYLAND_DISPLAY=$WAYLAND_DISPLAY" >> /tmp/copy-clipboard.log
 
 if command -v wl-copy >/dev/null 2>&1; then
     printf '%s' "$content" | wl-copy 2>>/tmp/copy-clipboard.log
