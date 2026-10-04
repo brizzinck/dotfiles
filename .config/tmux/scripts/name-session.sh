@@ -15,6 +15,11 @@ session_name="${1:?session name required}"
 AUTO_NAME_RE='^([0-9]+|term-[0-9]+)$'
 [[ "$session_name" =~ $AUTO_NAME_RE ]] || exit 0
 
+# Closing the terminal window (Super+Q / killactive) only detaches the client;
+# without this the session, nvim, agents and their MCP children live on and eat RAM.
+# destroy-unattached kills the session (SIGHUP to every pane) on detach.
+[[ "$session_name" == term-* ]] && tmux set-option -t "$session_name" destroy-unattached on
+
 existing=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
 
 available=()
