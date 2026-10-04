@@ -43,6 +43,8 @@ Two layers:
 
 `infrastructure/tlp/` — TLP drop-in configs (`/etc/tlp.d/`), not stowed (system path, outside `$HOME`, machine-wide rather than per-user). `61-battery-care.conf` caps battery charging; `install.sh` copies it into `/etc/tlp.d/` and enables `tlp.service` (copied, not symlinked, so it doesn't dangle if the installing user's account is later removed on a shared machine). Non-ThinkPad Lenovo hardware (`ideapad_laptop` driver) only supports a binary `Long_Life` charge mode (vendor-fixed ~55-60% cutoff) via the kernel's `charge_types` API — no exact percentage like ThinkPads' `charge_control_end_threshold`. To pick up edits without a full rerun: `sudo cp infrastructure/tlp/61-battery-care.conf /etc/tlp.d/ && sudo systemctl restart tlp`.
 
+`infrastructure/memory/` — RAM safety net, copied (not stowed) into `/etc` by `install.sh`: zram swap (`zram-generator.conf`), sysctl tuning, zswap off (avoids double compression), docker log limits (`daemon.json` only written if absent), journald cap. Apply (or re-apply after edits) without a full rerun: `./apply-memory.sh` (self-elevates with sudo, idempotent).
+
 ### Shell aliases (`.zshrc`)
 - `gtx` navigation: `gtj`=~/job, `gtd`=~/dotfiles, `gtn`=~/.config/nvim
 - Git: `gs`, `ga`, `gcm`, `gp`, `gl`, etc.

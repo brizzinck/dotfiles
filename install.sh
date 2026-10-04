@@ -167,6 +167,9 @@ sudo systemctl restart tlp.service
 getent group docker >/dev/null || sudo groupadd docker
 sudo usermod -aG docker "$USER"
 
+log "Memory safety net (zram, sysctl, docker/journald limits)"
+sudo "$DOTFILES/apply-memory.sh" || warn "memory safety net not applied"
+
 # ───────────────────────────── 7. dotfiles (stow) ─────────────────────────────
 log "Linking dotfiles with stow (existing files are moved to $BACKUP_DIR)"
 cd "$DOTFILES"

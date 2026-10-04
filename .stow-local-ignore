@@ -6,6 +6,7 @@
 ^/\.gitignore
 \.git
 ^/install\.sh
+^/apply-memory\.sh
 ^/flash\.sh
 ^/env\.secret\.sh
 ^/infrastructure
