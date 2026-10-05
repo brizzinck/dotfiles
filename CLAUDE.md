@@ -62,7 +62,6 @@ After `stow .` it runs `.config/nvim/scripts/bootstrap.lua` headless, which rest
 Neovim side (`lua/plugins/ai/*.lua`, all keys under `<leader>a`):
 - `sidekick.nvim` — Claude/Codex/Gemini CLIs in persistent tmux windows, context prompts
 - `agentic.nvim` — ACP quick chat (`claude-agent-acp`, `codex-acp`)
-- `code-preview.nvim` — agent edits shown as a diff before they hit disk
 - `codediff.nvim` + `review.nvim` — post-hoc review, comments sent back to the agent
 - `mcphub.nvim` — one MCP endpoint (`localhost:37373`) shared by all agents; servers in `.config/mcphub/servers.json`
 - `lua/agentdash/` — custom dashboard of sessions/subagents/tasks fed by agent hooks (`:AgentDash`, statusline segment)
