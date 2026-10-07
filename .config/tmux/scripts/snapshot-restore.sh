@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
-# Bound to prefix+R, runs inside a tmux popup. Lists every saved snapshot
-# (autosaves from continuum + labeled ones from snapshot-save.sh) newest
-# first in fzf, so the list scrolls, filters and previews the sessions /
+# Bound to prefix+R / prefix+Ctrl-r, runs inside a tmux popup. Lists every saved snapshot
+# newest first in fzf, so the list scrolls, filters and previews the sessions /
 # windows / commands inside each file. The pick becomes resurrect's "last"
-# symlink before its restore.sh runs.
+# symlink before its restore.sh runs. Supports deleting snapshots via 'd' or 'x'.
 #
-# Called as `snapshot-restore.sh --preview <file>` by fzf for the preview pane.
+# Called as:
+#   snapshot-restore.sh --preview <file>
+#   snapshot-restore.sh --delete <file>
+#   snapshot-restore.sh --confirm-delete <file>
+#   snapshot-restore.sh --list
 set -euo pipefail
+
+PLUGIN_DIR="$HOME/.config/tmux/plugins/tmux-resurrect"
+source "$PLUGIN_DIR/scripts/helpers.sh"
+RESURRECT_DIR="$(resurrect_dir)"
 
 if [ "${1:-}" = "--preview" ]; then
   f="${2:?snapshot file required}"
@@ -27,27 +34,12 @@ if [ "${1:-}" = "--preview" ]; then
   exit 0
 fi
 
-PLUGIN_DIR="$HOME/.config/tmux/plugins/tmux-resurrect"
-source "$PLUGIN_DIR/scripts/helpers.sh"
-RESURRECT_DIR="$(resurrect_dir)"
-
-if ! command -v fzf >/dev/null 2>&1; then
-  echo "fzf is not installed (pacman -S fzf)."
-  read -n1 -r -p "press any key..."
-  exit 1
-fi
-
-mapfile -t files < <(ls -t "$RESURRECT_DIR"/snapshot_*.txt 2>/dev/null)
-
-if [ ${#files[@]} -eq 0 ]; then
-  echo "No snapshots found."
-  read -n1 -r -p "press any key..."
-  exit 0
-fi
-
 # One awk pass over every file: "<path>\t<date>  <label>  <session>(<n>w) ..."
-# Filenames: tmux_resurrect_YYYYMMDDTHHMMSS.txt / snapshot_<label>_YYYYMMDDTHHMMSS.txt
+# Filenames: snapshot_<label>_YYYYMMDDTHHMMSS.txt
 list() {
+  local -a sfiles
+  mapfile -t sfiles < <(ls -t "$RESURRECT_DIR"/snapshot_*.txt 2>/dev/null)
+  [ ${#sfiles[@]} -gt 0 ] || return 0
   awk -F'\t' '
     function flush(   base, ts, label, date, out, i) {
       if (cur == "") return
@@ -62,20 +54,87 @@ list() {
     FNR == 1 { flush(); cur = FILENAME; delete c; delete order; n = 0 }
     $1 == "window" { if (!($2 in c)) order[++n] = $2; c[$2]++ }
     END { flush() }
-  ' "${files[@]}"
+  ' "${sfiles[@]}"
 }
+
+if [ "${1:-}" = "--list" ]; then
+  list
+  exit 0
+fi
+
+delete_snapshot() {
+  local f="${1:?snapshot file required}"
+  if [ -f "$f" ]; then
+    rm -f "$f"
+    # If this was 'last', update last to the newest remaining snapshot
+    if [ -L "$RESURRECT_DIR/last" ]; then
+      local last_target
+      last_target="$(readlink -f "$RESURRECT_DIR/last" 2>/dev/null || true)"
+      local cur_target
+      cur_target="$(readlink -f "$f" 2>/dev/null || true)"
+      if [ "$last_target" = "$cur_target" ] || [ ! -e "$RESURRECT_DIR/last" ]; then
+        local newest
+        newest="$(ls -t "$RESURRECT_DIR"/snapshot_*.txt 2>/dev/null | head -n1 || true)"
+        if [ -n "$newest" ]; then
+          ln -sf "$(basename "$newest")" "$RESURRECT_DIR/last"
+        else
+          rm -f "$RESURRECT_DIR/last"
+        fi
+      fi
+    fi
+  fi
+}
+
+if [ "${1:-}" = "--delete" ]; then
+  delete_snapshot "${2:?snapshot file required}"
+  exit 0
+fi
+
+if [ "${1:-}" = "--confirm-delete" ]; then
+  f="${2:?snapshot file required}"
+  base="$(basename "$f")"
+  label="$base"
+  if [[ "$base" =~ ^snapshot_(.+)_[0-9]{8}T[0-9]{6}\.txt$ ]]; then
+    label="${BASH_REMATCH[1]}"
+  fi
+  printf "\nУдалить снапшот '%s' (%s)? [y/N]: " "$label" "$base"
+  read -r ans
+  if [[ "$ans" =~ ^[Yy]$ ]]; then
+    delete_snapshot "$f"
+    echo "Снапшот удалён."
+    sleep 0.4
+  else
+    echo "Отмена."
+    sleep 0.3
+  fi
+  exit 0
+fi
+
+if ! command -v fzf >/dev/null 2>&1; then
+  echo "fzf is not installed (pacman -S fzf)."
+  read -n1 -r -p "press any key..."
+  exit 1
+fi
+
+initial="$(list)"
+if [ -z "$initial" ]; then
+  echo "No snapshots found."
+  read -n1 -r -p "press any key..."
+  exit 0
+fi
 
 # Modal vim keys. Normal mode (default): j/k move, g/G first/last, C-d/C-u
 # half page, C-f/C-b page, J/K scroll preview, i / a / "/" enter insert mode,
-# q or esc quit. Insert mode: type to filter, esc back to normal (query stays).
-# Mode state lives in the prompt text, which fzf exports to transform as $FZF_PROMPT.
-NORMAL_KEYS='j,k,g,G,J,K,i,a,/,q'
-chosen="$(list | fzf \
+# d / x delete snapshot, enter restore, q or esc quit.
+NORMAL_KEYS='j,k,g,G,J,K,i,a,/,q,d,x'
+chosen="$(printf "%s\n" "$initial" | fzf \
   --layout=reverse --delimiter=$'\t' --with-nth=2.. --no-multi --cycle \
   --prompt='N> ' \
-  --header='j/k g/G C-d/C-u move   J/K preview   i or / filter   esc normal   enter restore   q quit' \
+  --header='j/k g/G move   J/K preview   i or / filter   esc normal   enter restore   d delete   q quit' \
   --bind 'j:down,k:up,g:first,G:last,J:preview-down,K:preview-up,q:abort' \
   --bind 'ctrl-d:half-page-down,ctrl-u:half-page-up,ctrl-f:page-down,ctrl-b:page-up' \
+  --bind "d:execute(bash '$0' --confirm-delete {1})+reload(bash '$0' --list)" \
+  --bind "x:execute(bash '$0' --confirm-delete {1})+reload(bash '$0' --list)" \
   --bind "i:unbind($NORMAL_KEYS)+change-prompt(I> )" \
   --bind "a:unbind($NORMAL_KEYS)+change-prompt(I> )" \
   --bind "/:unbind($NORMAL_KEYS)+change-prompt(I> )+clear-query" \
