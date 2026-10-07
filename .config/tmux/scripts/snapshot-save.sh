@@ -1,16 +1,35 @@
 #!/usr/bin/env bash
-# Bound to prefix+S. Runs a normal resurrect save, then keeps a permanent
-# labeled copy (snapshot_<label>_<timestamp>.txt) that resurrect's own
-# remove_old_backups pruning and continuum's autosave can't touch, since
-# both only ever operate on tmux_resurrect_*.txt / the "last" symlink.
+# Bound to prefix+S / prefix+Ctrl-s.
+# Saves a named snapshot with an explicit, non-empty, unique name.
+# Rejects duplicate names.
 set -euo pipefail
+
+raw_label="${1:-}"
+label="$(echo "$raw_label" | xargs)"
+label="${label// /_}"
+
+if [ -z "$label" ]; then
+  tmux display-message "Ошибка: имя снапшота обязательно!"
+  exit 1
+fi
+
+if [[ ! "$label" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+  tmux display-message "Ошибка: недопустимые символы в имени снапшота!"
+  exit 1
+fi
 
 PLUGIN_DIR="$HOME/.config/tmux/plugins/tmux-resurrect"
 source "$PLUGIN_DIR/scripts/helpers.sh"
 RESURRECT_DIR="$(resurrect_dir)"
 
-label="${1:-unnamed}"
-label="${label// /_}"
+shopt -s nullglob
+existing=( "$RESURRECT_DIR"/snapshot_"${label}"_*.txt )
+shopt -u nullglob
+
+if [ ${#existing[@]} -gt 0 ]; then
+  tmux display-message "Ошибка: снапшот с именем '${label}' уже существует!"
+  exit 1
+fi
 
 "$PLUGIN_DIR/scripts/save.sh" quiet
 
@@ -19,4 +38,10 @@ ts="$(date +"%Y%m%dT%H%M%S")"
 dest="$RESURRECT_DIR/snapshot_${label}_${ts}.txt"
 cp "$latest" "$dest"
 
-tmux display-message "Snapshot saved: ${label}"
+# Point 'last' to the new named snapshot
+ln -sf "$(basename "$dest")" "$RESURRECT_DIR/last"
+
+# Remove any intermediate unnamed autosaves produced by save.sh
+rm -f "$RESURRECT_DIR"/tmux_resurrect_*.txt
+
+tmux display-message "Снапшот '${label}' успешно сохранён"

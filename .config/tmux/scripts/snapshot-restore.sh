@@ -37,7 +37,7 @@ if ! command -v fzf >/dev/null 2>&1; then
   exit 1
 fi
 
-mapfile -t files < <(ls -t "$RESURRECT_DIR"/tmux_resurrect_*.txt "$RESURRECT_DIR"/snapshot_*.txt 2>/dev/null)
+mapfile -t files < <(ls -t "$RESURRECT_DIR"/snapshot_*.txt 2>/dev/null)
 
 if [ ${#files[@]} -eq 0 ]; then
   echo "No snapshots found."
