@@ -1,0 +1,9 @@
+# name<TAB>text   ({date} {time} {datetime} {clipboard}; \n = newline)
+date	{date}
+datetime	{datetime}
+time	{time}
+clipboard (plain)	{clipboard}
+sign-off (en)	Best regards,\nSkalse
+sign-off (ru)	С уважением,\nSkalse
+todo line	- [ ] {date} 
+meeting note	## {datetime}\n\n- 
