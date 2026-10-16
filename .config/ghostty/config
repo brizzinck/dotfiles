@@ -25,3 +25,6 @@ clipboard-write = allow
 clipboard-read = allow
 
 app-notifications = no-clipboard-copy
+
+# No "Close Window?" dialog: SUPER+W twice (hypr/scripts/safe-close.sh, protected-classes lists com.mitchellh.ghostty) is the guard
+confirm-close-surface = false
