@@ -55,7 +55,7 @@ TSV = os.environ.get("PINNED_TSV") or os.path.expanduser("~/.config/waybar/pinne
 SIG = re.sub(r"-wb$", "", os.environ.get("HYPRLAND_INSTANCE_SIGNATURE", ""))
 HYPR = os.path.join(RT, "hypr", SIG)
 WAYBAR_SIGNAL = "RTMIN+14"
-HINT = "Click: {} · Middle: mark read · Right: menu"
+HINT = "L: {} · M: mark read · R: menu"
 EVENTS = ("openwindow", "closewindow", "activewindowv2", "movewindowv2", "windowtitlev2")
 
 

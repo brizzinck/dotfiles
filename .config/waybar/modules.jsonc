@@ -5,7 +5,7 @@
 // Signals (pkill -o -u $(id -u) -RTMIN+N -x waybar): 8 toggles drawer + summary, 9 updates, 14 pinned apps (pinned-watch.py), 15 vault. Recording is a continuous script
 // (it watches $XDG_RUNTIME_DIR/rec-pid itself); SIGUSR1 reaches only the full bar (bar.sh), SIGUSR2 reloads both.
 // The pinned apps are not defined here: group/pinned and custom/pin#ID come from pinned.tsv (pinned.sh gen -> state/pinned.jsonc).
-// Click grammar: L = main action (switch: toggle), R = menu or alternative, M = quick binary action, scroll = adjust value.
+// Click grammar: L = main action (switch: toggle), R = menu or alternative, M = quick binary action, scroll = adjust value. Tooltip hints use one format: `L: x · M: y · R: z · Scroll: w` (that order, omit idle buttons).
 // Interactive clicks open fzf-menu based scripts (vim keys); TUIs open in a float.tui ghostty.
 {
   // ── always present ──
@@ -270,9 +270,9 @@
     "format-linked": "󰤫 no IP",
     "format-disconnected": "󰖪 offline",
     "max-length": 16,
-    "tooltip-format-wifi": "{essid} {signalStrength}%\n{ipaddr}\n󰁅 {bandwidthDownBytes}  󰁝 {bandwidthUpBytes}\n\nL: Wi-Fi menu · R: network editor · M: Wi-Fi radio",
-    "tooltip-format-ethernet": "{ifname}\n{ipaddr}\n\nL: Wi-Fi menu · R: network editor · M: Wi-Fi radio",
-    "tooltip-format-disconnected": "No network\n\nL: Wi-Fi menu · R: network editor · M: Wi-Fi radio",
+    "tooltip-format-wifi": "{essid} {signalStrength}%\n{ipaddr}\n󰁅 {bandwidthDownBytes}  󰁝 {bandwidthUpBytes}\n\nL: Wi-Fi menu · M: Wi-Fi radio · R: network editor",
+    "tooltip-format-ethernet": "{ifname}\n{ipaddr}\n\nL: Wi-Fi menu · M: Wi-Fi radio · R: network editor",
+    "tooltip-format-disconnected": "No network\n\nL: Wi-Fi menu · M: Wi-Fi radio · R: network editor",
     "on-click": "~/.config/hypr/scripts/wifi.sh",
     "on-click-right": "ghostty --class=float.tui -e nmtui",
     "on-click-middle": "~/.config/hypr/scripts/wifi.sh --radio toggle"
@@ -311,7 +311,7 @@
     "format-bluetooth": "󰂰 {volume}%",
     "format-bluetooth-muted": "󰖁",
     "format-icons": { "headphone": "󰋋", "default": ["󰕿", "󰖀", "󰕾"] },
-    "tooltip-format": "{desc}\n\nL: wiremix · R: output picker · M: mute · scroll: volume",
+    "tooltip-format": "{desc}\n\nL: wiremix · M: mute · R: output picker · Scroll: volume",
     "on-click": "ghostty --class=float.tui -e wiremix",
     "on-click-right": "~/.config/hypr/scripts/audio-picker.sh",
     "on-click-middle": "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
@@ -321,7 +321,7 @@
     "format-source": "󰍬",
     "format-source-muted": "󰍭",
     "scroll-step": 2,
-    "tooltip-format": "{source_desc} {source_volume}%\n\nL: input picker · R: wiremix · M: mute all microphones · scroll: volume",
+    "tooltip-format": "{source_desc} {source_volume}%\n\nL: input picker · M: mute all microphones · R: wiremix · Scroll: volume",
     "on-click": "~/.config/hypr/scripts/audio-picker.sh",
     "on-click-right": "ghostty --class=float.tui -e wiremix",
     "on-click-middle": "~/.config/hypr/scripts/mic-mute-all.sh"
@@ -330,7 +330,7 @@
     "device": "amdgpu_bl1",
     "format": "{icon} {percent}%",
     "format-icons": ["󰃞", "󰃟", "󰃠"],
-    "tooltip-format": "Brightness {percent}%\n\nscroll: brightness",
+    "tooltip-format": "Brightness {percent}%\n\nScroll: brightness",
     "on-scroll-up": "brightnessctl set +5%",
     "on-scroll-down": "brightnessctl set 5%-"
   },

@@ -316,7 +316,7 @@ ssh_agent() {
 }
 
 waybar() {
-  local st nl=$'\n' tip='L: passwords · R: 2FA codes · M: desktop app'
+  local st nl=$'\n' tip='L: passwords · M: desktop app · R: 2FA codes'
   st=$(state)
   [[ -f $BW_SESSION_FILE ]] && tip="CLI (bw): session open$nl$tip"
   [[ -f $SSH_FLAG ]] && tip="SSH agent: on ($([[ -S $SSH_SOCK ]] && echo socket up || echo app not running))$nl$tip"
