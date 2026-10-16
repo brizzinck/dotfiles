@@ -57,12 +57,12 @@ packages=(
   # workstation additions — keep in sync with REPO_PACKAGES in apply-system.sh (it verifies each name with pacman -Si)
   pacman-contrib earlyoom reflector smartmontools nvme-cli libva-utils amdgpu_top   # paccache/updates, OOM guard, mirrors, SMART, vainfo, GPU monitor
   hyprpolkitagent cliphist wl-clip-persist swayosd wiremix hyprshot satty hyprpicker hyprsunset
-  rofimoji wtype udiskie                                                            # polkit agent, clipboard, OSD, screenshots, picker, emoji, automount
+  rofimoji wtype udiskie                                                            # polkit agent, clipboard, OSD, screenshots, picker, emoji (rofimoji = the emoji data of emoji.sh), automount
   bat eza git-delta github-cli trash-cli dust duf watchexec just go-yq xh shfmt direnv dive hyperfine
   tesseract tesseract-data-eng tesseract-data-rus zbar qrencode ddcutil pik                       # OCR (rus+eng), QR, DDC/CI monitor brightness, ports
-  libqalculate rofi-calc gifski kondo lostfiles termdown bandwhich lsof                           # calculator, GIF, cleanup, timer, network, open files
+  libqalculate chafa gifski kondo lostfiles termdown bandwhich lsof                           # calculator, image previews (chafa: kitty graphics in fzf-menu), GIF, cleanup, timer, network, open files
   tlp-pd                                                                                          # TLP profiles daemon (tlpctl), conflicts with power-profiles-daemon
-  rbw rofi-rbw kwindowsystem                                                                      # Bitwarden/Vaultwarden client + rofi front end; kwindowsystem = pinentry-qt backend
+  rbw kwindowsystem                                                                      # Bitwarden/Vaultwarden client (fzf-menu front end); kwindowsystem = pinentry-qt backend
   oo7 bitwarden                                                                                   # Bitwarden desktop (the bw CLI is AUR bitwarden-cli-bin); oo7 only satisfies the desktop package's org.freedesktop.secrets dependency (see apply-system.sh)
 )
 sudo pacman -S --needed --noconfirm "${packages[@]}"

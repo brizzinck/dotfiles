@@ -225,11 +225,11 @@ REPO_PACKAGES=(
   dive hyperfine
   # phase 2: OCR (rus+eng), QR/barcodes, monitor brightness over DDC/CI, ports, calculator, GIF, cleanup, timers, network
   tesseract tesseract-data-eng tesseract-data-rus zbar qrencode ddcutil pik
-  libqalculate rofi-calc gifski kondo lostfiles termdown bandwhich lsof
+  libqalculate chafa gifski kondo lostfiles termdown bandwhich lsof
   # TLP profiles daemon: power-profiles-daemon D-Bus API backed by TLP (tlpctl); needs tlp, conflicts with power-profiles-daemon
   tlp-pd
-  # phase 2 U5: Bitwarden/Vaultwarden client (rbw) with a rofi front end; pinentry-qt (themed by qt6ct) needs kwindowsystem
-  rbw rofi-rbw kwindowsystem
+  # phase 2 U5: Bitwarden/Vaultwarden client (rbw) with an fzf-menu front end; pinentry-qt (themed by qt6ct) needs kwindowsystem
+  rbw kwindowsystem
   # phase 2 U6: official Bitwarden desktop app (SSH agent, Wayland). The CLI (bw) is the AUR package bitwarden-cli-bin:
   # the repo bitwarden-cli needs nodejs-lts-jod, which conflicts with the installed nodejs and aborts the transaction.
   # The desktop package hard-depends on org.freedesktop.secrets; with no provider installed pacman --noconfirm would pick one
