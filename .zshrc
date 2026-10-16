@@ -42,12 +42,24 @@ plugins=(
   copypath
   docker
   golang
+  vi-mode
   fzf-tab
   zsh-autosuggestions
   zsh-syntax-highlighting
 )
 
 ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=8'   # ANSI 8 = muted in the Everforest palette (both variants)
+
+# vi-mode plugin (oh-my-zsh): beam cursor in INSERT, block in NORMAL; the [I]/[N] indicator lives in
+# ~/.config/zsh/vi-mode.zsh (sourced below). KEYTIMEOUT is in 1/100 s: 1 = Esc -> NORMAL at once, tmux escape-time is 10 ms too
+# (a slow ssh link needs more, so remote shells get 20 ms).
+VI_MODE_SET_CURSOR=true
+VI_MODE_RESET_PROMPT_ON_MODE_CHANGE=true
+VI_MODE_CURSOR_NORMAL=2   # steady block
+VI_MODE_CURSOR_INSERT=6   # steady beam
+VI_MODE_CURSOR_VISUAL=4   # steady underline
+KEYTIMEOUT=1
+[[ -n $SSH_CONNECTION ]] && KEYTIMEOUT=2
 
 # never block on a key press: the default mode asks "update now?" on the terminal about every 13 days, which stalls the
 # login shell that greetd starts on a bare tty (hypr-login) until a key is pressed
@@ -58,7 +70,11 @@ source $ZSH/oh-my-zsh.sh
 # ── Prompt and highlighting on the palette roles ────────────────────────────────────────────────────
 # ANSI indices follow the terminal palette, so both variants share this: ok arrow green, failing arrow red, dir blue
 # (like ls/eza), git branch purple (red means "error" here), dirty marker yellow, punctuation muted.
-PROMPT='%(?:%F{2}%B%1{➜%}%b:%F{1}%B%1{➜%}%b) %F{4}%c%f $(git_prompt_info)'
+# git info is computed once per prompt (precmd), not on every redraw: a vi-mode switch redraws the prompt each time
+autoload -Uz add-zsh-hook
+_df_git_info() { _DF_GIT_INFO=$(git_prompt_info) }
+add-zsh-hook precmd _df_git_info
+PROMPT='%(?:%F{2}%B%1{➜%}%b:%F{1}%B%1{➜%}%b) %F{4}%c%f ${_DF_GIT_INFO}'
 ZSH_THEME_GIT_PROMPT_PREFIX='%F{8}git:(%F{5}'
 ZSH_THEME_GIT_PROMPT_SUFFIX='%f '
 ZSH_THEME_GIT_PROMPT_DIRTY='%F{8}) %F{3}%1{✗%}'
@@ -85,7 +101,7 @@ if (( $+commands[fzf] )); then
     export FZF_ALT_C_COMMAND='fd --type d --hidden --exclude .git'
   fi
   if (( $+commands[bat] )); then
-    export FZF_CTRL_T_OPTS="--preview 'bat -n --color=always {} 2>/dev/null | head -200'"
+    FZF_CTRL_T_OPTS="--preview 'bat -n --color=always {} 2>/dev/null | head -200'"   # not exported: vi-mode.zsh appends the modal keys per call
   fi
 fi
 
@@ -96,6 +112,8 @@ if [[ -o zle && -r ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/layout-keys.zsh ]]; the
   source ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/layout-keys.zsh
   layout_dup_meta emacs
 fi
+# vi-mode keys, indicator, Cyrillic twins of the vi keymaps and the modal fzf widgets (needs the fzf widgets above)
+[[ -r ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/vi-mode.zsh ]] && source ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/vi-mode.zsh
 
 # lazygit colours of the active variant: generated gui.theme merged after the structural config (only when the
 # generated file exists, lazygit refuses a list with a missing file); tmux and hub set the same value
