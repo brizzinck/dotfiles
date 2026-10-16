@@ -1,0 +1,7 @@
+# pik (process killer): a filter list without modes. Ctrl+j/n and Ctrl+k/p move (built in); the list grammar of the
+# desktop adds Ctrl+d / Ctrl+u for ten rows (readline's delete-next-char / delete-to-start move to Delete / Alt+u).
+[key_mappings]
+jump_ten_next_items = ["pagedown", "ctrl+d"]
+jump_ten_previous_items = ["pageup", "ctrl+u"]
+delete_next_char = ["delete"]
+delete_to_start = ["alt+u"]

@@ -375,6 +375,21 @@ def gen_nvim(L):
     return "".join(out)
 
 
+# The app launcher keeps rofi (it has no modes), so it gets the list grammar of fzf-menu as closely as rofi allows:
+# Ctrl+j/k move, Ctrl+d/u page, Esc cancels (Ctrl+j/k/d/u lose their readline meanings: accept stays on Enter / Ctrl+m,
+# delete-forward on Delete). Applied to rofi's defaults before the Cyrillic twins are added.
+ROFI_OVERRIDES = {
+    "kb-accept-entry": "Return,KP_Enter,Control+m",
+    "kb-remove-to-eol": "",
+    "kb-remove-char-forward": "Delete",
+    "kb-remove-to-sol": "",
+    "kb-row-up": "Up,Control+p,Control+k",
+    "kb-row-down": "Down,Control+n,Control+j",
+    "kb-page-prev": "Page_Up,Control+u",
+    "kb-page-next": "Page_Down,Control+d",
+}
+
+
 def gen_rofi(L):
     """rofi sees keysyms, not characters: every default kb-* binding that has a Control+/Alt+<letter> part gets the
     Cyrillic keysym twins (Control+p -> Control+p,Control+Cyrillic_ze). Needs rofi installed for its defaults."""
@@ -388,14 +403,15 @@ def gen_rofi(L):
         name, val = m.groups()
         if name.startswith("kb-custom"):
             continue
-        specs = val.split(",")
+        val = ROFI_OVERRIDES.get(name, val)
+        specs = [x for x in val.split(",") if x]
         new = []
         for spec in specs:
             new.append(spec)
             mod, plus, key = spec.rpartition("+")
             if plus and mod and key in L.syms:
                 new.extend(f"{mod}+{t}" for t in L.syms[key])
-        if len(new) > len(specs):
+        if len(new) > len(specs) or name in ROFI_OVERRIDES:
             out.append(f'  {name}: "{",".join(new)}";\n')
     out.append("}\n")
     return "".join(out)

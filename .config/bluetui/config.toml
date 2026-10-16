@@ -1,0 +1,3 @@
+# bluetui: j/k/h/l and Tab already navigate natively; Esc quits like q (vim-style close). Layout keys are bluetui's own
+# letters (s scan, p pairing, o power, d discovery, u unpair, t trust, f favorite, e rename).
+esc_quit = true
