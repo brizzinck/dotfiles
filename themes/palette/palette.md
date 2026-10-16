@@ -28,7 +28,15 @@ that path:
 | fzf | `FZF_DEFAULT_OPTS_FILE=~/.local/state/theme/current/fzfrc` (zsh, tmux environment, hub and fzf scripts) |
 | git / delta | `[include]` of `generated/black/delta.gitconfig`, then `current/delta.gitconfig` |
 | nvim | `lua/palette.lua` reads `current/tokens.json` (fallback `generated/black`), per-variant base46 cache |
-| Zen (later) | `current/tokens.css` (`--ef-*` variables) and `current/tokens.json` |
+| Hyprland | `source = ~/dotfiles/themes/generated/black/hyprland.conf` (fallback) then `source = ~/.local/state/theme/current/hyprland.conf`; a missing sourced file is a config error, so the black one comes first |
+| hyprlock, screensaver | same pair of `source` lines for `generated/*/hyprlock.conf` (`$ef_*` variables; `$ef_hex_*` for pango spans) |
+| waybar, wofi, swayosd | `@import "theme-black.css"; @import "theme.css";` in their stylesheet; both are repo symlinks (`generated/black/waybar.css` and `current/waybar.css`), the file holds `@define-color` names = tokens |
+| rofi | `@import` of `~/dotfiles/themes/generated/black/rofi.rasi` then `~/.local/state/theme/current/rofi.rasi` (a missing import is silent) |
+| dunst | drop-ins `.config/dunst/dunstrc.d/40-theme-black.conf` and `50-theme.conf` (symlinks to the generated `dunstrc`), `dunstctl reload` |
+| GTK 3 / GTK 4 | `gtk.css` imports `theme-black.css` and `theme.css` (symlinks to `generated/*/gtk3.css`, `gtk4.css`) |
+| qt6ct, btop | `colors/everforest.conf` and `themes/everforest-v2.theme` are symlinks to `current/qt6ct.conf` and `current/btop.theme` |
+| lazygit | `LG_CONFIG_FILE=~/.config/lazygit/config.yml,current/lazygit.yml` (set by `.zshrc`, tmux and hub only when the file exists) |
+| Zen (later) | `current/tokens.css` (`--ef-*` variables, dashes: `--ef-fg-hi`, `--ef-subtext`, `--ef-muted`, `--ef-bg-oled`) and `current/tokens.json` |
 | Claude Code | `current/claude-theme.json`, copied by the owner (see below) |
 
 Live reload on `theme ...`: ghostty `SIGUSR2`, alacritty config touch, `tmux source-file` on every tmux server of
@@ -127,9 +135,29 @@ Terminal layer and nvim (applied):
 | nvim | `.config/nvim/lua/{palette,chadrc}.lua` | base46 everforest with every base_30/base_16 value from the tokens, `terminal_color_0..15` |
 | Claude Code | `generated/*/claude-theme.json` | 72-key custom theme, owner copies it to `~/.claude/themes/` |
 
-Desktop layer (generated fragments `waybar.css`, `rofi.rasi`, `ansi.txt`, `tokens.css` exist; wiring is stage T1b):
-Hyprland, hyprlock, screensaver, waybar, rofi, wofi, dunst, swayosd, GTK 3/4, qt6ct, btop, lazygit, Telegram and
-Obsidian files. The target mapping per setting is in the design study (`palette-v2.md` section 5.3).
+Desktop layer (applied, stage T1b; section 5.3 of the design study has the full token-per-setting table):
+
+| tool | how | notes |
+|---|---|---|
+| Hyprland | `hyprland.conf` fragment | active border `green` -> `aqua` 45deg, inactive `line`, shadow `glow`, groups `purple` / `border`, `misc:background_color` `bg_oled`; `dim_strength` 0.10 (0.15 turned fg khaki) |
+| hyprlock, screensaver | `$ef_*` variables | background `bg_oled`, ring `border`, text `fg`, date `subtext`, hint and placeholder `muted`, check `yellow`, fail `red`, caps `orange` |
+| waybar | `@define-color` names | bar and tooltip on `bg_oled`, text `subtext`, workspaces `muted` / `subtext` / `green` on `raised` / `yellow` urgent; module classes by role. Pango spans in `config` cannot use named colours: they hold the black-variant hex (night differs by <= 3/255 on `muted` and `subtext`); `doctor.sh` checks they are tokens |
+| rofi, wofi | token names | window `bg`, border `border`, selected row `select` with `green` text, placeholder `subtext`, urgent `red`, active `blue` |
+| dunst | drop-in | low `border` frame / `subtext` text, normal `blue` frame / `green` highlight, critical `red`; recorder red, idle yellow, battery orange |
+| swayosd | `style.css` | `bg_oled` pill, `border` frame, `fg` text, `line` trough, `green` bar |
+| GTK 3 / 4 | `gtk3.css`, `gtk4.css` | libadwaita variables and `@define-color` names: windows `bg`, header/side/cards `surface`, text `fg` (no libadwaita white), accent `green` with `bg` text; gsettings `accent-color` is `green` (closest enum value; the CSS accent is the exact token) |
+| Qt | `qt6ct.conf` | 21 roles x active/disabled/inactive; Highlight `visual`, Link `blue`, disabled text `muted` |
+| btop | `btop.theme` | gradients green -> yellow -> red, boxes `border`, dividers `line`, main_bg empty (terminal background) |
+| lazygit | `lazygit.yml` | active border `green`, inactive `line`, selected row `select`, options `blue`, search `yellow`; lazydocker keeps ANSI names (terminal palette) |
+| Telegram, Obsidian | generated, applied by hand | see below |
+
+What follows a switch live: Hyprland (reload), waybar (SIGUSR2), dunst (reload), swayosd (restart), terminals, tmux, nvim. At the next start only: GTK and Qt apps (qt6ct is nudged by a touch of `qt6ct.conf`), btop, lazygit, rofi, wofi, hyprlock. Telegram, Obsidian and Claude Code need the manual steps below.
+
+## Telegram and Obsidian (owner steps)
+
+- **Telegram Desktop**: `themes/generated/<variant>/everforest-<variant>.tdesktop-theme` is a complete theme (all 467 keys, derived from the stock Night theme, so nothing falls back to the light Day palette; the design study had asked for an export of Night, the copy shipped in tdesktop's `Telegram/Resources/night.tdesktop-theme` was used instead). Send the file to *Saved Messages* and open it ("Apply this theme"), or Settings > Chat Settings > Choose from file. Telegram has no auto-load: re-apply after a variant switch or a palette change. It was generated without a visual check; report keys that look wrong and fix them in `templates/telegram.colors.tmpl` (accents are `green` fills with `bg` text, the selected chat and own messages use `select`).
+- **Obsidian**: copy `themes/generated/<variant>/obsidian.css` to `<vault>/.obsidian/snippets/everforest.css` and enable it in Settings > Appearance > CSS snippets. Nothing writes into the vaults.
+- **GTK apps** already running keep the old colours until restarted.
 
 ## Claude Code and Codex (owner steps, agents may not write to `~/.claude` or `~/.codex`)
 

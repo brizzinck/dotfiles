@@ -1,14 +1,5 @@
-/* Pure-black libadwaita (nautilus, portals, GTK4 apps). Palette: themes/static/everforest-black */
-:root {
-  --window-bg-color: #000000;
-  --view-bg-color: #000000;
-  --headerbar-bg-color: #0b0e0d;
-  --sidebar-bg-color: #0b0e0d;
-  --card-bg-color: #0b0e0d;
-  --popover-bg-color: #0b0e0d;
-  --dialog-bg-color: #0b0e0d;
-  --accent-bg-color: #a7c080;
-  --accent-fg-color: #000000;
-  --accent-color: #a7c080;
-  --destructive-bg-color: #e67e80;
-}
+/* GTK 4 / libadwaita - Everforest v2 (themes/palette): pure-black windows, fg text (no libadwaita white), green accent.
+   Everything comes from the generated gtk4.css: black first (always there), then the active variant
+   (~/.local/state/theme/current, flipped by `theme`). Running GTK apps read it at start. */
+@import url("theme-black.css");
+@import url("theme.css");

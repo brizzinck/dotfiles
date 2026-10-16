@@ -235,6 +235,7 @@ touch "$DOTFILES/env.secret.sh" && chmod +x "$DOTFILES/env.secret.sh"
 log "GTK dark theme, icons, fonts and cursor (gsettings; the cursor falls back to Adwaita until bibata is installed)"
 if command -v gsettings >/dev/null 2>&1; then
   gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark' || true
+  gsettings set org.gnome.desktop.interface accent-color 'green' || true   # libadwaita apps that ignore gtk.css (closest enum to the palette green)
   gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark' || true
   gsettings set org.gnome.desktop.interface icon-theme 'breeze-dark' || true
   gsettings set org.gnome.desktop.interface monospace-font-name 'JetBrainsMono Nerd Font 11' || true

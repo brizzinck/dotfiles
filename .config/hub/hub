@@ -35,6 +35,10 @@ set -u
 # Everforest fzf colours of the active variant (generated, see themes/palette); callers outside a login shell have no env
 : "${FZF_DEFAULT_OPTS_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/theme/current/fzfrc}"
 if [[ -r $FZF_DEFAULT_OPTS_FILE ]]; then export FZF_DEFAULT_OPTS_FILE; else unset FZF_DEFAULT_OPTS_FILE; fi
+# lazygit colours (generated gui.theme merged after the structural config; set only when the file exists)
+if [[ -z ${LG_CONFIG_FILE:-} && -r ${XDG_STATE_HOME:-$HOME/.local/state}/theme/current/lazygit.yml ]]; then
+  export LG_CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/lazygit/config.yml,${XDG_STATE_HOME:-$HOME/.local/state}/theme/current/lazygit.yml"
+fi
 
 HUB_DIR=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 SELF="$HUB_DIR/hub"

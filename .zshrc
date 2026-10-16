@@ -85,6 +85,10 @@ if (( $+commands[fzf] )); then
   fi
 fi
 
+# lazygit colours of the active variant: generated gui.theme merged after the structural config (only when the
+# generated file exists, lazygit refuses a list with a missing file); tmux and hub set the same value
+[[ -r ${XDG_STATE_HOME:-$HOME/.local/state}/theme/current/lazygit.yml ]] && export LG_CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/lazygit/config.yml,${XDG_STATE_HOME:-$HOME/.local/state}/theme/current/lazygit.yml"
+
 export EDITOR="nvim"
 export GIT_EDITOR="nvim"
 export VISUAL="nvim"

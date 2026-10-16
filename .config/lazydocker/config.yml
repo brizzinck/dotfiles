@@ -1,4 +1,5 @@
-# palette: everforest-black; ANSI color names, so the terminal palette is inherited
+# Everforest v2: ANSI colour names on purpose (green = focus, black = ANSI 0 = select, blue = info), so the terminal
+# palette decides and `theme black|night` needs no file here (lazydocker has no include / multi-file config).
 gui:
   theme:
     activeBorderColor: [green, bold]

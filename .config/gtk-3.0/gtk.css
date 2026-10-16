@@ -1,0 +1,4 @@
+/* GTK 3 - Everforest v2 (themes/palette): Adwaita-dark named colours from the generated gtk3.css, black first
+   (always there), then the active variant (~/.local/state/theme/current, flipped by `theme`). Apps read it at start. */
+@import url("theme-black.css");
+@import url("theme.css");

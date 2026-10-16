@@ -5,7 +5,8 @@
     PYTHONPYCACHEPREFIX=/tmp/pycache python3 themes/palette/render.py --check  # exit 1 if generated/ is stale
 
 Input : everforest.json (tokens, per variant) and templates/*.tmpl
-Output: ../generated/<variant>/<template name without .tmpl>, plus tokens.json and tokens.css
+Output: ../generated/<variant>/<template name without .tmpl>, plus tokens.json and tokens.css, plus
+        everforest-<variant>.tdesktop-theme (zip of telegram.colors + a solid background.png, for Telegram Desktop)
 Stdlib only and deterministic: running it twice yields no git diff.
 
 Template syntax: {{name}} or {{name|filter}}.
@@ -16,9 +17,13 @@ Template syntax: {{name}} or {{name|filter}}.
 Unknown names are an error, so a typo can never ship an empty colour.
 """
 import argparse
+import io
 import json
 import re
+import struct
 import sys
+import zipfile
+import zlib
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -99,6 +104,30 @@ def tokens_css(var, vname):
     return "\n".join(lines) + "\n"
 
 
+def solid_png(hexcolour, size=16):
+    """Minimal uncompressed (stored deflate) RGB PNG filled with one colour; byte-for-byte deterministic."""
+    r, g, b = (int(hexcolour[i:i + 2], 16) for i in (1, 3, 5))
+    raw = b"".join(b"\x00" + bytes((r, g, b)) * size for _ in range(size))
+
+    def chunk(kind, data):
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw, 0)) + chunk(b"IEND", b"")
+
+
+def tdesktop_theme(colors_text, bg):
+    """Telegram theme archive: colors.tdesktop-theme + background.png (stored, fixed timestamps, no extra attrs)."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+        for name, data in (("colors.tdesktop-theme", colors_text.encode()), ("background.png", solid_png(bg))):
+            info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
+            info.external_attr = 0o644 << 16
+            z.writestr(info, data)
+    return buf.getvalue()
+
+
 def build():
     default, variants = load()
     files = {}
@@ -108,6 +137,9 @@ def build():
         for tmpl in sorted(TEMPLATES.glob("*.tmpl")):
             out_name = tmpl.name[: -len(".tmpl")]
             files[Path(vname) / out_name] = render_template(tmpl.read_text(), var["names"], f"{tmpl.name} [{vname}]")
+        colours = files.get(Path(vname) / "telegram.colors")
+        if colours is not None:
+            files[Path(vname) / f"everforest-{vname}.tdesktop-theme"] = tdesktop_theme(colours, var["tokens"]["bg"])
     return default, files
 
 
@@ -119,12 +151,13 @@ def main():
     stale = []
     for rel, text in sorted(files.items()):
         path = OUT / rel
-        if path.exists() and path.read_text() == text:
+        data = text if isinstance(text, bytes) else text.encode()
+        if path.exists() and path.read_bytes() == data:
             continue
         stale.append(str(rel))
         if not args.check:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text)
+            path.write_bytes(data)
     extra = sorted(str(p.relative_to(OUT)) for p in OUT.rglob("*") if p.is_file() and p.relative_to(OUT) not in files) if OUT.exists() else []
     if args.check:
         for s in stale:

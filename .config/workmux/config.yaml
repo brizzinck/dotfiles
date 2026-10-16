@@ -19,9 +19,9 @@ panes:
 merge_strategy: rebase
 
 # Status icons are rendered by tmux.conf (window-status-format shows #{@workmux_status}),
-# so workmux must not rewrite the window formats itself. Glyphs are Nerd Font (palette: everforest-black).
+# so workmux must not rewrite the window formats itself. Glyphs are Nerd Font (accent hex = palette tokens yellow / orange / green, identical in both variants).
 status_format: false
 status_icons:
-  working: "#[fg=#dbbc7f]󰚩#[fg=default]"
-  waiting: "#[fg=#e69875]󰍡#[fg=default]"
-  done: "#[fg=#a7c080]#[fg=default]"
+  working: "#[fg=#d9bc7f]󰚩#[fg=default]"
+  waiting: "#[fg=#ea9e77]󰍡#[fg=default]"
+  done: "#[fg=#abc682]#[fg=default]"
