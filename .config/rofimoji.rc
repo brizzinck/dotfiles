@@ -1,0 +1,6 @@
+# rofimoji (SUPER+period): pick with rofi, copy with wl-copy, type with wtype.
+# rofi look comes from ~/.config/rofi/config.rasi.
+selector = rofi
+clipboarder = wl-copy
+typer = wtype
+skin-tone = neutral
