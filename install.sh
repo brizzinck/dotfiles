@@ -203,6 +203,8 @@ cd "$DOTFILES"
 # Real directories first, so stow links single files instead of folding the whole directory:
 # systemd ignores a symlinked drop-in directory, and `systemctl --user enable` would write its *.wants links into the repo.
 mkdir -p "$HOME/.config/systemd/user/bredllm-reverse-socks.service.d"
+# GTK dirs stay real (apps keep bookmarks etc. there); only settings.ini / gtk.css are linked
+mkdir -p "$HOME/.config/gtk-3.0" "$HOME/.config/gtk-4.0"
 git submodule update --init --recursive
 # Move real files/dirs out of the way; leave symlinks (stow manages them)
 while IFS= read -r rel; do
@@ -224,6 +226,19 @@ if [ -d "$DOTFILES/private" ] && [ -n "$(ls -A "$DOTFILES/private" 2>/dev/null)"
   (cd "$DOTFILES/private" && stow --restow .)
 fi
 touch "$DOTFILES/env.secret.sh" && chmod +x "$DOTFILES/env.secret.sh"
+
+log "GTK dark theme, icons, fonts and cursor (gsettings; the cursor falls back to Adwaita until bibata is installed)"
+if command -v gsettings >/dev/null 2>&1; then
+  gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark' || true
+  gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark' || true
+  gsettings set org.gnome.desktop.interface icon-theme 'breeze-dark' || true
+  gsettings set org.gnome.desktop.interface monospace-font-name 'JetBrainsMono Nerd Font 11' || true
+  gsettings set org.gnome.desktop.interface cursor-theme 'Bibata-Modern-Ice' || true
+  gsettings set org.gnome.desktop.interface cursor-size 32 || true
+else
+  later "set GTK dark theme: gsettings set org.gnome.desktop.interface color-scheme prefer-dark (and gtk-theme Adwaita-dark, icon-theme breeze-dark, cursor-theme Bibata-Modern-Ice)"
+fi
+fc-cache -f 2>/dev/null || true
 
 log "User timers: cache aging (user tmpfiles) and Codex release pruning"
 systemctl --user daemon-reload 2>/dev/null || true

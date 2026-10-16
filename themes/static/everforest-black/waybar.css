@@ -1,0 +1,19 @@
+/* Everforest Black tokens for GTK CSS (waybar). Same names as palette.md. */
+@define-color bg #000000;
+@define-color surface #0b0e0d;
+@define-color raised #141a17;
+@define-color select #1f2a24;
+@define-color visual #2a3530;
+@define-color line #222a27;
+@define-color border #3a4440;
+@define-color dim #6b7770;
+@define-color sub #859289;
+@define-color fg #d3c6aa;
+@define-color fg_hi #e7dabe;
+@define-color green #a7c080;
+@define-color aqua #83c092;
+@define-color blue #7fbbb3;
+@define-color yellow #dbbc7f;
+@define-color orange #e69875;
+@define-color red #e67e80;
+@define-color purple #d699b6;

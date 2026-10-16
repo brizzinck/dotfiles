@@ -1,0 +1,21 @@
+# Everforest Black ANSI palette (index hex)
+0 #1f2a24
+1 #e67e80
+2 #a7c080
+3 #dbbc7f
+4 #7fbbb3
+5 #d699b6
+6 #83c092
+7 #b8ae96
+8 #6b7770
+9 #f29a9b
+10 #bfd39a
+11 #e8cc96
+12 #98cdc5
+13 #e3b0c8
+14 #9ad1a8
+15 #e7dabe
+foreground #d3c6aa
+background #000000
+cursor #e7dabe
+selection-background #2a3530
