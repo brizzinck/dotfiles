@@ -12,7 +12,7 @@ hyprctl binds -j | jq -r '
   # workspace digit binds are summarised in one line below
   [ .[]
     | select(.has_description)
-    | select(.dispatcher != "workspace" and .dispatcher != "movetoworkspace" or (.arg | test("^(prev|special)")))
+    | select(.description | test("^(Move window to )?[Ww]orkspace [0-9]+$") | not)
     | { sub: (if .submap == "" then "" else "[" + .submap + "] " end), key: keylabel, desc: .description } ]
   | (.[] | "\(.sub)\(.key)\t\(.desc)"),
     "SUPER+1..0 / +ALT\tWorkspace 1-10 / 11-20 (add SHIFT to move a window)"

@@ -4,11 +4,11 @@
 #   lid.sh toggle | on | off     hold / release a `systemd-inhibit --what=handle-lid-switch` (user process, no sudo)
 #   lid.sh status                exit 0 + "on" while held, exit 1 + "off" otherwise
 #   lid.sh waybar                JSON for the custom/lid module (empty text while off)
-#   lid.sh event close|open      called by the Hyprland lid switch binds (hyprland.conf):
+#   lid.sh event close|open      called by the Hyprland lid switch binds (hyprland.lua):
 #                                  close: another monitor active -> disable eDP-1 only;
 #                                         otherwise, while the toggle is on -> blank eDP-1 (dpms off);
 #                                         otherwise logind suspends as usual (default lid action)
-#                                  open:  re-enable eDP-1 (monitor rule from hyprland.conf) / dpms on
+#                                  open:  re-enable eDP-1 (monitor rule from monitors.lua) / dpms on
 #   --dry-run                    print the commands instead of running them
 #
 # With the inhibitor held logind ignores the lid, so agents and builds keep running with the lid shut.
@@ -20,7 +20,7 @@ STATE="${XDG_RUNTIME_DIR:-/tmp}/lid-awake"
 PIDF="$STATE/pid"
 MARK="$STATE/panel-off"
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
-CONF="$HOME/.config/hypr/hyprland.conf"
+MONITORS="$HOME/.config/hypr/monitors.lua"
 G_LID='󰛆'
 DRY=0
 args=()
@@ -84,20 +84,20 @@ external_count() {
   hyprctl monitors -j 2>/dev/null | jq --arg p "$PANEL" '[.[] | select(.name != $p and (.disabled | not))] | length' 2>/dev/null || echo 0
 }
 
-panel_rule() { # the panel's monitor rule from hyprland.conf (without the "monitor =" prefix)
-  local r
-  r=$(sed -n "s/^[[:space:]]*monitor[[:space:]]*=[[:space:]]*\\(${PANEL}[[:space:]]*,.*\\)$/\\1/p" "$CONF" 2>/dev/null | head -1)
-  printf '%s\n' "${r:-$PANEL, preferred, auto, 1}"
+# Lua expression that re-applies the panel's monitor rule from monitors.lua (the data hyprland.lua loads)
+panel_enable_lua() {
+  printf 'for _, m in ipairs(dofile(%s)) do if m.output == %s then hl.monitor(m) end end' \
+    "$(jq -Rn --arg v "$MONITORS" '$v')" "$(jq -Rn --arg v "$PANEL" '$v')"
 }
 
 event() {
   case ${1:-} in
     close)
       if [[ $(external_count) -gt 0 ]]; then
-        do_cmd hyprctl keyword monitor "$PANEL, disable"
+        do_cmd hyprctl eval "hl.monitor({ output = \"$PANEL\", disabled = true })"
         ((DRY)) || { mkdir -p "$STATE"; echo disabled >"$MARK"; }
       elif active; then
-        do_cmd hyprctl dispatch dpms off "$PANEL"
+        do_cmd hyprd dpms off "$PANEL"
         ((DRY)) || { mkdir -p "$STATE"; echo dpms >"$MARK"; }
       else
         ((DRY)) && echo "nothing to do: no external monitor and the toggle is off (logind suspends)"
@@ -106,9 +106,9 @@ event() {
       local m=""
       [[ -r $MARK ]] && m=$(cat "$MARK" 2>/dev/null)
       if [[ $m == dpms ]]; then
-        do_cmd hyprctl dispatch dpms on "$PANEL"
+        do_cmd hyprd dpms on "$PANEL"
       elif [[ $m == disabled ]] || hyprctl monitors all -j 2>/dev/null | jq -e --arg p "$PANEL" 'any(.[]; .name == $p and .disabled)' >/dev/null 2>&1; then
-        do_cmd hyprctl keyword monitor "$(panel_rule)"
+        do_cmd hyprctl eval "$(panel_enable_lua)"
       fi
       ((DRY)) || rm -f "$MARK" ;;
     *) echo "usage: lid.sh event close|open" >&2; return 2 ;;

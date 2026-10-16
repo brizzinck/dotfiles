@@ -1,0 +1,420 @@
+-- Hyprland 0.56 (Lua). Palette: Everforest v2 (themes/palette); colours live in the generated fragments loaded in
+-- the look section, so `theme black|night` recolours without touching this file.
+-- Monitors are static rules (no polling script); lid.sh re-applies the panel rule from monitors.lua.
+
+local home = os.getenv("HOME")
+local hypr_dir = home .. "/.config/hypr"
+
+-- ───────────────────────────── monitors ─────────────────────────────
+-- With an HDMI monitor: HDMI on top at 0x0, the laptop panel below it.
+-- Without: only eDP-1 is present and the offset is harmless.
+-- The rules live in monitors.lua so lid.sh can re-enable the panel from the same data.
+for _, rule in ipairs(dofile(hypr_dir .. "/monitors.lua")) do
+    hl.monitor(rule)
+end
+
+-- ───────────────────────────── programs ─────────────────────────────
+local terminal = "ghostty"
+local fileManagerTerminal = terminal .. " -e yazi"
+local fileManagerGUI = "nemo"
+local menu = "pkill rofi || rofi -show drun"
+local editor = "nvim"
+local browser = "flatpak run app.zen_browser.zen"
+local wallpaper = "swaybg -i ~/pics/walls/lol.jpg"
+-- Floating terminal for TUIs; matched by the float-tui window rule below
+local tui = "ghostty --class=float.tui -e"
+local scripts = "~/.config/hypr/scripts"
+
+-- ───────────────────────────── autostart ────────────────────────────
+-- hyprland.start fires once per session (not on reload).
+-- The marker (per Hyprland instance, in the runtime dir) keeps a `hyprctl reload full-reset` from starting everything twice.
+local instance = os.getenv("HYPRLAND_INSTANCE_SIGNATURE") or "unknown"
+local autostart_marker = (os.getenv("XDG_RUNTIME_DIR") or "/tmp") .. "/hypr/" .. instance .. "/autostart-done"
+hl.on("hyprland.start", function()
+    local seen = io.open(autostart_marker, "r")
+    if seen then
+        seen:close()
+        return
+    end
+    local mark = io.open(autostart_marker, "w")
+    if mark then
+        mark:write("1")
+        mark:close()
+    end
+    -- palette link first (black when missing): waybar, dunst, rofi, swayosd read ~/.local/state/theme/current
+    hl.exec_cmd("~/.local/bin/theme init")
+    hl.exec_cmd("waybar & hypridle")
+    hl.exec_cmd("systemctl --user start hyprpolkitagent")
+    hl.exec_cmd("~/.config/hypr/td_clipboard_acl.sh")
+    hl.exec_cmd("dunst")
+    hl.exec_cmd("swayosd-server")
+    hl.exec_cmd("wl-paste --type text --watch cliphist -max-items 300 store")
+    hl.exec_cmd("wl-paste --type image --watch cliphist -max-items 300 store")
+    hl.exec_cmd("wl-clip-persist --clipboard regular")
+    -- one master password per login: drop the rbw agent left over from the previous session (silent without rbw)
+    hl.exec_cmd("~/.config/hypr/scripts/vault.sh session-start")
+    hl.exec_cmd("easyeffects --service-mode --hide-window")
+    hl.exec_cmd("udiskie --tray --notify")
+    hl.exec_cmd("Telegram -startintray")
+    hl.exec_cmd("pgrep swaybg && killall swaybg; " .. wallpaper)
+end)
+
+-- ───────────────────────────── environment ──────────────────────────
+hl.env("XDG_CURRENT_DESKTOP", "Hyprland")
+hl.env("QT_QPA_PLATFORMTHEME", "qt6ct")
+hl.env("XCURSOR_THEME", "Bibata-Modern-Ice")
+hl.env("XCURSOR_SIZE", "32")
+hl.env("HYPRCURSOR_SIZE", "32")
+
+-- ───────────────────────────── input ────────────────────────────────
+-- resolve_binds_by_sym stays at its default (false): binds match layout 1 (us) on ua and ru too
+hl.config({
+    input = {
+        touchpad = {
+            natural_scroll = true,
+        },
+        kb_layout = "us,ua,ru",
+        kb_options = "grp:caps_toggle",
+        follow_mouse = 1,
+        sensitivity = -0.1,
+    },
+})
+
+-- ───────────────────────────── look ─────────────────────────────────
+-- Colours (borders, glow, groups, background) come from the palette: the black fragment is always there as the
+-- fallback, the second one is the active variant (~/.local/state/theme/current, flipped by `theme`). A missing
+-- or broken fragment is skipped (pcall), black stays in place and `theme init` repairs the link.
+for _, path in ipairs({
+    home .. "/dotfiles/themes/generated/black/hyprland.lua",
+    home .. "/.local/state/theme/current/hyprland.lua",
+}) do
+    local ok, err = pcall(dofile, path)
+    if not ok then
+        hl.exec_cmd("notify-send -a hyprland 'Theme fragment skipped' '" .. tostring(err):gsub("'", "") .. "'")
+    end
+end
+
+hl.config({
+    general = {
+        gaps_in = 3,
+        gaps_out = 4,
+        border_size = 2,
+        resize_on_border = true,
+
+        layout = "dwindle",
+        allow_tearing = false,
+    },
+
+    decoration = {
+        rounding = 6,
+
+        shadow = {
+            enabled = true,
+            range = 12,
+            render_power = 3,
+            color_inactive = "rgba(00000000)",
+        },
+
+        blur = {
+            enabled = false,            -- everything is opaque black
+        },
+
+        dim_inactive = true,            -- on black only text dims
+        dim_strength = 0.10,            -- 0.15 turned the new fg khaki (palette-v2 section 5.3)
+        dim_special = 0.5,
+    },
+
+    group = {
+        groupbar = {
+            font_family = "JetBrainsMono Nerd Font",
+            font_size = 11,
+            height = 18,
+            indicator_height = 2,
+            rounding = 4,
+            gradients = false,
+        },
+    },
+
+    misc = {
+        force_default_wallpaper = 0,
+        disable_hyprland_logo = true,
+        disable_splash_rendering = true,
+    },
+
+    cursor = {
+        inactive_timeout = 5,
+        hide_on_key_press = true,
+    },
+
+    render = {
+        direct_scanout = 2,             -- fullscreen video/games skip composition
+    },
+
+    xwayland = {
+        force_zero_scaling = true,      -- no X11 app is in regular use; crisp at scale 1.5
+    },
+
+    animations = {
+        enabled = true,
+    },
+
+    dwindle = {
+        preserve_split = true,
+    },
+})
+
+-- Fast, not off: ~150-200 ms at 120 Hz
+hl.curve("snap", { type = "bezier", points = { { 0.2, 0.9 }, { 0.1, 1 } } })
+hl.animation({ leaf = "global",           enabled = true, speed = 2,   bezier = "snap" })
+hl.animation({ leaf = "windows",          enabled = true, speed = 1.5, bezier = "snap", style = "popin 92%" })
+hl.animation({ leaf = "windowsOut",       enabled = true, speed = 1.2, bezier = "snap", style = "popin 92%" })
+hl.animation({ leaf = "border",           enabled = true, speed = 2,   bezier = "snap" })
+hl.animation({ leaf = "fade",             enabled = true, speed = 1.5, bezier = "snap" })
+hl.animation({ leaf = "layers",           enabled = true, speed = 1.2, bezier = "snap", style = "fade" })
+hl.animation({ leaf = "workspaces",       enabled = true, speed = 1.8, bezier = "snap", style = "slide" })
+hl.animation({ leaf = "specialWorkspace", enabled = true, speed = 1.8, bezier = "snap", style = "slidevert" })
+
+-- ───────────────────────────── workspaces and rules ─────────────────
+-- Smart borders: no frame, no gaps and no glow for a lone tiled window
+hl.workspace_rule({ workspace = "w[tv1]", gaps_out = 0, gaps_in = 0 })
+hl.window_rule({
+    name = "smart-borders",
+    match = { float = false, workspace = "w[tv1]" },
+    border_size = 0,
+    rounding = 0,
+    no_shadow = true,
+})
+
+-- Drop-down terminal: SUPER+Z toggles it, tmux session "scratch" is attached or created.
+-- (hyprlang added the [workspace ...] prefix to on-created-empty itself; Lua takes the command verbatim.)
+hl.workspace_rule({
+    workspace = "special:term",
+    gaps_out = 48,
+    on_created_empty = "[workspace special:term] ghostty -e tmux new-session -A -s scratch",
+})
+-- Notes scratchpad: SUPER+SHIFT+Z toggles nvim on ~/notes/scratch.md
+hl.workspace_rule({
+    workspace = "special:notes",
+    gaps_out = 48,
+    on_created_empty = "[workspace special:notes] ghostty -e sh -c 'mkdir -p ~/notes; exec nvim ~/notes/scratch.md'",
+})
+
+-- Floating TUIs (tui)
+hl.window_rule({
+    name = "float-tui",
+    match = { class = "^(float\\.tui)$" },
+    float = true,
+    center = true,
+    size = { "monitor_w*0.6", "monitor_h*0.65" },
+})
+
+-- QR code viewer (imv): small floating window
+hl.window_rule({
+    name = "float-imv",
+    match = { class = "^(imv)$" },
+    float = true,
+    center = true,
+    size = { 560, 600 },
+})
+
+-- pinentry (rbw master password prompt): small floating dialog instead of a tiled window
+hl.window_rule({
+    name = "float-pinentry",
+    match = { class = "^(org\\.gnupg\\.pinentry-.*|pinentry.*)$" },
+    float = true,
+    center = true,
+    size = { 520, 170 },
+    stay_focused = true,
+})
+
+-- Bitwarden desktop app (Electron, class Bitwarden): a centered floating window instead of a full-width tile.
+-- It is started silently (no focus) at login when the SSH agent flag is on; vault.sh app opens it on demand.
+hl.window_rule({
+    name = "float-bitwarden",
+    match = { class = "^([Bb]itwarden|com\\.bitwarden\\.desktop)$" },
+    float = true,
+    center = true,
+    size = { "monitor_w*0.5", "monitor_h*0.75" },
+})
+
+hl.layer_rule({
+    name = "rofi",
+    match = { namespace = "^(rofi)$" },
+    no_anim = true,
+    dim_around = true,
+})
+
+-- Chrome-vs-hypridle idle exemption lives in hypridle.conf (condition_cmd -> idle-allowed.sh there);
+-- the windowrule `idleinhibit` was removed from Hyprland in 0.53+.
+
+-- bindd = MODS, key, description, dispatcher, args   (descriptions feed SUPER+/ cheatsheet)
+-- d = description, e = repeat while held, l = works on the lock screen, m = mouse
+-- Descriptions must not contain commas.
+local mainMod = "SUPER"
+
+-- --- apps ---
+hl.bind("ALT + TAB", hl.dsp.window.cycle_next(), { description = "Cycle windows" })
+hl.bind("ALT + SHIFT + TAB", hl.dsp.window.cycle_next({ next = false }), { description = "Cycle windows backwards" })
+hl.bind(mainMod .. " + Return", hl.dsp.exec_cmd(terminal .. " -e tmux new-session -s \"term-$(date +%s%N)\""), { description = "Terminal (new tmux session)" })
+hl.bind(mainMod .. " + SHIFT + Return", hl.dsp.exec_cmd(terminal .. " -e tmux attach"), { description = "Terminal (attach tmux)" })
+hl.bind(mainMod .. " + SHIFT + T", hl.dsp.exec_cmd(terminal .. " -e su - td -c \"tmux set-environment -g XDG_RUNTIME_DIR /run/user/1000; tmux set-environment -g WAYLAND_DISPLAY wayland-1; tmux source-file ~/.config/tmux/tmux.conf; exec tmux new-session -A -s main\""), { description = "Terminal as user td" })
+hl.bind(mainMod .. " + G", hl.dsp.exec_cmd(browser), { description = "Browser" })
+hl.bind(mainMod .. " + E", hl.dsp.exec_cmd(fileManagerTerminal), { description = "File manager (yazi)" })
+hl.bind(mainMod .. " + SHIFT + E", hl.dsp.exec_cmd(fileManagerGUI), { description = "File manager (nemo)" })
+hl.bind(mainMod .. " + space", hl.dsp.exec_cmd(menu), { description = "App launcher" })
+hl.bind(mainMod .. " + T", hl.dsp.exec_cmd("Telegram"), { description = "Telegram" })
+hl.bind(mainMod .. " + S", hl.dsp.exec_cmd("if pgrep -x \"ytm\" > /dev/null; then hyprd focuswindow class:YTMDesktop; else flatpak run app.ytmdesktop.ytmdesktop; fi"), { description = "YouTube Music" })
+hl.bind(mainMod .. " + N", hl.dsp.exec_cmd("obsidian"), { description = "Obsidian" })
+hl.bind(mainMod .. " + O", hl.dsp.exec_cmd("pgrep swaybg && killall swaybg; " .. wallpaper), { description = "Reload wallpaper" })
+hl.bind(mainMod .. " + B", hl.dsp.exec_cmd("pkill -SIGUSR1 waybar"), { description = "Toggle waybar" })
+
+-- --- session and system ---
+hl.bind(mainMod .. " + Escape", hl.dsp.exec_cmd("pidof hyprlock || hyprlock"), { description = "Lock screen (password)" })
+hl.bind(mainMod .. " + SHIFT + Escape", hl.dsp.exec_cmd(scripts .. "/powermenu.sh"), { description = "Power menu" })
+hl.bind("XF86PowerOff", hl.dsp.exec_cmd(scripts .. "/powermenu.sh"), { description = "Power menu" })
+hl.bind(mainMod .. " + SHIFT + U", hl.dsp.exec_cmd(tui .. " zsh -ic 'sysup; read -k1'"), { description = "System update (sysup)" })
+hl.bind(mainMod .. " + CTRL + I", hl.dsp.exec_cmd(scripts .. "/idle-toggle.sh"), { description = "Toggle idle (hypridle)" })
+hl.bind(mainMod .. " + SHIFT + N", hl.dsp.exec_cmd("pkill -x hyprsunset || hyprsunset -t 4500"), { description = "Toggle night light" })
+hl.bind(mainMod .. " + X", hl.dsp.exec_cmd("dunstctl close"), { description = "Dismiss notification" })
+hl.bind(mainMod .. " + SHIFT + X", hl.dsp.exec_cmd("dunstctl history-pop"), { description = "Notification history" })
+hl.bind(mainMod .. " + CTRL + X", hl.dsp.exec_cmd("dunstctl set-paused toggle"), { description = "Toggle do-not-disturb" })
+
+-- --- TUIs and pickers ---
+hl.bind(mainMod .. " + A", hl.dsp.exec_cmd(tui .. " wiremix"), { description = "Audio mixer (wiremix)" })
+hl.bind(mainMod .. " + SHIFT + A", hl.dsp.exec_cmd(scripts .. "/audio-picker.sh"), { description = "Audio output/input picker" })
+hl.bind(mainMod .. " + SHIFT + B", hl.dsp.exec_cmd(tui .. " bluetui"), { description = "Bluetooth (bluetui)" })
+hl.bind(mainMod .. " + I", hl.dsp.exec_cmd(tui .. " nmtui"), { description = "Wi-Fi (nmtui)" })
+hl.bind(mainMod .. " + D", hl.dsp.exec_cmd(tui .. " btop"), { description = "System monitor (btop)" })
+hl.bind(mainMod .. " + P", hl.dsp.exec_cmd(terminal .. " -e ~/.config/tmux/scripts/sessionizer.sh"), { description = "Project sessions (tmux)" })
+hl.bind(mainMod .. " + C", hl.dsp.exec_cmd(scripts .. "/clipboard.sh"), { description = "Clipboard history" })
+hl.bind(mainMod .. " + SHIFT + C", hl.dsp.exec_cmd("hyprpicker -a"), { description = "Color picker" })
+hl.bind(mainMod .. " + period", hl.dsp.exec_cmd("rofimoji"), { description = "Emoji picker" })
+hl.bind(mainMod .. " + SHIFT + period", hl.dsp.exec_cmd(scripts .. "/snippets.sh"), { description = "Snippets picker" })
+hl.bind(mainMod .. " + CTRL + V", hl.dsp.exec_cmd(scripts .. "/paste-plain.sh"), { description = "Paste clipboard as plain text" })
+hl.bind(mainMod .. " + ALT + V", hl.dsp.exec_cmd(scripts .. "/clipboard.sh --paste-last-image"), { description = "Paste last screenshot or image" })
+hl.bind(mainMod .. " + CTRL + P", hl.dsp.exec_cmd(scripts .. "/vault.sh passwords"), { description = "Passwords (Bitwarden via rofi-rbw)" })
+hl.bind(mainMod .. " + CTRL + O", hl.dsp.exec_cmd(scripts .. "/vault.sh totp"), { description = "2FA codes (copy the current code)" })
+hl.bind(mainMod .. " + equal", hl.dsp.exec_cmd(scripts .. "/calc.sh"), { description = "Calculator (rofi-calc)" })
+hl.bind(mainMod .. " + slash", hl.dsp.exec_cmd(scripts .. "/keybinds.sh"), { description = "Keybind cheatsheet" })
+hl.bind(mainMod .. " + M", hl.dsp.exec_cmd("~/.config/hub/hub open"), { description = "Utility hub (fzf)" })
+
+-- --- capture ---
+hl.bind("Print", hl.dsp.exec_cmd("hyprshot -m region -o ~/pics/screenshots"), { description = "Screenshot region" })
+hl.bind("SHIFT + Print", hl.dsp.exec_cmd("hyprshot -m output -m active -o ~/pics/screenshots"), { description = "Screenshot active monitor" })
+hl.bind(mainMod .. " + Print", hl.dsp.exec_cmd("hyprshot -m window -m active -o ~/pics/screenshots"), { description = "Screenshot active window" })
+hl.bind(mainMod .. " + CTRL + S", hl.dsp.exec_cmd(scripts .. "/capture.sh"), { description = "Capture menu (screenshot - OCR - QR - record - GIF)" })
+hl.bind(mainMod .. " + SHIFT + O", hl.dsp.exec_cmd(scripts .. "/capture.sh ocr"), { description = "OCR region to clipboard (rus+eng)" })
+hl.bind(mainMod .. " + SHIFT + S", hl.dsp.exec_cmd("grim -g \"$(slurp)\" - | satty -f - --copy-command wl-copy --output-filename ~/pics/screenshots/%F_%T.png"), { description = "Screenshot region then annotate" })
+hl.bind("ALT + S", hl.dsp.exec_cmd("hyprshot -m region -o ~/pics/screenshots"), { description = "Screenshot region (clipboard + file)" })
+hl.bind("SHIFT + ALT + S", hl.dsp.exec_cmd("grim -g \"$(slurp)\" - | satty -f - --copy-command wl-copy --output-filename ~/pics/screenshots/%F_%T.png"), { description = "Screenshot region then annotate (satty)" })
+hl.bind(mainMod .. " + R", hl.dsp.exec_cmd(scripts .. "/rec-toggle.sh"), { description = "Record screen (toggle)" })
+hl.bind(mainMod .. " + SHIFT + R", hl.dsp.exec_cmd(scripts .. "/rec-toggle.sh region"), { description = "Record region (toggle)" })
+hl.bind(mainMod .. " + ALT + R", hl.dsp.exec_cmd(scripts .. "/rec-toggle.sh --mic"), { description = "Record screen with system sound and mic (toggle)" })
+
+-- --- windows ---
+hl.bind(mainMod .. " + W", hl.dsp.exec_cmd(scripts .. "/safe-close.sh"), { description = "Close window (twice for browsers and terminals)" })
+hl.bind(mainMod .. " + SHIFT + W", hl.dsp.exec_cmd(scripts .. "/window-menu.sh"), { description = "Window action menu" })
+hl.bind(mainMod .. " + SHIFT + space", hl.dsp.exec_cmd(scripts .. "/window-switcher.sh"), { description = "Window switcher" })
+hl.bind(mainMod .. " + V", hl.dsp.window.float({ action = "toggle" }), { description = "Toggle floating" })
+hl.bind(mainMod .. " + F", hl.dsp.window.fullscreen({ mode = "fullscreen" }), { description = "Fullscreen" })
+hl.bind(mainMod .. " + SHIFT + F", hl.dsp.window.fullscreen({ mode = "maximized" }), { description = "Maximize (keep bar)" })
+hl.bind(mainMod .. " + SHIFT + P", hl.dsp.window.pin(), { description = "Pin floating window" })
+hl.bind(mainMod .. " + U", hl.dsp.focus({ urgent_or_last = true }), { description = "Focus urgent or last window" })
+hl.bind(mainMod .. " + Y", hl.dsp.group.toggle(), { description = "Toggle group (tabs)" })
+hl.bind(mainMod .. " + SHIFT + Y", hl.dsp.group.next(), { description = "Next tab in group" })
+
+hl.bind(mainMod .. " + H", hl.dsp.focus({ direction = "left" }), { description = "Focus left" })
+hl.bind(mainMod .. " + L", hl.dsp.focus({ direction = "right" }), { description = "Focus right" })
+hl.bind(mainMod .. " + K", hl.dsp.focus({ direction = "up" }), { description = "Focus up" })
+hl.bind(mainMod .. " + J", hl.dsp.focus({ direction = "down" }), { description = "Focus down" })
+
+hl.bind(mainMod .. " + SHIFT + H", hl.dsp.window.move({ direction = "left" }), { description = "Move window left" })
+hl.bind(mainMod .. " + SHIFT + L", hl.dsp.window.move({ direction = "right" }), { description = "Move window right" })
+hl.bind(mainMod .. " + SHIFT + K", hl.dsp.window.move({ direction = "up" }), { description = "Move window up" })
+hl.bind(mainMod .. " + SHIFT + J", hl.dsp.window.move({ direction = "down" }), { description = "Move window down" })
+
+-- --- resize: held keys repeat (binde); the submap "resize" is shown by waybar ---
+hl.bind(mainMod .. " + left", hl.dsp.window.resize({ x = -20, y = 0, relative = true }), { repeating = true, description = "Resize left" })
+hl.bind(mainMod .. " + right", hl.dsp.window.resize({ x = 20, y = 0, relative = true }), { repeating = true, description = "Resize right" })
+hl.bind(mainMod .. " + up", hl.dsp.window.resize({ x = 0, y = -20, relative = true }), { repeating = true, description = "Resize up" })
+hl.bind(mainMod .. " + down", hl.dsp.window.resize({ x = 0, y = 20, relative = true }), { repeating = true, description = "Resize down" })
+hl.bind(mainMod .. " + SHIFT + left", hl.dsp.window.resize({ x = -50, y = 0, relative = true }), { repeating = true, description = "Resize left (big)" })
+hl.bind(mainMod .. " + SHIFT + right", hl.dsp.window.resize({ x = 50, y = 0, relative = true }), { repeating = true, description = "Resize right (big)" })
+hl.bind(mainMod .. " + SHIFT + up", hl.dsp.window.resize({ x = 0, y = -50, relative = true }), { repeating = true, description = "Resize up (big)" })
+hl.bind(mainMod .. " + SHIFT + down", hl.dsp.window.resize({ x = 0, y = 50, relative = true }), { repeating = true, description = "Resize down (big)" })
+hl.bind(mainMod .. " + CTRL + H", hl.dsp.window.resize({ x = -40, y = 0, relative = true }), { repeating = true, description = "Resize left" })
+hl.bind(mainMod .. " + CTRL + L", hl.dsp.window.resize({ x = 40, y = 0, relative = true }), { repeating = true, description = "Resize right" })
+hl.bind(mainMod .. " + CTRL + K", hl.dsp.window.resize({ x = 0, y = -40, relative = true }), { repeating = true, description = "Resize up" })
+hl.bind(mainMod .. " + CTRL + J", hl.dsp.window.resize({ x = 0, y = 40, relative = true }), { repeating = true, description = "Resize down" })
+
+hl.bind(mainMod .. " + CTRL + R", hl.dsp.submap("resize"), { description = "Resize mode (Esc to leave)" })
+hl.define_submap("resize", function()
+    hl.bind("h", hl.dsp.window.resize({ x = -40, y = 0, relative = true }), { repeating = true, description = "Resize left" })
+    hl.bind("l", hl.dsp.window.resize({ x = 40, y = 0, relative = true }), { repeating = true, description = "Resize right" })
+    hl.bind("k", hl.dsp.window.resize({ x = 0, y = -40, relative = true }), { repeating = true, description = "Resize up" })
+    hl.bind("j", hl.dsp.window.resize({ x = 0, y = 40, relative = true }), { repeating = true, description = "Resize down" })
+    hl.bind("left", hl.dsp.window.resize({ x = -40, y = 0, relative = true }), { repeating = true, description = "Resize left" })
+    hl.bind("right", hl.dsp.window.resize({ x = 40, y = 0, relative = true }), { repeating = true, description = "Resize right" })
+    hl.bind("up", hl.dsp.window.resize({ x = 0, y = -40, relative = true }), { repeating = true, description = "Resize up" })
+    hl.bind("down", hl.dsp.window.resize({ x = 0, y = 40, relative = true }), { repeating = true, description = "Resize down" })
+    hl.bind("escape", hl.dsp.submap("reset"), { description = "Leave resize mode" })
+    hl.bind("Return", hl.dsp.submap("reset"), { description = "Leave resize mode" })
+end)
+
+-- --- scratchpads ---
+hl.bind(mainMod .. " + grave", hl.dsp.workspace.toggle_special("scratch"), { description = "Toggle scratch workspace" })
+hl.bind(mainMod .. " + SHIFT + grave", hl.dsp.window.move({ workspace = "special:scratch" }), { description = "Send window to scratch" })
+hl.bind(mainMod .. " + Z", hl.dsp.workspace.toggle_special("term"), { description = "Drop-down terminal (tmux scratch)" })
+hl.bind(mainMod .. " + SHIFT + Z", hl.dsp.workspace.toggle_special("notes"), { description = "Notes scratchpad (nvim)" })
+
+-- --- monitors ---
+hl.bind(mainMod .. " + bracketleft", hl.dsp.focus({ monitor = "-1" }), { description = "Focus previous monitor" })
+hl.bind(mainMod .. " + bracketright", hl.dsp.focus({ monitor = "+1" }), { description = "Focus next monitor" })
+hl.bind(mainMod .. " + SHIFT + bracketleft", hl.dsp.window.move({ monitor = "-1" }), { description = "Move window to previous monitor" })
+hl.bind(mainMod .. " + SHIFT + bracketright", hl.dsp.window.move({ monitor = "+1" }), { description = "Move window to next monitor" })
+hl.bind(mainMod .. " + CTRL + bracketleft", hl.dsp.workspace.move({ monitor = "-1" }), { description = "Move workspace to previous monitor" })
+hl.bind(mainMod .. " + CTRL + bracketright", hl.dsp.workspace.move({ monitor = "+1" }), { description = "Move workspace to next monitor" })
+
+-- Workspaces 1-10 on SUPER+digit, 11-20 on SUPER+ALT+digit; SHIFT moves the active window
+for ws = 1, 20 do
+    local digit = tostring(ws % 10)
+    local alt = ws > 10 and " + ALT" or ""
+    hl.bind(mainMod .. alt .. " + " .. digit, hl.dsp.focus({ workspace = ws }), { description = "Workspace " .. ws })
+    hl.bind(mainMod .. " + SHIFT" .. alt .. " + " .. digit, hl.dsp.window.move({ workspace = ws }),
+        { description = "Move window to workspace " .. ws })
+end
+hl.bind(mainMod .. " + TAB", hl.dsp.focus({ workspace = "previous" }), { description = "Previous workspace" })
+
+hl.bind(mainMod .. " + mouse_down", hl.dsp.focus({ workspace = "e+1" }))
+hl.bind(mainMod .. " + mouse_up", hl.dsp.focus({ workspace = "e-1" }))
+
+hl.bind(mainMod .. " + mouse:272", hl.dsp.window.drag(), { mouse = true })
+hl.bind(mainMod .. " + mouse:273", hl.dsp.window.resize(), { mouse = true })
+
+-- --- hardware keys (swayosd draws the OSD; plain tools are the fallback) ---
+hl.bind("XF86AudioRaiseVolume", hl.dsp.exec_cmd("swayosd-client --output-volume raise --max-volume 140 || wpctl set-volume -l 1.4 @DEFAULT_AUDIO_SINK@ 5%+"), { repeating = true, locked = true, description = "Volume up" })
+hl.bind("XF86AudioLowerVolume", hl.dsp.exec_cmd("swayosd-client --output-volume lower || wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"), { repeating = true, locked = true, description = "Volume down" })
+hl.bind("XF86AudioMute", hl.dsp.exec_cmd("swayosd-client --output-volume mute-toggle || wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"), { locked = true, description = "Mute output" })
+hl.bind("XF86AudioMicMute", hl.dsp.exec_cmd("swayosd-client --input-volume mute-toggle || wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle"), { locked = true, description = "Mute microphone" })
+hl.bind(mainMod .. " + SHIFT + M", hl.dsp.exec_cmd(scripts .. "/mic-mute-all.sh"), { description = "Mute all microphones" })
+hl.bind(mainMod .. " + XF86AudioRaiseVolume", hl.dsp.exec_cmd(scripts .. "/win-volume.sh up"), { repeating = true, locked = true, description = "Focused app volume up" })
+hl.bind(mainMod .. " + XF86AudioLowerVolume", hl.dsp.exec_cmd(scripts .. "/win-volume.sh down"), { repeating = true, locked = true, description = "Focused app volume down" })
+hl.bind(mainMod .. " + XF86AudioMute", hl.dsp.exec_cmd(scripts .. "/win-volume.sh mute"), { locked = true, description = "Focused app mute" })
+hl.bind("XF86MonBrightnessUp", hl.dsp.exec_cmd(scripts .. "/brightness.sh up"), { repeating = true, locked = true, description = "Brightness up (focused monitor)" })
+hl.bind("XF86MonBrightnessDown", hl.dsp.exec_cmd(scripts .. "/brightness.sh down"), { repeating = true, locked = true, description = "Brightness down (focused monitor)" })
+hl.bind("XF86AudioPlay", hl.dsp.exec_cmd("playerctl play-pause"), { locked = true, description = "Play or pause" })
+hl.bind("XF86AudioPause", hl.dsp.exec_cmd("playerctl pause"), { locked = true, description = "Pause" })
+hl.bind("XF86AudioNext", hl.dsp.exec_cmd("playerctl next"), { locked = true, description = "Next track" })
+hl.bind("XF86AudioPrev", hl.dsp.exec_cmd("playerctl previous"), { locked = true, description = "Previous track" })
+
+-- --- lid: with another monitor active only the laptop panel is switched off; "keep working with the lid closed"
+-- (hub / waybar toggle, lid.sh) holds a logind inhibitor so closing the lid does not suspend ---
+hl.bind("switch:on:Lid Switch", hl.dsp.exec_cmd(scripts .. "/lid.sh event close"), { locked = true })
+hl.bind("switch:off:Lid Switch", hl.dsp.exec_cmd(scripts .. "/lid.sh event open"), { locked = true })
+
+-- --- cleaning mode: swallows every key and disables the touchpad (clean-mode.sh); auto-leaves after 5 min ---
+hl.bind(mainMod .. " + CTRL + Escape", hl.dsp.exec_cmd(scripts .. "/clean-mode.sh start"), { description = "Cleaning mode (locks keyboard and touchpad)" })
+hl.define_submap("clean", function()
+    hl.bind("CTRL + SHIFT + ALT + Escape", hl.dsp.exec_cmd(scripts .. "/clean-mode.sh stop"), { description = "Leave cleaning mode" })
+    hl.bind("catchall", hl.dsp.exec_cmd("true"))
+end)

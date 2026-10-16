@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""hyprd: legacy `hyprctl dispatch <dispatcher> <args>` syntax on a Lua Hyprland config.
+
+Hyprland 0.55+ with hyprland.lua turns `hyprctl dispatch` into `hl.dispatch(<lua expression>)`, so the old
+`hyprctl dispatch focuswindow address:0x1` no longer parses. The helper scripts of this repo keep calling dispatchers
+by their old names through this wrapper, which builds the Lua expression and runs `hyprctl dispatch` with it.
+
+  hyprd focuswindow address:0x55d0
+  hyprd -n dpms off eDP-1          print the Lua expression instead of running it
+  hyprd 'hl.dsp.exit()'            an argument that already starts with hl. is passed through
+"""
+import json
+import subprocess
+import sys
+
+
+def s(value):
+    return json.dumps(value, ensure_ascii=False)
+
+
+def tbl(**kw):
+    items = [f"{k} = {v}" for k, v in kw.items() if v is not None]
+    return "{ " + ", ".join(items) + " }" if items else ""
+
+
+DIRS = {"l": "left", "r": "right", "u": "up", "d": "down"}
+
+
+def num(v):
+    return v if v.lstrip("-").isdigit() else s(v)
+
+
+def pixels(value, axis, target):
+    """'60%' of the target window's monitor (logical pixels) -> int; plain numbers pass through."""
+    if not value.endswith("%"):
+        return value
+    clients = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"]))
+    monitors = json.loads(subprocess.check_output(["hyprctl", "-j", "monitors"]))
+    if target and target.startswith("address:"):
+        win = next(c for c in clients if c["address"] == target[8:])
+    else:
+        win = json.loads(subprocess.check_output(["hyprctl", "-j", "activewindow"]))
+    mon = next(m for m in monitors if m["id"] == win["monitor"])
+    logical = (mon["width"] if axis == "x" else mon["height"]) / mon["scale"]
+    return str(int(float(value[:-1]) / 100 * logical))
+
+
+def split_target(arg):
+    """'a b,address:0x1' -> ('a b', 'address:0x1'); the target is the last comma field."""
+    if "," in arg:
+        body, target = arg.rsplit(",", 1)
+        return body.strip(), target.strip()
+    return arg.strip(), None
+
+
+def exec_rules(cmd):
+    if cmd.startswith("["):
+        rules, _, rest = cmd[1:].partition("]")
+        out = {}
+        for r in rules.split(";"):
+            r = r.strip()
+            if r == "silent":
+                out["no_initial_focus"] = "true"
+            elif r == "float":
+                out["float"] = "true"
+            else:
+                raise SystemExit(f"hyprd: unsupported exec rule [{r}]")
+        return rest.strip(), out
+    return cmd, {}
+
+
+def translate(d, a):
+    w = lambda t: s(t) if t else None
+    if d == "focuswindow":
+        return f"hl.dsp.focus({{ window = {s(a)} }})"
+    if d == "closewindow":
+        return f"hl.dsp.window.close({tbl(window=w(a))})"
+    if d == "killwindow":
+        return f"hl.dsp.window.kill({tbl(window=w(a))})"
+    if d == "killactive":
+        return "hl.dsp.window.close()"
+    if d == "exit":
+        return "hl.dsp.exit()"
+    if d == "dpms":
+        parts = a.split()
+        act = {"on": "enable", "off": "disable", "toggle": "toggle"}[parts[0]]
+        mon = parts[1] if len(parts) > 1 else None
+        return f"hl.dsp.dpms({tbl(action=s(act), monitor=w(mon))})"
+    if d == "submap":
+        return f"hl.dsp.submap({s(a)})"
+    if d == "togglespecialworkspace":
+        return f"hl.dsp.workspace.toggle_special({s(a)})"
+    if d == "exec":
+        cmd, rules = exec_rules(a)
+        r = ", " + tbl(**rules) if rules else ""
+        return f"hl.dsp.exec_cmd({s(cmd)}{r})"
+    if d == "sendshortcut":
+        mods, key, *target = a.split(",")
+        mods = mods.replace("_", " ").strip()
+        return f"hl.dsp.send_shortcut({tbl(mods=s(mods), key=s(key), window=w(target[0].strip() if target and target[0].strip() != 'activewindow' else None))})"
+    if d in ("togglefloating", "setfloating"):
+        act = "toggle" if d == "togglefloating" else "set"
+        return f"hl.dsp.window.float({tbl(window=w(a), action=s(act))})"
+    if d == "pin":
+        return f"hl.dsp.window.pin({tbl(window=w(a))})"
+    if d == "fullscreen":
+        return f"hl.dsp.window.fullscreen({tbl(mode=s('maximized' if a.strip() == '1' else 'fullscreen'))})"
+    if d == "fullscreenstate":
+        i, c = a.split()
+        return f"hl.dsp.window.fullscreen_state({tbl(internal=i, client=c)})"
+    if d == "setprop":
+        target, prop, *value = a.split()
+        return f"hl.dsp.window.set_prop({tbl(window=w(target), prop=s(prop), value=s(' '.join(value)))})"
+    if d == "centerwindow":
+        return "hl.dsp.window.center()"
+    if d in ("resizewindowpixel", "movewindowpixel"):
+        body, target = split_target(a)
+        kind, x, y = body.split()
+        assert kind == "exact", body
+        fn = "resize" if d == "resizewindowpixel" else "move"
+        x, y = pixels(x, "x", target), pixels(y, "y", target)
+        return f"hl.dsp.window.{fn}({tbl(window=w(target), x=num(x), y=num(y), relative='false')})"
+    if d == "togglegroup":
+        return "hl.dsp.group.toggle()"
+    if d == "moveintogroup":
+        return f"hl.dsp.window.move({tbl(into_group=s(DIRS[a.strip()]))})"
+    if d == "lockactivegroup":
+        return f"hl.dsp.group.lock_active({tbl(action=s(a.strip() or 'toggle'))})"
+    if d == "movetoworkspacesilent":
+        ws, target = split_target(a)
+        return f"hl.dsp.window.move({tbl(window=w(target), workspace=num(ws), follow='false')})"
+    if d == "movewindow" and a.startswith("mon:"):
+        return f"hl.dsp.window.move({tbl(monitor=s(a[4:]))})"
+    raise SystemExit(f"hyprd: dispatcher '{d}' has no Lua translation yet (add it to .local/bin/hyprd)")
+
+
+def main(argv):
+    dry = False
+    if argv and argv[0] == "-n":
+        dry, argv = True, argv[1:]
+    if not argv:
+        raise SystemExit(__doc__)
+    if argv[0].startswith("hl."):
+        expr = " ".join(argv)
+    else:
+        expr = translate(argv[0], " ".join(argv[1:]))
+    if dry:
+        print(expr)
+        return 0
+    return subprocess.call(["hyprctl", "dispatch", expr])
+
+
+sys.exit(main(sys.argv[1:]))

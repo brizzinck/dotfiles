@@ -31,7 +31,7 @@ if is_protected "$class"; then
     read -r last_addr last_ms <"$state"
     if [[ $last_addr == "$addr" ]] && ((now - last_ms < window_ms)); then
       rm -f "$state"
-      exec hyprctl dispatch killactive
+      exec hyprd killactive
     fi
   fi
   printf '%s %s\n' "$addr" "$now" >"$state"
@@ -40,4 +40,4 @@ if is_protected "$class"; then
   exit 0
 fi
 
-exec hyprctl dispatch killactive
+exec hyprd killactive

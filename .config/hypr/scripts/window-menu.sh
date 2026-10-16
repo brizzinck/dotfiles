@@ -45,9 +45,9 @@ load_window() {
 
 # ───────────────────────────── helpers ─────────────────────────────
 
-# hyprctl dispatch (address-capable dispatchers)
+# hyprd = legacy dispatcher names on the Lua config (address-capable dispatchers)
 hc() {
-  if ((DRY)); then echo "hyprctl dispatch $*"; else hyprctl dispatch "$@" >/dev/null; fi
+  if ((DRY)); then echo "hyprd $*"; else hyprd "$@" >/dev/null; fi
 }
 
 # dispatchers that act on the active window only: refocus the target first (skipped when it is already active)
@@ -55,16 +55,16 @@ hc_active() {
   if [[ $A == "$ACTIVE" ]]; then
     hc "$@"
   elif ((DRY)); then
-    echo "hyprctl --batch 'dispatch focuswindow address:$A ; dispatch $*'"
+    echo "hyprd focuswindow address:$A ; hyprd $*"
   else
-    hyprctl --batch "dispatch focuswindow address:$A ; dispatch $*" >/dev/null
+    hyprd focuswindow "address:$A" >/dev/null && hyprd "$@" >/dev/null
   fi
 }
 
 # same for a shell command that needs the target to be the active window
 sh_active() {
   if [[ $A != "$ACTIVE" ]]; then
-    if ((DRY)); then echo "hyprctl dispatch focuswindow address:$A"; else hyprctl dispatch focuswindow "address:$A" >/dev/null; fi
+    if ((DRY)); then echo "hyprd focuswindow address:$A"; else hyprd focuswindow "address:$A" >/dev/null; fi
   fi
   if ((DRY)); then echo "$*"; else bash -c "$*"; fi
 }

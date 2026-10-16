@@ -32,7 +32,7 @@ paste_send() {
     echo "class=${class:-?}: sendshortcut ${mods// /_},code:$PASTE_KEYCODE,${target:-activewindow}"
     return 0
   fi
-  out=$(hyprctl dispatch sendshortcut "${mods// /_},code:$PASTE_KEYCODE,${target:-activewindow}" 2>&1)
+  out=$(hyprd sendshortcut "${mods// /_},code:$PASTE_KEYCODE,${target:-activewindow}" 2>&1)
   if [[ $out != ok ]]; then
     # last resort for the active window: a virtual keyboard
     if [[ $mods == "CTRL SHIFT" ]]; then wtype -M ctrl -M shift -k v -m shift -m ctrl; else wtype -M ctrl -k v -m ctrl; fi

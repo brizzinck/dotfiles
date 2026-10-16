@@ -197,7 +197,7 @@ session_start() {
   poke_bar
   # opt-in SSH agent: the desktop app owns the socket, so it has to run (start to tray is the app's own setting)
   if [[ -f $SSH_FLAG ]] && have bitwarden-desktop; then
-    setsid -f bash -c 'sleep 6; pgrep -f "[b]itwarden/app\.asar" >/dev/null || hyprctl dispatch exec "[silent] bitwarden-desktop" >/dev/null 2>&1' >/dev/null 2>&1 || true
+    setsid -f bash -c 'sleep 6; pgrep -f "[b]itwarden/app\.asar" >/dev/null || hyprd exec "[silent] bitwarden-desktop" >/dev/null 2>&1' >/dev/null 2>&1 || true
   fi
   return 0
 }

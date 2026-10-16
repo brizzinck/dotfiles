@@ -92,7 +92,7 @@ window_geo() {
   active=$(hyprctl monitors -j | jq -r --argjson m "$(jq '.monitor' <<<"$json")" '.[] | select(.id == $m) | .activeWorkspace.id')
   if [[ $wsid != "$active" ]] && ((!DRY)); then
     # the window is not visible: bring it up, otherwise grim would photograph whatever is on screen there
-    hyprctl dispatch focuswindow "address:$(jq -r .address <<<"$json")" >/dev/null
+    hyprd focuswindow "address:$(jq -r .address <<<"$json")" >/dev/null
     sleep 0.35
     json=$(hyprctl clients -j | jq -c --arg a "$(jq -r .address <<<"$json")" '.[] | select(.address == $a)')
   fi

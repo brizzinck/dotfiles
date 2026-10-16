@@ -12,7 +12,7 @@ power-performance	Energy	Power profile: performance	-	run	~/.config/hypr/scripts
 bright-up	Display	Brightness up (focused monitor)	XF86MonBrightnessUp	run	~/.config/hypr/scripts/brightness.sh up	-	-	Laptop panel: brightnessctl/swayosd. External monitor: ddcutil over DDC/CI (needs ddcutil and the i2c group).
 bright-down	Display	Brightness down (focused monitor)	XF86MonBrightnessDown	run	~/.config/hypr/scripts/brightness.sh down	-	-	-
 calc	Tools	Calculator (rofi-calc)	SUPER+equal	run	~/.config/hypr/scripts/calc.sh	-	-	Units, currency and dates via libqalculate; Enter copies the result.
-notes	Tools	Notes scratchpad (nvim ~/notes/scratch.md)	SUPER+SHIFT+Z	run	hyprctl dispatch togglespecialworkspace notes	-	hyprctl	-
+notes	Tools	Notes scratchpad (nvim ~/notes/scratch.md)	SUPER+SHIFT+Z	run	hyprd togglespecialworkspace notes	-	hyprctl	-
 snippets	Clipboard	Snippets picker	SUPER+SHIFT+period	run	~/.config/hypr/scripts/snippets.sh	-	rofi	Edit ~/.config/snippets/snippets.tsv. Variables: date, time, datetime, clipboard.
 paste-plain	Clipboard	Paste clipboard as plain text	SUPER+CTRL+V	run	~/.config/hypr/scripts/paste-plain.sh	-	wl-paste	-
 url-clean	Clipboard	Clean tracking parameters from the URL in the clipboard	-	run	~/.config/hypr/scripts/url-clean.sh	-	wl-paste python3	Manual only: removes utm_*, fbclid, gclid, yclid, igshid, ... and rewrites the clipboard.

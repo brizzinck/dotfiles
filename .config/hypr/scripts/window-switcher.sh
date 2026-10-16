@@ -46,4 +46,4 @@ n=${#lines[@]}
 idx=$(emit | rofi -dmenu -i -p switch -show-icons -format i -no-custom \
   -theme-str "window { width: 900px; } listview { lines: $n; }") || exit 0
 
-[[ -n $idx ]] && hyprctl dispatch focuswindow "address:${addrs[idx]}" >/dev/null
+[[ -n $idx ]] && hyprd focuswindow "address:${addrs[idx]}" >/dev/null

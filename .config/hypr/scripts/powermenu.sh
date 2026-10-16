@@ -16,7 +16,7 @@ confirm() {
 case $choice in
   lock) pidof hyprlock >/dev/null || hyprlock ;;
   suspend) systemctl suspend ;;
-  logout) confirm logout && hyprctl dispatch exit ;;
+  logout) confirm logout && hyprd exit ;;
   reboot) confirm reboot && systemctl reboot ;;
   poweroff) confirm poweroff && systemctl poweroff ;;
 esac

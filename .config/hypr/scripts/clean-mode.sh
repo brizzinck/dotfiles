@@ -3,7 +3,7 @@
 #   clean-mode.sh start [--dry-run]   disable the touchpad(s), enter the swallow-everything submap `clean`
 #   clean-mode.sh stop  [--dry-run]   leave the submap, re-enable the touchpad(s)
 #   clean-mode.sh devices             list the touchpad device names that would be disabled
-# Leave with CTRL+SHIFT+ALT+Escape (bound inside the submap in hyprland.conf). A watchdog leaves automatically
+# Leave with CTRL+SHIFT+ALT+Escape (bound inside the submap in hyprland.lua). A watchdog leaves automatically
 # after CLEAN_TIMEOUT seconds (default 300) so a broken combo can never lock the session.
 set -u
 TIMEOUT="${CLEAN_TIMEOUT:-300}"
@@ -18,7 +18,7 @@ devices() { hyprctl devices -j 2>/dev/null | jq -r '.mice[]? | select(.name | te
 set_touchpads() { # set_touchpads true|false
   local d
   while IFS= read -r d; do
-    [[ -n $d ]] && run hyprctl keyword "device[$d]:enabled" "$1"
+    [[ -n $d ]] && run hyprctl eval "hl.device({ name = \"$d\", enabled = $1 })"
   done < <(devices)
 }
 
@@ -26,14 +26,14 @@ case ${1:-start} in
   devices) devices ;;
   start)
     set_touchpads false
-    run hyprctl dispatch submap clean
+    run hyprd submap clean
     if ((DRY)); then echo "would start watchdog: stop after ${TIMEOUT}s"; else
       (sleep "$TIMEOUT"; "$0" stop) >/dev/null 2>&1 &
       echo $! >"$PIDF"
     fi
     run notify-send -a clean-mode -u critical -t 8000 -h string:x-dunst-stack-tag:clean-mode "Cleaning mode" "Keyboard and touchpad are off. Leave: CTRL+SHIFT+ALT+Escape (automatic after $((TIMEOUT / 60)) min)" ;;
   stop)
-    run hyprctl dispatch submap reset
+    run hyprd submap reset
     set_touchpads true
     if ((DRY)); then :; else
       if [[ -r $PIDF ]]; then kill "$(cat "$PIDF")" 2>/dev/null; rm -f "$PIDF"; fi
