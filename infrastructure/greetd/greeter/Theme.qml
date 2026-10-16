@@ -1,0 +1,1 @@
+../../../themes/generated/black/greeter-palette.qml

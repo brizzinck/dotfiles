@@ -1,0 +1,23 @@
+#!/bin/sh
+# greetd default_session (installed as /usr/local/lib/greeter/greeter-session, runs as user "greeter"):
+# graphical greeter = Hyprland + Quickshell (run-qs); tuigreet on the console when the graphical one fails to come up.
+# greetd waits for this command to exit, then starts the session the greeter asked for. If it exits without a request,
+# greetd starts it again. Log of the graphical attempt: /var/lib/greeter/state/greeter.log (the previous one: .log.1).
+#
+# GREETER_ROOT (config dir, default /etc/greetd) and GREETER_LIB (helper scripts, default /usr/local/lib/greeter) exist for
+# tests; GREETER_TEST_SESSION=1 makes the greeter launch /usr/bin/true instead of the real session (config-test.toml).
+state=/var/lib/greeter
+export HOME="$state" XDG_CACHE_HOME="$state/cache" XDG_STATE_HOME="$state/state"
+export XDG_DATA_HOME="$state/state" XDG_CONFIG_HOME="$state/state"
+export QS_NO_RELOAD_POPUP=1
+export GREETER_ROOT="${GREETER_ROOT:-/etc/greetd}" GREETER_LIB="${GREETER_LIB:-/usr/local/lib/greeter}"
+log="$state/state/greeter.log"
+run="${XDG_RUNTIME_DIR:-/tmp}"
+
+rm -f "$run/greeter-ok" "$run/greeter-alive"
+[ -e "$log" ] && mv -f "$log" "$log.1"
+/usr/bin/start-hyprland -- -c "$GREETER_ROOT/hyprland.lua" >"$log" 2>&1
+[ -e "$run/greeter-ok" ] && exit 0
+
+# Fallback: text login. Reached when Hyprland or the QML greeter never came up (see the log).
+exec /usr/bin/tuigreet --config "$GREETER_ROOT/tuigreet.toml" --cmd /usr/local/bin/hypr-login

@@ -1,0 +1,34 @@
+# Text greeter, used when the graphical login screen fails to come up or when config.toml selects it directly.
+# Installed as /etc/greetd/tuigreet.toml. A plain virtual console shows 16 colours only, so the theme uses the named
+# colours (they map to the Everforest ansi 0-15 of the terminals: green = accent, yellow = checking, red = failure).
+[display]
+show_time = true
+greeting = "Text login (the graphical greeter did not start: /var/lib/greeter/state/greeter.log)"
+
+[remember]
+username = true
+session = false
+user_session = false
+
+[user_menu]
+enabled = false
+
+[secret]
+mode = "characters"
+characters = "*"
+
+[session]
+sessions_dirs = []
+xsessions_dirs = []
+
+[theme]
+border = "green"
+text = "white"
+time = "green"
+container = "black"
+title = "green"
+greet = "yellow"
+prompt = "green"
+input = "white"
+action = "gray"
+button = "yellow"

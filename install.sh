@@ -65,6 +65,7 @@ packages=(
   tlp-pd                                                                                          # TLP profiles daemon (tlpctl), conflicts with power-profiles-daemon
   rbw kwindowsystem                                                                      # Bitwarden/Vaultwarden client (fzf-menu front end); kwindowsystem = pinentry-qt backend
   oo7 bitwarden                                                                                   # Bitwarden desktop (the bw CLI is AUR bitwarden-cli-bin); oo7 only satisfies the desktop package's org.freedesktop.secrets dependency (see apply-system.sh)
+  greetd greetd-tuigreet quickshell                                                                # login screen (infrastructure/greetd): greetd + Quickshell greeter, tuigreet fallback; enabled by apply-system.sh --only greeter
 )
 sudo pacman -S --needed --noconfirm "${packages[@]}"
 

@@ -5,7 +5,8 @@
 #   sudo ./apply-system.sh --dry-run       print what each section would do, change nothing
 #   sudo ./apply-system.sh --only cleanup  run a single section
 #
-# Section order: cleanup -> upgrade -> install -> remove -> config -> services -> disk -> boot -> flatpak -> summary
+# Section order: cleanup -> upgrade -> install -> remove -> config -> services -> greeter -> disk -> boot -> flatpak -> summary
+#   (greeter = the login screen, see infrastructure/greetd; also runnable alone: sudo ./apply-system.sh --only greeter)
 # System config files live in infrastructure/<area>/ and are installed from there (see apply-memory.sh).
 set -euo pipefail
 
@@ -13,7 +14,7 @@ ORIG_ARGS=("$@")
 DRY_RUN=0
 ONLY=""
 STAMP="20261016"
-SECTIONS=(cleanup upgrade install remove config services disk boot flatpak summary)
+SECTIONS=(cleanup upgrade install remove config services greeter disk boot flatpak summary)
 
 usage() {
   cat <<EOF
@@ -239,6 +240,9 @@ REPO_PACKAGES=(
   # at random (chipass came first). oo7 is the smallest provider (no deps, D-Bus activated, no PAM/keyring setup, not
   # gnome-keyring); the app itself keeps its vault keys in the kernel keyring, not in a Secret Service.
   oo7 bitwarden
+  # G1: graphical login screen. greetd = login daemon (pulls greetd-agreety), quickshell = the greeter UI (Wayland, QML),
+  # tuigreet = text fallback. The greeter runs in the Hyprland that is installed anyway (see section_greeter).
+  greetd greetd-tuigreet quickshell
 )
 # AUR packages, built at run time as the owner (makepkg refuses root) and installed with pacman -U. A failure only warns.
 # Keep in sync with the AUR section of install.sh. shellcheck-bin replaces the repo shellcheck (see swap_shellcheck).
@@ -669,6 +673,118 @@ section_services() {
   followup "tlpctl list; tlpctl get    # TLP Profiles Daemon (powerprofilesctl-compatible D-Bus API, no powerprofilesctl binary); busctl introspect org.freedesktop.UPower.PowerProfiles /org/freedesktop/UPower/PowerProfiles"
 }
 
+# --- greeter -----------------------------------------------------------------
+# Login screen (stage G1): greetd + a Quickshell greeter in a minimal Hyprland, tuigreet as the fallback. Sources live in
+# infrastructure/greetd/ (copied, not symlinked). The switch is "enable greetd, disable getty@tty1, reboot":
+# greetd.service has Conflicts=getty@tty1.service, so it is NEVER started or restarted from here (that would stop the
+# getty the running tty1 login belongs to). Everything below is idempotent; rerun it after editing the greeter.
+GREETD_SRC="$INFRA/greetd"
+GREETER_BANNER=0
+
+greeter_banner() {
+  cat <<'BANNER'
+
+################################################################################
+#  LOGIN SCREEN INSTALLED, NOT STARTED.  REBOOT TO SWITCH TO IT.
+#
+#  greetd is enabled for the next boot and getty@tty1 is disabled. Nothing was
+#  started now (greetd conflicts with getty@tty1, which your session runs on).
+#
+#  After the reboot: log in with your password (the "main" avatar), or pick
+#  "Other user..." and type a name. The graphical greeter falls back to a text
+#  login (tuigreet) by itself when it cannot start.
+#
+#  ROLLBACK from TTY2 (Ctrl+Alt+F2, log in there):
+#      sudo systemctl disable greetd && sudo systemctl enable getty@tty1 && sudo reboot
+#  EMERGENCY (no VT reachable): in GRUB press `e` on the entry and append
+#      systemd.mask=greetd.service
+#  to the linux line, then Ctrl+X; log in on a text tty and roll back as above.
+#  Text greeter only: see the comment at the top of /etc/greetd/config.toml.
+################################################################################
+
+BANNER
+}
+
+section_greeter() {
+  header "greeter"
+  local p missing=() f dest name
+
+  # packages: also checked here so that --only greeter works without the install section
+  for p in greetd greetd-tuigreet quickshell; do
+    pkg_installed "$p" || missing+=("$p")
+  done
+  if [ "${#missing[@]}" -gt 0 ]; then
+    log "greeter packages missing: ${missing[*]}"
+    try pacman -S --needed --noconfirm "${missing[@]}"
+    if [ "$DRY_RUN" -eq 0 ]; then
+      for p in greetd quickshell; do
+        if ! pkg_installed "$p"; then
+          warn "greeter: $p is not installed (pacman failed); the login screen was NOT set up and nothing was switched"
+          return 0
+        fi
+      done
+    fi
+  fi
+  if [ ! -d "$GREETD_SRC" ]; then
+    warn "greeter: $GREETD_SRC is missing, nothing to install"
+    return 0
+  fi
+  if [ "$(systemctl get-default 2>/dev/null)" != "graphical.target" ]; then
+    warn "default.target is not graphical.target: greetd (display-manager.service) would not start at boot"
+  fi
+
+  # greetd's sysusers entry (user greeter, group video) comes with the package; create it if the hook did not run
+  if ! getent passwd greeter >/dev/null; then
+    try systemd-sysusers
+  fi
+
+  # configuration, greeter UI and helper scripts
+  install_file "$GREETD_SRC/config.toml" /etc/greetd/config.toml
+  install_file "$GREETD_SRC/config-test.toml" /etc/greetd/config-test.toml
+  install_file "$GREETD_SRC/tuigreet.toml" /etc/greetd/tuigreet.toml
+  install_file "$GREETD_SRC/hyprland.lua" /etc/greetd/hyprland.lua
+  install_file "$REPO/.config/hypr/monitors.lua" /etc/greetd/monitors.lua    # same monitor rules as the session
+  install_file "$GREETD_SRC/greeter-session" /usr/local/lib/greeter/greeter-session 755
+  install_file "$GREETD_SRC/run-qs" /usr/local/lib/greeter/run-qs 755
+  install_file "$GREETD_SRC/hypr-login" /usr/local/bin/hypr-login 755
+  install_file "$GREETD_SRC/tmpfiles.conf" /etc/tmpfiles.d/greeter.conf
+  # Theme.qml in the repo is a symlink to themes/generated/black/greeter-palette.qml (install follows it)
+  for f in "$GREETD_SRC"/greeter/*.qml "$GREETD_SRC"/greeter/users.json; do
+    install_file "$f" "/etc/greetd/greeter/$(basename "$f")"
+  done
+  # drop UI files that no longer exist in the repo (renamed or removed files must not linger and shadow new ones)
+  if [ -d /etc/greetd/greeter ]; then
+    for dest in /etc/greetd/greeter/*; do
+      [ -e "$dest" ] || continue
+      name="$(basename "$dest")"
+      if [ ! -e "$GREETD_SRC/greeter/$name" ]; then
+        run rm -f -- "$dest"
+        changed "removed stale /etc/greetd/greeter/$name"
+      fi
+    done
+  fi
+  run systemd-tmpfiles --create /etc/tmpfiles.d/greeter.conf
+
+  # the greeter runs as user "greeter": everything under /etc/greetd must be world-readable
+  run chmod -R a+rX /etc/greetd
+
+  # the switch: NEVER --now, start or restart (see the comment above)
+  if [ "$DRY_RUN" -eq 0 ] && systemctl is-enabled --quiet greetd.service 2>/dev/null \
+    && ! systemctl is-enabled --quiet getty@tty1.service 2>/dev/null; then
+    log "unchanged: greetd.service is enabled and getty@tty1.service is disabled already"
+  else
+    run systemctl enable greetd.service        # Alias=display-manager.service, pulled in by graphical.target at the next boot
+    run systemctl disable getty@tty1.service   # does not stop the running one; TTY2..6 (autovt@) keep working
+    changed "greetd.service enabled, getty@tty1.service disabled (effective at the next boot, nothing started now)"
+    need_reboot
+  fi
+  GREETER_BANNER=1
+  followup "reboot to switch to the login screen; rollback from TTY2: sudo systemctl disable greetd && sudo systemctl enable getty@tty1 && sudo reboot"
+  followup "emergency (no VT): GRUB entry, press e, append systemd.mask=greetd.service to the linux line, Ctrl+X"
+  followup "optional test before the reboot, on VT3 with a dry-run session: sudo greetd --config /etc/greetd/config-test.toml (Ctrl+Alt+F1 returns, Ctrl+C stops it)"
+  followup "after the reboot: ./doctor.sh --fails; loginctl show-session \$XDG_SESSION_ID -p Service -p Type    # Service=greetd, Type=wayland"
+}
+
 # --- disk --------------------------------------------------------------------
 section_disk() {
   header "disk"
@@ -807,6 +923,9 @@ section_summary() {
     log "follow-up commands for $OWNER:"
     for item in "${FOLLOWUPS[@]}"; do log "  $item"; done
   fi
+  if [ "$GREETER_BANNER" -eq 1 ]; then
+    greeter_banner
+  fi
   if [ "$REBOOT_REQUIRED" -eq 1 ]; then
     log "REBOOT REQUIRED (kernel, microcode, fstab or boot configuration changed)"
   fi
@@ -824,6 +943,10 @@ main() {
     fi
     "section_$s"
   done
+  # a single-section run has no summary: print the login screen note here
+  if [ -n "$ONLY" ] && [ "$ONLY" != summary ] && [ "$GREETER_BANNER" -eq 1 ]; then
+    greeter_banner
+  fi
 }
 
 main

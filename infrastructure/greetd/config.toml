@@ -1,0 +1,20 @@
+# greetd configuration (installed as /etc/greetd/config.toml by apply-system.sh --only greeter).
+# Graphical login screen: Hyprland + Quickshell (infrastructure/greetd/greeter), with tuigreet as the automatic fallback.
+#
+# ONE-LINE SWITCH TO THE TEXT GREETER (tuigreet only, no graphics): in [default_session] replace the command with
+#   command = "/usr/bin/tuigreet --config /etc/greetd/tuigreet.toml --cmd /usr/local/bin/hypr-login"
+# and run `sudo systemctl restart greetd` from TTY2 (never from the graphical session: it stops tty1).
+# Undo: put /usr/local/lib/greeter/greeter-session back.
+
+[terminal]
+vt = 1
+
+[general]
+# greetd sources /etc/profile and ~/.profile before the session command
+source_profile = true
+
+[default_session]
+command = "/usr/local/lib/greeter/greeter-session"
+user = "greeter"
+
+# No autologin (decision D3: the disk is not encrypted, the password is asked every time).

@@ -1,0 +1,41 @@
+#!/bin/sh
+# Started by the greeter Hyprland (hyprland.lua, hyprland.start; installed as /usr/local/lib/greeter/run-qs).
+# Runs Quickshell with the greeter config and then ends this Hyprland, so greetd can start the session or the fallback.
+#   - Quickshell keeps running after a QML load error and would leave a black screen. The greeter touches
+#     $XDG_RUNTIME_DIR/greeter-alive when it loaded; without it after 10 s Quickshell is killed and Hyprland exits
+#     without greeter-ok, so greeter-session starts tuigreet.
+#   - Quickshell exits 0 after a successful Greetd.launch: that writes greeter-ok (the wrapper then exits 0 and greetd
+#     starts the session).
+# GREETER_QS overrides the quickshell binary (tests). Hyprland is always ended through its own instance signature, never "the running Hyprland".
+root="${GREETER_ROOT:-/etc/greetd}"
+run="${XDG_RUNTIME_DIR:-/tmp}"
+
+end_hyprland() {
+  [ -n "$HYPRLAND_INSTANCE_SIGNATURE" ] || exit 1
+  exec hyprctl -i "$HYPRLAND_INSTANCE_SIGNATURE" dispatch 'hl.dsp.exit()'
+}
+
+rm -f "$run/greeter-alive"
+"${GREETER_QS:-/usr/bin/qs}" -p "$root/greeter" &
+qs_pid=$!
+
+waited=0
+while [ ! -e "$run/greeter-alive" ] && kill -0 "$qs_pid" 2>/dev/null && [ "$waited" -lt 100 ]; do
+  sleep 0.1
+  waited=$((waited + 1))
+done
+if [ ! -e "$run/greeter-alive" ]; then
+  echo "run-qs: the greeter did not load within 10 s (or quickshell died); falling back to tuigreet" >&2
+  kill "$qs_pid" 2>/dev/null
+  wait "$qs_pid" 2>/dev/null
+  end_hyprland
+fi
+
+wait "$qs_pid"
+rc=$?
+if [ "$rc" -eq 0 ]; then
+  : >"$run/greeter-ok"
+else
+  echo "run-qs: quickshell exited with status $rc" >&2
+fi
+end_hyprland

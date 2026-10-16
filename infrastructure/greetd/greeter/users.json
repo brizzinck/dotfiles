@@ -1,0 +1,21 @@
+{
+  "main": "skalse",
+  "users": [
+    { "name": "skalse", "accent": "green" }
+  ],
+  "formOutputs": ["HDMI-A-1", "eDP-1"],
+  "sessions": [
+    {
+      "id": "hyprland",
+      "label": "Hyprland",
+      "cmd": ["/usr/local/bin/hypr-login"],
+      "env": ["XDG_SESSION_TYPE=wayland", "XDG_SESSION_DESKTOP=Hyprland", "XDG_CURRENT_DESKTOP=Hyprland"]
+    },
+    {
+      "id": "shell",
+      "label": "Shell",
+      "cmd": ["/bin/sh", "-c", "exec \"$(getent passwd \"$(id -un)\" | cut -d: -f7)\" -l"],
+      "env": []
+    }
+  ]
+}

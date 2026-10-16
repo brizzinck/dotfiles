@@ -359,6 +359,73 @@ PY
 )"
 if [ -z "$lit" ]; then ok theme-literals "waybar calendar spans and workmux icons are palette tokens"; else bad theme-literals "not tokens: $lit"; fi
 
+# ── login screen (G1): greetd + Quickshell greeter, tuigreet fallback ───────────
+# The repo side is always checked (FAIL). The system side is INFO until the owner switched (greetd enabled); after that a
+# missing or drifted install is a FAIL.
+greeter_src="$DOTFILES/infrastructure/greetd"
+greeter_bad=""
+for f in config.toml config-test.toml tuigreet.toml hyprland.lua tmpfiles.conf greeter-session run-qs hypr-login greeter/shell.qml greeter/Greeter.qml greeter/Theme.qml greeter/users.json; do
+  [ -r "$greeter_src/$f" ] || greeter_bad="$greeter_bad $f"
+done
+for f in greeter-session run-qs hypr-login; do
+  { [ -x "$greeter_src/$f" ] && sh -n "$greeter_src/$f" 2>/dev/null; } || greeter_bad="$greeter_bad $f(not executable or syntax)"
+done
+if [ -n "$greeter_bad" ]; then
+  bad greeter-repo "missing or broken in infrastructure/greetd:$greeter_bad"
+elif [ "$(readlink -f "$greeter_src/greeter/Theme.qml")" != "$(readlink -f "$DOTFILES/themes/generated/black/greeter-palette.qml")" ]; then
+  bad greeter-repo "greeter/Theme.qml is not a link to themes/generated/black/greeter-palette.qml"
+elif GREETER_ROOT="$greeter_src" Hyprland --verify-config -c "$greeter_src/hyprland.lua" 2>&1 | grep -q '^config ok'; then
+  ok greeter-repo "greetd files present, scripts valid, greeter hyprland.lua accepted by Hyprland --verify-config"
+else
+  bad greeter-repo "Hyprland --verify-config rejects infrastructure/greetd/hyprland.lua"
+fi
+greeter_report() { # greeter_report <name> <detail>: INFO before the switch, FAIL after it
+  if [ "$greeter_on" = 1 ]; then bad "$1" "$2"; else info "$1" "$2"; fi
+}
+greeter_on=0
+if systemctl is-enabled greetd.service >/dev/null 2>&1; then greeter_on=1; fi
+if [ "$greeter_on" = 1 ]; then
+  ok greeter-enabled "greetd.service is enabled (login screen active from the next boot)"
+else
+  info greeter-enabled "greetd not enabled: still the tty1 login (sudo ~/dotfiles/apply-system.sh --only greeter, then reboot)"
+fi
+if [ "$greeter_on" = 1 ] && systemctl is-enabled getty@tty1.service >/dev/null 2>&1; then
+  bad greeter-getty "greetd and getty@tty1 are both enabled (rollback half-done?): sudo systemctl disable getty@tty1"
+fi
+missing_pkgs=""
+for p in greetd greetd-tuigreet quickshell; do pacman -Q "$p" >/dev/null 2>&1 || missing_pkgs="$missing_pkgs $p"; done
+if [ -z "$missing_pkgs" ]; then
+  ok greeter-packages "greetd, greetd-tuigreet, quickshell installed"
+else
+  greeter_report greeter-packages "not installed:$missing_pkgs (sudo ~/dotfiles/apply-system.sh --only greeter)"
+fi
+drift=""
+n_files=0
+while read -r src dest; do
+  n_files=$((n_files + 1))
+  cmp -s "$src" "$dest" 2>/dev/null || drift="$drift ${dest#/}"
+done < <(
+  printf '%s %s\n' "$greeter_src/config.toml" /etc/greetd/config.toml "$greeter_src/config-test.toml" /etc/greetd/config-test.toml \
+    "$greeter_src/tuigreet.toml" /etc/greetd/tuigreet.toml "$greeter_src/hyprland.lua" /etc/greetd/hyprland.lua \
+    "$DOTFILES/.config/hypr/monitors.lua" /etc/greetd/monitors.lua "$greeter_src/greeter-session" /usr/local/lib/greeter/greeter-session \
+    "$greeter_src/run-qs" /usr/local/lib/greeter/run-qs "$greeter_src/hypr-login" /usr/local/bin/hypr-login
+  for f in "$greeter_src"/greeter/*.qml "$greeter_src"/greeter/users.json; do printf '%s %s\n' "$f" "/etc/greetd/greeter/$(basename "$f")"; done
+)
+if [ -z "$drift" ]; then
+  ok greeter-files "$n_files installed files match the repo (incl. monitors.lua and the black palette)"
+else
+  # shellcheck disable=SC2086
+  greeter_report greeter-files "$(echo $drift | wc -w) of $n_files differ or are missing, first: $(echo $drift | cut -d' ' -f1-2) (sudo ~/dotfiles/apply-system.sh --only greeter)"
+fi
+if [ "$greeter_on" = 1 ]; then
+  greeter_log=/var/lib/greeter/state/greeter.log
+  if [ -r "$greeter_log" ]; then
+    if grep -aq 'ERROR' "$greeter_log"; then bad greeter-log "ERROR lines in $greeter_log"; else ok greeter-log "last greeter log has no ERROR"; fi
+  else
+    info greeter-log "$greeter_log is not readable by $USER (sudo grep ERROR it)"
+  fi
+fi
+
 # ── stow symlinks: every tracked config file must resolve to the repo copy ──────
 broken=""
 n_links=0

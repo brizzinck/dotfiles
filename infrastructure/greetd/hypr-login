@@ -1,0 +1,8 @@
+#!/bin/sh
+# greetd session command (installed as /usr/local/bin/hypr-login): start Hyprland from the user's login + interactive
+# shell. The session then gets the same environment as the old flow (log in on tty1, type start-hyprland): PATH, EDITOR,
+# SSH_AUTH_SOCK, ... exported by ~/.zshrc. greetd itself only sources /etc/profile and ~/.profile.
+# Hyprland's autostart (hyprland.lua) still runs once per login: theme init, waybar, vault.sh session-start, ...
+shell=$(getent passwd "$(id -un)" | cut -d: -f7)
+[ -x "$shell" ] || shell=/bin/sh
+exec "$shell" -l -i -c 'exec /usr/bin/start-hyprland'

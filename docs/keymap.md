@@ -297,6 +297,22 @@ on hover. Colour means state: green = active workspace or enabled switch, a calm
 Click grammar of every module: `L` main action (switch: toggle), `R` menu or alternative, `M` quick binary action (mute, radio), scroll adjusts
 the value. The mode icon (right end): `L` compact/full, `R` bar menu (compact, full, hide, restart, theme). Tooltips list the clicks.
 
+## Login screen (greeter)
+
+greetd + a Quickshell greeter (`infrastructure/greetd/`). The form is on the monitor under the pointer, the other one shows the clock only. Letters are matched
+by physical key, so everything below works on the ua and ru layouts too (Caps switches us / ua / ru as in the session; the layout pill turns yellow when it is not US).
+
+| Keys | Action |
+|---|---|
+| `Ctrl+H` / `Ctrl+L`, `Left` / `Right` (empty field), `Tab` / `Shift+Tab` (empty password) | previous / next entry (skalse, Other user...) |
+| `Ctrl+J` / `Ctrl+K`, `Down` / `Up`, `Tab` | user name field / password field (Other user...) |
+| `Enter` | next field, then log in |
+| `Esc` | clear the password; empty: cancel a pending PAM question, then back from Other user... to the main user |
+| `F2` | session menu (Hyprland, Shell) |
+| `F12` | power menu (suspend, reboot, power off) |
+| `j` / `k`, arrows, `Enter` / `l`, `Esc` / `h` (open menu) | move, pick, close |
+| `Ctrl+Alt+F2` | text login on TTY2 (rollback and rescue) |
+
 ## Layout-independent keys (us, ua, ru)
 
 Every bind works while the Ukrainian or Russian layout is active. One physical-key map, `.config/layout/keymap.tsv`,
