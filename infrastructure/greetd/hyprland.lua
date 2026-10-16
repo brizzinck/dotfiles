@@ -5,9 +5,19 @@
 local root = os.getenv("GREETER_ROOT") or "/etc/greetd"
 local lib = os.getenv("GREETER_LIB") or "/usr/local/lib/greeter"
 
--- Same monitor rules as the session (/etc/greetd/monitors.lua is a copy of .config/hypr/monitors.lua).
-for _, rule in ipairs(dofile(root .. "/monitors.lua")) do
-    hl.monitor(rule)
+-- run-qs starts Quickshell, watches that it came up and exits this Hyprland when the greeter is done. Registered first so
+-- a later error in this file cannot keep it from running (greeter-session also ends a compositor without a live greeter).
+hl.on("hyprland.start", function()
+    hl.exec_cmd(lib .. "/run-qs")
+end)
+
+-- Same monitor rules as the session (/etc/greetd/monitors.lua is a copy of .config/hypr/monitors.lua); a broken copy
+-- must not stop the greeter, Hyprland's own fallback rule applies then.
+local ok_rules, rules = pcall(dofile, root .. "/monitors.lua")
+if ok_rules and type(rules) == "table" then
+    for _, rule in ipairs(rules) do
+        hl.monitor(rule)
+    end
 end
 
 -- Pointer: the session's cursor when it is installed (see hyprland.lua), Bibata otherwise; never request a missing theme.
@@ -40,6 +50,7 @@ hl.config({
         disable_hyprland_logo = true,
         disable_splash_rendering = true,
         disable_hyprland_guiutils_check = true,
+        disable_watchdog_warning = true, -- started without start-hyprland on purpose (greeter-session)
         background_color = "rgb(000000)",
         key_press_enables_dpms = true,
         mouse_move_enables_dpms = true,
@@ -55,8 +66,3 @@ hl.config({
 -- Closing the lid at the login screen turns the panel off; logind still decides about suspend.
 hl.bind("switch:on:Lid Switch", hl.dsp.dpms({ action = "off", monitor = "eDP-1" }), { locked = true })
 hl.bind("switch:off:Lid Switch", hl.dsp.dpms({ action = "on", monitor = "eDP-1" }), { locked = true })
-
--- run-qs starts Quickshell, watches that it came up and exits this Hyprland when the greeter is done.
-hl.on("hyprland.start", function()
-    hl.exec_cmd(lib .. "/run-qs")
-end)

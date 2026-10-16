@@ -370,6 +370,11 @@ done
 for f in greeter-session run-qs hypr-login; do
   { [ -x "$greeter_src/$f" ] && sh -n "$greeter_src/$f" 2>/dev/null; } || greeter_bad="$greeter_bad $f(not executable or syntax)"
 done
+# the greeter must start /usr/bin/Hyprland itself: start-hyprland restarts a crashed compositor in --safe-mode and never returns
+# to greeter-session, so the tuigreet fallback would be skipped
+grep -qE '^/usr/bin/Hyprland ' "$greeter_src/greeter-session" 2>/dev/null && ! grep -qE '^[^#]*start-hyprland' "$greeter_src/greeter-session" 2>/dev/null ||
+  greeter_bad="$greeter_bad greeter-session(must run /usr/bin/Hyprland directly, not start-hyprland)"
+grep -q 'disable_watchdog_warning = true' "$greeter_src/hyprland.lua" 2>/dev/null || greeter_bad="$greeter_bad hyprland.lua(disable_watchdog_warning)"
 if [ -n "$greeter_bad" ]; then
   bad greeter-repo "missing or broken in infrastructure/greetd:$greeter_bad"
 elif [ "$(readlink -f "$greeter_src/greeter/Theme.qml")" != "$(readlink -f "$DOTFILES/themes/generated/black/greeter-palette.qml")" ]; then
@@ -401,6 +406,8 @@ else
 fi
 drift=""
 n_files=0
+users_rendered="$(mktemp)"
+sed "s|@OWNER@|$USER|g" "$greeter_src/greeter/users.json" >"$users_rendered"   # users.json keeps @OWNER@ in the repo
 while read -r src dest; do
   n_files=$((n_files + 1))
   cmp -s "$src" "$dest" 2>/dev/null || drift="$drift ${dest#/}"
@@ -409,8 +416,10 @@ done < <(
     "$greeter_src/tuigreet.toml" /etc/greetd/tuigreet.toml "$greeter_src/hyprland.lua" /etc/greetd/hyprland.lua \
     "$DOTFILES/.config/hypr/monitors.lua" /etc/greetd/monitors.lua "$greeter_src/greeter-session" /usr/local/lib/greeter/greeter-session \
     "$greeter_src/run-qs" /usr/local/lib/greeter/run-qs "$greeter_src/hypr-login" /usr/local/bin/hypr-login
-  for f in "$greeter_src"/greeter/*.qml "$greeter_src"/greeter/users.json; do printf '%s %s\n' "$f" "/etc/greetd/greeter/$(basename "$f")"; done
+  printf '%s %s\n' "$greeter_src/tmpfiles.conf" /etc/tmpfiles.d/greeter.conf "$users_rendered" /etc/greetd/greeter/users.json
+  for f in "$greeter_src"/greeter/*.qml; do printf '%s %s\n' "$f" "/etc/greetd/greeter/$(basename "$f")"; done
 )
+rm -f -- "$users_rendered"
 if [ -z "$drift" ]; then
   ok greeter-files "$n_files installed files match the repo (incl. monitors.lua and the black palette)"
 else

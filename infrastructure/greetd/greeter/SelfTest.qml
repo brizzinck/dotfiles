@@ -41,8 +41,8 @@ Scope {
         switch (step) {
         case 0:
             check("two entries (main user + other)", Greeter.entries.length === 2);
-            check("main user preselected", Greeter.selected === 0 && Greeter.current.name === "skalse" && Greeter.current.main);
-            check("login user is skalse", Greeter.loginUser === "skalse");
+            check("main user preselected", Greeter.selected === 0 && Greeter.current.name === Greeter.cfg.main && Greeter.current.main);
+            check("login user is the main user", Greeter.loginUser === Greeter.cfg.main && Greeter.loginUser !== "");
             check("form on the first output", Greeter.formScreen === "DEMO-1");
             check("sessions loaded", Greeter.sessions.length === 2 && Greeter.sessions[0].id === "hyprland");
             Greeter.password = "";

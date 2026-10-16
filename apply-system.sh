@@ -193,6 +193,8 @@ try() {
 }
 
 pkg_installed() { pacman -Qq -- "$1" >/dev/null 2>&1; }
+# exact package name only: pacman -Qq NAME also matches Provides (tlp-pd provides power-profiles-daemon)
+pkg_installed_exact() { pacman -Qq 2>/dev/null | grep -qxF -- "$1"; }
 
 # sed_edit FILE SED-ARGS...: edit a file in place (backup first); echoes in --dry-run.
 sed_edit() {
@@ -680,7 +682,7 @@ section_services() {
     try systemctl enable --now "$u"
   done
   changed "enabled fstrim.timer paccache.timer reflector.timer earlyoom.service tlp-pd.service (per unit, failures are warnings)"
-  if pkg_installed power-profiles-daemon; then
+  if pkg_installed_exact power-profiles-daemon; then
     warn "power-profiles-daemon is installed and owns the same D-Bus names as tlp-pd (the packages conflict); remove it"
   fi
 
@@ -745,7 +747,7 @@ BANNER
 
 section_greeter() {
   header "greeter"
-  local p missing=() f dest name
+  local p missing=() f dest name tmp
 
   # packages: also checked here so that --only greeter works without the install section
   for p in greetd greetd-tuigreet quickshell; do
@@ -787,9 +789,14 @@ section_greeter() {
   install_file "$GREETD_SRC/hypr-login" /usr/local/bin/hypr-login 755
   install_file "$GREETD_SRC/tmpfiles.conf" /etc/tmpfiles.d/greeter.conf
   # Theme.qml in the repo is a symlink to themes/generated/black/greeter-palette.qml (install follows it)
-  for f in "$GREETD_SRC"/greeter/*.qml "$GREETD_SRC"/greeter/users.json; do
+  for f in "$GREETD_SRC"/greeter/*.qml; do
     install_file "$f" "/etc/greetd/greeter/$(basename "$f")"
   done
+  # users.json keeps @OWNER@ in the repo (user-agnostic); the installed copy names this machine's owner
+  tmp="$(mktemp)"
+  sed "s|@OWNER@|$OWNER|g" "$GREETD_SRC/greeter/users.json" >"$tmp"
+  install_file "$tmp" /etc/greetd/greeter/users.json
+  rm -f -- "$tmp"
   # drop UI files that no longer exist in the repo (renamed or removed files must not linger and shadow new ones)
   if [ -d /etc/greetd/greeter ]; then
     for dest in /etc/greetd/greeter/*; do

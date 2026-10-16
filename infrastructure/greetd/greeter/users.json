@@ -1,7 +1,7 @@
 {
-  "main": "skalse",
+  "main": "@OWNER@",
   "users": [
-    { "name": "skalse", "accent": "green" }
+    { "name": "@OWNER@", "accent": "green" }
   ],
   "formOutputs": ["HDMI-A-1", "eDP-1"],
   "sessions": [

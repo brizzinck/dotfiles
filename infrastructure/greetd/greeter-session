@@ -1,6 +1,7 @@
 #!/bin/sh
 # greetd default_session (installed as /usr/local/lib/greeter/greeter-session, runs as user "greeter"):
-# graphical greeter = Hyprland + Quickshell (run-qs); tuigreet on the console when the graphical one fails to come up.
+# graphical greeter = Hyprland + Quickshell (run-qs); tuigreet on the console when the graphical one fails to come up
+# (Hyprland crashed or did not start, or the greeter was not alive 25 s after start).
 # greetd waits for this command to exit, then starts the session the greeter asked for. If it exits without a request,
 # greetd starts it again. Log of the graphical attempt: /var/lib/greeter/state/greeter.log (the previous one: .log.1).
 #
@@ -16,7 +17,18 @@ run="${XDG_RUNTIME_DIR:-/tmp}"
 
 rm -f "$run/greeter-ok" "$run/greeter-alive"
 [ -e "$log" ] && mv -f "$log" "$log.1"
-/usr/bin/start-hyprland -- -c "$GREETER_ROOT/hyprland.lua" >"$log" 2>&1
+# Hyprland is started directly, not through start-hyprland: that wrapper restarts a crashed compositor in --safe-mode
+# (which loads no config, so run-qs never starts) and would never return here. A greeter needs no watchdog; any exit
+# without greeter-ok goes to the tuigreet fallback below.
+/usr/bin/Hyprland -c "$GREETER_ROOT/hyprland.lua" >"$log" 2>&1 &
+hypr_pid=$!
+# Guard: a compositor that is up but never got the QML greeter going (config error before the start hook, run-qs missing)
+# is ended after 25 s; run-qs writes greeter-alive as soon as the greeter loaded. Only this child is signalled.
+( sleep 25; [ -e "$run/greeter-alive" ] || kill "$hypr_pid" 2>/dev/null ) &
+guard_pid=$!
+wait "$hypr_pid"
+pkill -P "$guard_pid" 2>/dev/null
+kill "$guard_pid" 2>/dev/null
 [ -e "$run/greeter-ok" ] && exit 0
 
 # Fallback: text login. Reached when Hyprland or the QML greeter never came up (see the log).
