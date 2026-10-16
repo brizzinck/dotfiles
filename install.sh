@@ -32,11 +32,11 @@ packages=(
   # base / build
   base base-devel linux linux-firmware linux-headers grub networkmanager openssh
   git git-lfs stow curl wget less tree zip unzip man-db tldr bash-completion
-  cmake clang lld zig
+  cmake clang lld
   # shell & terminal
   zsh tmux zellij alacritty ghostty ripgrep fd fzf jq yazi ranger zoxide btop htop
   # editors & languages
-  neovim vim nano go nodejs npm python python-pip kotlin protobuf
+  neovim vim nano go nodejs npm python python-pip protobuf
   # wayland desktop
   hyprland hypridle hyprlock hyprpaper xdg-desktop-portal-hyprland xdg-desktop-portal-gtk waybar wofi rofi dunst
   swaybg grim slurp swappy imv wl-clipboard brightnessctl wmctrl seatd
@@ -53,9 +53,22 @@ packages=(
   # power management
   tlp
   # misc
-  android-tools bluez bluez-utils cloc cmatrix fpc lazarus
+  android-tools bluez bluez-utils cloc cmatrix
+  # workstation additions — keep in sync with REPO_PACKAGES in apply-system.sh (it verifies each name with pacman -Si)
+  pacman-contrib earlyoom reflector smartmontools nvme-cli libva-utils amdgpu_top   # paccache/updates, OOM guard, mirrors, SMART, vainfo, GPU monitor
+  hyprpolkitagent cliphist wl-clip-persist swayosd wiremix hyprshot satty hyprpicker hyprsunset
+  rofimoji wtype udiskie                                                            # polkit agent, clipboard, OSD, screenshots, picker, emoji, automount
+  bat eza git-delta github-cli trash-cli dust duf watchexec just go-yq xh shellcheck shfmt direnv dive hyperfine
+  bash-language-server yaml-language-server vscode-json-languageserver taplo-cli dockerfile-language-server   # neovim LSPs (S6 may prefer Mason)
 )
 sudo pacman -S --needed --noconfirm "${packages[@]}"
+
+# CPU microcode matching the vendor (grub-mkconfig, run by apply-system.sh, adds the ucode image to the boot entries)
+if grep -qi 'AuthenticAMD' /proc/cpuinfo; then
+  sudo pacman -S --needed --noconfirm amd-ucode
+elif grep -qi 'GenuineIntel' /proc/cpuinfo; then
+  sudo pacman -S --needed --noconfirm intel-ucode
+fi
 
 # NVIDIA only when the GPU is present
 if lspci 2>/dev/null | grep -qi nvidia; then
@@ -73,9 +86,11 @@ if ! have yay; then
   ( cd "$tmp/yay-bin" && makepkg -si --noconfirm ); rm -rf "$tmp"
 fi
 # hyprdynamicmonitors-bin: /usr/bin/hyprdynamicmonitors for infrastructure/systemd units (enable by hand, see CLAUDE.md)
-for pkg in facad hyprdynamicmonitors-bin; do
+# bibata-cursor-theme-bin: Bibata-Modern-Ice cursor theme
+for pkg in facad hyprdynamicmonitors-bin bibata-cursor-theme-bin; do
   yay -S --needed --noconfirm --sudoloop "$pkg" || warn "AUR install failed ($pkg) — continuing"
 done
+yay --save --cleanafter >/dev/null 2>&1 || true   # remove AUR build dirs after each install
 
 log "Flatpak apps"
 flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
@@ -167,12 +182,23 @@ sudo systemctl restart tlp.service
 getent group docker >/dev/null || sudo groupadd docker
 sudo usermod -aG docker "$USER"
 
-log "Memory safety net (zram, sysctl, docker/journald limits)"
+log "Memory safety net (zram, sysctl, journald limits)"
 sudo "$DOTFILES/apply-memory.sh" || warn "memory safety net not applied"
+
+log "System layer (earlyoom, docker GC cap, pacman hooks, TLP, coredump limits, timers, GRUB)"
+# apply-system.sh is idempotent; here only the sections that are safe on a fresh machine run.
+# Not run here: upgrade/install/remove (handled above or by the owner), disk (tune2fs + fstab).
+for section in config services boot; do
+  sudo "$DOTFILES/apply-system.sh" --only "$section" || warn "apply-system.sh --only $section failed"
+done
+later "optional: sudo $DOTFILES/apply-system.sh --only disk   (reserved blocks 1%, noatime,lazytime on /), --only remove (snap stack, unused toolchains, orphans)"
 
 # ───────────────────────────── 7. dotfiles (stow) ─────────────────────────────
 log "Linking dotfiles with stow (existing files are moved to $BACKUP_DIR)"
 cd "$DOTFILES"
+# Real directories first, so stow links single files instead of folding the whole directory:
+# systemd ignores a symlinked drop-in directory, and `systemctl --user enable` would write its *.wants links into the repo.
+mkdir -p "$HOME/.config/systemd/user/bredllm-reverse-socks.service.d"
 git submodule update --init --recursive
 # Move real files/dirs out of the way; leave symlinks (stow manages them)
 while IFS= read -r rel; do
@@ -186,7 +212,7 @@ done < <(cd "$DOTFILES" && find . -mindepth 1 -maxdepth 2 \
            \( -path './.git*' -o -path './.config' -o -name 'README*' -o -name 'LICENSE*' -o -name 'CLAUDE.md' \
               -o -name 'install.sh' -o -name 'flash.sh' -o -name 'env.secret.sh' -o -path './infrastructure*' \
               -o -path './themes*' -o -path './node_modules*' -o -name 'package*.json' -o -name '.stow-local-ignore' \
-              -o -path './private*' \) -prune -o -print \
+              -o -path './private*' -o -path './pkg*' -o -name 'apply-*.sh' \) -prune -o -print \
          | sed 's|^\./||' | awk -F/ 'NF<=2')
 stow --restow .
 # private submodule (secrets, machine-local configs) — stowed separately, skipped if not cloned
@@ -194,6 +220,11 @@ if [ -d "$DOTFILES/private" ] && [ -n "$(ls -A "$DOTFILES/private" 2>/dev/null)"
   (cd "$DOTFILES/private" && stow --restow .)
 fi
 touch "$DOTFILES/env.secret.sh" && chmod +x "$DOTFILES/env.secret.sh"
+
+log "User timers: cache aging (user tmpfiles) and Codex release pruning"
+systemctl --user daemon-reload 2>/dev/null || true
+systemctl --user enable --now systemd-tmpfiles-clean.timer codex-prune-releases.timer 2>/dev/null \
+  || later "enable the user timers once logged in: systemctl --user enable --now systemd-tmpfiles-clean.timer codex-prune-releases.timer"
 
 # ───────────────────────────── 8. identity ────────────────────────────────────
 log "Git identity (~/.gitconfig.local)"
