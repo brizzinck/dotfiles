@@ -81,7 +81,8 @@ the user, nvim `palette.reload()` through its server sockets, then the hook scri
 | `warn_bg` | `#1a160d` | `#201c12` | diagnostic virtual-text background |
 | `info_bg` | `#0d1819` | `#131e1f` | diagnostic virtual-text background |
 | `hint_bg` | `#101912` | `#161f18` | diagnostic virtual-text background |
-| `glow` | `#abc6822e` | `#abc6822e` | Hyprland shadow (green + alpha 2e) |
+| `green_soft` | `#67774e` | `#67774e` | calm tint of `green` (60 % of it on black, like `red_soft`): Hyprland active window border |
+| `purple_soft` | `#846070` | `#846070` | calm tint of `purple` (60 % of it on black): Hyprland group border and active groupbar tab |
 | `*_br` | `#f99b9b`, `#fab592`, `#ead19d`, `#c2da9e`, `#a7d9b4`, `#a2d5d9`, `#ecb7cf` | same | bright ANSI 9-14 (red, orange, yellow, green, aqua, blue, purple order; orange_br has no ANSI slot) |
 
 
@@ -116,7 +117,7 @@ The tinted 232-255 grey ramp from the design study is kept in `everforest.json` 
 | healthy / hint: VPN on, charging, TERMINAL, DiagnosticHint, types | `aqua` |
 | special: scratchpad, groups, VISUAL, DND, zoom, git branch | `purple` |
 | selection | `visual` (text), `select` (list rows), `raised` (inactive selection) |
-| borders | active `green`; inactive `line`; floats `border` |
+| borders | active `green_soft`; inactive `line`; groups `purple_soft` / `line`; no shadow |
 | text | primary `fg`, secondary `subtext`, tertiary and disabled `muted`, code comments `comment` |
 | diff | add `diff_add_bg` / `diff_add_word`, delete `diff_del_bg` / `diff_del_word`, change `diff_chg_bg` / `diff_chg_word`; signs `green` / `red` / `yellow` |
 
@@ -141,7 +142,7 @@ Desktop layer (applied, stage T1b; section 5.3 of the design study has the full 
 
 | tool | how | notes |
 |---|---|---|
-| Hyprland | `hyprland.lua` fragment (`hl.config`) | active border `green` -> `aqua` 45deg, inactive `line`, shadow `glow`, groups `purple` / `border`, `misc.background_color` `bg_oled`; `dim_strength` 0.10 (0.15 turned fg khaki) |
+| Hyprland | `hyprland.lua` fragment (`hl.config`) | active border `green_soft` (solid: a green -> aqua gradient banded on a 2-3 px stripe), inactive `line`, no shadow (the `glow` token is gone), groups `purple_soft` (border and active tab) / `line` (border) / `border` (inactive tab), blocked grouping `yellow_soft`, `misc.background_color` `bg_oled`; `dim_strength` 0.10 (0.15 turned fg khaki) |
 | hyprlock, screensaver | `$ef_*` variables | background `bg_oled`, ring `border`, text `fg`, date `subtext`, hint and placeholder `muted`, check `yellow`, fail `red`, caps `orange` |
 | greeter (login screen) | `greeter-palette.qml` (QML singleton `Theme`; `Theme.alpha(colour, a)` for the halo, the `glow` token is not emitted because QML reads #AARRGGBB) | `infrastructure/greetd/greeter/Theme.qml` links to `generated/black/greeter-palette.qml` and `apply-system.sh --only greeter` installs it as `/etc/greetd/greeter/Theme.qml`: the greeter is system-wide and always black (like hyprlock): background `bg_oled`, clock `fg`, date `subtext`, input outline `border` / focused `green` / checking `yellow` / failed `red`, placeholder and bar `muted`, avatar ring and halo `green` (Other user `aqua`), menu `surface` + `border`, selected row `select`. After a palette change rerun `render.py` and `sudo ./apply-system.sh --only greeter` (`doctor.sh` flags the drift once greetd is enabled) |
 | pointer (cursor) | `pointer.json` (`fill` = `fg`, `outline` = `bg_oled`, `accent` = `green`) | local package `infrastructure/cursor/everforest-cursor-theme` (PKGBUILD): Bibata Modern vector art recoloured through rtgiskard/bibata_cursor, hyprcursor SVG + XCursor build in `/usr/share/icons/Everforest-Cursor`. Built by `apply-system.sh` / `install.sh` (`infrastructure/cursor/build.sh`); the pointer does **not** follow `theme black\|night` (shared tokens only). After a palette change rerun `render.py` and `sudo ./apply-system.sh --only install` (the build stamp in the theme tells `doctor.sh` and the script when it is stale). The busy cursor's four hard-coded Windows-colour pies become `accent` |
