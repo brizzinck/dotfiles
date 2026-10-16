@@ -60,7 +60,7 @@ else
   child="$(pgrep -P "$hl_pid" 2>/dev/null | head -1)"
   leak="$(tr '\0' '\n' <"/proc/${child:-$hl_pid}/environ" 2>/dev/null |
     grep -E '^(LIBVA_DRIVER_NAME|GBM_BACKEND)=' | grep -vE '=(radeonsi|mesa)?$' | tr '\n' ' ')"
-  if [ -z "$leak" ]; then ok hypr-env "no non-AMD LIBVA/GBM driver in the session"; else bad hypr-env "set: ${leak}(re-login to pick up the current hyprland.conf)"; fi
+  if [ -z "$leak" ]; then ok hypr-env "no non-AMD LIBVA/GBM driver in the session"; else bad hypr-env "set: ${leak}(re-login to pick up the current hyprland.lua)"; fi
 fi
 
 # ── packages / timers / services ────────────────────────────────────────────────
@@ -147,12 +147,53 @@ else
 fi
 
 # ── Hyprland / waybar ───────────────────────────────────────────────────────────
+# The config is Lua: hyprland.lua is the only entry point, a leftover hyprland.conf must not exist (the .conf format is
+# deprecated and goes away in Hyprland 0.57), and the live bind table must come from the Lua file (Lua binds report the
+# dispatcher "__lua").
+conf_dir="$HOME/.config/hypr"
+if [ -f "$conf_dir/hyprland.lua" ] && [ ! -e "$conf_dir/hyprland.conf" ] && [ ! -e "$DOTFILES/.config/hypr/hyprland.conf" ]; then
+  ok hypr-lua-files "hyprland.lua present, hyprland.conf absent"
+else
+  bad hypr-lua-files "need $conf_dir/hyprland.lua and no hyprland.conf (also not in the repo)"
+fi
+if command -v Hyprland >/dev/null 2>&1 && [ -f "$conf_dir/hyprland.lua" ]; then
+  if Hyprland --verify-config -c "$conf_dir/hyprland.lua" 2>&1 | grep -q '^config ok'; then
+    ok hypr-verify "Hyprland --verify-config accepts hyprland.lua"
+  else
+    bad hypr-verify "Hyprland --verify-config rejects hyprland.lua (run it by hand for the message)"
+  fi
+fi
 if command -v hyprctl >/dev/null 2>&1 && [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]; then
   errs="$(hyprctl configerrors 2>&1 | sed '/^[[:space:]]*$/d')"
   if [ -z "$errs" ]; then ok hypr-config "hyprctl configerrors is empty"; else bad hypr-config "$(printf '%s' "$errs" | head -1)"; fi
+  binds_json="$(hyprctl binds -j 2>/dev/null)"
+  n_lua="$(printf '%s' "$binds_json" | jq '[.[] | select(.dispatcher == "__lua")] | length' 2>/dev/null || echo 0)"
+  n_all="$(printf '%s' "$binds_json" | jq 'length' 2>/dev/null || echo 0)"
+  if [ "${n_all:-0}" -gt 0 ] && [ "$n_lua" = "$n_all" ]; then
+    ok hypr-loaded "the running Hyprland loaded hyprland.lua ($n_all binds, all from Lua)"
+  else
+    bad hypr-loaded "live bind table has $n_lua Lua binds of $n_all: the running instance is not on hyprland.lua (log in again)"
+  fi
+  # every hub row of kind bind (and the leader menu) replays a bind by its key text: that bind must exist
+  stale="$("$DOTFILES/.config/hub/hub" --raw 2>/dev/null | awk -F"$(printf '\037')" '$5 == "bind" && $1 !~ /^bind:/ { print $6 }' |
+    while IFS= read -r label; do
+      printf '%s' "$binds_json" | jq -e --arg l "$label" '
+        def mods($m): [ (if ($m / 64 | floor) % 2 == 1 then "SUPER" else empty end), (if ($m / 4 | floor) % 2 == 1 then "CTRL" else empty end),
+                        (if ($m / 8 | floor) % 2 == 1 then "ALT" else empty end), (if $m % 2 == 1 then "SHIFT" else empty end) ];
+        any(.[]; .submap == "" and ((mods(.modmask) + [.key]) | join("+") | ascii_downcase) == ($l | ascii_downcase))' >/dev/null || printf '%s ' "$label"
+    done)"
+  if [ -z "$stale" ]; then ok hub-binds "every hub bind row names a live keybind"; else bad hub-binds "no such keybind: $stale"; fi
 else
   bad hypr-config "no running Hyprland instance to query"
 fi
+if [ -x "$DOTFILES/.config/hub/leader" ]; then
+  if out="$(PYTHONPYCACHEPREFIX=/tmp/pycache "$DOTFILES/.config/hub/leader" check 2>&1)"; then ok leader-menu "$out"; else bad leader-menu "$(printf '%s' "$out" | head -1)"; fi
+else
+  bad leader-menu ".config/hub/leader missing or not executable"
+fi
+for c in wl-kbptr wlrctl wlr-which-key; do
+  if command -v "$c" >/dev/null 2>&1; then info "v1-$c" "installed"; else info "v1-$c" "missing, its binds only notify (sudo ~/dotfiles/apply-system.sh --only install)"; fi
+done
 n_bar="$(pgrep -xc waybar 2>/dev/null || true)"
 if [ "${n_bar:-0}" = 1 ]; then ok waybar "single instance"; else bad waybar "${n_bar:-0} instances (expected 1)"; fi
 

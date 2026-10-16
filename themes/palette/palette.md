@@ -28,7 +28,7 @@ that path:
 | fzf | `FZF_DEFAULT_OPTS_FILE=~/.local/state/theme/current/fzfrc` (zsh, tmux environment, hub and fzf scripts) |
 | git / delta | `[include]` of `generated/black/delta.gitconfig`, then `current/delta.gitconfig` |
 | nvim | `lua/palette.lua` reads `current/tokens.json` (fallback `generated/black`), per-variant base46 cache |
-| Hyprland | `source = ~/dotfiles/themes/generated/black/hyprland.conf` (fallback) then `source = ~/.local/state/theme/current/hyprland.conf`; a missing sourced file is a config error, so the black one comes first |
+| Hyprland | `hyprland.lua` `dofile`s `~/dotfiles/themes/generated/black/hyprland.lua` (fallback) then `~/.local/state/theme/current/hyprland.lua`, each inside `pcall` (a missing or broken fragment is skipped with a notification and the black one stays) |
 | hyprlock, screensaver | same pair of `source` lines for `generated/*/hyprlock.conf` (`$ef_*` variables; `$ef_hex_*` for pango spans) |
 | waybar, wofi, swayosd | `@import "theme-black.css"; @import "theme.css";` in their stylesheet; both are repo symlinks (`generated/black/waybar.css` and `current/waybar.css`), the file holds `@define-color` names = tokens |
 | rofi | `@import` of `~/dotfiles/themes/generated/black/rofi.rasi` then `~/.local/state/theme/current/rofi.rasi` (a missing import is silent) |
@@ -139,7 +139,7 @@ Desktop layer (applied, stage T1b; section 5.3 of the design study has the full 
 
 | tool | how | notes |
 |---|---|---|
-| Hyprland | `hyprland.conf` fragment | active border `green` -> `aqua` 45deg, inactive `line`, shadow `glow`, groups `purple` / `border`, `misc:background_color` `bg_oled`; `dim_strength` 0.10 (0.15 turned fg khaki) |
+| Hyprland | `hyprland.lua` fragment (`hl.config`) | active border `green` -> `aqua` 45deg, inactive `line`, shadow `glow`, groups `purple` / `border`, `misc.background_color` `bg_oled`; `dim_strength` 0.10 (0.15 turned fg khaki) |
 | hyprlock, screensaver | `$ef_*` variables | background `bg_oled`, ring `border`, text `fg`, date `subtext`, hint and placeholder `muted`, check `yellow`, fail `red`, caps `orange` |
 | waybar | `@define-color` names | bar and tooltip on `bg_oled`, text `subtext`, workspaces `muted` / `subtext` / `green` on `raised` / `yellow` urgent; module classes by role. Pango spans in `config` cannot use named colours: they hold the black-variant hex (night differs by <= 3/255 on `muted` and `subtext`); `doctor.sh` checks they are tokens |
 | rofi, wofi | token names | window `bg`, border `border`, selected row `select` with `green` text, placeholder `subtext`, urgent `red`, active `blue` |

@@ -62,7 +62,7 @@ def ghostty_key(w3c):
 
 # --------------------------------------------------------------------------------------------------------------
 def dump_map():
-    """Rebuild keymap.tsv from libxkbcommon: layouts us,ua,ru (same as kb_layout in hyprland.conf)."""
+    """Rebuild keymap.tsv from libxkbcommon: layouts us,ua,ru (same as kb_layout in hyprland.lua)."""
     x = ctypes.CDLL(ctypes.util.find_library("xkbcommon"))
 
     class Names(ctypes.Structure):
