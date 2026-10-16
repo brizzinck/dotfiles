@@ -1,0 +1,369 @@
+// Waybar shared module definitions (W1). Both bars in `config` include this file; the objects merge key by key.
+// Roles: scripts print a `class` from  normal | dim | enabled | warning | critical  and style.css maps it to palette tokens
+// (subtext / muted / green / yellow_soft / red_soft: calm tints, no pill, no bold). No colour lives in this file except the clock calendar's pango
+// spans, which cannot use @define-color: they hold black-variant tokens fg / subtext / muted / green (doctor.sh checks them).
+// Signals (pkill -o -u $(id -u) -RTMIN+N -x waybar): 8 toggles drawer + summary, 9 updates, 15 vault. Recording is a continuous script
+// (it watches $XDG_RUNTIME_DIR/rec-pid itself); SIGUSR1 reaches only the full bar (bar.sh), SIGUSR2 reloads both.
+// Click grammar: L = main action (switch: toggle), R = menu or alternative, M = quick binary action, scroll = adjust value.
+// Interactive clicks open fzf-menu based scripts (vim keys); TUIs open in a float.tui ghostty.
+{
+  // ── always present ──
+  "hyprland/workspaces": {
+    "format": "{id} {windows}",
+    "format-window-separator": " ",
+    "window-rewrite-default": "󰣆",
+    "window-rewrite": {
+      "class<com.mitchellh.ghostty>": "󰆍",
+      "class<com.mitchellh.ghostty> title<.*:nvim.*>": "",
+      "class<com.mitchellh.ghostty> title<.*:(claude|codex|node).*>": "󰚩",
+      "class<float.tui>": "󰘮",
+      "class<app.zen_browser.zen>": "󰈹",
+      "class<google-chrome|Google-chrome|camoufox>": "󰊯",
+      "class<org.telegram.desktop>": "",
+      "class<obsidian>": "",
+      "class<YTMDesktop|app.ytmdesktop.ytmdesktop>": "󰗃",
+      "class<nemo|org.gnome.Nautilus>": "󰉋",
+      "class<com.obsproject.Studio>": "󰻂"
+    },
+    "show-special": true,
+    "special-visible-only": false,
+    // the hidden fzf-menu server terminal parks on special:menu (hyprland.lua window rule)
+    "ignore-workspaces": ["^special:menu$"],
+    "on-click": "activate",
+    "tooltip": false
+  },
+
+  "hyprland/submap": { "format": "󰩨 {}", "tooltip": false },
+
+  "clock": {
+    "format": "{:%H:%M}",
+    "format-alt": "{:%a %d %b  %H:%M}",
+    "tooltip-format": "<span font='JetBrainsMono Nerd Font'>{calendar}</span>",
+    "calendar": {
+      "mode": "year",
+      "mode-mon-col": 3,
+      "weeks-pos": "right",
+      "on-scroll": 1,
+      "format": {
+        // pango cannot use @define-color: black-variant tokens fg / subtext / muted / subtext / green
+        // (night differs from black by <= 3/255 on muted and subtext)
+        "months": "<span color='#dbd8c9'><b>{}</b></span>",
+        "days": "<span color='#8d998f'>{}</span>",
+        "weeks": "<span color='#6c7871'>W{}</span>",
+        "weekdays": "<span color='#8d998f'><b>{}</b></span>",
+        "today": "<span color='#abc682'><b><u>{}</u></b></span>"
+      }
+    },
+    "actions": {
+      "on-click-right": "mode",
+      "on-scroll-up": "shift_up",
+      "on-scroll-down": "shift_down"
+    }
+  },
+
+  "battery": {
+    "bat": "BAT0",
+    "interval": 30,
+    "states": { "warning": 30, "critical": 15 },
+    "format": "{icon} {capacity}%",
+    "format-charging": "󰂄 {capacity}%",
+    "format-plugged": "󰚥 {capacity}%",
+    "format-full": "󰚥 {capacity}%",
+    "format-icons": ["󰁺", "󰁻", "󰁼", "󰁽", "󰁾", "󰁿", "󰂀", "󰂁", "󰂂", "󰁹"],
+    // TLP Long_Life holds the battery near 80% ("Not charging"): waybar reports that as "plugged"
+    "tooltip-format": "Battery {capacity}%, {timeTo}\n{power:.1f} W\n\nL: energy menu · R: power profile",
+    "on-click": "~/.config/hub/hub open Energy",
+    "on-click-right": "~/.config/hypr/scripts/power-profile.sh menu",
+    "events": {
+      "on-discharging-warning": "notify-send -u normal -a battery 'Low battery'",
+      "on-discharging-critical": "notify-send -u critical -a battery 'Battery critical'"
+    }
+  },
+
+  // the mode icon: compact <-> full (SUPER+B); one per bar so each shows its own glyph
+  "custom/mode#compact": {
+    "format": "󰡎",
+    "tooltip-format": "Compact bar\n\nL: full bar (SUPER+B) · R: bar menu",
+    "on-click": "~/.config/waybar/scripts/bar.sh mode toggle",
+    "on-click-right": "~/.config/waybar/scripts/bar.sh menu"
+  },
+  "custom/mode#full": {
+    "format": "󰡌",
+    "tooltip-format": "Full bar\n\nL: compact bar (SUPER+B) · R: bar menu",
+    "on-click": "~/.config/waybar/scripts/bar.sh mode toggle",
+    "on-click-right": "~/.config/waybar/scripts/bar.sh menu"
+  },
+
+  // layout indicator: always shown, always muted (owner decision); L switches to the next layout
+  "hyprland/language": {
+    "format": "{}",
+    "format-en": "EN",
+    "format-uk": "UA",
+    "format-ru": "RU",
+    "on-click": "hyprctl switchxkblayout $(hyprctl devices -j | jq -r '[.keyboards[] | select(.main)][0].name') next"
+  },
+
+  // ── alerts: print nothing while everything is normal ──
+  "privacy": {
+    "icon-size": 14,
+    "icon-spacing": 6,
+    "transition-duration": 150,
+    "modules": [{ "type": "screenshare" }, { "type": "audio-in" }]
+  },
+
+  "custom/recording": {
+    "exec": "~/.config/waybar/scripts/recording.sh --follow",
+    "return-type": "json",
+    "restart-interval": 5,
+    "on-click": "~/.config/hypr/scripts/rec-toggle.sh",
+    "on-click-right": "~/.config/hypr/scripts/capture.sh"
+  },
+
+  // failed or restart-looping units (critical) and sysalert conditions (warning); one real run a minute for both bars
+  "custom/health": {
+    "exec": "~/.config/waybar/scripts/cache.sh health 55 -- ~/.config/waybar/scripts/health.sh",
+    "return-type": "json",
+    "interval": 60,
+    "on-click": "ghostty --class=float.tui -e sh -c 'systemctl --failed --no-pager; systemctl --user --failed --no-pager; read -r _'",
+    "on-click-right": "ghostty --class=float.tui -e bash -c '~/dotfiles/doctor.sh --fails; read -rn1 -p \"press a key\" _'"
+  },
+
+  // compact only: shown while offline or without an IP
+  "network#alert": {
+    "interval": 10,
+    "format-wifi": "",
+    "format-ethernet": "",
+    "format-linked": "󰤫 no IP",
+    "format-disconnected": "󰖪 offline",
+    "tooltip-format-disconnected": "No network\n\nL: Wi-Fi menu",
+    "tooltip-format-linked": "{ifname}: no IP address\n\nL: Wi-Fi menu",
+    "on-click": "~/.config/hypr/scripts/wifi.sh"
+  },
+
+  // full bar only: the highest usage window (class always normal; the tooltip lists Claude, Codex, resets)
+  "custom/ai": {
+    "exec": "~/.config/waybar/scripts/cache.sh ai 55 -- ~/.config/waybar/scripts/ai-usage.sh",
+    "return-type": "json",
+    "interval": 60,
+    "on-click": "ghostty --class=float.tui -e ~/.config/waybar/scripts/ai-usage.sh report daily",
+    "on-click-right": "ghostty --class=float.tui -e ~/.config/waybar/scripts/ai-usage.sh report blocks"
+  },
+
+  // compact: only when >= 50 are pending or the last full upgrade is older than 14 days; full: whenever any are pending
+  "custom/updates#alert": {
+    "exec": "~/.config/waybar/scripts/updates.sh --alert",
+    "return-type": "json",
+    "interval": 3600,
+    "signal": 9,
+    "on-click": "ghostty --class=float.tui -e zsh -ic sysup; ~/.config/waybar/scripts/cache.sh --drop updates; pkill -o -u $(id -u) -RTMIN+9 -x waybar",
+    "on-click-right": "~/.config/waybar/scripts/updates.sh list"
+  },
+  "custom/updates": {
+    "exec": "~/.config/waybar/scripts/updates.sh",
+    "return-type": "json",
+    "interval": 3600,
+    "signal": 9,
+    "on-click": "ghostty --class=float.tui -e zsh -ic sysup; ~/.config/waybar/scripts/cache.sh --drop updates; pkill -o -u $(id -u) -RTMIN+9 -x waybar",
+    "on-click-right": "~/.config/waybar/scripts/updates.sh list"
+  },
+
+  // compact: the enabled switches as glyphs (empty when none is on); full: the leader of the toggles drawer
+  "custom/toggles": {
+    "exec": "~/.config/waybar/scripts/toggles.sh summary --alert",
+    "return-type": "json",
+    "interval": 10,
+    "signal": 8,
+    "on-click": "~/.config/hub/hub open Toggles",
+    "on-click-right": "~/.config/hub/hub open Toggles"
+  },
+
+  // ── full bar: vault (decision 3: not in the compact bar), updates, tray ──
+  "custom/vault": {
+    "exec": "~/.config/hypr/scripts/vault.sh waybar",
+    "return-type": "json",
+    "interval": 30,
+    "signal": 15,
+    "on-click": "~/.config/hypr/scripts/vault.sh passwords",
+    "on-click-right": "~/.config/hypr/scripts/vault.sh totp",
+    "on-click-middle": "~/.config/hypr/scripts/vault.sh app"
+  },
+
+  // ── drawers (open on hover, close by themselves; the leader keeps its own clicks) ──
+  "group/toggles": {
+    "orientation": "inherit",
+    "drawer": { "transition-duration": 200, "transition-left-to-right": false, "children-class": "drawer-child" },
+    "modules": ["custom/toggles#leader", "custom/sw-dnd", "custom/sw-caffeine", "custom/sw-awake", "custom/sw-lid", "custom/sw-night", "custom/power"]
+  },
+  "custom/toggles#leader": {
+    "exec": "~/.config/waybar/scripts/toggles.sh summary",
+    "return-type": "json",
+    "interval": 10,
+    "signal": 8,
+    "on-click": "~/.config/hub/hub open Toggles",
+    "on-click-right": "~/.config/hub/hub open Toggles"
+  },
+  "custom/sw-dnd": {
+    "exec": "~/.config/waybar/scripts/toggles.sh switch dnd",
+    "return-type": "json",
+    "interval": 30,
+    "signal": 8,
+    "on-click": "~/.config/waybar/scripts/toggles.sh toggle dnd",
+    "on-click-right": "~/.config/hypr/scripts/notif-history.sh"
+  },
+  "custom/sw-caffeine": {
+    "exec": "~/.config/waybar/scripts/toggles.sh switch caffeine",
+    "return-type": "json",
+    "interval": 30,
+    "signal": 8,
+    "on-click": "~/.config/waybar/scripts/toggles.sh toggle caffeine"
+  },
+  "custom/sw-awake": {
+    "exec": "~/.config/waybar/scripts/toggles.sh switch awake",
+    "return-type": "json",
+    "interval": 30,
+    "signal": 8,
+    "on-click": "~/.config/waybar/scripts/toggles.sh toggle awake",
+    "on-click-right": "~/.config/hypr/scripts/keep-awake.sh menu"
+  },
+  "custom/sw-lid": {
+    "exec": "~/.config/waybar/scripts/toggles.sh switch lid",
+    "return-type": "json",
+    "interval": 30,
+    "signal": 8,
+    "on-click": "~/.config/waybar/scripts/toggles.sh toggle lid"
+  },
+  "custom/sw-night": {
+    "exec": "~/.config/waybar/scripts/toggles.sh switch night",
+    "return-type": "json",
+    "interval": 30,
+    "signal": 8,
+    "on-click": "~/.config/waybar/scripts/toggles.sh toggle night"
+  },
+  // power profile: non-balanced counts as enabled (class enabled), balanced is normal
+  "custom/power": {
+    "exec": "~/.config/hypr/scripts/power-profile.sh waybar",
+    "return-type": "json",
+    "interval": 30,
+    "signal": 8,
+    "on-click": "~/.config/hypr/scripts/power-profile.sh cycle",
+    "on-click-right": "~/.config/hypr/scripts/power-profile.sh menu"
+  },
+
+  "group/net": {
+    "orientation": "inherit",
+    "drawer": { "transition-duration": 200, "transition-left-to-right": false, "children-class": "drawer-child" },
+    "modules": ["network", "bluetooth", "custom/sw-vpn"]
+  },
+  "network": {
+    "interval": 10,
+    "format-wifi": "{icon} {essid}",
+    "format-icons": ["󰤟", "󰤢", "󰤥", "󰤨"],
+    "format-ethernet": "󰈀",
+    "format-linked": "󰤫 no IP",
+    "format-disconnected": "󰖪 offline",
+    "max-length": 16,
+    "tooltip-format-wifi": "{essid} {signalStrength}%\n{ipaddr}\n󰁅 {bandwidthDownBytes}  󰁝 {bandwidthUpBytes}\n\nL: Wi-Fi menu · R: network editor · M: Wi-Fi radio",
+    "tooltip-format-ethernet": "{ifname}\n{ipaddr}\n\nL: Wi-Fi menu · R: network editor · M: Wi-Fi radio",
+    "tooltip-format-disconnected": "No network\n\nL: Wi-Fi menu · R: network editor · M: Wi-Fi radio",
+    "on-click": "~/.config/hypr/scripts/wifi.sh",
+    "on-click-right": "ghostty --class=float.tui -e nmtui",
+    "on-click-middle": "~/.config/hypr/scripts/wifi.sh --radio toggle"
+  },
+  "bluetooth": {
+    "format": "󰂯",
+    "format-off": "󰂲",
+    "format-disabled": "",
+    "format-connected": "󰂱 {device_alias}",
+    "max-length": 16,
+    "tooltip-format": "{controller_alias}\nL: bluetui · M: power on/off",
+    "tooltip-format-connected": "{controller_alias}\n{device_enumerate}\n\nL: bluetui · M: power on/off",
+    "tooltip-format-enumerate-connected": "{device_alias} {device_battery_percentage}%",
+    "on-click": "ghostty --class=float.tui -e bluetui",
+    "on-click-middle": "bluetoothctl power $(bluetoothctl show | grep -q 'Powered: yes' && echo off || echo on)"
+  },
+  "custom/sw-vpn": {
+    "exec": "~/.config/waybar/scripts/toggles.sh switch vpn",
+    "return-type": "json",
+    "interval": 10,
+    "signal": 8,
+    "on-click": "~/.config/waybar/scripts/toggles.sh toggle vpn"
+  },
+
+  "group/audio": {
+    "orientation": "inherit",
+    "drawer": { "transition-duration": 200, "transition-left-to-right": false, "children-class": "drawer-child" },
+    "modules": ["pulseaudio", "pulseaudio#mic", "backlight"]
+  },
+  "pulseaudio": {
+    "scroll-step": 2,
+    "max-volume": 140,
+    "states": { "over": 101 },
+    "format": "{icon} {volume}%",
+    "format-muted": "󰖁",
+    "format-bluetooth": "󰂰 {volume}%",
+    "format-bluetooth-muted": "󰖁",
+    "format-icons": { "headphone": "󰋋", "default": ["󰕿", "󰖀", "󰕾"] },
+    "tooltip-format": "{desc}\n\nL: wiremix · R: output picker · M: mute · scroll: volume",
+    "on-click": "ghostty --class=float.tui -e wiremix",
+    "on-click-right": "~/.config/hypr/scripts/audio-picker.sh",
+    "on-click-middle": "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
+  },
+  "pulseaudio#mic": {
+    "format": "{format_source}",
+    "format-source": "󰍬",
+    "format-source-muted": "󰍭",
+    "scroll-step": 2,
+    "tooltip-format": "{source_desc} {source_volume}%\n\nL: input picker · R: wiremix · M: mute all microphones · scroll: volume",
+    "on-click": "~/.config/hypr/scripts/audio-picker.sh",
+    "on-click-right": "ghostty --class=float.tui -e wiremix",
+    "on-click-middle": "~/.config/hypr/scripts/mic-mute-all.sh"
+  },
+  "backlight": {
+    "device": "amdgpu_bl1",
+    "format": "{icon} {percent}%",
+    "format-icons": ["󰃞", "󰃟", "󰃠"],
+    "tooltip-format": "Brightness {percent}%\n\nscroll: brightness",
+    "on-scroll-up": "brightnessctl set +5%",
+    "on-scroll-down": "brightnessctl set 5%-"
+  },
+
+  "group/system": {
+    "orientation": "inherit",
+    "drawer": { "transition-duration": 200, "transition-left-to-right": false, "children-class": "drawer-child" },
+    "modules": ["memory", "cpu", "temperature"]
+  },
+  "memory": {
+    "interval": 10,
+    "format": "󰍛 {percentage:>2}%",
+    "states": { "warning": 75, "critical": 90 },
+    "tooltip-format": "Memory {used:.1f} / {total:.1f} GiB\n\nL: btop",
+    "on-click": "ghostty --class=float.tui -e btop"
+  },
+  "cpu": {
+    "interval": 5,
+    "format": "󰻠 {usage:>2}%",
+    "states": { "warning": 70, "critical": 90 },
+    "tooltip-format": "CPU {usage}%\n\nL: btop",
+    "on-click": "ghostty --class=float.tui -e btop"
+  },
+  // AMD CPU (k10temp, Tctl); the glob-free hwmon dir is resolved by waybar
+  "temperature": {
+    "interval": 10,
+    "hwmon-path-abs": "/sys/devices/pci0000:00/0000:00:18.3/hwmon",
+    "input-filename": "temp1_input",
+    "critical-threshold": 90,
+    "format": "󰔏 {temperatureC:>2}°",
+    "format-critical": "󱃂 {temperatureC:>2}°",
+    "tooltip-format": "CPU {temperatureC} °C\n\nL: btop",
+    "on-click": "ghostty --class=float.tui -e btop"
+  },
+
+  // tray icons live in a drawer (group name "trays": the tray module itself already owns the CSS id #tray)
+  "group/trays": {
+    "orientation": "inherit",
+    "drawer": { "transition-duration": 200, "transition-left-to-right": false, "children-class": "drawer-child" },
+    "modules": ["custom/tray-leader", "tray"]
+  },
+  "custom/tray-leader": { "format": "󰇘", "tooltip-format": "Tray icons (hover)" },
+  "tray": { "icon-size": 14, "spacing": 8 }
+}

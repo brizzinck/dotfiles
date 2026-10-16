@@ -12,7 +12,7 @@ set -u
 ORDER=(power-saver balanced performance)
 G_SAVER='󰌪' G_BAL='󰗑' G_PERF='󰓅'
 note() { notify-send -a power-profile -h string:x-dunst-stack-tag:power-profile -t 2500 "$@" 2>/dev/null || true; }
-poke_bar() { pkill -RTMIN+14 waybar 2>/dev/null || true; }
+poke_bar() { pkill -o -u "$UID" -RTMIN+8 -x waybar 2>/dev/null || true; }   # signal 8 = waybar toggles drawer
 DBUS=(net.hadess.PowerProfiles /net/hadess/PowerProfiles net.hadess.PowerProfiles)
 
 get() {
@@ -59,7 +59,8 @@ waybar() {
   local p icon
   if ! p=$(get); then echo '{"text":""}'; return 0; fi
   case $p in power-saver) icon=$G_SAVER ;; performance) icon=$G_PERF ;; *) icon=$G_BAL ;; esac
-  jq -cn --arg t "$icon" --arg c "$p" --arg tip "Power profile: $p\nclick: next profile, right click: choose" \
+  # class: enabled = a non-default profile, normal = balanced (the colour roles of waybar/style.css)
+  jq -cn --arg t "$icon" --arg c "$([[ $p == balanced ]] && echo normal || echo enabled)" --arg tip "Power profile: $p\n\nL: next profile · R: choose" \
     '{text: $t, class: $c, tooltip: ($tip | gsub("\\\\n"; "\n"))}'
 }
 

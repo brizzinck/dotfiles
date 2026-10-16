@@ -150,6 +150,15 @@ typed stays applied. Cyrillic (ua/ru) twins of every NORMAL key come from `layou
 TUIs: `btop` (`vim_keys`), `wiremix`, `bluetui`, `yazi`, `lazygit`, `lazydocker` and `pacseek` take `j` / `k` natively; `pik` has `Ctrl+j/k`
 and `Ctrl+d/u`; tmux menus and `choose-tree` follow `mode-keys vi`. Those programs read characters, so they have no Cyrillic twins.
 
+## Bar (waybar)
+
+Two bars per monitor in one waybar process: **compact** (workspaces, clock, alerts, enabled switches, battery, mode icon) and **full**
+(adds the drawers toggles, network, audio, system and tray, plus AI, vault and the layout indicator). `SUPER+B` switches between them,
+`SUPER+CTRL+B` hides or shows the whole bar; the state lives in `~/.local/state/waybar` and survives restarts and logins. Drawers open
+on hover. Colour means state: green = active workspace or enabled switch, a calm yellow or red tint (text colour only) = warning or critical; everything else is grey.
+Click grammar of every module: `L` main action (switch: toggle), `R` menu or alternative, `M` quick binary action (mute, radio), scroll adjusts
+the value. The mode icon (right end): `L` compact/full, `R` bar menu (compact, full, hide, restart, theme). Tooltips list the clicks.
+
 ## Layout-independent keys (us, ua, ru)
 
 Every bind works while the Ukrainian or Russian layout is active. One physical-key map, `.config/layout/keymap.tsv`,

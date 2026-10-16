@@ -69,6 +69,8 @@ the user, nvim `palette.reload()` through its server sockets, then the hook scri
 | `aqua` | `#8cc69c` | `#8cc69c` | healthy/connected, TERMINAL, hint, types, plan mode |
 | `blue` | `#83c3c8` | `#83c3c8` | info, links, INSERT, copy-mode, search match, directories/path, properties |
 | `purple` | `#dca0bb` | `#dca0bb` | special: scratchpad, groups, VISUAL, DND, zoom, numbers/constants/punctuation, git branch |
+| `red_soft` | `#8b4f4f` | `#8b4f4f` | calm alert tint: `red` blended 60 % toward the bar black (waybar critical: failed units, recording, battery low) |
+| `yellow_soft` | `#82714c` | `#82714c` | calm alert tint: `yellow` blended 60 % toward the bar black (waybar warning, urgent workspace, mic in use) |
 | `diff_add_bg` | `#192616` | `#1f2c1c` | diff line background (nvim, delta, Claude) |
 | `diff_del_bg` | `#2b1516` | `#311b1b` | diff line background |
 | `diff_chg_bg` | `#0f2022` | `#152729` | diff line background |
@@ -141,7 +143,7 @@ Desktop layer (applied, stage T1b; section 5.3 of the design study has the full 
 |---|---|---|
 | Hyprland | `hyprland.lua` fragment (`hl.config`) | active border `green` -> `aqua` 45deg, inactive `line`, shadow `glow`, groups `purple` / `border`, `misc.background_color` `bg_oled`; `dim_strength` 0.10 (0.15 turned fg khaki) |
 | hyprlock, screensaver | `$ef_*` variables | background `bg_oled`, ring `border`, text `fg`, date `subtext`, hint and placeholder `muted`, check `yellow`, fail `red`, caps `orange` |
-| waybar | `@define-color` names | bar and tooltip on `bg_oled`, text `subtext`, workspaces `muted` / `subtext` / `green` on `raised` / `yellow` urgent; module classes by role. Pango spans in `config` cannot use named colours: they hold the black-variant hex (night differs by <= 3/255 on `muted` and `subtext`); `doctor.sh` checks they are tokens |
+| waybar | `@define-color` names (incl. `red_soft`, `yellow_soft`) | bar on `bg_oled`, tooltip `surface` + `border`; roles: `subtext` normal, `muted` dim / off / inactive (layout indicator, mode icon), `fg` clock and hover (on a `surface` pill), `green` active workspace / submap (on `raised`) / enabled switch, `yellow_soft` warning and `red_soft` critical (calm tints of yellow and red, text colour only: no pill, no bold; a bright alert colour was rejected as too loud). Scripts print one class per state (`normal`, `dim`, `enabled`, `warning`, `critical`) and `style.css` maps them; no hex in `style.css`. The only literals are the pango spans of the clock calendar in `modules.jsonc` (black-variant hex of `fg`, `subtext`, `muted`, `green`; night differs by <= 3/255 on `muted` and `subtext`); `doctor.sh` checks they are tokens |
 | rofi, wofi | token names | window `bg`, border `border`, selected row `select` with `green` text, placeholder `subtext`, urgent `red`, active `blue` |
 | dunst | drop-in | low `border` frame / `subtext` text, normal `blue` frame / `green` highlight, critical `red`; recorder red, idle yellow, battery orange |
 | swayosd | `style.css` | `bg_oled` pill, `border` frame, `fg` text, `line` trough, `green` bar |

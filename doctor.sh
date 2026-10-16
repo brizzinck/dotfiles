@@ -203,8 +203,98 @@ if [ -z "$left" ]; then ok rofi-dmenu "rofi is only the app launcher"; else bad 
 for c in wl-kbptr wlrctl wlr-which-key; do
   if command -v "$c" >/dev/null 2>&1; then info "v1-$c" "installed"; else info "v1-$c" "missing, its binds only notify (sudo ~/dotfiles/apply-system.sh --only install)"; fi
 done
-n_bar="$(pgrep -xc waybar 2>/dev/null || true)"
+# count only top-level waybar processes: it forks a child (also named waybar) per script run
+n_bar="$(ps -u "$(id -u)" -o pid=,ppid=,comm= 2>/dev/null | awk '$3 == "waybar" {p[$1] = 1; pp[$1] = $2} END {n = 0; for (i in p) if (!(pp[i] in p)) n++; print n}')"
 if [ "${n_bar:-0}" = 1 ]; then ok waybar "single instance"; else bad waybar "${n_bar:-0} instances (expected 1)"; fi
+
+# ── waybar (W1): config parses, state files match the mode, both bars sit where the design puts them ────────────
+bar_sh="$HOME/.config/waybar/scripts/bar.sh"
+bar_state="${XDG_STATE_HOME:-$HOME/.local/state}/waybar"
+bar_err="$(PYTHONPYCACHEPREFIX=/tmp/pycache python3 -I - "$DOTFILES/.config/waybar" "$bar_state" <<'PY' 2>&1
+import json, os, sys
+cfgdir, state = sys.argv[1:3]
+
+def jsonc(path):  # waybar accepts // comments; strip them outside of strings
+    s, out, i, ins = open(path, encoding="utf-8").read(), [], 0, False
+    while i < len(s):
+        c = s[i]
+        if ins:
+            out.append(c)
+            if c == "\\":
+                out.append(s[i + 1]); i += 1
+            elif c == '"':
+                ins = False
+        elif c == '"':
+            ins = True; out.append(c)
+        elif s.startswith("//", i):
+            while i < len(s) and s[i] != "\n":
+                i += 1
+            continue
+        else:
+            out.append(c)
+        i += 1
+    return json.loads("".join(out))
+
+problems = []
+try:
+    cfg = jsonc(f"{cfgdir}/config")
+    mods = jsonc(f"{cfgdir}/modules.jsonc")
+    jsonc(f"{cfgdir}/full-default.jsonc")
+    names = [b.get("name") for b in cfg]
+    if names != ["compact", "full"]:
+        problems.append(f"config bars {names}")
+    for b in cfg:
+        for m in b["modules-left"] + b["modules-center"] + b["modules-right"]:
+            if m not in mods:
+                problems.append(f"{b['name']}: module {m} is not defined in modules.jsonc")
+        for g in b["modules-right"]:
+            if g.startswith("group/"):
+                for m in mods[g]["modules"]:
+                    if m not in mods:
+                        problems.append(f"{g}: module {m} is not defined")
+except Exception as e:  # noqa: BLE001
+    problems.append(f"config: {e}")
+try:
+    mode = open(f"{state}/mode").read().strip()
+    if mode not in ("compact", "full"):
+        problems.append(f"mode file says '{mode}'")
+    hidden = os.path.exists(f"{state}/hidden")
+    want = {"compact": {"start_hidden": hidden}, "full": {"start_hidden": hidden or mode == "compact"}}
+    for n, w in want.items():
+        got = jsonc(f"{state}/{n}.jsonc")
+        if got != w:
+            problems.append(f"{n}.jsonc is {got}, expected {w}")
+except Exception as e:  # noqa: BLE001
+    problems.append(f"state: {e} (run: bar.sh init)")
+print("; ".join(problems))
+PY
+)"
+if [ -z "$bar_err" ]; then ok bar-state "config and modules.jsonc parse, mode $("$bar_sh" status 2>/dev/null), include files match the state"; else bad bar-state "$bar_err"; fi
+if [ "${n_bar:-0}" -ge 1 ] && command -v hyprctl >/dev/null 2>&1 && [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]; then
+  bar_hidden=0; [ -e "$bar_state/hidden" ] && bar_hidden=1
+  bar_mode="$("$bar_sh" status --short 2>/dev/null)"
+  layers_err="$(jq -rn --argjson L "$(hyprctl layers -j 2>/dev/null)" --argjson M "$(hyprctl monitors -j 2>/dev/null)" \
+    --argjson hidden "$bar_hidden" --arg mode "$bar_mode" '
+    [ $M[] | . as $m
+      | ($L[$m.name].levels // {} | to_entries
+         | map(.key as $lv | .value[] | select(.namespace == "compact" or .namespace == "full") | {n: .namespace, lv: ($lv | tonumber), y: .y, h: .h})) as $s
+      | ($s | map(select(.n == "compact")) | .[0]) as $c | ($s | map(select(.n == "full")) | .[0]) as $f
+      | if ($c == null or $f == null) then "\($m.name): compact/full surface missing"
+        elif $hidden == 1 then (if ($c.lv != 1 or $f.lv != 1) then "\($m.name): hidden but a bar is above the bottom layer" else empty end)
+        elif ($c.y != $m.y or $f.y != $m.y) then "\($m.name): a bar is not at the top edge (y \($c.y)/\($f.y), expected \($m.y)); the negative margin was clamped, switch to the fallback in waybar-design.md 4.1"
+        elif $mode == "full" and ($c.lv != 2 or $f.lv != 2) then "\($m.name): full mode but a bar is not on the top layer"
+        elif $mode == "compact" and ($c.lv != 2 or $f.lv != 1) then "\($m.name): compact mode but the layers disagree (a stray SIGUSR1? run: bar.sh sync)"
+        else empty end
+    ] | join("; ")' 2>&1)"
+  if [ -z "$layers_err" ]; then ok bar-layers "compact and full surfaces on every monitor match mode $bar_mode$([ "$bar_hidden" = 1 ] && echo ' (hidden)')"; else bad bar-layers "$layers_err"; fi
+  want_top=28; [ "$bar_hidden" = 1 ] && want_top=0
+  res_err="$(hyprctl monitors -j 2>/dev/null | jq -r --argjson w "$want_top" '[.[] | select(.reserved[1] != $w) | "\(.name) reserved \(.reserved[1])"] | join("; ")')"
+  if [ -z "$res_err" ]; then ok bar-reserved "reserved top strip is ${want_top}px on every monitor"; else bad bar-reserved "$res_err (expected $want_top)"; fi
+fi
+css_hex="$(grep -nE '#[0-9a-fA-F]{3,8}\b' "$DOTFILES/.config/waybar/style.css" 2>/dev/null | head -2 | tr '\n' ' ')"
+if [ -z "$css_hex" ]; then ok bar-css "style.css uses palette tokens only"; else bad bar-css "hex literal in style.css: $css_hex"; fi
+raw_usr1="$(git -C "$DOTFILES" grep -nE 'USR1.*waybar|waybar.*USR1' -- .config .local ':!.config/nvim' ':!.config/waybar/scripts/bar.sh' ':!*.md' ':!.config/waybar/config' ':!.config/waybar/modules.jsonc' 2>/dev/null | head -2 | tr '\n' ' ')"
+if [ -z "$raw_usr1" ]; then ok bar-sigusr1 "only bar.sh sends SIGUSR1 to waybar"; else bad bar-sigusr1 "raw SIGUSR1: $raw_usr1"; fi
 
 # ── palette variant (black | night): link present, generated fragments in sync with the token source ───────────
 theme_link="${XDG_STATE_HOME:-$HOME/.local/state}/theme/current"
@@ -238,14 +328,14 @@ tokens = set()
 for v in ("black", "night"):
     tokens |= {c.lower() for c in json.load(open(f"{root}/themes/generated/{v}/tokens.json"))["tokens"].values()}
 bad = []
-for path, pat in ((".config/waybar/config", r"color='(#[0-9a-fA-F]{6})'"), (".config/workmux/config.yaml", r"fg=(#[0-9a-fA-F]{6})")):
+for path, pat in ((".config/waybar/config", r"color='(#[0-9a-fA-F]{6})'"), (".config/waybar/modules.jsonc", r"color='(#[0-9a-fA-F]{6})'"), (".config/workmux/config.yaml", r"fg=(#[0-9a-fA-F]{6})")):
     for hexc in re.findall(pat, open(f"{root}/{path}").read()):
         if hexc.lower() not in tokens:
             bad.append(f"{path} {hexc}")
 print(" ".join(bad))
 PY
 )"
-if [ -z "$lit" ]; then ok theme-literals "waybar pango spans and workmux icons are palette tokens"; else bad theme-literals "not tokens: $lit"; fi
+if [ -z "$lit" ]; then ok theme-literals "waybar calendar spans and workmux icons are palette tokens"; else bad theme-literals "not tokens: $lit"; fi
 
 # ── stow symlinks: every tracked config file must resolve to the repo copy ──────
 broken=""

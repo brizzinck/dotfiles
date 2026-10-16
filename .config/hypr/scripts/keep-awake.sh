@@ -31,7 +31,7 @@ done
 set -- "${args[@]+"${args[@]}"}"
 
 note() { notify-send -a keep-awake -h string:x-dunst-stack-tag:keep-awake -t 2500 "$@" 2>/dev/null || true; }
-poke_bar() { pkill -RTMIN+12 waybar 2>/dev/null || true; }
+poke_bar() { pkill -o -u "$UID" -RTMIN+8 -x waybar 2>/dev/null || true; }   # signal 8 = waybar toggles drawer
 
 holder_pid() { # print the pid of the live holder, or fail
   local p
@@ -146,8 +146,8 @@ waybar() {
   else
     text="$G_AWAKE on"
   fi
-  jq -cn --arg t "$text" --arg tip "Keep awake: $label\nclick: off, right click: choose duration" \
-    '{text: $t, class: "on", tooltip: ($tip | gsub("\\\\n"; "\n"))}'
+  jq -cn --arg t "$text" --arg tip "Keep awake: $label\n\nL: toggle · R: choose duration" \
+    '{text: $t, class: "enabled", tooltip: ($tip | gsub("\\\\n"; "\n"))}'
 }
 
 menu() {

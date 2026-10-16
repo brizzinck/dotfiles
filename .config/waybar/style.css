@@ -1,84 +1,97 @@
-/* Everforest v2 (themes/palette). The @define-color names come from the generated waybar.css of the black variant
-   (always present, repo symlink) and of the active variant (symlink to ~/.local/state/theme/current, flipped by
-   `theme`; `theme` reloads waybar with SIGUSR2). The bar and its tooltip sit on @bg_oled, which is #000000 in both. */
+/* Waybar (W1): monochrome, colour = state. Palette: themes/palette (palette.md); no hex literal in this file.
+   The @define-color names come from the generated waybar.css of the black variant (always present, repo symlink) and of
+   the active variant (symlink to ~/.local/state/theme/current, flipped by `theme`, which reloads waybar with SIGUSR2).
+   Roles:  subtext  normal text            muted   dim / off / inactive (also the layout indicator and the mode icon)
+           fg       clock, hover           green   active workspace, submap, enabled switch
+           yellow_soft  warning           red_soft  critical (calm tints, text colour only: no pill, no bold)
+   Scripts print one class per state: normal | dim | enabled | warning | critical (the rules below map them). */
 @import "theme-black.css";
 @import "theme.css";
 
 * {
-  font-family: "JetBrainsMono Nerd Font", "JetBrainsMono Nerd Font Propo";
+  font-family: "JetBrainsMono Nerd Font Propo", "JetBrainsMono Nerd Font";
   font-size: 14px;
   font-weight: 500;
   min-height: 0;
   border: none;
   border-radius: 0;
+  box-shadow: none;
+  text-shadow: none;
 }
 
 window#waybar { background: @bg_oled; color: @subtext; }
 
-tooltip { background: @bg_oled; border: 1px solid @border; border-radius: 8px; }
-tooltip label { color: @fg; padding: 2px 4px; }
+tooltip { background: @surface; border: 1px solid @border; border-radius: 6px; }
+tooltip label { color: @fg; padding: 4px 6px; }
 
-/* workspaces: active = green text on a quiet pill with a 2px underline (no bright filled block) */
-#workspaces { margin-left: 6px; }
-#workspaces button {
+/* every module: one padding, one pill geometry (20 px high on the 28 px bar) */
+#clock, #privacy, #custom-recording, #custom-health, #custom-updates, #custom-toggles, #custom-ai, #custom-vault,
+#custom-mode, #custom-power, #custom-tray-leader, #network, #bluetooth, #pulseaudio, #backlight, #battery,
+#cpu, #memory, #temperature, #language,
+#custom-sw-dnd, #custom-sw-caffeine, #custom-sw-awake, #custom-sw-lid, #custom-sw-night, #custom-sw-vpn {
   padding: 0 8px;
-  margin: 3px 2px;
-  color: @muted;
-  background: transparent;
+  margin: 4px 0;
   border-radius: 6px;
-  border-bottom: 2px solid transparent;
+  color: @subtext;
 }
+
+/* drawer children sit closer together */
+#custom-sw-dnd, #custom-sw-caffeine, #custom-sw-awake, #custom-sw-lid, #custom-sw-night, #custom-sw-vpn,
+#custom-power, #bluetooth, #pulseaudio, #backlight, #cpu, #temperature { padding: 0 6px; }
+#custom-toggles.leader, #network, #pulseaudio, #memory, #custom-tray-leader { padding: 0 6px 0 8px; }
+
+/* hover: any clickable module */
+#clock:hover, #custom-recording:hover, #custom-health:hover, #custom-updates:hover, #custom-toggles:hover, #custom-ai:hover,
+#custom-vault:hover, #custom-mode:hover, #custom-power:hover, #network:hover, #bluetooth:hover, #pulseaudio:hover,
+#battery:hover, #cpu:hover, #memory:hover, #temperature:hover, #language:hover,
+#custom-sw-dnd:hover, #custom-sw-caffeine:hover, #custom-sw-awake:hover, #custom-sw-lid:hover, #custom-sw-night:hover,
+#custom-sw-vpn:hover { background: @surface; color: @fg; }
+
+/* the tray is 28 px high by itself: any margin would make the bar taller than 28 */
+#tray { padding: 0 6px; margin: 0; }
+
+/* workspaces */
+#workspaces { margin-left: 4px; }
+#workspaces button { padding: 0 8px; margin: 4px 1px; border-radius: 6px; color: @muted; background: transparent; }
 #workspaces button.visible { color: @subtext; }
-#workspaces button.active { color: @green; background: @raised; border-bottom: 2px solid @green; }
-#workspaces button.urgent { color: @bg_oled; background: @yellow; }
-#workspaces button.special { color: @purple; border-bottom: 2px solid @purple; }
-#workspaces button:hover { background: @surface; box-shadow: none; text-shadow: none; }
+#workspaces button.active { color: @green; background: @raised; }
+#workspaces button.urgent { color: @yellow_soft; }
+#workspaces button.special { color: @subtext; }
+#workspaces button:hover { background: @surface; color: @fg; }
 
-#submap {
-  color: @bg_oled;
-  background: @yellow;
-  font-weight: 700;
-  padding: 0 10px;
-  margin: 3px 4px;
-  border-radius: 6px;
+/* a mode is active (resize, mouse): the same quiet pill as the active workspace */
+#submap { color: @green; background: @raised; padding: 0 8px; margin: 4px; border-radius: 6px; }
+
+#clock { color: @fg; font-weight: 600; }
+
+/* script and module classes -> roles (the id of window#waybar lifts these above the plain id rules) */
+window#waybar .dim { color: @muted; }
+window#waybar .enabled { color: @green; }
+window#waybar .warning { color: @yellow_soft; }
+window#waybar .critical { color: @red_soft; }
+
+/* built-in states mapped onto the same roles */
+window#waybar #battery.warning.discharging { color: @yellow_soft; }
+window#waybar #battery.critical.discharging { color: @red_soft; }
+/* TLP Long_Life holds the battery low while plugged: that is not an alarm */
+window#waybar #battery.warning:not(.discharging), window#waybar #battery.critical:not(.discharging) {
+  color: @subtext;
 }
+window#waybar #network.disconnected, window#waybar #network.linked { color: @yellow_soft; }
+window#waybar #bluetooth.off { color: @muted; }
+window#waybar #pulseaudio.muted, window#waybar #pulseaudio.source-muted { color: @muted; }
+window#waybar #pulseaudio.over { color: @yellow_soft; }
+window#waybar #privacy-item.screenshare { color: @red_soft; }
+window#waybar #privacy-item.audio-in { color: @yellow_soft; }
+window#waybar #custom-power.normal { color: @subtext; }
 
-#clock { color: @fg; font-weight: 700; }
+/* the layout indicator and the mode icon are always dim; the hover rule above brightens them */
+#language, #custom-mode { color: @muted; }
+#language:hover, #custom-mode:hover { color: @fg; }
 
-#privacy, #custom-recording, #custom-failed, #custom-updates, #custom-vpn, #custom-dnd, #custom-idle, #custom-keepawake, #custom-lid, #custom-ai, #custom-power, #custom-vault,
-#network, #bluetooth, #pulseaudio, #backlight, #battery, #cpu, #memory, #temperature,
-#language, #tray { padding: 0 7px; }
-#tray { padding-right: 10px; }
-
-/* alerts */
-#custom-recording.rec, #privacy-item.screenshare { color: @red; font-weight: 700; }
-#privacy-item.audio-in { color: @orange; }
-#custom-failed.bad { color: @red; font-weight: 700; }
-#custom-updates { color: @blue; }
-#custom-vpn.on { color: @aqua; }
-#custom-dnd.on { color: @purple; }
-#custom-idle.on { color: @yellow; }
-#custom-keepawake.on, #custom-lid.on { color: @yellow; }
-#custom-ai.ok { color: @subtext; }
-#custom-ai.warning { color: @orange; }
-#custom-ai.critical { color: @red; font-weight: 700; }
-#custom-vault.unlocked { color: @green; }
-#custom-vault.locked { color: @subtext; }
-#custom-vault.unconfigured { color: @muted; }
-#custom-power.power-saver { color: @green; }
-#custom-power.balanced { color: @subtext; }
-#custom-power.performance { color: @orange; }
-
-/* state */
-#network.disconnected { color: @red; }
-#bluetooth.connected { color: @blue; }
-#pulseaudio.muted { color: @muted; }
-#pulseaudio.over { color: @orange; }
-#pulseaudio.mic { color: @subtext; }
-#pulseaudio.mic.source-muted { color: @red; }
-#battery.charging, #battery.plugged, #battery.full { color: @aqua; }
-#battery.warning:not(.charging):not(.plugged) { color: @orange; }
-#battery.critical:not(.charging):not(.plugged) { color: @bg_oled; background: @red; border-radius: 6px; margin: 3px 0; }
-#cpu.warning, #memory.warning { color: @orange; }
-#cpu.critical, #memory.critical, #temperature.critical { color: @red; }
-#language { color: @subtext; }
+/* drawers: open = PRELIGHT = :hover on the group box (named after the group: group/net -> #net). The tray drawer gets no
+   pill: the tray is 28 px high by itself, a margin would not fit the bar. */
+#toggles:hover, #net:hover, #audio:hover, #system:hover { background: @surface; border-radius: 6px; margin: 4px 0; }
+#toggles:hover label, #net:hover label, #audio:hover label, #system:hover label { margin: 0; background: transparent; }
+#tray image { -gtk-icon-effect: dim; }
+#tray image:hover { -gtk-icon-effect: none; }

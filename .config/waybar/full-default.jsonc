@@ -1,0 +1,3 @@
+// Fallback for the full bar when ~/.local/state/waybar/full.jsonc is missing (lower precedence than that file):
+// no state yet = compact mode, so the full overlay starts hidden. bar.sh init / render writes the real state.
+{ "start_hidden": true }

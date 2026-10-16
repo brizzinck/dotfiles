@@ -43,7 +43,8 @@ doctor	System	Dotfiles doctor (health check)	-	tui	+pause ~/dotfiles/doctor.sh	-
 configerrors	System	Hyprland config errors	-	tui	+pause hyprctl configerrors	-	hyprctl	-	s e;Hyprland errors
 failed-units	System	Failed systemd units (system + user)	-	tui	+pause systemctl --failed --no-pager; systemctl --user --failed --no-pager	-	systemctl	-	s f;Failed units
 hypr-reload	System	Reload Hyprland config	-	run	hyprctl reload	-	hyprctl	-	s r;Reload Hyprland
-waybar-toggle	System	Show or hide waybar	SUPER+B	run	pkill -SIGUSR1 waybar	-	waybar	-	s w;Toggle bar
-waybar-restart	System	Restart waybar	-	run	pkill -x waybar; sleep 0.3; exec waybar	-	waybar	-	s b;Restart bar
+bar-mode	System	Bar: compact / full	SUPER+B	toggle	~/.config/waybar/scripts/bar.sh mode toggle	[ "$(~/.config/waybar/scripts/bar.sh status --short)" = full ]	waybar	ON = full bar (drawers for toggles, network, audio, system and tray), OFF = compact bar (workspaces, clock, battery and alerts only). The icon at the right end of the bar does the same; right click on it opens the bar menu.	s w;Bar compact/full
+bar-hide	System	Bar: hide / show	SUPER+CTRL+B	toggle	~/.config/waybar/scripts/bar.sh hide toggle	[ -e ~/.local/state/waybar/hidden ]	waybar	ON = the bar is hidden on every monitor (the mode is kept; the windows use the freed strip).	s h;Bar hide/show
+waybar-restart	System	Restart waybar	-	run	~/.config/waybar/scripts/bar.sh restart	-	waybar	-	s b;Restart bar
 keybinds	Docs	Keybind cheatsheet	SUPER+slash	run	~/.config/hypr/scripts/keybinds.sh	-	fzf-menu jq	-
 keymap	Docs	Keymap document (docs/keymap.md)	-	tui	less -R ~/dotfiles/docs/keymap.md	-	less	Hyprland, tmux and shell keys; regenerate with docs/gen-keymap.sh.

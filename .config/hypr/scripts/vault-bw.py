@@ -71,7 +71,7 @@ def notify(title, body="", urgency="low"):
 
 
 def poke_bar():
-    subprocess.run(["pkill", "-RTMIN+15", "waybar"], check=False, stderr=subprocess.DEVNULL)
+    subprocess.run(["pkill", "-o", "-u", str(os.getuid()), "-RTMIN+15", "-x", "waybar"], check=False, stderr=subprocess.DEVNULL)
 
 
 def die(msg, code=1):

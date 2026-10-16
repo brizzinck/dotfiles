@@ -233,6 +233,8 @@ fi
 touch "$DOTFILES/env.secret.sh" && chmod +x "$DOTFILES/env.secret.sh"
 # palette variant link (black by default; flip with `theme black|night`): ghostty, tmux, fzf, delta and nvim read it
 "$HOME/.local/bin/theme" init || warn "theme init failed (themes/generated missing?)"
+# waybar bar mode (compact/full) and visibility files; the bar config includes them
+"$HOME/.config/waybar/scripts/bar.sh" init || warn "bar.sh init failed (waybar scripts not stowed?)"
 
 log "GTK dark theme, icons, fonts and cursor (gsettings; the cursor falls back to Adwaita until bibata is installed)"
 if command -v gsettings >/dev/null 2>&1; then

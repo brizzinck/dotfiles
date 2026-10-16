@@ -2,8 +2,9 @@
 # hub - utility hub: one fuzzy list of every action and every described keybind.
 #
 #   hub                      interactive fzf (default; also `hub --fzf`)
-#   hub open                 SUPER+M: remember the focused window, open the hub in a float.tui ghostty
-#                            (a second press while the hub is focused closes it)
+#   hub open [GROUP]         SUPER+M: remember the focused window, open the hub in a float.tui ghostty
+#                            (a second press while the hub is focused closes it); GROUP (e.g. Toggles, Energy) starts the
+#                            list filtered to that group (the waybar toggles summary and battery use it)
 #   hub --list [--all]       print the merged table (--all also shows actions whose command is missing)
 #   hub --raw                print the merged, evaluated records (fields below, then avail + state)
 #   hub --describe ID        description of one row (used by the fzf preview)
@@ -296,10 +297,12 @@ run_row() {
 }
 
 interactive() {
+  local start_query=${1:-}
   command -v fzf >/dev/null 2>&1 || { echo "hub: fzf is required" >&2; return 1; }
   if [[ -n ${HUB_FROM_OPEN:-} ]]; then echo $$ >"$RUN_DIR/float.pid"; else record_prev; fi
   printf '\e]2;hub\a'
   local query="" out rc id sel
+  [[ -n $start_query ]] && query="^$start_query"
   while :; do
     build_cache
     rc=0
@@ -323,6 +326,7 @@ interactive() {
 }
 
 open_hub() {
+  [[ ${1:-} =~ ^[A-Za-z]*$ ]] || { echo "hub: bad group '$1'" >&2; return 2; }
   local aw cls title addr pid
   aw=$(hyprctl activewindow -j 2>/dev/null) || aw="{}"
   cls=$(jq -r '.class // ""' <<<"$aw")
@@ -341,7 +345,7 @@ open_hub() {
     return 0
   fi
   printf '%s\n' "$addr" >"$PREV_FILE"
-  HUB_FROM_OPEN=1 exec ghostty --class=float.tui --title=hub -e "$SELF" --fzf
+  HUB_FROM_OPEN=1 exec ghostty --class=float.tui --title=hub -e "$SELF" --fzf ${1:+"$1"}
 }
 
 usage() { sed -n '2,/^set -u/p' "$SELF" | sed '$d; s/^# \{0,1\}//'; }
@@ -359,8 +363,8 @@ done
 set -- "${args[@]}"
 
 case ${1:-} in
-  "" | --fzf) interactive ;;
-  open) open_hub ;;
+  "" | --fzf) interactive "${2:-}" ;;
+  open) open_hub "${2:-}" ;;
   --list) build_cache; list_table | column -t -s $'\t' ;;
   --raw) build_cache; cat "$CACHE" ;;
   --describe) shift; describe "${1:?row id}" ;;

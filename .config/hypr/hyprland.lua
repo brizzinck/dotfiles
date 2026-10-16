@@ -43,7 +43,7 @@ hl.on("hyprland.start", function()
     end
     -- palette link first (black when missing): waybar, dunst, rofi, swayosd read ~/.local/state/theme/current
     hl.exec_cmd("~/.local/bin/theme init")
-    hl.exec_cmd("waybar & hypridle")
+    hl.exec_cmd("~/.config/waybar/scripts/bar.sh init; waybar & hypridle")
     hl.exec_cmd("systemctl --user start hyprpolkitagent")
     hl.exec_cmd("~/.config/hypr/td_clipboard_acl.sh")
     hl.exec_cmd("dunst")
@@ -58,6 +58,12 @@ hl.on("hyprland.start", function()
     hl.exec_cmd("udiskie --tray --notify")
     hl.exec_cmd("Telegram -startintray")
     hl.exec_cmd("pgrep swaybg && killall swaybg; " .. wallpaper)
+end)
+
+-- A new monitor gets its bars from the config waybar parsed at startup. After a compact/full toggle that config is stale,
+-- so bar.sh reloads waybar on hotplug, but only when a toggle left it stale (see .config/waybar/scripts/bar.sh).
+hl.on("monitor.added", function()
+    hl.exec_cmd("~/.config/waybar/scripts/bar.sh sync --if-stale")
 end)
 
 -- ───────────────────────────── environment ──────────────────────────
@@ -358,7 +364,8 @@ hl.bind(mainMod .. " + T", hl.dsp.exec_cmd("Telegram"), { description = "Telegra
 hl.bind(mainMod .. " + S", hl.dsp.exec_cmd("if pgrep -x \"ytm\" > /dev/null; then hyprd focuswindow class:YTMDesktop; else flatpak run app.ytmdesktop.ytmdesktop; fi"), { description = "YouTube Music" })
 hl.bind(mainMod .. " + N", hl.dsp.exec_cmd("obsidian"), { description = "Obsidian" })
 hl.bind(mainMod .. " + O", hl.dsp.exec_cmd("pgrep swaybg && killall swaybg; " .. wallpaper), { description = "Reload wallpaper" })
-hl.bind(mainMod .. " + B", hl.dsp.exec_cmd("pkill -SIGUSR1 waybar"), { description = "Toggle waybar" })
+hl.bind(mainMod .. " + B", hl.dsp.exec_cmd("~/.config/waybar/scripts/bar.sh mode toggle"), { description = "Bar compact or full" })
+hl.bind(mainMod .. " + CTRL + B", hl.dsp.exec_cmd("~/.config/waybar/scripts/bar.sh hide toggle"), { description = "Hide or show the bar" })
 
 -- --- session and system ---
 hl.bind(mainMod .. " + Escape", hl.dsp.exec_cmd("pidof hyprlock || hyprlock"), { description = "Lock screen (password)" })
@@ -366,10 +373,10 @@ hl.bind(mainMod .. " + SHIFT + Escape", hl.dsp.exec_cmd(scripts .. "/powermenu.s
 hl.bind("XF86PowerOff", hl.dsp.exec_cmd(scripts .. "/powermenu.sh"), { description = "Power menu" })
 hl.bind(mainMod .. " + SHIFT + U", hl.dsp.exec_cmd(tui .. " zsh -ic 'sysup; read -k1'"), { description = "System update (sysup)" })
 hl.bind(mainMod .. " + CTRL + I", hl.dsp.exec_cmd(scripts .. "/idle-toggle.sh"), { description = "Toggle idle (hypridle)" })
-hl.bind(mainMod .. " + SHIFT + N", hl.dsp.exec_cmd("pkill -x hyprsunset || hyprsunset -t 4500"), { description = "Toggle night light" })
+hl.bind(mainMod .. " + SHIFT + N", hl.dsp.exec_cmd("pkill -x hyprsunset || hyprsunset -t 4500; pkill -o -u $(id -u) -RTMIN+8 -x waybar"), { description = "Toggle night light" })
 hl.bind(mainMod .. " + X", hl.dsp.exec_cmd("dunstctl close"), { description = "Dismiss notification" })
 hl.bind(mainMod .. " + SHIFT + X", hl.dsp.exec_cmd(scripts .. "/notif-history.sh"), { description = "Notification history (fzf)" })
-hl.bind(mainMod .. " + CTRL + X", hl.dsp.exec_cmd("dunstctl set-paused toggle"), { description = "Toggle do-not-disturb" })
+hl.bind(mainMod .. " + CTRL + X", hl.dsp.exec_cmd("dunstctl set-paused toggle; pkill -o -u $(id -u) -RTMIN+8 -x waybar"), { description = "Toggle do-not-disturb" })
 hl.bind(mainMod .. " + ALT + X", hl.dsp.exec_cmd("dunstctl context"), { description = "Notification actions menu" })
 
 -- --- TUIs and pickers ---

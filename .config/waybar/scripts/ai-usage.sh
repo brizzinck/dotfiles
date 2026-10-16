@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ai-usage: waybar custom/ai. Quiet when no data is available.
-#   ai-usage.sh                  JSON: "C 23% X 41%" + tooltip with windows, resets and today's ccusage numbers
+#   ai-usage.sh                  JSON: "<glyph> 41%" (the highest window) + tooltip with every window, resets and today's
+#                                ccusage numbers; the class is always normal: an exhausted limit is normal, not an alert
 #   ai-usage.sh report daily     float.tui report (ccusage daily), also `blocks`
 #   ai-usage.sh --record-claude  read the Claude Code statusline JSON on stdin and cache rate_limits (see below)
 #
@@ -105,16 +106,9 @@ if [[ -n $cx_pct ]]; then
 fi
 if ((${#parts[@]} == 0)); then echo '{"text":""}'; exit 0; fi
 
-class=ok
-if ((maxp >= 90)); then class=critical; elif ((maxp >= 75)); then class=warning; fi
-text="$G_AI ${parts[*]}"
-tip+=("" "click: ccusage daily, right click: 5h blocks")
+class=normal
+if ((maxp > 0)); then printf -v text '%s %2d%%' "$G_AI" "$maxp"; else text="$G_AI ${parts[*]}"; fi
+tip=("AI usage, highest window ${maxp}%" "${tip[@]}")
+tip+=("" "L: ccusage daily · R: 5h blocks")
 
-# one alert when a window crosses 90 %
-mkdir -p "$RUN"
-if ((maxp >= 90)); then
-  if [[ ! -e $RUN/alerted ]]; then touch "$RUN/alerted"; notify-send -a ai-usage -u critical "AI usage at ${maxp}%" "${parts[*]}" 2>/dev/null || true; fi
-else
-  rm -f "$RUN/alerted"
-fi
 printf '%s\n' "${tip[@]}" | jq -Rs --arg t "$text" --arg c "$class" '{text: $t, class: $c, tooltip: (rtrimstr("\n"))}' | jq -c .

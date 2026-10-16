@@ -21,7 +21,7 @@ PIDF="$STATE/pid"
 MARK="$STATE/panel-off"
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 MONITORS="$HOME/.config/hypr/monitors.lua"
-G_LID='󰛆'
+G_LID='󰌢'
 DRY=0
 args=()
 for a in "$@"; do
@@ -30,7 +30,7 @@ done
 set -- "${args[@]+"${args[@]}"}"
 
 note() { notify-send -a lid -h string:x-dunst-stack-tag:lid -t 2500 "$@" 2>/dev/null || true; }
-poke_bar() { pkill -RTMIN+13 waybar 2>/dev/null || true; }
+poke_bar() { pkill -o -u "$UID" -RTMIN+8 -x waybar 2>/dev/null || true; }   # signal 8 = waybar toggles drawer
 do_cmd() { if ((DRY)); then echo "would run: $*"; else "$@"; fi; }
 
 holder_pid() {
@@ -117,7 +117,7 @@ event() {
 
 waybar() {
   if active; then
-    jq -cn --arg t "$G_LID" '{text: $t, class: "on", tooltip: "Lid closed: keep working (no suspend on close)\nclick: off"}'
+    jq -cn --arg t "$G_LID" '{text: $t, class: "enabled", tooltip: "Lid closed: keep working (no suspend on close)\n\nL: toggle"}'
   else
     echo '{"text":""}'
   fi

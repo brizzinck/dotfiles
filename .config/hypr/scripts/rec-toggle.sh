@@ -11,12 +11,14 @@
 # A running recording is stopped by any invocation except --dry-run.
 # Output: ~/Videos/screencaptures/<date>.mp4. Waybar can test for a recording with
 # `pgrep -x gpu-screen-reco` (the kernel truncates the process name to 15 chars);
-# the recording flavour (mic or not) is left in $XDG_RUNTIME_DIR/rec-mic for the waybar module.
+# the recording flavour (mic or not) is left in $XDG_RUNTIME_DIR/rec-mic and the pid plus start time in
+# $XDG_RUNTIME_DIR/rec-pid for the waybar module.
 set -u
 
 proc=gpu-screen-reco
 outdir="$HOME/Videos/screencaptures"
 micflag="${XDG_RUNTIME_DIR:-/tmp}/rec-mic"
+pidfile="${XDG_RUNTIME_DIR:-/tmp}/rec-pid"   # "<pid> <start epoch>", read by the waybar recording module (elapsed time)
 
 mode=monitor
 addr=""
@@ -47,7 +49,7 @@ if ((!dry)) && pgrep -x "$proc" >/dev/null; then
     pgrep -x "$proc" >/dev/null || break
     sleep 0.1
   done
-  rm -f "$micflag"
+  rm -f "$micflag" "$pidfile"
   notify-send -a recorder -t 2500 "Recording saved" "$outdir"
   exit 0
 fi
@@ -93,6 +95,7 @@ fi
 
 if ((mic)); then : >"$micflag"; else rm -f "$micflag"; fi
 gpu-screen-recorder "${args[@]}" -f 60 "${audio[@]}" -o "$out" &
+printf '%s %s\n' "$!" "$(date +%s)" >"$pidfile"
 disown
 if ((mic)); then
   notify-send -a recorder -t 2500 "Recording (system + mic)" "$out"

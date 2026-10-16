@@ -52,7 +52,7 @@ set -- "${args[@]+"${args[@]}"}"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 note() { notify-send -a vault -u "${3:-low}" -t 4000 -h string:x-dunst-stack-tag:vault "$1" "${2:-}"; }
-poke_bar() { pkill -RTMIN+15 waybar 2>/dev/null || true; }
+poke_bar() { pkill -o -u "$UID" -RTMIN+15 -x waybar 2>/dev/null || true; }
 forget_index() { rm -f "$RUN/totp-index.tsv" "$RUN/totp-index.tmp"; }
 
 configured() { [[ -s $RBW_CONF ]] && jq -e '.email != null' "$RBW_CONF" >/dev/null 2>&1; }
@@ -301,15 +301,16 @@ ssh_agent() {
 }
 
 waybar() {
-  local st nl=$'\n' tip='left: passwords  right: 2FA codes  middle: desktop app'
+  local st nl=$'\n' tip='L: passwords · R: 2FA codes · M: desktop app'
   st=$(state)
-  [[ -f $BW_SESSION_FILE ]] && tip="$tip${nl}CLI (bw): session open"
-  [[ -f $SSH_FLAG ]] && tip="$tip${nl}SSH agent: on ($([[ -S $SSH_SOCK ]] && echo socket up || echo app not running))"
+  [[ -f $BW_SESSION_FILE ]] && tip="CLI (bw): session open$nl$tip"
+  [[ -f $SSH_FLAG ]] && tip="SSH agent: on ($([[ -S $SSH_SOCK ]] && echo socket up || echo app not running))$nl$tip"
+  # colour roles: unlocked = normal (the usual state of a session, no colour), locked / not set up = dim
   case $st in
     missing) echo '{"text":""}' ;;
-    unconfigured) jq -cn --arg t "$G_LOCKED" '{text: $t, class: "unconfigured", tooltip: "Vault is not set up: run bw-setup in a terminal"}' ;;
-    unlocked) jq -cn --arg t "$G_OPEN" --arg tip "Vault unlocked (until the next login or lock)$nl$tip" '{text: $t, class: "unlocked", tooltip: $tip}' ;;
-    *) jq -cn --arg t "$G_LOCKED" --arg tip "Vault locked (master password on first use)$nl$tip" '{text: $t, class: "locked", tooltip: $tip}' ;;
+    unconfigured) jq -cn --arg t "$G_LOCKED" '{text: $t, class: "dim", tooltip: "Vault is not set up: run bw-setup in a terminal"}' ;;
+    unlocked) jq -cn --arg t "$G_OPEN" --arg tip "Vault unlocked (until the next login or lock)$nl$nl$tip" '{text: $t, class: "normal", tooltip: $tip}' ;;
+    *) jq -cn --arg t "$G_LOCKED" --arg tip "Vault locked (master password on first use)$nl$nl$tip" '{text: $t, class: "dim", tooltip: $tip}' ;;
   esac
 }
 

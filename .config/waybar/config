@@ -1,285 +1,45 @@
-// Waybar: quiet when normal, loud when abnormal. Palette: themes/static/everforest-black.
-// Alerts on the right are hidden until relevant. TUI actions open a floating ghostty (class float.tui).
-{
-  "layer": "top",
-  "position": "top",
-  "height": 28,
-  "spacing": 0,
-  "margin": 0,
-
-  "modules-left": ["hyprland/workspaces", "hyprland/submap"],
-  "modules-center": ["clock"],
-  "modules-right": [
-    "privacy", "custom/recording", "custom/failed", "custom/updates", "custom/vpn", "custom/dnd", "custom/idle", "custom/keepawake", "custom/lid",
-    "custom/ai", "custom/power", "custom/vault",
-    "network", "bluetooth", "pulseaudio#mic", "pulseaudio", "backlight", "battery",
-    "cpu", "memory", "temperature", "hyprland/language", "tray"
-  ],
-
-  "hyprland/workspaces": {
-    "format": "{id} {windows}",
-    "format-window-separator": " ",
-    "window-rewrite-default": "󰣆",
-    "window-rewrite": {
-      "class<com.mitchellh.ghostty>": "󰆍",
-      "class<com.mitchellh.ghostty> title<.*:nvim.*>": "",
-      "class<com.mitchellh.ghostty> title<.*:(claude|codex|node).*>": "󰚩",
-      "class<float.tui>": "󰘮",
-      "class<app.zen_browser.zen>": "󰈹",
-      "class<google-chrome|Google-chrome|camoufox>": "󰊯",
-      "class<org.telegram.desktop>": "",
-      "class<obsidian>": "",
-      "class<YTMDesktop|app.ytmdesktop.ytmdesktop>": "󰗃",
-      "class<nemo|org.gnome.Nautilus>": "󰉋",
-      "class<com.obsproject.Studio>": "󰻂"
-    },
-    "show-special": true,
-    "special-visible-only": false,
-    "on-click": "activate",
-    "tooltip": false
+// Waybar (W1): two bars per output in one process; every module is defined in modules.jsonc.
+//   compact  base bar: exclusive zone, always there (hidden only by `bar.sh hide`)
+//   full     overlay of the same height drawn over compact (non-exclusive, margin-top -28); SIGUSR1 toggles only this one
+// Mode and visibility live in ~/.local/state/waybar (written by scripts/bar.sh, read here through `include`), so they survive
+// restarts, theme reloads and logins. Never send SIGUSR1 by hand: use `bar.sh mode toggle` (SUPER+B) or `bar.sh hide toggle`
+// (SUPER+CTRL+B). Colours: style.css (palette tokens, themes/palette). Alerts print nothing until they are relevant.
+[
+  {
+    "name": "compact",
+    "include": ["~/.local/state/waybar/compact.jsonc", "~/.config/waybar/modules.jsonc"],
+    "layer": "top",
+    "position": "top",
+    "height": 28,
+    "spacing": 0,
+    "margin": 0,
+    "exclusive": true,
+    "on-sigusr1": "noop",
+    "modules-left": ["hyprland/workspaces", "hyprland/submap"],
+    "modules-center": ["clock"],
+    "modules-right": [
+      "privacy", "custom/recording", "custom/health", "network#alert", "custom/updates#alert",
+      "hyprland/language", "custom/toggles", "battery", "custom/mode#compact"
+    ]
   },
-
-  "hyprland/submap": { "format": "󰩨 {}", "tooltip": false },
-
-  "clock": {
-    "format": "{:%H:%M}",
-    "format-alt": "{:%a %d %b  %H:%M}",
-    "tooltip-format": "<span font='JetBrainsMono Nerd Font'>{calendar}</span>",
-    "calendar": {
-      "mode": "year",
-      "mode-mon-col": 3,
-      "weeks-pos": "right",
-      "on-scroll": 1,
-      "format": {
-        // pango cannot use @define-color: these are the black-variant tokens fg / subtext / muted / yellow / green
-        // (doctor.sh checks that every hex here is a palette token; night differs from black by <= 3/255 on muted and subtext)
-        "months": "<span color='#dbd8c9'><b>{}</b></span>",
-        "days": "<span color='#8d998f'>{}</span>",
-        "weeks": "<span color='#6c7871'>W{}</span>",
-        "weekdays": "<span color='#d9bc7f'><b>{}</b></span>",
-        "today": "<span color='#abc682'><b><u>{}</u></b></span>"
-      }
-    },
-    "actions": {
-      "on-click-right": "mode",
-      "on-scroll-up": "shift_up",
-      "on-scroll-down": "shift_down"
-    }
-  },
-
-  "privacy": {
-    "icon-size": 14,
-    "icon-spacing": 6,
-    "transition-duration": 150,
-    "modules": [{ "type": "screenshare" }, { "type": "audio-in" }]
-  },
-
-  "custom/recording": {
-    "exec": "~/.config/waybar/scripts/recording.sh",
-    "return-type": "json",
-    "interval": 2,
-    "on-click": "~/.config/hypr/scripts/rec-toggle.sh",
-    "tooltip": false
-  },
-
-  // failed units (system + user) and services with many restarts
-  "custom/failed": {
-    "exec": "~/.config/waybar/scripts/failed.sh",
-    "return-type": "json",
-    "interval": 60,
-    "on-click": "ghostty --class=float.tui -e sh -c 'systemctl --failed --no-pager; systemctl --user --failed --no-pager; read -r _'"
-  },
-
-  "custom/updates": {
-    "exec": "~/.config/waybar/scripts/updates.sh",
-    "return-type": "json",
-    "interval": 3600,
-    "signal": 9,
-    "on-click": "ghostty --class=float.tui -e zsh -ic sysup; pkill -RTMIN+9 waybar"
-  },
-
-  "custom/vpn": {
-    "exec": "~/.config/waybar/scripts/vpn.sh",
-    "return-type": "json",
-    "interval": 5
-  },
-
-  // shown only while notifications are paused; SUPER+CTRL+X toggles, click toggles, right-click pops history
-  "custom/dnd": {
-    "exec": "~/.config/waybar/scripts/dnd.sh",
-    "return-type": "json",
-    "interval": 2,
-    "signal": 8,
-    "on-click": "dunstctl set-paused toggle; pkill -RTMIN+8 waybar",
-    "on-click-right": "dunstctl history-pop"
-  },
-
-  // shown only while hypridle is stopped (SUPER+CTRL+I toggles it)
-  "custom/idle": {
-    "exec": "~/.config/waybar/scripts/idle.sh",
-    "return-type": "json",
-    "interval": 2,
-    "on-click": "~/.config/hypr/scripts/idle-toggle.sh",
-    "tooltip": false
-  },
-
-  // shown only while a keep-awake inhibitor is held (keep-awake.sh); click releases, right click picks a duration
-  "custom/keepawake": {
-    "exec": "~/.config/hypr/scripts/keep-awake.sh waybar",
-    "return-type": "json",
-    "interval": 30,
-    "signal": 12,
-    "on-click": "~/.config/hypr/scripts/keep-awake.sh toggle",
-    "on-click-right": "~/.config/hypr/scripts/keep-awake.sh menu"
-  },
-
-  // shown only while "keep working with the lid closed" is on (lid.sh)
-  "custom/lid": {
-    "exec": "~/.config/hypr/scripts/lid.sh waybar",
-    "return-type": "json",
-    "interval": 30,
-    "signal": 13,
-    "on-click": "~/.config/hypr/scripts/lid.sh toggle"
-  },
-
-  // Codex limit from the codex-hud cache, Claude from the statusline cache or ccusage; empty when there is no data
-  "custom/ai": {
-    "exec": "~/.config/waybar/scripts/ai-usage.sh",
-    "return-type": "json",
-    "interval": 60,
-    "on-click": "ghostty --class=float.tui -e ~/.config/waybar/scripts/ai-usage.sh report daily",
-    "on-click-right": "ghostty --class=float.tui -e ~/.config/waybar/scripts/ai-usage.sh report blocks"
-  },
-
-  // power profile (tlp-pd); click cycles, right click opens a picker
-  "custom/power": {
-    "exec": "~/.config/hypr/scripts/power-profile.sh waybar",
-    "return-type": "json",
-    "interval": 10,
-    "signal": 14,
-    "on-click": "~/.config/hypr/scripts/power-profile.sh cycle",
-    "on-click-right": "~/.config/hypr/scripts/power-profile.sh menu"
-  },
-
-  // Bitwarden vault (rbw): lock/unlock state, empty when rbw is not installed, dim until bw-setup has run.
-  // left click = passwords (rofi-rbw), right click = 2FA codes, middle click = Bitwarden desktop app; signal 15 refreshes it after lock/unlock actions
-  "custom/vault": {
-    "exec": "~/.config/hypr/scripts/vault.sh waybar",
-    "return-type": "json",
-    "interval": 10,
-    "signal": 15,
-    "on-click": "~/.config/hypr/scripts/vault.sh passwords",
-    "on-click-right": "~/.config/hypr/scripts/vault.sh totp",
-    "on-click-middle": "~/.config/hypr/scripts/vault.sh app"
-  },
-
-  "network": {
-    "interval": 5,
-    "format-wifi": "{icon} {essid}",
-    "format-icons": ["󰤯", "󰤟", "󰤢", "󰤥", "󰤨"],
-    "format-ethernet": "󰈀",
-    "format-linked": "󰤫",
-    "format-disconnected": "󰖪 offline",
-    "max-length": 24,
-    "tooltip-format-wifi": "{essid} {signalStrength}%\n{ipaddr}\n󰁅 {bandwidthDownBytes}  󰁝 {bandwidthUpBytes}",
-    "tooltip-format-ethernet": "{ifname}\n{ipaddr}",
-    "tooltip-format-disconnected": "no connection",
-    "on-click": "ghostty --class=float.tui -e nmtui"
-  },
-
-  "bluetooth": {
-    "format": "󰂯",
-    "format-off": "",
-    "format-disabled": "",
-    "format-connected": "󰂱 {device_alias}",
-    "tooltip-format-connected": "{controller_alias}\n{device_enumerate}",
-    "tooltip-format-enumerate-connected": "{device_alias} {device_battery_percentage}%",
-    "max-length": 24,
-    "on-click": "ghostty --class=float.tui -e bluetui"
-  },
-
-  "pulseaudio#mic": {
-    "format": "{format_source}",
-    "format-source": "󰍬",
-    "format-source-muted": "󰍭",
-    "on-click": "~/.config/hypr/scripts/mic-mute-all.sh",
-    "on-click-right": "~/.config/hypr/scripts/audio-picker.sh",
-    "scroll-step": 5,
-    "tooltip-format": "{source_desc} {source_volume}%\nclick: mute/unmute all microphones, right click: device picker"
-  },
-
-  "pulseaudio": {
-    "scroll-step": 5,
-    "max-volume": 140,
-    "states": { "over": 101 },
-    "format": "{icon} {volume}%",
-    "format-muted": "󰖁",
-    "format-bluetooth": "󰂰 {volume}%",
-    "format-bluetooth-muted": "󰖁",
-    "format-icons": { "headphone": "󰋋", "default": ["󰕿", "󰖀", "󰕾"] },
-    "tooltip-format": "{desc}",
-    "on-click": "ghostty --class=float.tui -e wiremix",
-    "on-click-right": "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
-  },
-
-  "backlight": {
-    "device": "amdgpu_bl1",
-    "format": "{icon} {percent}%",
-    "format-icons": ["󰃞", "󰃟", "󰃠"],
-    "on-scroll-up": "brightnessctl set +5%",
-    "on-scroll-down": "brightnessctl set 5%-",
-    "tooltip": false
-  },
-
-  // TLP Long_Life holds the battery near 80% ("Not charging"): waybar reports that as "plugged"
-  "battery": {
-    "bat": "BAT0",
-    "interval": 30,
-    "states": { "warning": 30, "critical": 15 },
-    "format": "{icon} {capacity}%",
-    "format-charging": "󰂄 {capacity}%",
-    "format-plugged": "󰚥 {capacity}%",
-    "format-full": "󰚥 {capacity}%",
-    "format-icons": ["󰂎", "󰁺", "󰁼", "󰁾", "󰂀", "󰂂", "󰁹"],
-    "tooltip-format": "{timeTo}\n{power:.1f} W",
-    "events": {
-      "on-discharging-warning": "notify-send -u normal -a battery 'Low battery'",
-      "on-discharging-critical": "notify-send -u critical -a battery 'Battery critical'"
-    }
-  },
-
-  "cpu": {
-    "interval": 3,
-    "format": "󰻠 {usage}%",
-    "states": { "warning": 70, "critical": 90 },
-    "tooltip": false
-  },
-
-  "memory": {
-    "interval": 5,
-    "format": "󰍛 {percentage}%",
-    "states": { "warning": 75, "critical": 90 },
-    "tooltip-format": "{used:.1f} / {total:.1f} GiB"
-  },
-
-  // AMD CPU (k10temp, Tctl); the glob-free hwmon dir is resolved by waybar
-  "temperature": {
-    "hwmon-path-abs": "/sys/devices/pci0000:00/0000:00:18.3/hwmon",
-    "input-filename": "temp1_input",
-    "critical-threshold": 90,
-    "format": "󰔏 {temperatureC}°",
-    "format-critical": "󱃂 {temperatureC}°",
-    "tooltip": false
-  },
-
-  // anything but EN is highlighted so a wrong layout is noticed (colours: orange / subtext / yellow / orange tokens)
-  "hyprland/language": {
-    "format": "<span color='#ea9e77'>{}</span>",
-    "format-en": "<span color='#8d998f'>EN</span>",
-    "format-ru": "<span color='#d9bc7f'><b>RU</b></span>",
-    "format-uk": "<span color='#ea9e77'><b>UA</b></span>",
-    "tooltip": false
-  },
-
-  "tray": { "icon-size": 16, "spacing": 8 }
-}
+  {
+    "name": "full",
+    "include": ["~/.local/state/waybar/full.jsonc", "~/.config/waybar/full-default.jsonc", "~/.config/waybar/modules.jsonc"],
+    "layer": "top",
+    "position": "top",
+    "height": 28,
+    "spacing": 0,
+    "margin": 0,
+    "exclusive": false,
+    "margin-top": -28,
+    "on-sigusr1": "toggle",
+    "modules-left": ["hyprland/workspaces", "hyprland/submap"],
+    "modules-center": ["clock"],
+    "modules-right": [
+      "privacy", "custom/recording", "custom/health", "custom/updates",
+      "group/toggles", "group/net", "group/audio", "group/system",
+      "custom/ai", "custom/vault", "hyprland/language", "group/trays",
+      "battery", "custom/mode#full"
+    ]
+  }
+]
