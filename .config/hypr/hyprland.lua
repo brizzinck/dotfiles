@@ -111,7 +111,7 @@ hl.config({
 })
 
 -- ───────────────────────────── look ─────────────────────────────────
--- Colours (borders, glow, groups, background) come from the palette: the black fragment is always there as the
+-- Colours (borders, groups, background) come from the palette: the black fragment is always there as the
 -- fallback, the second one is the active variant (~/.local/state/theme/current, flipped by `theme`). A missing
 -- or broken fragment is skipped (pcall), black stays in place and `theme init` repairs the link.
 for _, path in ipairs({
@@ -129,7 +129,11 @@ local cursor_idle_timeout = 5
 
 hl.config({
     general = {
-        gaps_in = 3,
+        -- Crisp edges on both outputs: Hyprland scales these by the monitor scale and rounds every box to whole
+        -- pixels. The border is round(border_size * scale) = 2 px on HDMI-A-1 (1.0) and 3 px on eDP-1 (1.5); the
+        -- gaps are even so they stay whole pixels at 1.5 (gaps_in 3 would be 4.5 px). Odd border sizes round up
+        -- (1 -> 2 px, 3 -> 5 px at 1.5), so keep the border even.
+        gaps_in = 4,
         gaps_out = 4,
         border_size = 2,
         resize_on_border = true,
@@ -139,13 +143,11 @@ hl.config({
     },
 
     decoration = {
-        rounding = 6,
+        rounding = 6,                   -- 6 / 9 px radius (outer edge 8 / 12 px), whole pixels on both outputs
+        rounding_power = 2,             -- true circle: no border correction offset, smoothest antialiasing
 
         shadow = {
-            enabled = true,
-            range = 12,
-            render_power = 3,
-            color_inactive = "rgba(00000000)",
+            enabled = false,            -- no glow around the focused window
         },
 
         blur = {
@@ -208,14 +210,13 @@ hl.animation({ leaf = "workspaces",       enabled = true, speed = 1.8, bezier = 
 hl.animation({ leaf = "specialWorkspace", enabled = true, speed = 1.8, bezier = "snap", style = "slidevert" })
 
 -- ───────────────────────────── workspaces and rules ─────────────────
--- Smart borders: no frame, no gaps and no glow for a lone tiled window
+-- Smart borders: no frame and no gaps for a lone tiled window
 hl.workspace_rule({ workspace = "w[tv1]", gaps_out = 0, gaps_in = 0 })
 hl.window_rule({
     name = "smart-borders",
     match = { float = false, workspace = "w[tv1]" },
     border_size = 0,
     rounding = 0,
-    no_shadow = true,
 })
 
 -- Drop-down terminal: SUPER+Z toggles it, tmux session "scratch" is attached or created.
