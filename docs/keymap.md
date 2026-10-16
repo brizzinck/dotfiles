@@ -223,7 +223,7 @@ so the hub and the leader cannot drift. Keys work on the ua and ru layouts. Ever
 | `SUPER+;` `t` | Theme: `b` Black, `n` Night, `t` Toggle |
 | `SUPER+;` `n` | Notifications: `a` Dismiss all, `c` Actions, `d` Do not disturb, `h` History, `x` Dismiss |
 | `SUPER+;` `m` | Mouse: `d` Hint drag, `h` Hint click, `m` Mouse mode |
-| `SUPER+;` `s` | System: `b` Restart bar, `d` Doctor, `e` Hyprland errors, `f` Health issues, `h` Bar hide/show, `i` Wi-Fi, `n` Network, `p` Ports, `r` Reload Hyprland, `t` btop, `u` Update, `v` Voicebox tunnel, `w` Bar compact/full |
+| `SUPER+;` `s` | System: `b` Restart bar, `d` Doctor, `e` Hyprland errors, `f` Health issues, `h` Bar hide/show, `i` Wi-Fi, `n` Network, `p` Ports, `r` Reload Hyprland, `t` btop, `u` Update, `w` Bar compact/full |
 
 ## tmux
 

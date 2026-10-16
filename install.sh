@@ -219,7 +219,6 @@ log "Linking dotfiles with stow (existing files are moved to $BACKUP_DIR)"
 cd "$DOTFILES"
 # Real directories first, so stow links single files instead of folding the whole directory:
 # systemd ignores a symlinked drop-in directory, and `systemctl --user enable` would write its *.wants links into the repo.
-mkdir -p "$HOME/.config/systemd/user/bredllm-reverse-socks.service.d"
 # GTK dirs stay real (apps keep bookmarks etc. there); only settings.ini / gtk.css are linked
 mkdir -p "$HOME/.config/gtk-3.0" "$HOME/.config/gtk-4.0"
 git submodule update --init --recursive

@@ -48,5 +48,3 @@ bar-hide	System	Bar: hide / show	SUPER+CTRL+B	toggle	~/.config/waybar/scripts/ba
 waybar-restart	System	Restart waybar	-	run	~/.config/waybar/scripts/bar.sh restart	-	waybar	-	s b;Restart bar
 keybinds	Docs	Keybind cheatsheet	SUPER+slash	run	~/.config/hypr/scripts/keybinds.sh	-	fzf-menu jq	-
 keymap	Docs	Keymap document (docs/keymap.md)	-	tui	less -R ~/dotfiles/docs/keymap.md	-	less	Hyprland, tmux and shell keys; regenerate with docs/gen-keymap.sh.
-voicebox-tunnel	Toggles	Voicebox tunnel (ssh -L 17493 to bredllm)	-	toggle	~/.local/bin/voicebox-tunnel toggle	~/.local/bin/voicebox-tunnel status >/dev/null 2>&1	~/.local/bin/voicebox-tunnel	ON = the user unit voicebox-tunnel.service runs (localhost:17493). It starts only on demand, never at login; a stopped tunnel raises no health alert.	s v;Voicebox tunnel
-voicebox-status	System	Voicebox tunnel status	-	tui	+pause ~/.local/bin/voicebox-tunnel status	-	~/.local/bin/voicebox-tunnel	systemctl --user status of voicebox-tunnel.service.

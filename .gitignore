@@ -3,8 +3,6 @@ node_modules
 *.claude
 package*.json
 .config/tmux/plugins
-# host/LAN specific unit, kept only in ~/.config/systemd/user (public repo)
-.config/systemd/user/bredllm-reverse-socks.service
 # Bitwarden client state: holds the server URL and e-mail, never commit
 .config/rbw/
 .local/share/rbw/
