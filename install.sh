@@ -74,10 +74,14 @@ fi
 if lspci 2>/dev/null | grep -qi nvidia; then
   log "NVIDIA GPU detected — installing drivers"
   sudo pacman -S --needed --noconfirm nvidia-open nvidia-utils nvidia-settings
+  # NVIDIA env for Hyprland (it must not be set on AMD: LIBVA_DRIVER_NAME=nvidia breaks VA-API)
+  nvidia_src='source = ~/.config/hypr/gpu-nvidia.conf'
+  grep -qxF "$nvidia_src" "$DOTFILES/.config/hypr/host.conf" 2>/dev/null ||
+    echo "$nvidia_src" >> "$DOTFILES/.config/hypr/host.conf"
 fi
 
 log "Creating directories"
-mkdir -p "$HOME"/{job,docs/books,pics/walls,pics/screenshots,vids/screencaptures,.local/bin,.local/state,.config}
+mkdir -p "$HOME"/{job,docs/books,pics/walls,pics/screenshots,vids/screencaptures,Videos/screencaptures,.local/bin,.local/state,.config}
 
 # ───────────────────────────── 2. AUR / flatpak ───────────────────────────────
 log "Installing yay"
