@@ -1,76 +1,67 @@
+/* wofi fallback launcher — Everforest Black, fully opaque (themes/static/everforest-black/palette.md) */
 window {
     font-family: "JetBrainsMono Nerd Font";
-    font-size: 18px;
-    font-weight: bold;
-    background-color: rgba(0, 0, 0, 0.8);
+    font-size: 16px;
+    font-weight: 500;
+    background-color: #000000;
     border-radius: 8px;
-    border: 2px solid #FFFFFF;
+    border: 1px solid #3a4440;
     padding: 8px;
 }
 
 #input {
-    color: #FFFFFF;
+    color: #d3c6aa;
     background-color: transparent;
     border: none;
+    border-bottom: 1px solid #3a4440;
+    border-radius: 0;
+    box-shadow: none;
     padding: 8px;
     margin: 0;
-    text-align: left;
+}
+
+#input:focus {
+    border-bottom: 1px solid #a7c080;
 }
 
 #outer-box {
     padding: 8px;
-    spacing: 10px;
-    align: start;
+    margin: 0;
 }
 
 #inner-box {
-    spacing: 10px;
-    align: start;
+    margin-top: 6px;
 }
 
 #scroll {
     margin: 0;
-    align: start;
 }
 
 #entry {
-    color: #FFFFFF;
+    color: #d3c6aa;
     background-color: transparent;
-    padding: 8px;
+    padding: 6px 12px;
     margin: 0;
-    border-radius: 8px;
-    text-align: left;
-    width: 100%;  /* Ensure full width */
-    padding-left: 12px; /* Push text to left */
+    border-radius: 6px;
 }
 
 #entry:selected {
-    background-color: #FFFFFF;
-    color: #000000;
-    text-align: left;
-    width: 100%;  /* Ensure full width */
-    padding-left: 12px; /* Push text to left */
-    display: flex;
-    justify-content: flex-start; /* Ensure text is left-aligned */
-}
-
-#entry:alternate {
-    background-color: #111111;
-    text-align: left;
+    background-color: #1f2a24;
+    color: #a7c080;
 }
 
 #text {
-    color: #FFFFFF;
-    text-align: left;
+    color: #d3c6aa;
 }
 
 #text:selected {
-    color: #000000;
-    text-align: left;
+    color: #a7c080;
 }
 
 #message {
-    background-color: red;
+    background-color: #0b0e0d;
+    color: #d3c6aa;
     border: none;
-    text-align: left;
+    border-radius: 6px;
+    padding: 6px 10px;
 }

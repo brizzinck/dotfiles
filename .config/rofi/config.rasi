@@ -1,1 +1,106 @@
-/* TODO */
+/* rofi 2.0 — Everforest Black (themes/static/everforest-black/palette.md).
+   Scripts pass only -theme-str (width/lines), -p and -mesg on top of this. */
+configuration {
+  modes: "drun,run,window,ssh";
+  show-icons: true;
+  icon-theme: "breeze-dark";
+  font: "JetBrainsMono Nerd Font 13";
+  terminal: "ghostty";
+  drun-display-format: "{name}";
+  display-drun: "󰀻 apps";
+  display-run: "󰐊 run";
+  display-window: "󱂬 win";
+  display-ssh: "󰣀 ssh";
+  display-combi: "󰍉 all";
+  matching: "fuzzy";
+  sort: true;
+  sorting-method: "fzf";
+  case-sensitive: false;
+  cycle: true;
+  hover-select: false;
+  kb-mode-next: "Shift+Right,Control+Tab";
+  kb-mode-previous: "Shift+Left,Control+ISO_Left_Tab";
+}
+
+* {
+  bg: #000000;
+  surface: #0b0e0d;
+  sel: #1f2a24;
+  border: #3a4440;
+  fg: #d3c6aa;
+  dim: #6b7770;
+  accent: #a7c080;
+  urgent: #e67e80;
+  active: #7fbbb3;
+  background-color: transparent;
+  text-color: @fg;
+}
+
+window {
+  width: 640px;
+  location: center;
+  anchor: center;
+  background-color: @bg;
+  border: 1px;
+  border-color: @border;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+mainbox {
+  spacing: 10px;
+  children: [ inputbar, message, listview ];
+}
+
+inputbar {
+  padding: 8px 12px;
+  spacing: 10px;
+  border: 0 0 1px 0;
+  border-color: @border;
+  children: [ prompt, entry ];
+}
+
+prompt { text-color: @accent; }
+
+entry {
+  placeholder: "search";
+  placeholder-color: @dim;
+  cursor: text;
+}
+
+listview {
+  lines: 10;
+  columns: 1;
+  fixed-height: true;
+  scrollbar: false;
+  spacing: 2px;
+}
+
+element {
+  padding: 6px 10px;
+  border-radius: 6px;
+  spacing: 10px;
+}
+
+element normal.normal, element alternate.normal { background-color: transparent; text-color: @fg; }
+element selected.normal { background-color: @sel; text-color: @accent; }
+element normal.urgent, element alternate.urgent, element selected.urgent { text-color: @urgent; }
+element normal.active, element alternate.active, element selected.active { text-color: @active; }
+
+element-icon {
+  size: 22px;
+  vertical-align: 0.5;
+}
+
+element-text {
+  text-color: inherit;
+  vertical-align: 0.5;
+}
+
+message {
+  padding: 6px 10px;
+  border-radius: 6px;
+  background-color: @surface;
+}
+
+textbox { text-color: @fg; }
