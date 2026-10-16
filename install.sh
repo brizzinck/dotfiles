@@ -80,7 +80,7 @@ if lspci 2>/dev/null | grep -qi nvidia; then
 fi
 
 log "Creating directories"
-mkdir -p "$HOME"/{job,docs/books,pics/walls,pics/screenshots,vids/screencaptures,Videos/screencaptures,.local/bin,.local/state,.config}
+mkdir -p "$HOME"/{job,docs/books,pics/walls,pics/screenshots,Downloads,Videos/screencaptures,.local/bin,.local/state,.config}
 
 # ───────────────────────────── 2. AUR / flatpak ───────────────────────────────
 log "Installing yay"
@@ -97,7 +97,8 @@ yay --save --cleanafter >/dev/null 2>&1 || true   # remove AUR build dirs after 
 
 log "Flatpak apps"
 flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
-flatpak override --user --filesystem="$HOME/downloads" || true
+DOWNLOADS_DIR="$(xdg-user-dir DOWNLOAD 2>/dev/null || true)"; DOWNLOADS_DIR="${DOWNLOADS_DIR:-$HOME/Downloads}"   # XDG download dir (~/Downloads)
+flatpak override --user --filesystem="$DOWNLOADS_DIR" || true
 for app in com.google.Chrome com.brave.Browser com.spotify.Client us.zoom.Zoom app.zen_browser.zen \
            org.pgadmin.pgadmin4 rest.insomnia.Insomnia com.google.AndroidStudio \
            com.valvesoftware.Steam com.mojang.Minecraft com.unity.UnityHub app.ytmdesktop.ytmdesktop; do
@@ -155,10 +156,12 @@ npm install -g @openai/codex @google/gemini-cli
 log "RTK (bash output compressor for LLM tools)"
 if ! have rtk; then curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh; fi
 export PATH="$HOME/.local/bin:$PATH"
-have rtk && rtk init -g || warn "rtk init failed — run manually: rtk init -g"
+if have rtk; then rtk init -g || warn "rtk init failed — run manually: rtk init -g"; fi
 
 log "Agent cockpit backends: mcp-hub, ACP adapters, workmux"
 npm install -g mcp-hub@latest @agentclientprotocol/claude-agent-acp @zed-industries/codex-acp
+# MCP servers as pinned global binaries (no `npx …@latest` wrapper process / registry round-trip on every agent start)
+npm install -g chrome-devtools-mcp@1.11.0 mcp-remote@0.14.3
 have workmux || cargo install workmux
 
 # ───────────────────────────── 5. shell ───────────────────────────────────────
@@ -220,7 +223,8 @@ done < <(cd "$DOTFILES" && find . -mindepth 1 -maxdepth 2 \
            \( -path './.git*' -o -path './.config' -o -name 'README*' -o -name 'LICENSE*' -o -name 'CLAUDE.md' \
               -o -name 'install.sh' -o -name 'flash.sh' -o -name 'env.secret.sh' -o -path './infrastructure*' \
               -o -path './themes*' -o -path './node_modules*' -o -name 'package*.json' -o -name '.stow-local-ignore' \
-              -o -path './private*' -o -path './pkg*' -o -name 'apply-*.sh' \) -prune -o -print \
+              -o -path './private*' -o -path './pkg*' -o -name 'apply-*.sh' \
+              -o -path './browsers*' -o -path './docs*' -o -name 'doctor.sh' \) -prune -o -print \
          | sed 's|^\./||' | awk -F/ 'NF<=2')
 stow --restow .
 # private submodule (secrets, machine-local configs) — stowed separately, skipped if not cloned
@@ -241,6 +245,9 @@ else
   later "set GTK dark theme: gsettings set org.gnome.desktop.interface color-scheme prefer-dark (and gtk-theme Adwaita-dark, icon-theme breeze-dark, cursor-theme Bibata-Modern-Ice)"
 fi
 fc-cache -f 2>/dev/null || true
+
+log "Browser settings (Zen user.js memory prefs, Chrome disk-cache flag; copied into the flatpak sandboxes)"
+"$DOTFILES/browsers/apply.sh" || warn "browsers/apply.sh failed"
 
 log "User timers: cache aging (user tmpfiles) and Codex release pruning"
 systemctl --user daemon-reload 2>/dev/null || true
@@ -281,6 +288,10 @@ nvim --headless -c "luafile $HOME/.config/nvim/scripts/bootstrap.lua" 2>&1 | gre
 log "Registering the MCP hub with Claude Code and Codex"
 if have claude && ! claude mcp get mcphub &>/dev/null; then
   claude mcp add -s user --transport http mcphub http://localhost:37373/mcp || warn "claude mcp add failed"
+fi
+if have claude && ! claude mcp get chrome-devtools &>/dev/null; then
+  claude mcp add -s user chrome-devtools -- "$HOME/.npm-global/bin/chrome-devtools-mcp" --autoConnect \
+    --userDataDir "$HOME/.var/app/com.google.Chrome/config/google-chrome" --no-usage-statistics || warn "claude mcp add chrome-devtools failed"
 fi
 if have codex && ! grep -q 'mcp_servers.mcphub' "$HOME/.codex/config.toml" 2>/dev/null; then
   codex mcp add mcphub --url http://localhost:37373/mcp || warn "codex mcp add failed"
