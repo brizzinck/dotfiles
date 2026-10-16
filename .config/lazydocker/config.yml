@@ -1,0 +1,7 @@
+# palette: everforest-black; ANSI color names, so the terminal palette is inherited
+gui:
+  theme:
+    activeBorderColor: [green, bold]
+    inactiveBorderColor: [black]
+    selectedLineBgColor: [black]
+    optionsTextColor: [blue]
