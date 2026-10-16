@@ -39,6 +39,18 @@ else
   if [ -z "$missing" ]; then ok lockscreen "lock_cmd '$lock_cmd' resolves"; else bad lockscreen "lock_cmd '$lock_cmd': not found:$missing"; fi
 fi
 
+# ── idle: clock screensaver without a password, never an automatic suspend ──────
+idle_conf="$HOME/.config/hypr/hypridle.conf"
+if grep -Eq '^[[:space:]]*on-timeout[[:space:]]*=.*(suspend|lock-session)' "$idle_conf" 2>/dev/null; then
+  bad idle-screensaver "hypridle.conf has an idle listener that suspends or locks with a password"
+elif ! grep -q 'screensaver.sh start' "$idle_conf" 2>/dev/null; then
+  bad idle-screensaver "hypridle.conf has no screensaver listener"
+elif [ ! -x "$HOME/.config/hypr/scripts/screensaver.sh" ] || [ ! -r "$HOME/.config/hypr/screensaver.conf" ] || [ ! -x "$HOME/.config/hypr/idle-allowed.sh" ]; then
+  bad idle-screensaver "screensaver.sh / screensaver.conf / idle-allowed.sh missing or not executable"
+else
+  ok idle-screensaver "idle starts the no-password clock screensaver; no auto-suspend"
+fi
+
 # ── NVIDIA env must not leak into the session on an AMD/Intel host ──────────────
 if lspci 2>/dev/null | grep -qi nvidia; then
   ok no-nvidia-env "NVIDIA GPU present, check skipped"
