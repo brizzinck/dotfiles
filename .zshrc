@@ -110,6 +110,14 @@ export BROWSER="flatpak run app.zen_browser.zen"
 export MOZ_ENABLE_WAYLAND=1
 export MOZ_GTK_TITLEBAR_DECORATION=client
 export XCURSOR_SIZE=32
+export HYPRCURSOR_SIZE=32
+# Pointer theme in the environment of the login shell that starts Hyprland (greetd -> hypr-login -> zsh -l -i -> start-hyprland),
+# so the compositor has it at its own start; same choice as hyprland.lua: Everforest-Cursor once installed, else Bibata.
+if [[ -r /usr/share/icons/Everforest-Cursor/manifest.hl && -r /usr/share/icons/Everforest-Cursor/cursors/left_ptr ]]; then
+  export XCURSOR_THEME=Everforest-Cursor HYPRCURSOR_THEME=Everforest-Cursor
+else
+  export XCURSOR_THEME=Bibata-Modern-Ice
+fi
 
 export NVM_DIR="$HOME/.nvm"
 
