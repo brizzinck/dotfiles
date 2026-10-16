@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Hyprland: re-read the colour fragment of the variant (hyprland.conf sources ~/.local/state/theme/current/hyprland.conf).
-# Hyprland watches hyprland.conf and its sourced files, but not the flip of the `current` link, so reload explicitly,
+# Hyprland: re-read the colour fragment of the variant (hyprland.lua loads ~/.local/state/theme/current/hyprland.lua).
+# Hyprland watches hyprland.lua, but not the flip of the `current` link, so reload explicitly,
 # and only when the live colours differ from the variant. Afterwards `hyprctl configerrors` must be empty.
 set -u
 command -v hyprctl >/dev/null 2>&1 || exit 0
@@ -20,7 +20,7 @@ fi
 
 dir=${THEME_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/theme/current}
 want=$(sed -n 's/.*"line": "#\([0-9a-fA-F]\{6\}\)".*/\1/p' "$dir/tokens.json" 2>/dev/null | head -1)
-have=$(hyprctl getoption general:col.inactive_border 2>/dev/null | awk '/custom type/ {print substr($3, 3)}')
+have=$(hyprctl -j getoption general:col.inactive_border 2>/dev/null | jq -r '.gradient // empty | split(" ")[0] | .[2:]' 2>/dev/null)
 if [[ -n $want && $want == "$have" ]]; then
   echo "hyprland: already on ${THEME_VARIANT:-the variant}"
 else
