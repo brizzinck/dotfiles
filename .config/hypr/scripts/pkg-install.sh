@@ -4,6 +4,9 @@
 #   pkg-install.sh --list          "repo/name version" rows (installed ones marked)
 #   pkg-install.sh [--dry-run] NAME...   install these names directly
 set -u
+# Everforest fzf colours of the active variant (generated, see themes/palette); callers outside a login shell have no env
+: "${FZF_DEFAULT_OPTS_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/theme/current/fzfrc}"
+if [[ -r $FZF_DEFAULT_OPTS_FILE ]]; then export FZF_DEFAULT_OPTS_FILE; else unset FZF_DEFAULT_OPTS_FILE; fi
 DRY=0; names=(); mode=pick
 for a in "$@"; do
   case $a in --dry-run) DRY=1 ;; --list) mode=list ;; *) names+=("$a") ;; esac

@@ -32,6 +32,9 @@
 # $XDG_RUNTIME_DIR/hub/prev-window, exported as HUB_TARGET=address:0x... to run/toggle commands, and the
 # window is refocused before every non-TUI action.
 set -u
+# Everforest fzf colours of the active variant (generated, see themes/palette); callers outside a login shell have no env
+: "${FZF_DEFAULT_OPTS_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/theme/current/fzfrc}"
+if [[ -r $FZF_DEFAULT_OPTS_FILE ]]; then export FZF_DEFAULT_OPTS_FILE; else unset FZF_DEFAULT_OPTS_FILE; fi
 
 HUB_DIR=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 SELF="$HUB_DIR/hub"
@@ -283,8 +286,7 @@ interactive() {
     out=$(fzf_rows | fzf --ansi --delimiter="$US" --with-nth=2 --layout=reverse --height=100% \
       --prompt='hub> ' --info=inline --tiebreak=begin,index --print-query --query="$query" \
       --header='Enter run · Esc close · ●/○ live state' \
-      --preview="$SELF --describe {1}" --preview-window='right,45%,wrap,border-left' \
-      --color='bg:#000000,fg:#d3c6aa,hl:#a7c080,fg+:#a7c080,bg+:#1f2a24,hl+:#a7c080,info:#6b7770,prompt:#a7c080,pointer:#a7c080,marker:#e67e80,spinner:#7fbbb3,header:#6b7770,border:#3a4440,gutter:#000000') || rc=$?
+      --preview="$SELF --describe {1}" --preview-window='right,45%,wrap,border-left') || rc=$?
     ((rc == 0)) || return 0
     query=$(sed -n 1p <<<"$out")
     sel=$(sed -n 2p <<<"$out")

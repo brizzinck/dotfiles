@@ -25,6 +25,9 @@
 # `rbw unlocked` is the only state probe: it never starts the agent and never opens pinentry (checked on rbw 1.15).
 # Secrets are copied with wl-copy --sensitive (cliphist skips them), never shown in notifications, never written to disk.
 set -u
+# Everforest fzf colours of the active variant (generated, see themes/palette); callers outside a login shell have no env
+: "${FZF_DEFAULT_OPTS_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/theme/current/fzfrc}"
+if [[ -r $FZF_DEFAULT_OPTS_FILE ]]; then export FZF_DEFAULT_OPTS_FILE; else unset FZF_DEFAULT_OPTS_FILE; fi
 
 HERE=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 TOTP_PY="$HERE/vault-totp.py"

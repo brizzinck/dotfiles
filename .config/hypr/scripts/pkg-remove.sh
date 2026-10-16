@@ -6,6 +6,9 @@
 #   pkg-remove.sh [--dry-run] NAME...   remove these names directly
 # Leftovers are searched with fd in ~/.config ~/.local/share ~/.cache ~/.local/state and go to the Trash (never rm).
 set -u
+# Everforest fzf colours of the active variant (generated, see themes/palette); callers outside a login shell have no env
+: "${FZF_DEFAULT_OPTS_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/theme/current/fzfrc}"
+if [[ -r $FZF_DEFAULT_OPTS_FILE ]]; then export FZF_DEFAULT_OPTS_FILE; else unset FZF_DEFAULT_OPTS_FILE; fi
 DRY=0; names=(); mode=pick; left=""
 while (($#)); do
   case $1 in

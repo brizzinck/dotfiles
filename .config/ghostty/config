@@ -1,29 +1,11 @@
 term = xterm-256color
 
-# palette: everforest-black (themes/static/everforest-black)
-background = #000000
-foreground = #d3c6aa
-cursor-color = #e7dabe
-cursor-text = #000000
-selection-background = #2a3530
-selection-foreground = cell-foreground
-minimum-contrast = 1.5
-palette = 0=#1f2a24
-palette = 1=#e67e80
-palette = 2=#a7c080
-palette = 3=#dbbc7f
-palette = 4=#7fbbb3
-palette = 5=#d699b6
-palette = 6=#83c092
-palette = 7=#b8ae96
-palette = 8=#6b7770
-palette = 9=#f29a9b
-palette = 10=#bfd39a
-palette = 11=#e8cc96
-palette = 12=#98cdc5
-palette = 13=#e3b0c8
-palette = 14=#9ad1a8
-palette = 15=#e7dabe
+# Palette: Everforest, variant black (default) or night, see themes/palette. Colours, palette 0-15, cursor,
+# selection, minimum-contrast and faint-opacity come from generated fragments. The first include is the
+# fallback while the theme link does not exist yet; the second is the active variant (the symlink
+# ~/.local/state/theme/current, flipped by `theme black|night`, which also reloads ghostty with SIGUSR2).
+config-file = ?~/dotfiles/themes/generated/black/ghostty.conf
+config-file = ?~/.local/state/theme/current/ghostty.conf
 
 font-family = JetBrainsMono Nerd Font
 font-size = 15

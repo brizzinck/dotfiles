@@ -25,6 +25,10 @@ export PATH="$PATH:$HOME/go/bin"
 export PATH="$HOME/.local/bin:$PATH"
 export PATH="$HOME/.cargo/bin:$PATH"
 
+# Everforest variant (black | night): ghostty, tmux, fzf, delta and nvim read ~/.local/state/theme/current, which the
+# `theme` command flips. Recreate the default (black) when the link is missing, e.g. on a fresh machine.
+[[ -e ${XDG_STATE_HOME:-$HOME/.local/state}/theme/current || ! -x $HOME/.local/bin/theme ]] || "$HOME/.local/bin/theme" init 2>/dev/null
+
 export CLAUDE_CODE_MAX_OUTPUT_TOKENS=66384
 
 ZSH_THEME="robbyrussell"
@@ -43,9 +47,23 @@ plugins=(
   zsh-syntax-highlighting
 )
 
-ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=8'   # ANSI 8 = #6b7770 in the everforest-black palette
+ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=8'   # ANSI 8 = muted in the Everforest palette (both variants)
 
 source $ZSH/oh-my-zsh.sh
+
+# ── Prompt and highlighting on the palette roles ────────────────────────────────────────────────────
+# ANSI indices follow the terminal palette, so both variants share this: ok arrow green, failing arrow red, dir blue
+# (like ls/eza), git branch purple (red means "error" here), dirty marker yellow, punctuation muted.
+PROMPT='%(?:%F{2}%B%1{➜%}%b:%F{1}%B%1{➜%}%b) %F{4}%c%f $(git_prompt_info)'
+ZSH_THEME_GIT_PROMPT_PREFIX='%F{8}git:(%F{5}'
+ZSH_THEME_GIT_PROMPT_SUFFIX='%f '
+ZSH_THEME_GIT_PROMPT_DIRTY='%F{8}) %F{3}%1{✗%}'
+ZSH_THEME_GIT_PROMPT_CLEAN='%F{8})'
+# zsh-syntax-highlighting paints comments black+bold = ANSI 0, which is the near-invisible `select` surface
+ZSH_HIGHLIGHT_STYLES[comment]='fg=8'
+# dircolors defaults put blue on green (ow), black on green (tw) and white on blue (st): invisible or loud
+[[ $LS_COLORS == *:st=01\;34 ]] || export LS_COLORS="$LS_COLORS:ow=01;34:tw=01;34:st=01;34"
+export EZA_COLORS="${EZA_COLORS:-xx=90}"   # eza punctuation: xterm grey 244 -> ANSI 8 (muted)
 
 # ── History ─────────────────────────────────────────────────────────────────
 HISTSIZE=200000
@@ -54,6 +72,8 @@ setopt HIST_IGNORE_ALL_DUPS HIST_REDUCE_BLANKS
 
 # ── fzf: Ctrl-R history, Ctrl-T files, Alt-C dirs (fd/bat only when installed) ──
 if (( $+commands[fzf] )); then
+  # Everforest colours of the active variant (hub, tmux popups and the pkg/vault scripts load the same file)
+  [[ -r ${XDG_STATE_HOME:-$HOME/.local/state}/theme/current/fzfrc ]] && export FZF_DEFAULT_OPTS_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/theme/current/fzfrc"
   [[ -t 0 && -o zle ]] && source <(fzf --zsh)   # needs a tty line editor: skipped in non-tty shells (agent snapshots)
   if (( $+commands[fd] )); then
     export FZF_DEFAULT_COMMAND='fd --type f --hidden --exclude .git'
@@ -202,6 +222,9 @@ if [[ -z $CLAUDECODE ]]; then
   fi
   (( $+commands[trash-put] )) && alias tp='trash-put'
   (( $+commands[bat] )) && export BAT_THEME=ansi   # inherits the terminal palette
+  # man pages through less colours: bold = green, underline = blue (ANSI, so both variants); MANROFFOPT keeps SGR
+  export MANPAGER='less -R --use-color -Dd+g -Du+b'
+  export MANROFFOPT='-P -c'
 fi
 
 (( $+commands[direnv] )) && eval "$(direnv hook zsh)"

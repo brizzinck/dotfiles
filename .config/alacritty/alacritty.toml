@@ -1,38 +1,13 @@
 [env]
 TERM = "xterm-256color"
-# palette: everforest-black (themes/static/everforest-black)
-[colors.primary]
-background = "#000000"
-foreground = "#d3c6aa"
-
-[colors.cursor]
-cursor = "#e7dabe"
-text = "#000000"
-
-[colors.selection]
-background = "#2a3530"
-text = "CellForeground"
-
-[colors.normal]
-black = "#1f2a24"
-red = "#e67e80"
-green = "#a7c080"
-yellow = "#dbbc7f"
-blue = "#7fbbb3"
-magenta = "#d699b6"
-cyan = "#83c092"
-white = "#b8ae96"
-
-[colors.bright]
-black = "#6b7770"
-red = "#f29a9b"
-green = "#bfd39a"
-yellow = "#e8cc96"
-blue = "#98cdc5"
-magenta = "#e3b0c8"
-cyan = "#9ad1a8"
-white = "#e7dabe"
-
+# Palette: Everforest, variant black (default) or night, see themes/palette. Colours come from generated fragments;
+# imports are applied in order, so the active variant (symlink flipped by `theme black|night`) overrides the
+# black fallback that covers a missing link.
+[general]
+import = [
+  "~/dotfiles/themes/generated/black/alacritty.toml",
+  "~/.local/state/theme/current/alacritty.toml",
+]
 
 [font.bold]
 family = "JetBrainsMono Nerd Font"

@@ -17,6 +17,11 @@
 	line-numbers = true
 	dark = true
 	syntax-theme = ansi
+# Everforest diff colours (generated, see themes/palette): the black fallback first, then the active variant
+# (symlink ~/.local/state/theme/current, flipped by the `theme` command). Missing include files are ignored.
+[include]
+	path = ~/dotfiles/themes/generated/black/delta.gitconfig
+	path = ~/.local/state/theme/current/delta.gitconfig
 [merge]
 	conflictStyle = zdiff3
 [diff]
