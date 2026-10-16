@@ -65,6 +65,7 @@ Prefix is `Ctrl+Space`. Config: `.config/tmux/tmux.conf`.
 | `Alt+Space` / `prefix Tab` | Last window |
 | `prefix S` / `prefix R` | Save a named snapshot / restore one (fzf, `d`/`x` deletes) |
 | `prefix X` | Kill-session picker |
+| `prefix m` | Utility hub popup (same list as `SUPER+M`) |
 | `prefix Q` | Kill the current session (confirm) and land in a fresh one |
 | `prefix N` | Save the current session as a snapshot, then start a new unnamed one |
 | `prefix r` | Reload `tmux.conf` |
@@ -77,6 +78,7 @@ Status badges: `PREFIX` (yellow), `COPY` (blue), `ZOOM` (purple), `SYNC` (red); 
 
 | Command | What it does |
 |---|---|
+| `hub` | Utility hub: fzf over actions, live toggles and every described keybind (`hub --list`, `hub --run ID`, `hub --help`) |
 | `sysup` | Upgrade: Arch news, `yay -Syu`, flatpak, pacdiff, paccache, reboot hint, failed units |
 | `vpn` | fzf toggle for the VPN/proxy services that exist on this machine |
 | `jf [args]` | Fuzzy journal of this boot: `jf -p err`, `jf -u docker`, `jf --user` |

@@ -37,6 +37,11 @@ The active palette is **Everforest Black** (pure `#000000` backgrounds), stored 
 ### Launcher
 **rofi** is the launcher (`$menu`, `SUPER+space`) and the dmenu backend for the power menu, clipboard history, dunst history, keybind cheatsheet and emoji picker (`.config/rofi/`). wofi stays installed and is themed, but nothing binds it.
 
+### Hubs and window tools
+- `hub` (`.config/hub/`, `SUPER+M`, tmux `prefix m`, zsh `hub`): fzf utility hub in a `float.tui` ghostty. Rows come from `actions.tsv` (+ `actions.d/*.tsv`; format in the header of `.config/hub/hub`) merged with every `bindd` from `hyprctl binds -j`; toggles show live ON/OFF; rows whose command is not installed are hidden. `hub open` records the previously focused window (`$XDG_RUNTIME_DIR/hub/prev-window`) so window actions target it. Later stages append rows to `actions.tsv`.
+- `scripts/window-menu.sh` (`SUPER+SHIFT+W`, rofi): per-window actions with `address:` dispatchers; `--dry-run --do ID` prints the dispatcher. Extra entries come from executable files in `scripts/window-hooks/` (`# menu: Label` line; run as `hook ADDRESS`).
+- `scripts/window-switcher.sh` (`SUPER+SHIFT+space`): fuzzy switcher over all windows. `scripts/safe-close.sh` (`SUPER+W`): double press within 1 s for the classes in `.config/hypr/protected-classes`.
+
 ### Docs and tools in the repo (not stowed)
 - `doctor.sh` — read-only health check of the approved workstation state (PASS/FAIL per item: lock screen, idle screensaver, hypr-env, ucode, timers, earlyoom, docker GC, pacman cache, pacnew, failed units, zram, Hyprland config errors, waybar, stow links). Run `./doctor.sh` (`--fails` for failures only).
 - `docs/keymap.md` — Hyprland / tmux / shell-helper keymap; regenerate the Hyprland part with `docs/gen-keymap.sh` after changing binds.

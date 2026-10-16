@@ -1,0 +1,12 @@
+# Window classes that need SUPER+W twice within 1 second (see scripts/safe-close.sh). One class per line,
+# case-insensitive, `#` comments. Real classes: `hyprctl clients -j | jq -r '.[].class'`.
+# Zen (flatpak)
+app.zen_browser.zen
+zen
+# Chrome (flatpak / native)
+com.google.Chrome
+google-chrome
+# ghostty
+com.mitchellh.ghostty
+# Telegram
+org.telegram.desktop
