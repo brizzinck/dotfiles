@@ -125,12 +125,13 @@
     "on-click-right": "~/.config/hypr/scripts/capture.sh"
   },
 
-  // failed or restart-looping units (critical) and sysalert conditions (warning); one real run a minute for both bars
+  // failed or restart-looping units (critical) and sysalert conditions (warning); one real run a minute for both bars.
+  // L = health-details.sh (fzf-menu over the same cached run: status + journal preview, restart/stop/journal), R = doctor
   "custom/health": {
     "exec": "~/.config/waybar/scripts/cache.sh health 55 -- ~/.config/waybar/scripts/health.sh",
     "return-type": "json",
     "interval": 60,
-    "on-click": "ghostty --class=float.tui -e sh -c 'systemctl --failed --no-pager; systemctl --user --failed --no-pager; read -r _'",
+    "on-click": "~/.config/waybar/scripts/health-details.sh",
     "on-click-right": "ghostty --class=float.tui -e bash -c '~/dotfiles/doctor.sh --fails; read -rn1 -p \"press a key\" _'"
   },
 
