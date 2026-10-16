@@ -40,7 +40,7 @@ packages=(
   # wayland desktop
   hyprland hypridle hyprlock hyprpaper xdg-desktop-portal-hyprland xdg-desktop-portal-gtk waybar wofi rofi dunst
   swaybg grim slurp swappy imv wl-clipboard brightnessctl seatd
-  nemo libnotify xdg-utils xdg-user-dirs qt6ct   # hyprland.conf: $fileManagerGUI, notify-send, xdg-open, QT_QPA_PLATFORMTHEME (qt6ct)
+  nemo libnotify xdg-utils xdg-user-dirs qt6ct   # hyprland.lua: fileManagerGUI, notify-send, xdg-open, QT_QPA_PLATFORMTHEME (qt6ct)
   pipewire pipewire-alsa pipewire-pulse wireplumber pavucontrol
   easyeffects noise-suppression-for-voice lsp-plugins lsp-plugins-lv2
   ttf-jetbrains-mono-nerd noto-fonts-cjk noto-fonts-emoji
@@ -86,9 +86,10 @@ fi
 # hyprdynamicmonitors-bin: /usr/bin/hyprdynamicmonitors for infrastructure/systemd units (enable by hand, see CLAUDE.md)
 # bibata-cursor-theme-bin: Bibata-Modern-Ice cursor theme; shellcheck-bin: static build that replaces the repo package
 # (no haskell chain); ccusage: Claude/Codex usage from local logs; wayscrollshot-bin: scrolling screenshots;
-# pacseek: pacman/AUR TUI; bitwarden-cli-bin: bw CLI (the repo bitwarden-cli needs nodejs-lts-jod, which conflicts with nodejs).
+# pacseek: pacman/AUR TUI; bitwarden-cli-bin: bw CLI (the repo bitwarden-cli needs nodejs-lts-jod, which conflicts with nodejs);
+# wl-kbptr + wlrctl: keyboard-driven pointer (SUPER+', SUPER+ALT+M); wlr-which-key: the SUPER+; leader menu.
 # Keep in sync with AUR_PACKAGES in apply-system.sh.
-for pkg in facad hyprdynamicmonitors-bin bibata-cursor-theme-bin shellcheck-bin ccusage wayscrollshot-bin pacseek bitwarden-cli-bin; do
+for pkg in facad hyprdynamicmonitors-bin bibata-cursor-theme-bin shellcheck-bin ccusage wayscrollshot-bin pacseek bitwarden-cli-bin wl-kbptr wlrctl wlr-which-key; do
   yay -S --needed --noconfirm --sudoloop "$pkg" || warn "AUR install failed ($pkg) — continuing"
 done
 yay --save --cleanafter >/dev/null 2>&1 || true   # remove AUR build dirs after each install

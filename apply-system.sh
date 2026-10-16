@@ -239,7 +239,9 @@ REPO_PACKAGES=(
 )
 # AUR packages, built at run time as the owner (makepkg refuses root) and installed with pacman -U. A failure only warns.
 # Keep in sync with the AUR section of install.sh. shellcheck-bin replaces the repo shellcheck (see swap_shellcheck).
-AUR_PACKAGES=(bibata-cursor-theme-bin shellcheck-bin ccusage wayscrollshot-bin pacseek bitwarden-cli-bin)
+# wl-kbptr + wlrctl: keyboard-driven pointer (SUPER+', SUPER+ALT+M); wlr-which-key: the SUPER+; leader menu. Their makedepends
+# (meson, scdoc, wayland-protocols, rust) come from the repositories through aur_unmet_deps; wl-kbptr needs opencv (installed).
+AUR_PACKAGES=(bibata-cursor-theme-bin shellcheck-bin ccusage wayscrollshot-bin pacseek bitwarden-cli-bin wl-kbptr wlrctl wlr-which-key)
 
 cpu_ucode_package() {
   if grep -qi 'AuthenticAMD' /proc/cpuinfo 2>/dev/null; then
