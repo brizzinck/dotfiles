@@ -51,21 +51,16 @@ else
   ok idle-screensaver "idle starts the no-password clock screensaver; no auto-suspend"
 fi
 
-# ── NVIDIA env must not leak into the session on an AMD/Intel host ──────────────
-if lspci 2>/dev/null | grep -qi nvidia; then
-  ok no-nvidia-env "NVIDIA GPU present, check skipped"
+# ── session GPU env must not point at a non-AMD driver (this laptop is AMD-only) ─
+hl_pid="$(pgrep -xo Hyprland 2>/dev/null || true)"
+if [ -z "$hl_pid" ]; then
+  bad hypr-env "Hyprland is not running, cannot inspect"
 else
-  hl_pid="$(pgrep -xo Hyprland 2>/dev/null || true)"
-  if [ -z "$hl_pid" ]; then
-    bad no-nvidia-env "Hyprland is not running, cannot inspect"
-  else
-    # a direct child of Hyprland got the environment after `env =` lines were applied; Hyprland's own /proc environ did not
-    child="$(pgrep -P "$hl_pid" 2>/dev/null | head -1)"
-    leak="$(tr '\0' '\n' <"/proc/${child:-$hl_pid}/environ" 2>/dev/null |
-      grep -E '^(GBM_BACKEND=nvidia|LIBVA_DRIVER_NAME=nvidia|__GLX_VENDOR_LIBRARY_NAME=nvidia|NVD_BACKEND=|__NV_PRIME_RENDER_OFFLOAD=|WLR_NO_HARDWARE_CURSORS=|WLR_DRM_NO_ATOMIC=)' |
-      cut -d= -f1 | tr '\n' ' ')"
-    if [ -z "$leak" ]; then ok no-nvidia-env "none in the Hyprland session environment"; else bad no-nvidia-env "still set: ${leak}(re-login after the new hyprland.conf)"; fi
-  fi
+  # a direct child of Hyprland got the environment after `env =` lines were applied; Hyprland's own /proc environ did not
+  child="$(pgrep -P "$hl_pid" 2>/dev/null | head -1)"
+  leak="$(tr '\0' '\n' <"/proc/${child:-$hl_pid}/environ" 2>/dev/null |
+    grep -E '^(LIBVA_DRIVER_NAME|GBM_BACKEND)=' | grep -vE '=(radeonsi|mesa)?$' | tr '\n' ' ')"
+  if [ -z "$leak" ]; then ok hypr-env "no non-AMD LIBVA/GBM driver in the session"; else bad hypr-env "set: ${leak}(re-login to pick up the current hyprland.conf)"; fi
 fi
 
 # ── packages / timers / services ────────────────────────────────────────────────

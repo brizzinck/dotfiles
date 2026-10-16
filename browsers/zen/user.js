@@ -9,7 +9,7 @@ user_pref("dom.ipc.processCount.webIsolated", 1);
 user_pref("browser.sessionstore.interval", 60000);
 // bfcache: keep at most 2 pages alive instead of 8 per tab
 user_pref("browser.sessionhistory.max_total_viewers", 2);
-// VA-API video decode (needs the Hyprland env without LIBVA_DRIVER_NAME=nvidia; verify in about:support -> Media)
+// VA-API hardware video decode (radeonsi); verify in about:support -> Media
 user_pref("media.hardware-video-decoding.force-enabled", true);
 // Disk cache capped at 1 GiB (the value is in KiB)
 user_pref("browser.cache.disk.smart_size.enabled", false);

@@ -27,7 +27,7 @@ cd ~/dotfiles && stow .
 All configs live under `.config/` following XDG Base Dir. Root-level files (`.zshrc`, `.gitconfig`) stow directly to `$HOME`.
 
 ### Monitor management
-Static Hyprland rules in the `monitors` block of `.config/hypr/hyprland.conf`: `HDMI-A-1` 2560x1440@144 at `0x0`, the laptop panel `eDP-1` 2880x1800@120 scaled 1.5 at `0x1440` (below the external one), plus a `preferred, auto` fallback for any other output. Hyprland applies them on hotplug, so there is no kanshi, no polling script and no monitor daemon. GPU-specific env lives in `.config/hypr/gpu-nvidia.conf`, sourced from `.config/hypr/host.conf` only on NVIDIA machines (`install.sh` appends the `source` line).
+Static Hyprland rules in the `monitors` block of `.config/hypr/hyprland.conf`: `HDMI-A-1` 2560x1440@144 at `0x0`, the laptop panel `eDP-1` 2880x1800@120 scaled 1.5 at `0x1440` (below the external one), plus a `preferred, auto` fallback for any other output. Hyprland applies them on hotplug, so there is no kanshi, no polling script and no monitor daemon.
 
 ### Theme system
 Idle (`.config/hypr/hypridle.conf`): dim at 150 s, at 300 s a clock-only hyprlock screensaver (`screensaver.conf`, started by `scripts/screensaver.sh`, no password; any input dismisses it via hypridle on-resume + `SIGUSR1`), panel off (`dpms`) at 1200 s. The machine never suspends or locks by itself, and nothing is killed. All listeners are skipped while media plays or an automation Chrome runs (`idle-allowed.sh`; Wayland/DBus inhibitors are honoured too). `SUPER+Escape` is still the real password lock.
@@ -38,7 +38,7 @@ The active palette is **Everforest Black** (pure `#000000` backgrounds), stored 
 **rofi** is the launcher (`$menu`, `SUPER+space`) and the dmenu backend for the power menu, clipboard history, dunst history, keybind cheatsheet and emoji picker (`.config/rofi/`). wofi stays installed and is themed, but nothing binds it.
 
 ### Docs and tools in the repo (not stowed)
-- `doctor.sh` — read-only health check of the approved workstation state (PASS/FAIL per item: lock screen, idle screensaver, NVIDIA env, ucode, timers, earlyoom, docker GC, pacman cache, pacnew, failed units, zram, Hyprland config errors, waybar, stow links). Run `./doctor.sh` (`--fails` for failures only).
+- `doctor.sh` — read-only health check of the approved workstation state (PASS/FAIL per item: lock screen, idle screensaver, hypr-env, ucode, timers, earlyoom, docker GC, pacman cache, pacnew, failed units, zram, Hyprland config errors, waybar, stow links). Run `./doctor.sh` (`--fails` for failures only).
 - `docs/keymap.md` — Hyprland / tmux / shell-helper keymap; regenerate the Hyprland part with `docs/gen-keymap.sh` after changing binds.
 - `browsers/` — Zen `user.js` (memory/cache prefs) and Chrome `chrome-flags.conf` (1 GiB disk cache). They must be copied into the flatpak sandboxes, so `browsers/apply.sh` (called by `install.sh`, merges, idempotent) does that instead of stow.
 - `pkg/*.txt` — package lists written by a pacman hook; `infrastructure/` — system files installed by `apply-system.sh` / `apply-memory.sh`.
