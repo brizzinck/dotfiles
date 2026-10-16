@@ -33,6 +33,10 @@ out=$(printf '%s' "$in" | clean)
 if [[ $out == "$in" ]]; then
   notify-send -a url-clean -t 2000 "URL cleaner" "nothing to remove"
 else
-  printf '%s' "$out" | wl-copy
+  # keep the password-manager hint (and the 30 s clear) when the clipboard was a sensitive copy
+  sens=()
+  if wl-paste --list-types 2>/dev/null | grep -qx 'x-kde-passwordManagerHint'; then sens=(--sensitive); fi
+  printf '%s' "$out" | wl-copy "${sens[@]}"
+  if ((${#sens[@]})); then "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/vault.sh" arm-clear; fi
   notify-send -a url-clean -t 3000 "URL cleaner" "tracking parameters removed from the clipboard"
 fi

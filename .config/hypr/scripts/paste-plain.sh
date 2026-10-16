@@ -13,6 +13,10 @@ if ((DRY)); then echo "class=$class: wl-paste -n -t text/plain | wl-copy -t text
 txt=$(wl-paste -n -t text/plain 2>/dev/null; echo x)
 txt=${txt%x}
 [[ -n $txt ]] || { notify-send -a paste-plain -t 2000 "Paste as plain text" "clipboard has no text"; exit 0; }
-printf '%s' "$txt" | wl-copy -t text/plain
+# keep the password-manager hint: a sensitive copy (2FA code, password) must stay out of cliphist and keep its 30 s clear
+sens=()
+if wl-paste --list-types 2>/dev/null | grep -qx 'x-kde-passwordManagerHint'; then sens=(--sensitive); fi
+printf '%s' "$txt" | wl-copy "${sens[@]}" -t text/plain
 sleep 0.25   # let the physical SUPER+CTRL be released first
 hyprctl dispatch sendshortcut "${mods// /_},V,activewindow" >/dev/null 2>&1 || wtype -M ctrl -k v -m ctrl
+if ((${#sens[@]})); then "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/vault.sh" arm-clear; fi
