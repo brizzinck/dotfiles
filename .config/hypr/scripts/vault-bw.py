@@ -17,6 +17,8 @@ Run through `vault.sh bw CMD` (hub rows in actions.d/u6.tsv, interactive ones in
   vault-bw.py attach-add      pick an item, pick a file, upload it as an attachment
   vault-bw.py delete          pick an item, type its name to confirm, move it to the Bitwarden trash
   vault-bw.py sync            bw sync (needs an open session)
+  vault-bw.py import-csv FILE unlock, `bw import bitwardencsv FILE`, `bw sync` + `rbw sync`, drop the 2FA index (used by
+                              2fa-import; the file is a path, never a secret on the command line)
 
 Secrets: the master password only travels pinentry -> this process -> the environment of ONE `bw unlock` child
 (--passwordenv), never argv, never a file. The session key lives in $XDG_RUNTIME_DIR/vault/bw-session (tmpfs, mode 600)
@@ -301,11 +303,11 @@ def refresh_rbw():
 
 
 def fzf(rows, prompt, header="", print_query=False):
-    """Pick one row (tab separated, the first column is the id and stays hidden). Returns the row or None."""
-    if not have("fzf"):
-        die("fzf is not installed")
-    cmd = ["fzf", "--delimiter=\t", "--with-nth=2..", "--tabstop=4", f"--prompt={prompt}> ",
-           "--height=100%", "--layout=reverse", "--border=none"]
+    """Pick one row (tab separated, the first column is the id and stays hidden). Returns the row or None.
+    The list is the shared modal fzf (fzf-menu --here: INSERT/NORMAL, Ctrl+j/k, Esc)."""
+    if not have("fzf-menu"):
+        die("fzf-menu is not installed (~/.local/bin/fzf-menu)")
+    cmd = ["fzf-menu", "--here", "-p", prompt, "--delimiter=\t", "--with-nth=2..", "--tabstop=4"]
     if header:
         cmd.append(f"--header={header}")
     if print_query:
@@ -636,6 +638,19 @@ def cmd_sync():
     return p.returncode
 
 
+def cmd_import_csv(path):
+    if not os.path.isfile(path):
+        die(f"import-csv: no such file: {path}")
+    ensure()
+    p = bw("import", "bitwardencsv", path)
+    if p.returncode != 0:
+        die(f"bw import failed: {first_line(p.stderr or p.stdout)}")
+    print(first_line(p.stdout) or "imported")
+    bw("sync")
+    refresh_rbw()
+    return 0
+
+
 # ───────────────────────────── main ─────────────────────────────
 
 COMMANDS = {
@@ -664,6 +679,11 @@ def main(argv):
         return 0 if st == "unlocked" else 1
     if cmd == "sync":
         return cmd_sync()
+    if cmd == "import-csv":
+        if len(argv) != 2:
+            print("usage: vault-bw.py import-csv FILE", file=sys.stderr)
+            return 2
+        return cmd_import_csv(argv[1])
     fn = COMMANDS.get(cmd)
     if fn is None:
         print(f"unknown command {cmd}", file=sys.stderr)

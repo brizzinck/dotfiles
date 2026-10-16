@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-# vault: Bitwarden / Vaultwarden front end on top of rbw + rofi-rbw.
+# vault: Bitwarden / Vaultwarden front end on top of rbw + fzf-menu (vim keys).
 # SUPER+CTRL+P (passwords), SUPER+CTRL+O (2FA codes), waybar custom/vault, hub rows.
 #
-#   vault.sh passwords [ARGS]   rofi-rbw (Enter types user+password, Alt+t copies the TOTP; settings in ~/.config/rofi-rbw.rc)
-#   vault.sh totp               rofi list of the logins that have a TOTP key: Enter copies the code, Alt+t types it,
-#                               Alt+r rescans the vault
-#   vault.sh totp-tui           same list in fzf with a live code + countdown preview (hub row, runs in a terminal)
+#   vault.sh passwords          fzf-menu over `rbw list` (name, user, folder). Enter types user, Tab, password into the
+#                               window that was focused before the menu (wtype, text on stdin: never in argv);
+#                               Alt+p / NORMAL p types the password only, Alt+u / u the user only, Alt+c / y copies the
+#                               password (sensitive, cleared in 30 s), Alt+t / t copies the TOTP code. The preview
+#                               shows name, user, folder, URIs and whether a TOTP key exists, never a secret.
+#   vault.sh totp               the logins that have a TOTP key: live code + seconds left in the preview (ticks every
+#                               second); Enter / y copies the code (clears after 30 s), Alt+t / t types it,
+#                               Alt+r / r rescans the vault
+#   vault.sh totp-tui           same list in the current terminal (hub row)
 #   vault.sh lock               lock the vault now: rbw lock and the official CLI session (bw lock)
 #   vault.sh sync               rbw sync (asks for the master password when locked) and, when its session is open, bw sync
 #   vault.sh status             print locked|unlocked|unconfigured|missing, exit 0 only when unlocked
@@ -25,22 +30,17 @@
 # `rbw unlocked` is the only state probe: it never starts the agent and never opens pinentry (checked on rbw 1.15).
 # Secrets are copied with wl-copy --sensitive (cliphist skips them), never shown in notifications, never written to disk.
 set -u
-# Everforest fzf colours of the active variant (generated, see themes/palette); callers outside a login shell have no env
-: "${FZF_DEFAULT_OPTS_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/theme/current/fzfrc}"
-if [[ -r $FZF_DEFAULT_OPTS_FILE ]]; then export FZF_DEFAULT_OPTS_FILE; else unset FZF_DEFAULT_OPTS_FILE; fi
 
 HERE=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+SELF="$HERE/vault.sh"
 TOTP_PY="$HERE/vault-totp.py"
-# Layout-independent rofi keys (ua/ru twins), generated: ~/.config/layout/layout.py
-# shellcheck source=/dev/null
-. "${XDG_CONFIG_HOME:-$HOME/.config}/layout/layout-keys.sh" 2>/dev/null || lk_rofi() { printf '%s' "$1"; }
 BW_PY="$HERE/vault-bw.py"
 RUN="${XDG_RUNTIME_DIR:-/tmp}/vault"
 BW_SESSION_FILE="$RUN/bw-session"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/vault"
 SSH_FLAG="$STATE_DIR/ssh-agent"
 SSH_SOCK="${BITWARDEN_SSH_AUTH_SOCK:-$HOME/.bitwarden-ssh-agent.sock}"
-RBW_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/rbw/config.json"
+RBW_CONF="${VAULT_RBW_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/rbw/config.json}"
 G_LOCKED='󰌾'
 G_OPEN='󰌿'
 DRY=0
@@ -79,56 +79,88 @@ state() {
 
 arm_clear() { have wl-paste && python3 -I "$TOTP_PY" arm-clear 2>/dev/null; return 0; }
 
-passwords() {
-  if ((DRY)); then echo "rofi-rbw $*"; return 0; fi
-  need_ready || return 1
-  have rofi-rbw || { note "Vault" "rofi-rbw is not installed" critical; return 1; }
-  rofi-rbw "$@"
-  local rc=$?
-  arm_clear
-  poke_bar
-  return $rc
+# the `become` NORMAL-mode spelling of a key that must leave the list like an --expect key
+nb() { printf '%s:become(printf "%%s\\n%%s\\n" %s {})' "$1" "$2"; }
+
+# preview of one login for the passwords list: metadata only, `rbw get --raw` output goes through jq and the
+# password / totp secret / notes / hidden fields never reach stdout
+pw_preview() {
+  rbw get --raw "$1" 2>/dev/null | jq -r '
+    "\(.name)\n",
+    "user     \(.data.username // "-")",
+    "folder   \(.folder // "-")",
+    "totp     \(if .data.totp then "yes (Alt+t)" else "no" end)",
+    "notes    \(if (.notes // "") != "" then "yes" else "no" end)",
+    "",
+    (.data.uris // [] | .[] | "uri      \(.uri)")' 2>/dev/null || echo "could not read the entry"
 }
 
-totp_rows() { python3 -I "$TOTP_PY" list "$@"; }
+type_text() { # text on stdin -> the focused window (stdin keeps it out of argv)
+  have wtype || { note "Vault" "wtype is not installed" critical; return 1; }
+  wtype -
+}
 
-totp() {
-  local rows pick rc id code
-  if ((DRY)); then echo "python3 vault-totp.py list | rofi -dmenu ..."; return 0; fi
+passwords() {
+  local rows out key pick id user pass
+  if ((DRY)); then echo "rbw list --fields id,name,user,folder | fzf-menu -p vault ... (Enter: user<Tab>password via wtype -)"; return 0; fi
   need_ready || return 1
-  have rofi || { note "Vault" "rofi is not installed" critical; return 1; }
+  have fzf-menu || { note "Vault" "fzf-menu is not installed" critical; return 1; }
+  rows=$(rbw list --fields id,name,user,folder 2>/dev/null) || { note "Vault" "Could not read the vault (locked and cancelled?)" critical; return 1; }
+  poke_bar
+  [[ -n $rows ]] || { note "Vault" "The vault has no logins"; return 0; }
+  export FZF_MENU_NORMAL_BINDS
+  FZF_MENU_NORMAL_BINDS=$(nb p alt-p; echo; nb u alt-u; echo; nb y alt-c; echo; nb t alt-t)
+  out=$(printf '%s\n' "$rows" | awk -F'\t' '{ printf "%s\t%-34s %-30s %s\n", $1, substr($2, 1, 34), substr($3, 1, 30), ($4 != "" ? "[" $4 "]" : "") }' |
+    fzf-menu -p vault --delimiter=$'\t' --with-nth=2.. --expect=alt-p,alt-u,alt-c,alt-t \
+      --header $'Enter: user+Tab+password   Alt+p / p: password   Alt+u / u: user   Alt+c / y: copy   Alt+t / t: TOTP' \
+      --preview "$SELF pw-preview {1}" --preview-window 'right,45%,border-left') || return 0
+  key=$(sed -n 1p <<<"$out")
+  pick=$(sed -n 2p <<<"$out")
+  id=${pick%%$'\t'*}
+  [[ -n $id ]] || return 0
+  user=$(awk -F'\t' -v id="$id" '$1 == id { print $3; exit }' <<<"$rows")
+  case $key in
+    alt-t)
+      python3 -I "$TOTP_PY" copy "$id" ;;
+    alt-c)
+      pass=$(rbw get "$id") || { note "Vault" "Could not read the password" critical; return 1; }
+      printf '%s' "$pass" | wl-copy --sensitive
+      note "Password copied" "cleared in 30 s"
+      arm_clear ;;
+    alt-u)
+      sleep 0.2
+      printf '%s' "$user" | type_text ;;
+    alt-p)
+      pass=$(rbw get "$id") || { note "Vault" "Could not read the password" critical; return 1; }
+      sleep 0.2
+      printf '%s' "$pass" | type_text ;;
+    *)
+      pass=$(rbw get "$id") || { note "Vault" "Could not read the password" critical; return 1; }
+      sleep 0.2
+      printf '%s' "$user" | type_text
+      wtype -k Tab
+      printf '%s' "$pass" | type_text ;;
+  esac
+  pass=""
+  poke_bar
+  return 0
+}
+
+totp_rows() { python3 -I "$TOTP_PY" list; }
+
+# the 2FA list; $@ = extra fzf-menu arguments (--here for a terminal). The preview ticks every second through the
+# fzf --listen socket so the code and the countdown stay live.
+totp_menu() {
+  local rows sock loop out key pick id code
+  if ((DRY)); then echo "python3 vault-totp.py list | fzf-menu -p 2fa ... (live preview)"; return 0; fi
+  need_ready || return 1
+  have fzf-menu || { note "Vault" "fzf-menu is not installed" critical; return 1; }
   rows=$(totp_rows) || { note "Vault" "Could not read the vault (locked and cancelled?)" critical; return 1; }
   poke_bar
-  while true; do
-    [[ -n $rows ]] || { note "Vault" "No logins with a TOTP key. Import them: 2fa-import"; return 0; }
-    rc=0
-    pick=$(printf '%s\n' "$rows" | awk -F'\t' '{ printf "%s\t%s%s%s\n", $1, $2, ($3 != "" ? "   " $3 : ""), ($4 != "" ? "   [" $4 "]" : "") }' |
-      rofi -dmenu -i -p 2fa -display-columns 2 -kb-custom-1 "$(lk_rofi 'Alt+t')" -kb-custom-2 "$(lk_rofi 'Alt+r')" \
-        -mesg 'Enter: copy the code (clears after 30 s)    Alt+t: type it    Alt+r: rescan') || rc=$?
-    id=${pick%%$'\t'*}
-    case $rc in
-      0) python3 -I "$TOTP_PY" copy "$id"; return $? ;;
-      10)
-        have wtype || { note "Vault" "wtype is not installed" critical; return 1; }
-        code=$(python3 -I "$TOTP_PY" code "$id") || return 1
-        printf '%s' "$code" | wtype -
-        return 0 ;;
-      11) rows=$(totp_rows --refresh) || return 1 ;;
-      *) return 0 ;;
-    esac
-  done
-}
-
-totp_tui() {
-  local rows sock loop
-  need_ready || { read -r -n1 -p 'press a key '; return 1; }
-  have fzf || { echo "fzf is not installed"; read -r -n1; return 1; }
-  rows=$(totp_rows) || { echo "could not read the vault"; read -r -n1 -p 'press a key '; return 1; }
-  [[ -n $rows ]] || { echo "No logins with a TOTP key. Import them with: 2fa-import"; read -r -n1 -p 'press a key '; return 0; }
+  [[ -n $rows ]] || { note "Vault" "No logins with a TOTP key. Import them: 2fa-import"; return 0; }
   mkdir -p "$RUN" && chmod 700 "$RUN"
   sock="$RUN/fzf-totp.$$.sock"
   rm -f "$sock"
-  # tick the preview every second so the code and the countdown stay live
   (
     while sleep 1; do
       [[ -S $sock ]] || continue
@@ -136,15 +168,29 @@ totp_tui() {
     done
   ) &
   loop=$!
-  printf '%s\n' "$rows" | fzf --listen="$sock" --delimiter=$'\t' --with-nth=2,3 --tabstop=4 \
-    --prompt='2fa> ' --height=100% --layout=reverse --border=none \
-    --header='Enter: copy the code (sensitive, clears in 30 s)    Ctrl-R: rescan    Esc: close' \
-    --preview="python3 -I '$TOTP_PY' preview {1}" --preview-window='right,45%,border-left' \
-    --bind "enter:execute-silent(python3 -I '$TOTP_PY' copy {1})+abort" \
-    --bind "ctrl-r:reload(python3 -I '$TOTP_PY' list --refresh)" || true
+  local reload="reload(python3 -I '$TOTP_PY' list --refresh)"
+  export FZF_MENU_NORMAL_BINDS
+  FZF_MENU_NORMAL_BINDS=$(nb y alt-c; echo; nb t alt-t; echo; printf 'r:%s' "$reload")
+  out=$(printf '%s\n' "$rows" | awk -F'\t' '{ printf "%s\t%s%s%s\n", $1, $2, ($3 != "" ? "   " $3 : ""), ($4 != "" ? "   [" $4 "]" : "") }' |
+    fzf-menu "$@" -p 2fa --delimiter=$'\t' --with-nth=2.. --expect=alt-t,alt-c --listen="$sock" \
+      --header $'Enter / y: copy the code (clears in 30 s)   Alt+t / t: type it   Alt+r / r: rescan' \
+      --bind "alt-r:$reload" \
+      --preview "python3 -I '$TOTP_PY' preview {1}" --preview-window 'right,45%,border-left') || true
   kill "$loop" 2>/dev/null
   wait "$loop" 2>/dev/null
   rm -f "$sock"
+  key=$(sed -n 1p <<<"$out")
+  pick=$(sed -n 2p <<<"$out")
+  id=${pick%%$'\t'*}
+  if [[ -n $id ]]; then
+    if [[ $key == alt-t ]]; then
+      code=$(python3 -I "$TOTP_PY" code "$id") || return 1
+      sleep 0.2
+      printf '%s' "$code" | type_text
+    else
+      python3 -I "$TOTP_PY" copy "$id"
+    fi
+  fi
   poke_bar
   return 0
 }
@@ -268,9 +314,10 @@ waybar() {
 }
 
 case ${1:-passwords} in
-  passwords) shift; passwords "$@" ;;
-  totp) totp ;;
-  totp-tui) totp_tui ;;
+  passwords) passwords ;;
+  pw-preview) pw_preview "${2:?id}" ;;
+  totp) totp_menu ;;
+  totp-tui) totp_menu --here ;;
   lock) lock ;;
   sync) sync_vault ;;
   status) state ;;
@@ -281,5 +328,5 @@ case ${1:-passwords} in
   app) app ;;
   web) web ;;
   ssh-agent) shift; ssh_agent "$@" ;;
-  *) echo "usage: vault.sh passwords|totp|totp-tui|lock|sync|status|waybar|session-start|arm-clear|bw CMD|app|web|ssh-agent on|off|toggle|status [--dry-run]" >&2; exit 2 ;;
+  *) echo "usage: vault.sh passwords|pw-preview ID|totp|totp-tui|lock|sync|status|waybar|session-start|arm-clear|bw CMD|app|web|ssh-agent on|off|toggle|status [--dry-run]" >&2; exit 2 ;;
 esac

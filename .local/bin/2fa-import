@@ -3,7 +3,8 @@
 
 Google Authenticator -> Transfer accounts -> Export accounts shows one or more QR codes holding
 otpauth-migration:// links. This tool decodes them (own protobuf reader, Python 3 stdlib only), prints the
-normal otpauth:// URIs and writes a Bitwarden CSV you import in the Vaultwarden web vault.
+normal otpauth:// URIs and writes a Bitwarden CSV. It offers to import it at once with the official CLI (`bw`, master
+password through the themed pinentry, session handled by vault-bw.py); the web vault stays the fallback.
 
   2fa-import [OPTIONS] [INPUT ...]
 
@@ -13,7 +14,8 @@ normal otpauth:// URIs and writes a Bitwarden CSV you import in the Vaultwarden 
   --screen     select a screen region showing the QR code (grim + slurp); can be repeated per batch
   --no-csv     only print the otpauth:// URIs
   --no-uris    do not print the URIs (CSV only)
-  --keep       keep the CSV without asking (default: ask whether to delete it)
+  --keep       keep the CSV, do not offer the import (default: offer `bw import`, then shred the CSV)
+  --import     import with bw without asking (no web-vault instructions when it works)
   -h, --help   this text
 
 Needs zbarimg (package zbar) for images and screen regions. Pasted links need nothing but Python.
@@ -303,6 +305,42 @@ def write_csv(rows):
     return path
 
 
+WEB_STEPS = """
+Import it into Vaultwarden by hand:
+  1. Open your Vaultwarden web vault in the browser and log in.
+  2. Tools -> Import data.
+  3. Vault: your vault.  File format: "Bitwarden (csv)".
+  4. Choose file: the path above (the file chooser can browse /run/user/...).  Import.
+  5. The logins land in the folder "%s". Run `rbw sync`, then check the codes
+     against Google Authenticator (hub row "2FA codes", or `rbw code NAME`).
+  6. Only then remove the accounts from Google Authenticator.
+The file lives on tmpfs (RAM) and disappears at logout or reboot at the latest.
+"""
+
+
+def vault_bw_script():
+    for cand in (os.path.expanduser("~/.config/hypr/scripts/vault-bw.py"),
+                 os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", ".config/hypr/scripts/vault-bw.py")):
+        if os.path.isfile(cand):
+            return os.path.realpath(cand)
+    return None
+
+
+def bw_import_available():
+    return bool(shutil.which("bw")) and vault_bw_script() is not None
+
+
+def bw_import(path):
+    """bw import through vault-bw.py: it unlocks with the themed pinentry (password never in argv), imports, syncs
+    bw and rbw and refreshes the 2FA index. True when the import worked."""
+    script = vault_bw_script()
+    try:
+        return subprocess.run([sys.executable, "-I", script, "import-csv", path]).returncode == 0
+    except OSError as exc:
+        warn(f"cannot run vault-bw.py: {exc}")
+        return False
+
+
 def wipe(path):
     if shutil.which("shred"):
         subprocess.run(["shred", "-u", path], check=False)
@@ -311,7 +349,7 @@ def wipe(path):
 
 
 def main(argv):
-    opts = {"screen": 0, "csv": True, "uris": True, "keep": False}
+    opts = {"screen": 0, "csv": True, "uris": True, "keep": False, "import": False}
     inputs = []
     for a in argv:
         if a in ("-h", "--help"):
@@ -325,6 +363,8 @@ def main(argv):
             opts["uris"] = False
         elif a == "--keep":
             opts["keep"] = True
+        elif a == "--import":
+            opts["import"] = True
         elif a == "-" or not a.startswith("-"):
             inputs.append(a)
         else:
@@ -363,17 +403,17 @@ def main(argv):
         sys.exit("2fa-import: nothing left for the CSV")
     path = write_csv(rows)
     print(f"Bitwarden CSV with {len(rows)} login(s): {path}")
-    print("""
-Import it into Vaultwarden:
-  1. Open your Vaultwarden web vault in the browser and log in.
-  2. Tools -> Import data.
-  3. Vault: your vault.  File format: "Bitwarden (csv)".
-  4. Choose file: the path above (the file chooser can browse /run/user/...).  Import.
-  5. The logins land in the folder "%s". Run `rbw sync`, then check the codes
-     against Google Authenticator (hub row "2FA codes", or `rbw code NAME`).
-  6. Only then remove the accounts from Google Authenticator.
-The file lives on tmpfs (RAM) and disappears at logout or reboot at the latest.
-""" % FOLDER)
+    if tty and not opts["keep"] and bw_import_available():
+        answer = "y" if opts["import"] else ask("Import now with bw? [Y/n] ")
+        if answer.lower() in ("", "y", "yes"):
+            if bw_import(path):
+                wipe(path)
+                print("Imported and the CSV is shredded.")
+                print(f"The logins are in the folder \"{FOLDER}\". Check the codes against Google Authenticator "
+                      "(hub row \"2FA codes\", or `rbw code NAME`), then remove the accounts from Google Authenticator.")
+                return 0
+            print("The import did not work; the CSV is kept so you can use the web vault instead.")
+    print(WEB_STEPS % FOLDER)
     if opts["keep"] or not tty:
         print(f"Kept. Delete it when done:  shred -u '{path}'")
         return 0
