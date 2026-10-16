@@ -1,14 +1,15 @@
 [StreamInputs]
-inputDevice=alsa_input.usb-3142_fifine_Microphone-00.analog-stereo
-listenToMic=false
-plugins=rnnoise#0
+inputDevice=alsa_input.usb-Apple__Inc._EarPods_LY9V7QVJ2P-00.mono-fallback
+plugins=rnnoise#0,pitch#0,autotune#0,autogain#0
 visiblePage=pluginsPage
-visiblePlugin=rnnoise#0
+visiblePlugin=pitch#0
 
 [StreamOutputs]
 outputDevice=alsa_output.pci-0000_04_00.6.HiFi__Speaker__sink
+visiblePage=pluginsPage
 
 [Window]
 height=775
 visiblePage=inputPage
+visiblePipeWirePage=testSignalsPage
 width=1275

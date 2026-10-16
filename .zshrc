@@ -65,7 +65,7 @@ export NVM_DIR="$HOME/.nvm"
 
 [ -s "/home/$USER/.bun/_bun" ] && source "/home/$USER/.bun/_bun"
 
-wmctrl -r ":ACTIVE:" -b add,maximized_vert,maximized_horz
+wmctrl -r ":ACTIVE:" -b add,maximized_vert,maximized_horz 2>/dev/null
 
 alias firefox="firefox --start-maximized"
 
@@ -116,17 +116,16 @@ of() {
   done
 }
 
+unalias rg 2>/dev/null
 rg() {
   if [ -f "./main.go" ]; then 
-    go run .
+    go run . "$@"
   elif [ -f "./cmd/main.go" ]; then
-    go run ./cmd/main.go
+    go run ./cmd/main.go "$@"
   elif [ -f "./cmd/api/main.go" ]; then
-    go run ./cmd/api/main.go
+    go run ./cmd/api/main.go "$@"
   fi
 }
-
-alias rg="rg"
 alias lg="golangci-lint run --fix; go mod tidy"
 alias lgw="golangci-lint run > lint.dev 2>&1"
 alias lgr='find . -name "go.mod" -execdir sh -c "golangci-lint run --fix; go mod tidy" \;'
@@ -167,7 +166,7 @@ export PATH="$HOME/.npm-global/bin:$PATH"
 
 # Launch Codex without approval prompts or sandboxing.
 codex() {
-  command codex --dangerously-bypass-approvals-and-sandbox "$@"
+  command "$HOME/.local/bin/codex" --dangerously-bypass-approvals-and-sandbox "$@"
 }
 
 # ── AI agent cockpit ────────────────────────────────────────────────────────

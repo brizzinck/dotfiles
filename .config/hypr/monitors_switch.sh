@@ -10,7 +10,7 @@ trap "rm -f $PIDFILE" EXIT
 
 apply() {
     if hyprctl -j monitors all | grep -q '"HDMI-A-1"'; then
-        hyprctl keyword monitor "eDP-1,disable" >/dev/null
+        hyprctl keyword monitor "eDP-1,2880x1800@120,0x1440,1.5" >/dev/null
         hyprctl keyword monitor "HDMI-A-1,2560x1440@144,0x0,1" >/dev/null
     else
         hyprctl keyword monitor "eDP-1,2880x1800@120,0x0,1.5" >/dev/null
