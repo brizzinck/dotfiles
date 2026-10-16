@@ -1,0 +1,11 @@
+# Installed to /etc/default/earlyoom by apply-system.sh (earlyoom.service reads it via EnvironmentFile=-/etc/default/earlyoom).
+# systemd splits $EARLYOOM_ARGS on whitespace and ignores quotes inside it, so the regexes must contain no spaces
+# (use "." to match one, e.g. "tmux:.server").
+#
+#   -m 6,3  SIGTERM below 6% MemAvailable, SIGKILL below 3%   (both conditions must hold with the swap limit)
+#   -s 10,5 ... and below 10% / 5% free swap
+#   -r 0    no periodic memory report in the journal
+# --prefer: browser renderers, Electron apps, linters and language servers are killed first.
+# --avoid : compositor, bar, terminal, multiplexer, editor, agents and the session plumbing are deprioritised
+#           (a bias, not immunity).
+EARLYOOM_ARGS="-m 6,3 -s 10,5 -r 0 --prefer ^(Isolated.Web.Co|Web.Content|WebExtensions|chrome|Telegram|electron|obsidian|spotify|golangci-lint|gopls|tsserver|java|dragonfly)$ --avoid ^(Hyprland|Xwayland|waybar|hypridle|hyprlock|dunst|ghostty|tmux:.server|nvim|zsh|sshd|pipewire|pipewire-pulse|wireplumber|systemd|systemd-logind|dbus-broker|NetworkManager|xdg-desktop-por|zen|claude|codex)$"

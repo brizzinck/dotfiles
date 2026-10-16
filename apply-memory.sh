@@ -12,7 +12,8 @@ install -Dm644 "$SRC/zram-generator.conf"    /etc/systemd/zram-generator.conf
 install -Dm644 "$SRC/99-dotfiles-memory.conf" /etc/sysctl.d/99-dotfiles-memory.conf
 install -Dm644 "$SRC/zswap-off.conf"         /etc/tmpfiles.d/zswap-off.conf
 install -Dm644 "$SRC/journald-size.conf"     /etc/systemd/journald.conf.d/size.conf
-[ -e /etc/docker/daemon.json ] || install -Dm644 "$SRC/docker-daemon.json" /etc/docker/daemon.json
+# /etc/docker/daemon.json (log options + BuildKit GC cap) is owned by apply-system.sh (section config);
+# it installs the same infrastructure/memory/docker-daemon.json, so there is a single source of truth.
 
 systemd-tmpfiles --create /etc/tmpfiles.d/zswap-off.conf
 sysctl --system >/dev/null
@@ -22,4 +23,4 @@ systemctl restart systemd-journald.service
 
 echo "--- swap ---";   swapon --show
 echo "--- zswap enabled (want N) ---"; cat /sys/module/zswap/parameters/enabled
-echo "Docker log limits apply after: sudo systemctl restart docker"
+echo "Docker log limits and GC cap: sudo ./apply-system.sh --only config, then --only services (restarts docker)"

@@ -57,10 +57,8 @@ if [ "$EUID" -eq 0 ]; then
 else
   OWNER="$(id -un)"
 fi
-# shellcheck disable=SC2034  # OWNER_HOME and INFRA are used by the sections later stages fill in
 OWNER_HOME="$(getent passwd "$OWNER" | cut -d: -f6)"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck disable=SC2034
 INFRA="$REPO/infrastructure"
 
 # --- helpers -----------------------------------------------------------------
@@ -126,6 +124,8 @@ cleanup_pacman_cache() {
     run paccache -rk2
     run paccache -ruk0
     changed "pacman cache trimmed with paccache ($when)"
+  elif [ "$DRY_RUN" -eq 1 ] && [ "$when" != start ]; then
+    log "[dry-run] paccache -rk2 and paccache -ruk0 would run here (pacman-contrib is installed by this section)"
   elif [ "$when" = start ]; then
     # paccache comes with pacman-contrib, which the install section adds later; until then keep installed versions only
     run pacman -Sc --noconfirm
@@ -174,55 +174,401 @@ section_cleanup() {
   fi
 }
 
-# --- sections below are stubs; later stages fill them ------------------------
+# --- shared helpers for the S2 sections --------------------------------------
+warn() { NOTES+=("WARNING: $*"); printf 'warn: %s\n' "$*" >&2; }
 
-# S2: pacman -Syu --noconfirm (full upgrade before installs; sets need_reboot).
+# try CMD...: like run, but a failure is recorded as a warning and the script continues.
+try() {
+  if ! run "$@"; then
+    warn "command failed: $*"
+    return 0
+  fi
+}
+
+pkg_installed() { pacman -Qq -- "$1" >/dev/null 2>&1; }
+
+# sed_edit FILE SED-ARGS...: edit a file in place (backup first); echoes in --dry-run.
+sed_edit() {
+  local f="$1"
+  shift
+  backup_file "$f"
+  run sed -i -E "$@" "$f"
+}
+
+# --- upgrade -----------------------------------------------------------------
 section_upgrade() {
   header "upgrade"
-  log "(not implemented yet)"
+  # full upgrade before installing anything new (partial upgrades are unsupported on Arch)
+  run pacman -Syu --noconfirm
+  changed "system upgraded with pacman -Syu"
+  need_reboot
+  followup "pacman -Qu    # should be empty after the upgrade"
 }
 
-# S2: install the consolidated package lists (repo + prebuilt AUR packages), then rerun the pacman cache trim.
+# --- install -----------------------------------------------------------------
+# Repo packages added by the workstation run. Keep in sync with the "workstation additions" block in install.sh.
+# Later stages append their packages here.
+REPO_PACKAGES=(
+  # system
+  pacman-contrib earlyoom reflector git-lfs fd smartmontools nvme-cli libva-utils amdgpu_top
+  # wayland desktop helpers
+  hyprpolkitagent cliphist wl-clip-persist swayosd wiremix hyprshot satty hyprpicker hyprsunset
+  rofimoji wtype udiskie qt6ct
+  # cli tools
+  bat eza git-delta github-cli trash-cli dust duf watchexec just go-yq xh shellcheck shfmt direnv
+  dive hyperfine
+  # language servers for neovim (S6 may drop any of these in favour of Mason)
+  bash-language-server yaml-language-server vscode-json-languageserver taplo-cli dockerfile-language-server
+)
+AUR_CURSOR_PACKAGE="bibata-cursor-theme-bin"
+
+cpu_ucode_package() {
+  if grep -qi 'AuthenticAMD' /proc/cpuinfo 2>/dev/null; then
+    echo amd-ucode
+  elif grep -qi 'GenuineIntel' /proc/cpuinfo 2>/dev/null; then
+    echo intel-ucode
+  fi
+}
+
+# Build the AUR cursor theme as the owner (makepkg refuses root), install the result as root. Failure only warns.
+install_aur_cursor() {
+  local pkg="$AUR_CURSOR_PACKAGE" build_dir built
+  if pkg_installed "$pkg"; then
+    log "unchanged: $pkg already installed"
+    return 0
+  fi
+  if ! command -v makepkg >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
+    warn "makepkg or git missing, skipped AUR package $pkg (install base-devel and git, then rerun --only install)"
+    return 0
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "[dry-run] would build $pkg from https://aur.archlinux.org/$pkg.git as $OWNER (makepkg, no -s) and pacman -U the result"
+    return 0
+  fi
+  build_dir="$(mktemp -d /tmp/aur-build.XXXXXX)"
+  chown "$OWNER": "$build_dir"
+  # shellcheck disable=SC2016  # the script runs in the owner's shell, $1 and $2 must stay literal here
+  if run_as_owner bash -c '
+      set -euo pipefail
+      cd "$1"
+      mkdir out
+      git clone --depth 1 "https://aur.archlinux.org/$2.git" src
+      cd src
+      PKGDEST="$1/out" makepkg --noconfirm
+    ' _ "$build_dir" "$pkg"; then
+    built="$(find "$build_dir/out" -maxdepth 1 -name "$pkg-*.pkg.tar.*" ! -name '*.sig' | head -n 1)"
+    if [ -n "$built" ] && pacman -U --noconfirm "$built"; then
+      changed "installed AUR package $pkg"
+    else
+      warn "built $pkg but pacman -U failed, cursor theme not installed (fall back to Adwaita)"
+    fi
+  else
+    warn "building $pkg failed, continuing without it (fall back to Adwaita)"
+  fi
+  rm -rf -- "$build_dir"
+}
+
 section_install() {
   header "install"
-  log "(package lists not implemented yet)"
+  local ucode p wanted=() missing=()
+  ucode="$(cpu_ucode_package)"
+  if [ -n "$ucode" ]; then
+    log "CPU microcode package for this machine: $ucode"
+    REPO_PACKAGES=("$ucode" "${REPO_PACKAGES[@]}")
+  else
+    note "CPU vendor not recognised, no microcode package selected"
+  fi
+
+  # verify every package against the sync databases first; unknown names are dropped and reported
+  for p in "${REPO_PACKAGES[@]}"; do
+    if pacman -Si -- "$p" >/dev/null 2>&1; then
+      wanted+=("$p")
+    else
+      missing+=("$p")
+    fi
+  done
+  if [ "${#missing[@]}" -gt 0 ]; then
+    warn "not found in the repositories, dropped: ${missing[*]}"
+  fi
+  log "installing ${#wanted[@]} repo packages (already installed ones are skipped)"
+  try pacman -S --needed --noconfirm "${wanted[@]}"
+  changed "repo packages ensured (${#wanted[@]} names)"
+
+  install_aur_cursor
+
+  # pacman-contrib (paccache) exists now; trim the cache again after the downloads
   cleanup_pacman_cache post-install
+  followup "vainfo    # VA-API decode check (libva-utils)"
 }
 
-# S2: snap stack + snapd, explicit removal list, then orphans (pacman -Qdtq at run time).
+# --- remove ------------------------------------------------------------------
+remove_snap_stack() {
+  local s present=()
+  if ! pkg_installed snapd; then
+    log "snapd not installed, snap stack already gone"
+    if [ -d "$OWNER_HOME/snap" ]; then
+      run rm -rf -- "$OWNER_HOME/snap"
+      changed "removed leftover $OWNER_HOME/snap"
+    fi
+    return 0
+  fi
+  if command -v snap >/dev/null 2>&1; then
+    for s in surfshark gnome-3-28-1804 gtk-common-themes core18 core20 bare; do
+      snap list "$s" >/dev/null 2>&1 && present+=("$s")
+    done
+    # surfshark first: the others are its bases/platforms; the flatpak Surfshark stays
+    if [[ " ${present[*]} " == *" surfshark "* ]]; then
+      try snap remove --purge surfshark
+    fi
+    for s in gnome-3-28-1804 gtk-common-themes core18 core20 bare; do
+      if [[ " ${present[*]} " == *" $s "* ]]; then
+        try snap remove --purge "$s"
+      fi
+    done
+  fi
+  try systemctl disable --now snapd.service snapd.socket snapd.apparmor.service
+  try pacman -Rns --noconfirm snapd
+  changed "snap stack and snapd removed"
+  if [ -d "$OWNER_HOME/snap" ]; then
+    run rm -rf -- "$OWNER_HOME/snap"
+    changed "removed $OWNER_HOME/snap"
+  fi
+  if [ -d /var/lib/snapd ]; then
+    note "/var/lib/snapd still exists after removing snapd; inspect it and delete it by hand if it holds no snaps"
+  fi
+}
+
 section_remove() {
   header "remove"
-  log "(not implemented yet)"
+  local p present=() orphans=()
+
+  remove_snap_stack
+
+  # explicit list from the package review (only those actually installed)
+  for p in lazarus fpc fpc-src kotlin zig dolphin-emu modemmanager; do
+    pkg_installed "$p" && present+=("$p")
+  done
+  if [ "${#present[@]}" -gt 0 ]; then
+    log "removing: ${present[*]}"
+    try pacman -Rns --noconfirm "${present[@]}"
+    changed "removed packages: ${present[*]}"
+  else
+    log "none of the unused toolchain packages are installed"
+  fi
+
+  # orphans last, after the removals above may have created new ones; printed before removal
+  mapfile -t orphans < <(pacman -Qdtq 2>/dev/null || true)
+  if [ "${#orphans[@]}" -gt 0 ]; then
+    log "orphans to remove:"
+    printf '  %s\n' "${orphans[@]}"
+    try pacman -Rns --noconfirm "${orphans[@]}"
+    changed "removed orphans: ${orphans[*]}"
+  else
+    log "no orphan packages"
+  fi
 }
 
-# S2/S3+: install_file calls for infrastructure/<area>/* into /etc (pacman.conf, makepkg.conf, daemon.json, earlyoom, tlp, ...).
+# --- config ------------------------------------------------------------------
+# Render a template (@OWNER@, @DOTFILES@) to a temp file and install it, so tracked files stay user-agnostic.
+install_pkglist_helper() {
+  local tmp
+  tmp="$(mktemp)"
+  sed -e "s|@OWNER@|$OWNER|g" -e "s|@DOTFILES@|$REPO|g" "$INFRA/pacman/dotfiles-pkglist.in" >"$tmp"
+  install_file "$tmp" /usr/local/bin/dotfiles-pkglist 755
+  rm -f -- "$tmp"
+}
+
 section_config() {
   header "config"
-  log "(not implemented yet)"
+
+  # earlyoom: earlyoom.service reads EARLYOOM_ARGS through EnvironmentFile=-/etc/default/earlyoom
+  install_file "$INFRA/memory/earlyoom" /etc/default/earlyoom
+
+  # docker daemon.json (log options + BuildKit GC cap). Single source: infrastructure/memory/docker-daemon.json
+  if command -v dockerd >/dev/null 2>&1 && ! dockerd --validate --config-file "$INFRA/memory/docker-daemon.json" >/dev/null 2>&1; then
+    warn "dockerd --validate rejected infrastructure/memory/docker-daemon.json, /etc/docker/daemon.json left untouched"
+  else
+    if command -v dockerd >/dev/null 2>&1; then log "dockerd --validate: configuration OK"; fi
+    install_file "$INFRA/memory/docker-daemon.json" /etc/docker/daemon.json
+  fi
+
+  # pacman hooks and the package-list snapshot helper
+  install_file "$INFRA/pacman/zz-paccache.hook" /etc/pacman.d/hooks/zz-paccache.hook
+  install_file "$INFRA/pacman/zz-dotfiles-pkglist.hook" /etc/pacman.d/hooks/zz-dotfiles-pkglist.hook
+  install_pkglist_helper
+
+  # makepkg: stop generating *-debug packages
+  if grep -qE '^OPTIONS=\(.*[ (]debug[ )]' /etc/makepkg.conf; then
+    sed_edit /etc/makepkg.conf 's/^(OPTIONS=\(.*[ (])debug([ )])/\1!debug\2/'
+    changed "makepkg.conf: debug -> !debug"
+  else
+    log "unchanged: makepkg.conf already has !debug"
+  fi
+
+  # pacman.conf: Color and VerbosePkgLists
+  if grep -qE '^#(Color|VerbosePkgLists)$' /etc/pacman.conf; then
+    sed_edit /etc/pacman.conf 's/^#(Color|VerbosePkgLists)$/\1/'
+    changed "pacman.conf: Color and VerbosePkgLists enabled"
+  else
+    log "unchanged: pacman.conf Color/VerbosePkgLists already active"
+  fi
+
+  # coredump limits
+  install_file "$INFRA/systemd/coredump-limits.conf" /etc/systemd/coredump.conf.d/limits.conf
+
+  # TLP drop-in (61-battery-care.conf only sets STOP_CHARGE_THRESH_*, no overlap with these keys)
+  install_file "$INFRA/tlp/62-power.conf" /etc/tlp.d/62-power.conf
 }
 
-# S2: enable system timers/services (earlyoom, fstrim, paccache, reflector, tlp); user units are not handled here.
+# --- services ----------------------------------------------------------------
+docker_config_stale() {
+  local started conf_time start_time
+  if ! cmp -s -- "$INFRA/memory/docker-daemon.json" /etc/docker/daemon.json 2>/dev/null; then
+    return 0
+  fi
+  started="$(systemctl show -p ActiveEnterTimestamp --value docker.service)"
+  [ -n "$started" ] || return 1
+  conf_time="$(stat -c %Y /etc/docker/daemon.json)"
+  start_time="$(date -d "$started" +%s)"
+  [ "$conf_time" -gt "$start_time" ]
+}
+
 section_services() {
   header "services"
-  log "(not implemented yet)"
+  run systemctl daemon-reload
+  try systemctl enable --now fstrim.timer paccache.timer reflector.timer earlyoom.service
+  changed "enabled fstrim.timer paccache.timer reflector.timer earlyoom.service"
+
+  # docker reads daemon.json only at start: restart when the file is newer than the running daemon (or still differs from the repo copy)
+  if systemctl is-active --quiet docker.service && docker_config_stale; then
+    note "restarting docker.service to apply daemon.json; containers without a restart policy stop"
+    try systemctl restart docker.service
+    changed "docker restarted (new daemon.json)"
+  else
+    log "docker restart not needed (daemon.json already applied or docker is not running)"
+  fi
+
+  if command -v tlp >/dev/null 2>&1; then
+    try tlp start
+    changed "tlp start (applied /etc/tlp.d/62-power.conf)"
+  fi
+
+  # reflector: read-only sanity check of the shipped configuration
+  if [ -r /etc/xdg/reflector/reflector.conf ]; then
+    log "reflector.conf (active options):"
+    grep -vE '^[[:space:]]*(#|$)' /etc/xdg/reflector/reflector.conf | sed 's/^/  /'
+    note "reflector.conf has no --country filter: mirrors are chosen worldwide by age; add --country to /etc/xdg/reflector/reflector.conf if pacman downloads feel slow"
+  else
+    warn "/etc/xdg/reflector/reflector.conf is missing, reflector.timer will use defaults"
+  fi
+  followup "systemctl --failed    # expect no failed units"
+  followup "journalctl -u earlyoom -b --no-pager | tail    # earlyoom started with the new arguments"
+  followup "systemctl list-timers fstrim.timer paccache.timer reflector.timer"
 }
 
-# S2: tune2fs reserved blocks, fstab mount options (+ findmnt --verify).
+# --- disk --------------------------------------------------------------------
 section_disk() {
   header "disk"
-  log "(not implemented yet)"
+  local src uuid fstype blocks reserved line
+
+  src="$(findmnt -no SOURCE / 2>/dev/null || true)"
+  uuid="$(findmnt -no UUID / 2>/dev/null || true)"
+  fstype="$(findmnt -no FSTYPE / 2>/dev/null || true)"
+  log "root: source=$src uuid=$uuid fstype=$fstype"
+  if [ "$fstype" != ext4 ] || [ -z "$uuid" ] || [ -z "$src" ]; then
+    note "root filesystem is not ext4 or its UUID is unknown, disk section skipped"
+    return 0
+  fi
+
+  # reserved blocks: the 5% default is wasteful on a single-user root, 1% is enough
+  if [ "$EUID" -eq 0 ]; then
+    blocks="$(tune2fs -l "$src" | awk -F: '/^Block count/ {gsub(/ /, "", $2); print $2}')"
+    reserved="$(tune2fs -l "$src" | awk -F: '/^Reserved block count/ {gsub(/ /, "", $2); print $2}')"
+    if [ -n "$blocks" ] && [ -n "$reserved" ] && [ $((reserved * 100)) -gt "$blocks" ]; then
+      run tune2fs -m 1 "$src"
+      changed "tune2fs -m 1 $src (reserved blocks $reserved of $blocks -> 1%)"
+    else
+      log "unchanged: reserved blocks already <= 1% ($reserved of $blocks)"
+    fi
+  else
+    log "[dry-run] would read tune2fs -l $src and run tune2fs -m 1 if the reserved share is above 1%"
+  fi
+
+  # fstab: relatime -> noatime,lazytime on the root line, matched by the root UUID
+  line="$(awk -v u="UUID=$uuid" '$1 == u && $2 == "/" {print}' /etc/fstab)"
+  if [ -z "$line" ]; then
+    note "no UUID=$uuid line for / in /etc/fstab, mount options not changed"
+  elif [[ "$line" == *noatime* ]]; then
+    log "unchanged: root fstab line already has noatime"
+  elif [[ "$line" != *relatime* ]]; then
+    note "root fstab line has no relatime option to replace, not changed: $line"
+  else
+    backup_file /etc/fstab
+    run sed -i -E "/^UUID=${uuid}[[:space:]]+\\/[[:space:]]/ s/([[:space:],])relatime([[:space:],])/\\1noatime,lazytime\\2/" /etc/fstab
+    if [ "$DRY_RUN" -eq 1 ]; then
+      log "[dry-run] would verify with findmnt --verify and restore /etc/fstab.bak-$STAMP on failure, then mount -o remount /"
+    elif findmnt --verify >/dev/null 2>&1; then
+      changed "fstab root options: relatime -> noatime,lazytime"
+      run mount -o remount /
+      changed "remounted / with the new options"
+      need_reboot
+      followup "findmnt -no OPTIONS /    # expect noatime,lazytime"
+    else
+      cp -a -- "/etc/fstab.bak-$STAMP" /etc/fstab
+      warn "findmnt --verify failed on the edited /etc/fstab, restored the backup; disk section aborted"
+      return 0
+    fi
+  fi
 }
 
-# S2: GRUB_TIMEOUT and grub-mkconfig (also picks up amd-ucode).
+# --- boot --------------------------------------------------------------------
 section_boot() {
   header "boot"
-  log "(not implemented yet)"
+  local cfg=/boot/grub/grub.cfg
+  if [ -d /sys/firmware/efi ]; then
+    log "boot mode: UEFI"
+  else
+    log "boot mode: BIOS"
+  fi
+  if ! command -v grub-mkconfig >/dev/null 2>&1 || [ ! -f "$cfg" ] || [ ! -f /etc/default/grub ]; then
+    note "GRUB not detected (grub-mkconfig, $cfg or /etc/default/grub missing); bootloader section skipped, regenerate your bootloader config by hand so it loads the microcode image"
+    return 0
+  fi
+  log "bootloader: GRUB ($cfg)"
+
+  if grep -qE '^GRUB_TIMEOUT=1$' /etc/default/grub; then
+    log "unchanged: GRUB_TIMEOUT already 1"
+  else
+    sed_edit /etc/default/grub 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=1/'
+    changed "GRUB_TIMEOUT=1"
+  fi
+
+  backup_file "$cfg"
+  run grub-mkconfig -o "$cfg"
+  changed "grub.cfg regenerated (also loads the CPU microcode image)"
+  if [ "$DRY_RUN" -eq 0 ]; then
+    if grep -q 'ucode' "$cfg"; then
+      log "grub.cfg references a ucode image"
+    else
+      warn "grub.cfg has no ucode initrd; check that amd-ucode/intel-ucode is installed"
+    fi
+  fi
+  need_reboot
 }
 
-# S2: flatpak update -y.
+# --- flatpak -----------------------------------------------------------------
 section_flatpak() {
   header "flatpak"
-  log "(not implemented yet)"
+  if ! command -v flatpak >/dev/null 2>&1; then
+    log "flatpak not installed"
+    return 0
+  fi
+  try flatpak update -y --noninteractive
+  changed "system flatpaks updated"
+  if { if [ "$EUID" -eq 0 ]; then sudo -u "$OWNER" -H flatpak list --user --app; else flatpak list --user --app; fi; } 2>/dev/null | grep -q .; then
+    try sudo -u "$OWNER" -H flatpak update --user -y --noninteractive
+    changed "user flatpaks updated"
+  fi
 }
 
 # Last: what changed, reboot notice, follow-up commands for the owner.

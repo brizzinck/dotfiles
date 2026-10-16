@@ -1,0 +1,13 @@
+app.ytmdesktop.ytmdesktop
+app.zen_browser.zen
+com.brave.Browser
+com.google.AndroidStudio
+com.google.Chrome
+com.mojang.Minecraft
+com.spotify.Client
+com.surfshark.Surfshark
+com.unity.UnityHub
+com.valvesoftware.Steam
+org.pgadmin.pgadmin4
+rest.insomnia.Insomnia
+us.zoom.Zoom

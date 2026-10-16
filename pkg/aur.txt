@@ -1,0 +1,12 @@
+adspower-global
+anydesk-bin
+facad
+hadolint-bin
+happ
+httptoolkit
+pandoc-bin
+snapd
+v2raya
+xray
+yay-bin
+yay-bin-debug

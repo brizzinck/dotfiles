@@ -1,0 +1,10 @@
+[Trigger]
+Operation = Install
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = Saving package lists to dotfiles...
+When = PostTransaction
+Exec = /usr/local/bin/dotfiles-pkglist
