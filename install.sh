@@ -59,7 +59,6 @@ packages=(
   hyprpolkitagent cliphist wl-clip-persist swayosd wiremix hyprshot satty hyprpicker hyprsunset
   rofimoji wtype udiskie                                                            # polkit agent, clipboard, OSD, screenshots, picker, emoji, automount
   bat eza git-delta github-cli trash-cli dust duf watchexec just go-yq xh shellcheck shfmt direnv dive hyperfine
-  bash-language-server yaml-language-server vscode-json-languageserver taplo-cli dockerfile-language-server   # neovim LSPs (S6 may prefer Mason)
 )
 sudo pacman -S --needed --noconfirm "${packages[@]}"
 

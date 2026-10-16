@@ -217,8 +217,6 @@ REPO_PACKAGES=(
   # cli tools
   bat eza git-delta github-cli trash-cli dust duf watchexec just go-yq xh shellcheck shfmt direnv
   dive hyperfine
-  # language servers for neovim (S6 may drop any of these in favour of Mason)
-  bash-language-server yaml-language-server vscode-json-languageserver taplo-cli dockerfile-language-server
 )
 AUR_CURSOR_PACKAGE="bibata-cursor-theme-bin"
 
