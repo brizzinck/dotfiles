@@ -24,6 +24,8 @@ MENU=$'shot-region\tScreenshot: region\thyprshot slurp
 shot-window\tScreenshot: window\thyprshot
 shot-monitor\tScreenshot: monitor\thyprshot
 annotate\tScreenshot: region, annotate (satty)\tgrim slurp satty wl-copy
+shot-frozen\tScreenshot: frozen screen, region\thyprpicker grim slurp wl-copy
+annotate-frozen\tScreenshot: frozen screen, region, annotate (satty)\thyprpicker grim slurp satty wl-copy
 ocr-region\tOCR: region to clipboard (rus+eng)\tgrim slurp tesseract wl-copy
 ocr-window\tOCR: window to clipboard (rus+eng)\tgrim tesseract wl-copy
 qr-scan\tQR: scan region\tgrim slurp zbarimg wl-copy
@@ -276,6 +278,8 @@ run_action() { # ID [ADDRESS]
         local geo; geo=$(slurp) || return 0
         grim -g "$geo" - | satty -f - --copy-command wl-copy --output-filename "$SHOTS/%F_%T.png"
       fi ;;
+    shot-frozen) x "$SCRIPTS/freeze-shot.sh" save ;;
+    annotate-frozen) x "$SCRIPTS/freeze-shot.sh" annotate ;;
     ocr-region) cmd_ocr ;;
     ocr-window) cmd_ocr window "$addr" ;;
     qr-scan) do_qr_scan ;;

@@ -18,6 +18,8 @@ shot-region	Capture	Screenshot: region	Print	run	hyprshot -m region -o ~/pics/sc
 shot-monitor	Capture	Screenshot: active monitor	SHIFT+Print	run	hyprshot -m output -m active -o ~/pics/screenshots	-	hyprshot	-	c o;Output
 shot-window	Capture	Screenshot: active window	SUPER+Print	run	hyprshot -m window -m active -o ~/pics/screenshots	-	hyprshot	Targets the window that was focused before the hub opened.	c w;Window
 shot-annotate	Capture	Screenshot: region, then annotate (satty)	SUPER+SHIFT+S	run	grim -g "$(slurp)" - | satty -f - --copy-command wl-copy --output-filename ~/pics/screenshots/%F_%T.png	-	grim slurp satty	-	c a;Annotate
+shot-frozen	Capture	Screenshot: frozen screen, region	CTRL+ALT+S	run	~/.config/hypr/scripts/freeze-shot.sh save	-	hyprpicker grim slurp	The screen freezes at the key press; select the region on the frozen image (Esc cancels and unfreezes). Saved to ~/pics/screenshots and copied.	c z;Frozen region
+shot-frozen-annotate	Capture	Screenshot: frozen screen, region, then annotate (satty)	CTRL+SHIFT+ALT+S	run	~/.config/hypr/scripts/freeze-shot.sh annotate	-	hyprpicker grim slurp satty	-	c x;Frozen annotate
 rec-region	Capture	Record region	SUPER+SHIFT+R	run	~/.config/hypr/scripts/rec-toggle.sh region	-	gpu-screen-recorder	-	c b;Record region
 colorpicker	Capture	Color picker (copies hex)	SUPER+SHIFT+C	run	hyprpicker -a	-	hyprpicker	-	c p;Color picker
 clipboard	Clipboard	Clipboard history	SUPER+C	run	~/.config/hypr/scripts/clipboard.sh	-	cliphist fzf-menu	Enter pastes into the previous window, Alt+Enter / y only copies, Alt+p / m pins, Alt+d / d deletes, Alt+i / f images only, Alt+t / t text only. The preview pane shows the text or the image.	y h;History

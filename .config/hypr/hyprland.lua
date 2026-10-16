@@ -439,6 +439,8 @@ hl.bind(mainMod .. " + ALT + R", hl.dsp.exec_cmd(scripts .. "/rec-toggle.sh --mi
 hl.bind(mainMod .. " + W", hl.dsp.exec_cmd(scripts .. "/safe-close.sh"), { description = "Close window (twice for browsers and terminals)" })
 hl.bind(mainMod .. " + SHIFT + W", hl.dsp.exec_cmd(scripts .. "/window-menu.sh"), { description = "Window action menu" })
 hl.bind(mainMod .. " + SHIFT + space", hl.dsp.exec_cmd(scripts .. "/window-switcher.sh"), { description = "Window switcher" })
+hl.bind("CTRL + ALT + S", hl.dsp.exec_cmd(scripts .. "/freeze-shot.sh save"), { description = "Frozen screen region screenshot (clipboard + file)" })
+hl.bind("CTRL + SHIFT + ALT + S", hl.dsp.exec_cmd(scripts .. "/freeze-shot.sh annotate"), { description = "Frozen screen region screenshot then annotate (satty)" })
 hl.bind(mainMod .. " + V", hl.dsp.window.float({ action = "toggle" }), { description = "Toggle floating" })
 hl.bind(mainMod .. " + F", hl.dsp.window.fullscreen({ mode = "fullscreen" }), { description = "Fullscreen" })
 hl.bind(mainMod .. " + SHIFT + F", hl.dsp.window.fullscreen({ mode = "maximized" }), { description = "Maximize (keep bar)" })
