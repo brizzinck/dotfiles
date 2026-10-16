@@ -17,6 +17,7 @@
 ^/package.*\.json
 ^/private
 ^/browsers
+^/apps
 ^/doctor\.sh
 ^/docs
 __pycache__
