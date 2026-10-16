@@ -4,12 +4,13 @@
 #   --dry-run  print what would be sent
 set -u
 DRY=0; [[ ${1:-} == --dry-run ]] && DRY=1
-class=$(hyprctl activewindow -j 2>/dev/null | jq -r '.class // ""')
-case ${class,,} in
-  *ghostty* | float.tui | alacritty | kitty | foot | org.wezfurlong.wezterm | xterm*) mods="CTRL SHIFT" ;;
-  *) mods="CTRL" ;;
-esac
-if ((DRY)); then echo "class=$class: wl-paste -n -t text/plain | wl-copy -t text/plain; sendshortcut ${mods/ /+},V"; exit 0; fi
+SCRIPTS=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+# shellcheck source=paste-lib.sh
+. "$SCRIPTS/paste-lib.sh"
+if ((DRY)); then
+  echo "wl-paste -n -t text/plain | wl-copy -t text/plain; $(PASTE_DRY=1 paste_send)"
+  exit 0
+fi
 txt=$(wl-paste -n -t text/plain 2>/dev/null; echo x)
 txt=${txt%x}
 [[ -n $txt ]] || { notify-send -a paste-plain -t 2000 "Paste as plain text" "clipboard has no text"; exit 0; }
@@ -18,5 +19,5 @@ sens=()
 if wl-paste --list-types 2>/dev/null | grep -qx 'x-kde-passwordManagerHint'; then sens=(--sensitive); fi
 printf '%s' "$txt" | wl-copy "${sens[@]}" -t text/plain
 sleep 0.25   # let the physical SUPER+CTRL be released first
-hyprctl dispatch sendshortcut "${mods// /_},V,activewindow" >/dev/null 2>&1 || wtype -M ctrl -k v -m ctrl
-if ((${#sens[@]})); then "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/vault.sh" arm-clear; fi
+paste_send
+if ((${#sens[@]})); then "$SCRIPTS/vault.sh" arm-clear; fi

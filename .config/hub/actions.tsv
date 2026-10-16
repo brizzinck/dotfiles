@@ -20,7 +20,7 @@ shot-window	Capture	Screenshot: active window	SUPER+Print	run	hyprshot -m window
 shot-annotate	Capture	Screenshot: region, then annotate (satty)	SUPER+SHIFT+S	run	grim -g "$(slurp)" - | satty -f - --copy-command wl-copy --output-filename ~/pics/screenshots/%F_%T.png	-	grim slurp satty	-
 rec-region	Capture	Record region	SUPER+SHIFT+R	run	~/.config/hypr/scripts/rec-toggle.sh region	-	gpu-screen-recorder	-
 colorpicker	Capture	Color picker (copies hex)	SUPER+SHIFT+C	run	hyprpicker -a	-	hyprpicker	-
-clipboard	Clipboard	Clipboard history	SUPER+C	run	~/.config/hypr/scripts/clipboard.sh	-	cliphist rofi	Enter copies, Alt+d deletes.
+clipboard	Clipboard	Clipboard history	SUPER+C	run	~/.config/hypr/scripts/clipboard.sh	-	cliphist rofi	Enter pastes into the previous window, Alt+Enter only copies, Alt+p pins, Alt+d deletes, Alt+i images only, Alt+t text only.
 emoji	Clipboard	Emoji picker	SUPER+period	run	rofimoji	-	rofimoji	-
 notif-history	Notify	Notification history (pop last)	SUPER+SHIFT+X	run	dunstctl history-pop	-	dunstctl	-
 notif-dismiss	Notify	Dismiss notification	SUPER+X	run	dunstctl close	-	dunstctl	-

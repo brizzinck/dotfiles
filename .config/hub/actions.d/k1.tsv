@@ -1,0 +1,2 @@
+# K1: clipboard additions (format: see the header of ../hub)
+paste-last-image	Clipboard	Paste last screenshot or image	SUPER+ALT+V	run	~/.config/hypr/scripts/clipboard.sh --paste-last-image	-	cliphist wl-copy	Newest image of the clipboard history (else the newest file in ~/pics/screenshots) goes back into the clipboard and is pasted into the previous window, even when text was copied after it.
