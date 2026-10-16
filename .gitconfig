@@ -2,11 +2,46 @@
 [include]
 	path = ~/.gitconfig.local
 [credential]
-	helper = cache
+	# after installing github-cli, run once (interactive): gh auth login && gh auth setup-git
+	helper = cache --timeout=28800
 [init]
 	defaultBranch = master
 [core]
 	editor = nvim
+	# delta when installed, plain less otherwise; the pager only runs on a TTY, agent output stays stock
+	pager = "if command -v delta >/dev/null 2>&1; then exec delta; else exec less; fi"
+[interactive]
+	diffFilter = "command -v delta >/dev/null 2>&1 && delta --color-only || cat"
+[delta]
+	navigate = true
+	line-numbers = true
+	dark = true
+	syntax-theme = ansi
+[merge]
+	conflictStyle = zdiff3
+[diff]
+	algorithm = histogram
+	colorMoved = default
+[pull]
+	rebase = true
+[rebase]
+	autoStash = true
+	autoSquash = true
+	updateRefs = true
+[push]
+	autoSetupRemote = true
+[fetch]
+	prune = true
+[rerere]
+	enabled = true
+[branch]
+	sort = -committerdate
+[commit]
+	verbose = true
+[alias]
+	lg = log --graph --oneline --decorate --all
+	st = status -sb
+	undo = reset --soft HEAD~1
 [filter "lfs"]
 	process = git-lfs filter-process
 	required = true
