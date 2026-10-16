@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# menu: App volume mute/unmute
+# Window-menu hook, called as `app-volume-mute ADDRESS` (window-menu.sh exports WIN_ADDR ... WIN_MON).
+dir=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+exec "$dir/win-volume.sh" mute --addr "${1:-${WIN_ADDR:-}}"

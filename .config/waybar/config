@@ -149,9 +149,10 @@
     "format": "{format_source}",
     "format-source": "󰍬",
     "format-source-muted": "󰍭",
-    "on-click": "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle",
+    "on-click": "~/.config/hypr/scripts/mic-mute-all.sh",
+    "on-click-right": "~/.config/hypr/scripts/audio-picker.sh",
     "scroll-step": 5,
-    "tooltip-format": "{source_desc} {source_volume}%"
+    "tooltip-format": "{source_desc} {source_volume}%\nclick: mute/unmute all microphones, right click: device picker"
   },
 
   "pulseaudio": {

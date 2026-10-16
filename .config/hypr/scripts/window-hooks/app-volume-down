@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# menu: App volume down
+# Window-menu hook, called as `app-volume-down ADDRESS` (window-menu.sh exports WIN_ADDR ... WIN_MON).
+dir=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+exec "$dir/win-volume.sh" down --addr "${1:-${WIN_ADDR:-}}"
