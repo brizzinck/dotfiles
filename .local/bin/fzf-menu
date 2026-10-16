@@ -15,6 +15,8 @@
 #   --preview CMD            preview command, `{}` = the row, `{1}` = a tab field (fzf syntax)
 #   --preview-window OPTS    fzf preview window options (default: right,55%,wrap,border-left)
 #   --image [FIELD]          preview the image file named in tab field FIELD (default 1) with chafa
+#   --index                  print the 0-based line number of the chosen row instead of its text (rofi -format i);
+#                            `{}` in a preview is then "N<TAB>row", use `{2..}` for the row text
 #   --title TEXT             window title (default: "menu: PROMPT")
 #   --here                   run in the current terminal instead of a new window (python/zsh/tmux popups)
 #   --no-restore             do not refocus the previously active window afterwards
@@ -22,6 +24,7 @@
 #   `--bind=...`, `--print-query`, `--query=...`). Options with a value must use the `--opt=value` form, except
 #   --bind/--expect/--with-nth/--nth/--accept-nth/--delimiter/--query/--tiebreak/--tabstop which may also take a
 #   separate argument.
+#   FZF_MENU_HERE=1 in the environment acts like --here (test hook for scripts that call fzf-menu).
 #   Extra NORMAL-mode letter binds: FZF_MENU_NORMAL_BINDS='d:execute(x)' (newline separated KEY:ACTION).
 #
 # Subcommands:
@@ -52,7 +55,7 @@ active_addr() { in_hypr && hyprctl activewindow -j 2>/dev/null | sed -n 's/^[[:s
 
 # ───────────────────────────── arguments ─────────────────────────────
 
-PROMPT=menu HERE=0 NORESTORE=0 COLD=0 TITLE=""
+PROMPT=menu HERE=0 NORESTORE=0 COLD=0 INDEX=0 TITLE=""
 FZF_ARGS=()
 parse_args() {
   local image="" delim=$'\t'
@@ -72,6 +75,7 @@ parse_args() {
         ;;
       --title) TITLE=${2-}; shift ;;
       --here) HERE=1 ;;
+      --index) INDEX=1 ;;
       --no-restore) NORESTORE=1 ;;
       --cold) COLD=1 ;;
       --bind | --expect | --with-nth | --nth | --accept-nth | --delimiter | --query | --tiebreak | --tabstop | --scheme)
@@ -98,8 +102,12 @@ parse_args() {
       [[ $a == --preview=* ]] && { FZF_ARGS+=("--preview-window=right,55%,wrap,border-left"); break; }
     done
   fi
+  if ((INDEX)); then FZF_ARGS+=(--delimiter=$'\t' --with-nth=2.. --accept-nth=1); fi
   [[ -n $TITLE ]] || TITLE="menu: $PROMPT"
 }
+
+# rows on stdin; --index prepends the 0-based line number as a hidden first field
+rows_in() { if ((INDEX)); then awk '{ printf "%d\t%s\n", NR - 1, $0 }'; else cat; fi; }
 
 # ───────────────────────────── the list itself ─────────────────────────────
 
@@ -125,7 +133,7 @@ run_list() {
 # a request directory holds: in (rows), out (selection), rc, cfg (bash: PROMPT, FZF_ARGS, TITLE, NORESTORE), env
 write_request() {
   local req=$1
-  cat >"$req/in"
+  rows_in >"$req/in"
   {
     declare -p PROMPT TITLE NORESTORE
     declare -p FZF_ARGS
@@ -343,12 +351,12 @@ self_test() {
     tmux -L "$sock" kill-session -t t 2>/dev/null
     tmux -L "$sock" new-session -d -s t -x 100 -y 24 \
       "bash -c 'out=\$($SELF --here -p test < <(seq 30)); echo \"RES[\$out]\"; sleep 3'"
-    sleep 0.5
+    sleep 0.7
     for k in "$@"; do
       if [[ $k == =* ]]; then tmux -L "$sock" send-keys -t t -l "${k#=}"; else tmux -L "$sock" send-keys -t t "$k"; fi
-      sleep 0.1
+      sleep 0.15
     done
-    sleep 0.4
+    sleep 0.5
     out=$(tmux -L "$sock" capture-pane -p -t t | grep -a 'RES\[' | head -1)
     if [[ $out == "RES[$want]" ]]; then printf 'ok    %s\n' "$name"; else printf 'FAIL  %s (got %s, want RES[%s])\n' "$name" "${out:-nothing}" "$want"; fails=$((fails + 1)); fi
   }
@@ -382,8 +390,9 @@ case ${1:-} in
 esac
 
 parse_args "$@"
+[[ ${FZF_MENU_HERE:-} == 1 ]] && HERE=1   # test hook: run in the current terminal (headless tmux drives)
 if ((HERE)); then
-  run_list
+  rows_in | run_list
   exit $?
 fi
 menu_gui
