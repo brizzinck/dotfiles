@@ -1,0 +1,7 @@
+# rofi-rbw defaults (no secrets here). Read through ~/.config/rofi-rbw.rc by rofi-rbw.
+# Enter types user, Tab, password into the focused window; Alt+t copies the TOTP code; Alt+m target menu; Alt+s sync.
+selector = rofi
+typer = wtype
+clipboarder = wl-copy
+prompt = vault
+use-notify-send = true

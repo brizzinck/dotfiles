@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# bw-setup: one-time setup of the Bitwarden / Vaultwarden client (rbw).
+# Asks for the server URL and your e-mail (neither is stored in the dotfiles repo: rbw keeps them in
+# ~/.config/rbw/config.json, which is not under stow), configures rbw, logs in, syncs and shows a test list.
+#
+#   bw-setup [--url URL] [--email MAIL]
+#
+# Lock policy: lock_timeout is one year, so the master password is asked once per login session. Hyprland runs
+# `vault.sh session-start` (rbw stop-agent) at every session start, which locks the vault again for the new login.
+set -euo pipefail
+
+url=${BW_URL:-} email=${BW_EMAIL:-}
+while (($#)); do
+  case $1 in
+    --url) url=${2:?--url needs a value}; shift 2 ;;
+    --email) email=${2:?--email needs a value}; shift 2 ;;
+    -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown option $1" >&2; exit 2 ;;
+  esac
+done
+
+command -v rbw >/dev/null || { echo "rbw is not installed. Run: sudo ~/dotfiles/apply-system.sh --only install" >&2; exit 1; }
+
+self_dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+pinentry=$(command -v pinentry-themed 2>/dev/null || true)
+[[ -n $pinentry ]] || pinentry="$self_dir/pinentry-themed"
+[[ -x $pinentry ]] || pinentry=$(command -v pinentry)
+
+cur_url=$(rbw config show 2>/dev/null | jq -r '.base_url // empty' 2>/dev/null || true)
+cur_email=$(rbw config show 2>/dev/null | jq -r '.email // empty' 2>/dev/null || true)
+
+if [[ -z $url ]]; then
+  read -r -p "Vaultwarden URL, e.g. https://vault.example.com${cur_url:+ [$cur_url]}: " url
+  url=${url:-$cur_url}
+fi
+if [[ -z $email ]]; then
+  read -r -p "Account e-mail${cur_email:+ [$cur_email]}: " email
+  email=${email:-$cur_email}
+fi
+[[ $url =~ ^https?://[^[:space:]]+$ ]] || { echo "the URL must start with https:// (or http:// for a LAN test server)" >&2; exit 1; }
+[[ $email == *@* ]] || { echo "that does not look like an e-mail address" >&2; exit 1; }
+url=${url%/}
+
+rbw stop-agent >/dev/null 2>&1 || true
+rbw config set base_url "$url"
+rbw config set email "$email"
+rbw config set lock_timeout 31536000
+rbw config set pinentry "$pinentry"
+echo "rbw configured (pinentry: $pinentry)."
+
+echo "Logging in: a pinentry window asks for the master password."
+if ! rbw login; then
+  cat <<'MSG'
+
+Login failed. On a self-hosted Vaultwarden this is usually a wrong password or a wrong URL.
+The official bitwarden.com server needs the device registered with your personal API key first:
+  rbw register
+Then run bw-setup again.
+MSG
+  exit 1
+fi
+rbw sync
+echo
+echo "Synced. First entries (names only):"
+rbw list | head
+echo
+echo "Done. SUPER+CTRL+P opens the passwords, SUPER+CTRL+O the 2FA codes. The master password is asked once per login."
+echo "Migrating from Google Authenticator: 2fa-import (also in the hub, SUPER+M)."

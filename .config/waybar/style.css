@@ -59,7 +59,7 @@ tooltip label { color: @fg; padding: 2px 4px; }
 
 #clock { color: @fg; font-weight: 700; }
 
-#privacy, #custom-recording, #custom-failed, #custom-updates, #custom-vpn, #custom-dnd, #custom-idle, #custom-keepawake, #custom-lid, #custom-ai, #custom-power,
+#privacy, #custom-recording, #custom-failed, #custom-updates, #custom-vpn, #custom-dnd, #custom-idle, #custom-keepawake, #custom-lid, #custom-ai, #custom-power, #custom-vault,
 #network, #bluetooth, #pulseaudio, #backlight, #battery, #cpu, #memory, #temperature,
 #language, #tray { padding: 0 7px; }
 #tray { padding-right: 10px; }
@@ -76,6 +76,9 @@ tooltip label { color: @fg; padding: 2px 4px; }
 #custom-ai.ok { color: @sub; }
 #custom-ai.warning { color: @orange; }
 #custom-ai.critical { color: @red; font-weight: 700; }
+#custom-vault.unlocked { color: @green; }
+#custom-vault.locked { color: @sub; }
+#custom-vault.unconfigured { color: @dim; }
 #custom-power.power-saver { color: @green; }
 #custom-power.balanced { color: @sub; }
 #custom-power.performance { color: @orange; }

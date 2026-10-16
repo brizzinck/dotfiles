@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# pinentry for rbw (set by bw-setup as the rbw "pinentry" option): the nicest pinentry that can start here.
+#   pinentry-qt   Qt6, Everforest Black through qt6ct (rbw does not forward QT_QPA_PLATFORMTHEME, so it is set here)
+#   pinentry-gtk  GTK3, follows the GTK dark theme
+#   pinentry-curses / pinentry  when there is no display (ssh, tty)
+# A candidate is skipped when it is missing or a shared library is missing (the packaged pinentry-qt needs the
+# kwindowsystem package), so the prompt keeps working while the package set catches up.
+export QT_QPA_PLATFORMTHEME=qt6ct
+
+runnable() { [[ -x $1 ]] && ! ldd "$1" 2>/dev/null | grep -q 'not found'; }
+
+if [[ -n ${WAYLAND_DISPLAY:-}${DISPLAY:-} ]]; then
+  if runnable /usr/bin/pinentry-qt; then exec /usr/bin/pinentry-qt "$@"; fi
+  if runnable /usr/bin/pinentry-gtk; then GTK_THEME=Adwaita:dark exec /usr/bin/pinentry-gtk "$@"; fi
+fi
+if runnable /usr/bin/pinentry-curses; then exec /usr/bin/pinentry-curses "$@"; fi
+exec pinentry "$@"

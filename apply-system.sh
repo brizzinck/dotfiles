@@ -228,6 +228,8 @@ REPO_PACKAGES=(
   libqalculate rofi-calc gifski kondo lostfiles termdown bandwhich lsof
   # TLP profiles daemon: power-profiles-daemon D-Bus API backed by TLP (tlpctl); needs tlp, conflicts with power-profiles-daemon
   tlp-pd
+  # phase 2 U5: Bitwarden/Vaultwarden client (rbw) with a rofi front end; pinentry-qt (themed by qt6ct) needs kwindowsystem
+  rbw rofi-rbw kwindowsystem
 )
 # AUR packages, built at run time as the owner (makepkg refuses root) and installed with pacman -U. A failure only warns.
 # Keep in sync with the AUR section of install.sh. shellcheck-bin replaces the repo shellcheck (see swap_shellcheck).

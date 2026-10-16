@@ -76,6 +76,14 @@ for c in ddcutil tlpctl rofi-calc ccusage pik; do
   if command -v "$c" >/dev/null 2>&1 || { [ "$c" = rofi-calc ] && [ -e /usr/lib/rofi/calc.so ]; }; then info "u4-$c" "installed"; else info "u4-$c" "missing (sudo ~/dotfiles/apply-system.sh --only install)"; fi
 done
 if id -nG 2>/dev/null | tr ' ' '\n' | grep -qx i2c; then info i2c-group "member"; else info i2c-group "not in group i2c (log in again after the root script)"; fi
+# Bitwarden / Vaultwarden (rbw): informational only
+if ! command -v rbw >/dev/null 2>&1; then
+  info rbw "not installed (sudo ~/dotfiles/apply-system.sh --only install)"
+elif [ -s "${XDG_CONFIG_HOME:-$HOME/.config}/rbw/config.json" ] && grep -q '"email": "' "${XDG_CONFIG_HOME:-$HOME/.config}/rbw/config.json" 2>/dev/null; then
+  if rbw unlocked >/dev/null 2>&1; then info rbw "configured, unlocked"; else info rbw "configured, locked (master password on first use)"; fi
+else
+  info rbw "installed but not configured (run bw-setup)"
+fi
 check earlyoom "active" "not active (sudo ~/dotfiles/apply-system.sh --only services)" systemctl is-active earlyoom.service
 
 # ── interactive zsh must not shadow rg / id ─────────────────────────────────────

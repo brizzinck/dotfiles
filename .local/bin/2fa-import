@@ -1,0 +1,390 @@
+#!/usr/bin/env python3
+"""2fa-import: move Google Authenticator accounts into Bitwarden / Vaultwarden (rbw).
+
+Google Authenticator -> Transfer accounts -> Export accounts shows one or more QR codes holding
+otpauth-migration:// links. This tool decodes them (own protobuf reader, Python 3 stdlib only), prints the
+normal otpauth:// URIs and writes a Bitwarden CSV you import in the Vaultwarden web vault.
+
+  2fa-import [OPTIONS] [INPUT ...]
+
+  INPUT        an image file with the QR code, an otpauth-migration://... link, or - (links on stdin).
+               Several INPUTs are fine: Google splits big exports into batches of ~10 accounts, one QR each.
+               With no INPUT on a terminal you are asked (Enter = select a screen region with slurp).
+  --screen     select a screen region showing the QR code (grim + slurp); can be repeated per batch
+  --no-csv     only print the otpauth:// URIs
+  --no-uris    do not print the URIs (CSV only)
+  --keep       keep the CSV without asking (default: ask whether to delete it)
+  -h, --help   this text
+
+Needs zbarimg (package zbar) for images and screen regions. Pasted links need nothing but Python.
+The CSV goes to $XDG_RUNTIME_DIR/2fa-import (tmpfs, mode 600) and nowhere else. Secrets are never written to
+disk elsewhere, logged, put in a notification or sent to the clipboard. Do not pass a link as a command line
+argument from an interactive shell (it lands in the shell history): use the prompt, `-` or an image.
+"""
+import base64
+import binascii
+import csv
+import datetime
+import os
+import re
+import shutil
+import subprocess
+import sys
+from urllib.parse import quote, unquote
+
+HEADER = ["folder", "favorite", "type", "name", "notes", "fields", "reprompt",
+          "login_uri", "login_username", "login_password", "login_totp"]
+FOLDER = "Imported 2FA"
+ALGORITHMS = {0: "SHA1", 1: "SHA1", 2: "SHA256", 3: "SHA512", 4: "MD5"}
+DIGITS = {0: 6, 1: 6, 2: 8}
+OTP_TYPES = {0: "totp", 1: "hotp", 2: "totp"}
+
+
+# ───────────────────────────── protobuf wire format ─────────────────────────────
+
+def read_varint(buf, pos):
+    result = shift = 0
+    while True:
+        if pos >= len(buf):
+            raise ValueError("truncated varint")
+        b = buf[pos]
+        pos += 1
+        result |= (b & 0x7F) << shift
+        if not b & 0x80:
+            return result, pos
+        shift += 7
+        if shift > 70:
+            raise ValueError("varint too long")
+
+
+def parse_message(buf):
+    """Yield (field number, wire type, value) of one message; unknown fields are returned too."""
+    pos = 0
+    while pos < len(buf):
+        key, pos = read_varint(buf, pos)
+        field, wire = key >> 3, key & 7
+        if wire == 0:
+            value, pos = read_varint(buf, pos)
+        elif wire == 1:
+            value, pos = buf[pos:pos + 8], pos + 8
+        elif wire == 2:
+            length, pos = read_varint(buf, pos)
+            if pos + length > len(buf):
+                raise ValueError("truncated field")
+            value, pos = buf[pos:pos + length], pos + length
+        elif wire == 5:
+            value, pos = buf[pos:pos + 4], pos + 4
+        else:
+            raise ValueError(f"unsupported wire type {wire}")
+        yield field, wire, value
+
+
+def parse_otp_parameters(buf):
+    acct = {"secret": b"", "name": "", "issuer": "", "algorithm": 1, "digits": 1, "type": 2, "counter": 0}
+    for field, wire, value in parse_message(buf):
+        if field == 1 and wire == 2:
+            acct["secret"] = bytes(value)
+        elif field == 2 and wire == 2:
+            acct["name"] = bytes(value).decode("utf-8", "replace")
+        elif field == 3 and wire == 2:
+            acct["issuer"] = bytes(value).decode("utf-8", "replace")
+        elif field == 4 and wire == 0:
+            acct["algorithm"] = value
+        elif field == 5 and wire == 0:
+            acct["digits"] = value
+        elif field == 6 and wire == 0:
+            acct["type"] = value
+        elif field == 7 and wire == 0:
+            acct["counter"] = value
+    return acct
+
+
+def parse_payload(buf):
+    """MigrationPayload: accounts plus the batch fields (version, size, index, id)."""
+    payload = {"accounts": [], "version": 0, "batch_size": 1, "batch_index": 0, "batch_id": 0}
+    for field, wire, value in parse_message(buf):
+        if field == 1 and wire == 2:
+            payload["accounts"].append(parse_otp_parameters(bytes(value)))
+        elif field == 2 and wire == 0:
+            payload["version"] = value
+        elif field == 3 and wire == 0:
+            payload["batch_size"] = value or 1
+        elif field == 4 and wire == 0:
+            payload["batch_index"] = value
+        elif field == 5 and wire == 0:
+            payload["batch_id"] = value
+    return payload
+
+
+def decode_migration_uri(uri):
+    m = re.search(r"[?&]data=([^&#]+)", uri.strip())
+    if not m:
+        raise ValueError("no data= parameter in the link")
+    data = unquote(m.group(1)).replace(" ", "+")
+    data += "=" * (-len(data) % 4)
+    try:
+        raw = base64.b64decode(data, altchars=b"-_") if ("-" in data or "_" in data) else base64.b64decode(data)
+    except binascii.Error as exc:
+        raise ValueError(f"invalid base64: {exc}")
+    return parse_payload(raw)
+
+
+# ───────────────────────────── otpauth URIs and CSV ─────────────────────────────
+
+def split_name(acct):
+    """(issuer, account) with Google's habit of storing 'Issuer:account' in name handled."""
+    issuer, name = acct["issuer"], acct["name"]
+    if ":" in name:
+        prefix, rest = name.split(":", 1)
+        if not issuer:
+            issuer = prefix.strip()
+        if prefix.strip().lower() == issuer.lower():
+            name = rest.strip()
+    return issuer, name
+
+
+def to_uri(acct):
+    issuer, name = split_name(acct)
+    kind = OTP_TYPES.get(acct["type"], "totp")
+    label = f"{issuer}:{name}" if issuer else name
+    secret = base64.b32encode(acct["secret"]).decode().rstrip("=")
+    parts = [f"secret={secret}"]
+    if issuer:
+        parts.append("issuer=" + quote(issuer, safe=""))
+    parts.append("algorithm=" + ALGORITHMS.get(acct["algorithm"], "SHA1"))
+    parts.append(f"digits={DIGITS.get(acct['digits'], 6)}")
+    if kind == "hotp":
+        parts.append(f"counter={acct['counter']}")
+    else:
+        parts.append("period=30")
+    return f"otpauth://{kind}/{quote(label, safe=':@')}?" + "&".join(parts)
+
+
+def csv_rows(accounts):
+    rows, skipped = [], []
+    for acct in accounts:
+        issuer, name = split_name(acct)
+        if OTP_TYPES.get(acct["type"], "totp") == "hotp":
+            skipped.append(issuer or name or "(unnamed)")  # Bitwarden has no counter based codes
+            continue
+        rows.append([FOLDER, "", "login", issuer or name or "(unnamed)", "", "", 0,
+                     "", name if issuer else "", "", to_uri(acct)])
+    return rows, skipped
+
+
+# ───────────────────────────── input ─────────────────────────────
+
+def warn(msg):
+    print(f"2fa-import: {msg}", file=sys.stderr)
+
+
+def runtime_dir():
+    base = os.environ.get("XDG_RUNTIME_DIR")
+    if not base or not os.path.isdir(base):
+        sys.exit("2fa-import: XDG_RUNTIME_DIR (tmpfs) is not available, refusing to write secrets elsewhere")
+    path = os.path.join(base, "2fa-import")
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    os.chmod(path, 0o700)
+    return path
+
+
+def scan_image(path):
+    if not shutil.which("zbarimg"):
+        sys.exit("2fa-import: zbarimg not found (package zbar; run the root script: sudo ./apply-system.sh --only install)")
+    p = subprocess.run(["zbarimg", "-q", "--raw", "-Sdisable", "-Sqrcode.enable", path],
+                       capture_output=True, text=True)
+    return [line.strip() for line in p.stdout.splitlines() if line.strip()]
+
+
+def grab_region():
+    for tool in ("grim", "slurp"):
+        if not shutil.which(tool):
+            sys.exit(f"2fa-import: {tool} not found")
+    geo = subprocess.run(["slurp"], capture_output=True, text=True)
+    if geo.returncode != 0:
+        return []
+    shot = os.path.join(runtime_dir(), f"shot-{os.getpid()}.png")
+    old = os.umask(0o077)
+    try:
+        if subprocess.run(["grim", "-g", geo.stdout.strip(), shot]).returncode != 0:
+            warn("could not capture the screen")
+            return []
+        return scan_image(shot)
+    finally:
+        os.umask(old)
+        try:
+            os.unlink(shot)
+        except FileNotFoundError:
+            pass
+
+
+def links_from_input(item):
+    if item == "-":
+        return [line.strip() for line in sys.stdin.read().splitlines() if line.strip()]
+    if item.startswith("otpauth-migration://"):
+        return [item]
+    if os.path.isfile(item):
+        found = scan_image(item)
+        if not found:
+            warn(f"no QR code found in {item}")
+        return found
+    warn(f"ignored: {item!r} is neither an image file nor an otpauth-migration:// link")
+    return []
+
+
+def ask(prompt):
+    try:
+        return input(prompt).strip()
+    except EOFError:
+        return ""
+
+
+def interactive_inputs():
+    print("Google Authenticator -> Transfer accounts -> Export accounts shows the QR code(s).")
+    print("Give each QR code as: an image path, a pasted otpauth-migration:// link, or Enter to select a screen region.")
+    links, n = [], 0
+    while True:
+        n += 1
+        item = ask(f"QR #{n} (path / link / Enter = screen region): ")
+        got = grab_region() if item == "" else links_from_input(item)
+        if got:
+            links.extend(got)
+            print(f"  read {len(got)} code(s)")
+        else:
+            print("  nothing read")
+        if ask("Another QR code (big exports are split into batches)? [y/N] ").lower() not in ("y", "yes"):
+            break
+    return links
+
+
+# ───────────────────────────── main ─────────────────────────────
+
+def collect(links):
+    accounts, seen_acct, batches = [], set(), {}
+    for link in links:
+        if not link.startswith("otpauth-migration://"):
+            if link.startswith("otpauth://"):
+                warn("this is already a normal otpauth:// link (not a Google export), skipped")
+            else:
+                warn("a QR code that is not a Google Authenticator export was skipped")
+            continue
+        try:
+            payload = decode_migration_uri(link)
+        except ValueError as exc:
+            warn(f"cannot decode a link: {exc}")
+            continue
+        batches.setdefault(payload["batch_id"], {"size": payload["batch_size"], "have": set()})
+        batches[payload["batch_id"]]["have"].add(payload["batch_index"])
+        for acct in payload["accounts"]:
+            ident = (acct["secret"], acct["name"], acct["issuer"], acct["type"])
+            if ident not in seen_acct:
+                seen_acct.add(ident)
+                accounts.append(acct)
+    for bid, info in batches.items():
+        missing = sorted(set(range(info["size"])) - info["have"])
+        if missing:
+            warn(f"export batch {bid & 0xFFFF:04x}: QR {', '.join(str(i + 1) for i in missing)} of {info['size']} "
+                 "missing, scan the remaining ones too and run again with all of them")
+    return accounts
+
+
+def write_csv(rows):
+    folder = runtime_dir()
+    path = os.path.join(folder, "bitwarden-2fa-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + ".csv")
+    old = os.umask(0o077)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    finally:
+        os.umask(old)
+    with os.fdopen(fd, "w", newline="") as f:
+        w = csv.writer(f, lineterminator="\n")
+        w.writerow(HEADER)
+        w.writerows(rows)
+    return path
+
+
+def wipe(path):
+    if shutil.which("shred"):
+        subprocess.run(["shred", "-u", path], check=False)
+    if os.path.exists(path):
+        os.unlink(path)
+
+
+def main(argv):
+    opts = {"screen": 0, "csv": True, "uris": True, "keep": False}
+    inputs = []
+    for a in argv:
+        if a in ("-h", "--help"):
+            print(__doc__)
+            return 0
+        elif a == "--screen":
+            opts["screen"] += 1
+        elif a == "--no-csv":
+            opts["csv"] = False
+        elif a == "--no-uris":
+            opts["uris"] = False
+        elif a == "--keep":
+            opts["keep"] = True
+        elif a == "-" or not a.startswith("-"):
+            inputs.append(a)
+        else:
+            sys.exit(f"2fa-import: unknown option {a} (see --help)")
+
+    tty = sys.stdin.isatty()
+    links = []
+    for _ in range(opts["screen"]):
+        links += grab_region()
+        if tty and _ + 1 < opts["screen"]:
+            ask("Show the next QR code, then press Enter ")
+    for item in inputs:
+        links += links_from_input(item)
+    if not links and not inputs and not opts["screen"]:
+        if not tty:
+            sys.exit("2fa-import: nothing to do (give an image, a link, - for stdin or --screen; --help)")
+        links = interactive_inputs()
+
+    accounts = collect(links)
+    if not accounts:
+        sys.exit("2fa-import: no accounts decoded")
+    print(f"\n{len(accounts)} account(s) decoded.\n")
+
+    if opts["uris"]:
+        print("otpauth URIs (secrets! they stay in this terminal's scrollback until it is closed):")
+        for acct in accounts:
+            print("  " + to_uri(acct))
+        print()
+    if not opts["csv"]:
+        return 0
+
+    rows, skipped = csv_rows(accounts)
+    if skipped:
+        warn("counter based (HOTP) accounts are not supported by Bitwarden and are not in the CSV: " + ", ".join(skipped))
+    if not rows:
+        sys.exit("2fa-import: nothing left for the CSV")
+    path = write_csv(rows)
+    print(f"Bitwarden CSV with {len(rows)} login(s): {path}")
+    print("""
+Import it into Vaultwarden:
+  1. Open your Vaultwarden web vault in the browser and log in.
+  2. Tools -> Import data.
+  3. Vault: your vault.  File format: "Bitwarden (csv)".
+  4. Choose file: the path above (the file chooser can browse /run/user/...).  Import.
+  5. The logins land in the folder "%s". Run `rbw sync`, then check the codes
+     against Google Authenticator (hub row "2FA codes", or `rbw code NAME`).
+  6. Only then remove the accounts from Google Authenticator.
+The file lives on tmpfs (RAM) and disappears at logout or reboot at the latest.
+""" % FOLDER)
+    if opts["keep"] or not tty:
+        print(f"Kept. Delete it when done:  shred -u '{path}'")
+        return 0
+    answer = ask("Delete the CSV now? [Y/n] (say n until the web import is finished) ")
+    if answer.lower() in ("", "y", "yes"):
+        wipe(path)
+        print("Deleted.")
+    else:
+        print(f"Kept. Delete it when done:  shred -u '{path}'")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

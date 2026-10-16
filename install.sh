@@ -62,6 +62,7 @@ packages=(
   tesseract tesseract-data-eng tesseract-data-rus zbar qrencode ddcutil pik                       # OCR (rus+eng), QR, DDC/CI monitor brightness, ports
   libqalculate rofi-calc gifski kondo lostfiles termdown bandwhich lsof                           # calculator, GIF, cleanup, timer, network, open files
   tlp-pd                                                                                          # TLP profiles daemon (tlpctl), conflicts with power-profiles-daemon
+  rbw rofi-rbw kwindowsystem                                                                      # Bitwarden/Vaultwarden client + rofi front end; kwindowsystem = pinentry-qt backend
 )
 sudo pacman -S --needed --noconfirm "${packages[@]}"
 

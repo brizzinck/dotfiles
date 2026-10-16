@@ -166,7 +166,7 @@ do_qr_scan() {
   fi
   # one-time-password secrets must not reach the clipboard history (cliphist stores every text copy)
   if grep -qiE '^otpauth(-migration)?://' <<<"$out"; then
-    notify-send -a capture -u critical -t 8000 "QR is a 2FA secret" "Not copied, so it stays out of the clipboard history. Use 2fa-import instead."
+    notify-send -a capture -u critical -t 8000 "QR is a 2FA secret" "Not copied, so it stays out of the clipboard history. Import it with 2fa-import (hub row: Import Google Authenticator)."
     return 0
   fi
   printf '%s' "$out" | wl-copy
