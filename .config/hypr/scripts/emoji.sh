@@ -40,6 +40,10 @@ esac
 
 [[ -n $(data_dir) ]] || { notify-send -a emoji "Emoji picker" "emoji data not found (package rofimoji)"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
+HERE=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+# shellcheck source=type-guard.sh
+. "$HERE/type-guard.sh"
+prev_win=$(tg_record)   # the window to type into: focused before the menu opens
 
 remember() { # emoji row -> the recent file (30 newest, newest first)
   mkdir -p "$STATE"
@@ -69,5 +73,9 @@ if [[ $key == alt-enter ]] || ! have wtype; then
   notify-send -a emoji -t 1500 "Copied" "$emoji"
 else
   sleep 0.2
-  printf '%s' "$emoji" | wtype -
+  if tg_ok "$prev_win" emoji; then
+    printf '%s' "$emoji" | wtype -
+  else
+    printf '%s' "$emoji" | wl-copy
+  fi
 fi

@@ -6,6 +6,9 @@
 #   snippets.sh --list          names
 #   snippets.sh --expand NAME   print the expanded text
 set -u
+HERE=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+# shellcheck source=type-guard.sh
+. "$HERE/type-guard.sh"
 FILE="${SNIPPETS_FILE:-$HOME/.config/snippets/snippets.tsv}"
 
 expand() { # text from stdin-free arg
@@ -27,6 +30,7 @@ case ${1:-} in
 esac
 
 [[ -r $FILE ]] || { notify-send -a snippets "Snippets" "missing $FILE"; exit 1; }
+prev=$(tg_record)   # the window to type into: focused before the menu opens
 # NORMAL y (yank) = Alt+Enter: copy only
 export FZF_MENU_NORMAL_BINDS='y:become(printf "alt-enter\n%s\n" {1})'
 res=$(awk -F'\t' '!/^#/ && NF >= 2 && $1 != "" { t = $2; gsub(/\\n/, " ", t); printf "%s\t%s\n", $1, substr(t, 1, 70) }' "$FILE" |
@@ -42,5 +46,11 @@ if [[ $key == alt-enter ]] || ! command -v wtype >/dev/null 2>&1; then
   notify-send -a snippets -t 2000 "Snippet copied" "$name"
 else
   sleep 0.2
-  wtype -- "$out"
+  # text on stdin, never in argv ({clipboard} may hold a copied secret); only into the window the menu was opened over
+  if tg_ok "$prev" snippets; then
+    printf '%s' "$out" | wtype -
+  else
+    printf '%s' "$out" | wl-copy
+    notify-send -a snippets -t 4000 "Snippet copied instead" "$name"
+  fi
 fi

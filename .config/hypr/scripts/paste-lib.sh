@@ -7,6 +7,8 @@
 #   paste_send [ADDRESS]         send the paste shortcut to ADDRESS (default: active window); PASTE_DRY=1 only prints
 
 PASTE_KEYCODE=55
+# shellcheck source=type-guard.sh
+. "$(dirname "${BASH_SOURCE[0]}")/type-guard.sh"
 
 paste_class() {
   if [[ -n ${1:-} ]]; then
@@ -34,7 +36,9 @@ paste_send() {
   fi
   out=$(hyprd sendshortcut "${mods// /_},code:$PASTE_KEYCODE,${target:-activewindow}" 2>&1)
   if [[ $out != ok ]]; then
-    # last resort for the active window: a virtual keyboard
+    # last resort: a virtual keyboard types into whatever is focused, so only for the active window or for the
+    # recorded window while it still has focus (it may have closed or lost focus since the menu opened)
+    if [[ -n $addr ]] && ! tg_ok "$addr" paste; then return 1; fi
     if [[ $mods == "CTRL SHIFT" ]]; then wtype -M ctrl -M shift -k v -m shift -m ctrl; else wtype -M ctrl -k v -m ctrl; fi
   fi
 }

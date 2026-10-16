@@ -33,6 +33,9 @@ set -u
 
 HERE=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 SELF="$HERE/vault.sh"
+# shellcheck source=type-guard.sh
+. "$HERE/type-guard.sh"
+TYPE_PREV=''   # the window the menu was opened over: the only one text is typed into (type-guard.sh)
 TOTP_PY="$HERE/vault-totp.py"
 BW_PY="$HERE/vault-bw.py"
 RUN="${XDG_RUNTIME_DIR:-/tmp}/vault"
@@ -95,8 +98,16 @@ pw_preview() {
     (.data.uris // [] | .[] | "uri      \(.uri)")' 2>/dev/null || echo "could not read the entry"
 }
 
-type_text() { # text on stdin -> the focused window (stdin keeps it out of argv)
-  have wtype || { note "Vault" "wtype is not installed" critical; return 1; }
+type_text() { # text on stdin -> the window recorded before the menu (stdin keeps it out of argv)
+  if ! have wtype; then
+    note "Vault" "wtype is not installed" critical
+    cat >/dev/null
+    return 1
+  fi
+  if ! tg_ok "$TYPE_PREV" vault; then
+    cat >/dev/null   # drop the secret, nothing is typed
+    return 1
+  fi
   wtype -
 }
 
@@ -105,6 +116,7 @@ passwords() {
   if ((DRY)); then echo "rbw list --fields id,name,user,folder | fzf-menu -p vault ... (Enter: user<Tab>password via wtype -)"; return 0; fi
   need_ready || return 1
   have fzf-menu || { note "Vault" "fzf-menu is not installed" critical; return 1; }
+  TYPE_PREV=$(tg_record)
   rows=$(rbw list --fields id,name,user,folder 2>/dev/null) || { note "Vault" "Could not read the vault (locked and cancelled?)" critical; return 1; }
   poke_bar
   [[ -n $rows ]] || { note "Vault" "The vault has no logins"; return 0; }
@@ -137,9 +149,11 @@ passwords() {
     *)
       pass=$(rbw get "$id") || { note "Vault" "Could not read the password" critical; return 1; }
       sleep 0.2
-      printf '%s' "$user" | type_text
-      wtype -k Tab
-      printf '%s' "$pass" | type_text ;;
+      # Tab and the password only follow a user name that was typed into the right window
+      if printf '%s' "$user" | type_text && tg_ok "$TYPE_PREV" vault; then
+        wtype -k Tab
+        printf '%s' "$pass" | type_text
+      fi ;;
   esac
   pass=""
   poke_bar
@@ -155,6 +169,7 @@ totp_menu() {
   if ((DRY)); then echo "python3 vault-totp.py list | fzf-menu -p 2fa ... (live preview)"; return 0; fi
   need_ready || return 1
   have fzf-menu || { note "Vault" "fzf-menu is not installed" critical; return 1; }
+  TYPE_PREV=$(tg_record "$@")
   rows=$(totp_rows) || { note "Vault" "Could not read the vault (locked and cancelled?)" critical; return 1; }
   poke_bar
   [[ -n $rows ]] || { note "Vault" "No logins with a TOTP key. Import them: 2fa-import"; return 0; }
