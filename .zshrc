@@ -228,5 +228,8 @@ vpn() {
   systemctl is-active "$u"
 }
 
+# utility hub: fuzzy list of actions, toggles and keybinds (SUPER+M / tmux prefix+m). hub --help for the flags
+hub() { "$HOME/.config/hub/hub" "$@" }
+
 # fuzzy journal: jf [journalctl args], e.g. jf -p err  /  jf -u docker  /  jf --user
 jf() { journalctl -b -o short-iso --no-pager "$@" | fzf --tac --no-sort --exact; }

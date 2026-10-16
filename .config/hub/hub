@@ -1,0 +1,348 @@
+#!/usr/bin/env bash
+# hub - utility hub: one fuzzy list of every action and every described keybind.
+#
+#   hub                      interactive fzf (default; also `hub --fzf`)
+#   hub open                 SUPER+M: remember the focused window, open the hub in a float.tui ghostty
+#                            (a second press while the hub is focused closes it)
+#   hub --list [--all]       print the merged table (--all also shows actions whose command is missing)
+#   hub --raw                print the merged, evaluated records (fields below, then avail + state)
+#   hub --describe ID        description of one row (used by the fzf preview)
+#   hub --run ID             run one row without the UI
+#   --dry-run                with --run (or the UI): print what would run instead of running it
+#
+# Data (merged on every open):
+#   actions.tsv, actions.d/*.tsv   tab separated, `#` comments, `-` or a missing trailing column = empty
+#     id  group  title  keys  kind  command  state  needs  desc
+#       id     unique slug
+#       group  section label shown as a prefix (short, <= 9 chars looks best)
+#       keys   human key text, e.g. SUPER+CTRL+I (also used to dedupe against the live bind table)
+#       kind   run     detached `bash -c command`, hub closes, the previously focused window is refocused first
+#              toggle  like run, but the hub stays open and shows the new state
+#              tui     runs in this terminal in place (hub is replaced); prefix the command with `+pause `
+#                      to wait for a key afterwards
+#       command  shell command line
+#       state    optional shell snippet, exit status 0 = ON (toggles show a live "on"/"off" marker)
+#       needs    optional space separated commands that must exist; default = first word of command.
+#                The row is hidden when one is missing (~ is expanded, a path is tested with -x)
+#       desc     optional text for the preview pane
+#   every `bindd` from `hyprctl binds -j` (global submap, no mouse binds, workspace digits collapsed)
+#   is appended as group "Keybinds"; rows that share a title or a key with an actions.tsv row are merged.
+#
+# Window/app actions target the window that was focused before the hub opened: its address is saved in
+# $XDG_RUNTIME_DIR/hub/prev-window, exported as HUB_TARGET=address:0x... to run/toggle commands, and the
+# window is refocused before every non-TUI action.
+set -u
+
+HUB_DIR=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+SELF="$HUB_DIR/hub"
+RUN_DIR="${XDG_RUNTIME_DIR:-/tmp}/hub"
+PREV_FILE="$RUN_DIR/prev-window"
+CACHE="$RUN_DIR/list.cache"
+LOG="$RUN_DIR/last.log"
+US=$'\037'
+DRY=0
+ALL=0
+mkdir -p "$RUN_DIR"
+
+# ───────────────────────────── data pipeline ─────────────────────────────
+
+# actions.tsv + actions.d/*.tsv -> 9 US-separated fields per row
+load_actions() {
+  local f
+  for f in "$HUB_DIR/actions.tsv" "$HUB_DIR"/actions.d/*.tsv; do
+    [[ -f $f ]] || continue
+    grep -vE '^[[:space:]]*(#|$)' "$f" || true
+  done | awk -F'\t' -v OFS="$US" '{
+    for (i = NF + 1; i <= 9; i++) $i = ""
+    for (i = 1; i <= 9; i++) if ($i == "-") $i = ""
+    print $1, $2, $3, $4, $5, $6, $7, $8, $9
+  }'
+}
+
+# live bind table -> same 9 fields (kind=bind, command = "dispatcher arg")
+load_binds() {
+  hyprctl binds -j 2>/dev/null | jq -r --arg us "$US" '
+    def mods($m):
+      [ (if ($m / 64 | floor) % 2 == 1 then "SUPER" else empty end),
+        (if ($m / 4  | floor) % 2 == 1 then "CTRL"  else empty end),
+        (if ($m / 8  | floor) % 2 == 1 then "ALT"   else empty end),
+        (if $m % 2 == 1 then "SHIFT" else empty end) ];
+    def keylabel: (mods(.modmask) + [.key]) | join("+");
+    [ .[]
+      | select(.has_description and .submap == "" and (.mouse | not))
+      | select((.dispatcher != "workspace" and .dispatcher != "movetoworkspace") or (.arg | test("^(prev|special)")))
+      | { desc: .description, key: keylabel, disp: .dispatcher, arg: .arg } ]
+    | reduce .[] as $b ([];
+        (map(.desc) | index($b.desc)) as $i
+        | if $i == null then . + [$b + {keys: [$b.key]}] else .[$i].keys += [$b.key] end)
+    | .[]
+    | [ "bind:" + .keys[0], "Keybinds", .desc, (.keys | join(" / ")), "bind",
+        (.disp + (if .arg == "" then "" else " " + .arg end)), "",
+        (if .disp == "exec" and ((.arg | split(" ")[0]) | startswith("$") | not) then (.arg | split(" ")[0]) else "" end),
+        "" ]
+    | join($us)'
+}
+
+# merge: bind rows that duplicate an action row (same title or same key) are dropped; the action row gains the keys
+merge_rows() {
+  awk -F"$US" -v US="$US" '
+    function norm(s) { s = toupper(s); gsub(/[ \t]+/, "", s); return s }
+    FILENAME == ARGV[1] {
+      n++
+      for (i = 1; i <= 9; i++) A[n, i] = $i
+      tk[tolower($3)] = n
+      m = split($4, kk, " / ")
+      for (q = 1; q <= m; q++) if (kk[q] != "") ks[norm(kk[q])] = n
+      next
+    }
+    {
+      j = 0
+      if (tolower($3) in tk) j = tk[tolower($3)]
+      else {
+        m = split($4, kk, " / ")
+        for (q = 1; q <= m; q++) if (norm(kk[q]) in ks) { j = ks[norm(kk[q])]; break }
+      }
+      if (j) { if (A[j, 4] == "") A[j, 4] = $4; next }
+      B[++b] = $0
+    }
+    END {
+      for (r = 1; r <= n; r++) {
+        line = A[r, 1]
+        for (i = 2; i <= 9; i++) line = line US A[r, i]
+        print line
+      }
+      for (r = 1; r <= b; r++) print B[r]
+    }' "$1" "$2"
+}
+
+cmd_ok() {
+  local w=$1
+  w=${w/#\~/$HOME}
+  if [[ $w == */* ]]; then [[ -x $w ]]; else command -v "$w" >/dev/null 2>&1; fi
+}
+
+# $1 kind, $2 command, $3 needs
+needs_ok() {
+  local kind=$1 cmd=$2 needs=$3 w
+  local -a words
+  if [[ -z $needs ]]; then
+    [[ $kind == bind ]] && return 0
+    read -r -a words <<<"$cmd"
+    for w in "${words[@]}"; do
+      [[ $w == [A-Za-z_]*=* ]] && continue
+      needs=$w
+      break
+    done
+    [[ -z $needs || $needs == '$'* ]] && return 0
+  fi
+  for w in $needs; do cmd_ok "$w" || return 1; done
+  return 0
+}
+
+# build the evaluated cache: 9 fields + avail (1/0) + state (on/off/-)
+build_cache() {
+  local actions binds merged tmp
+  actions=$(mktemp "$RUN_DIR/a.XXXXXX")
+  binds=$(mktemp "$RUN_DIR/b.XXXXXX")
+  merged=$(mktemp "$RUN_DIR/m.XXXXXX")
+  tmp=$(mktemp "$RUN_DIR/c.XXXXXX")
+  load_actions >"$actions"
+  load_binds >"$binds"
+  merge_rows "$actions" "$binds" >"$merged"
+  local id grp title keys kind cmd state needs desc avail st
+  while IFS=$US read -r id grp title keys kind cmd state needs desc; do
+    [[ -n $id ]] || continue
+    avail=1
+    needs_ok "$kind" "$cmd" "$needs" || avail=0
+    st=-
+    if [[ $avail == 1 && -n $state ]]; then
+      if timeout 1 bash -c "$state" >/dev/null 2>&1; then st=on; else st=off; fi
+    fi
+    printf '%s\n' "$id$US$grp$US$title$US$keys$US$kind$US$cmd$US$state$US$needs$US$desc$US$avail$US$st"
+  done <"$merged" >"$tmp"
+  mv "$tmp" "$CACHE"
+  rm -f "$actions" "$binds" "$merged"
+}
+
+# ───────────────────────────── presentation ─────────────────────────────
+
+list_table() {
+  local id grp title keys kind cmd state needs desc avail st mark
+  while IFS=$US read -r id grp title keys kind cmd state needs desc avail st; do
+    if [[ $avail == 0 ]]; then
+      ((ALL)) || continue
+      mark="missing"
+    else
+      case $st in on) mark="on" ;; off) mark="off" ;; *) mark="-" ;; esac
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$grp" "$mark" "$id" "$title" "${keys:--}" "$kind"
+  done <"$CACHE"
+}
+
+# fzf input: id <US> coloured display text
+fzf_rows() {
+  local id grp title keys kind cmd state needs desc avail st mark
+  while IFS=$US read -r id grp title keys kind cmd state needs desc avail st; do
+    [[ $avail == 1 ]] || continue
+    case $st in
+      on) mark=$'\e[32m● \e[0m' ;;
+      off) mark=$'\e[2m○ \e[0m' ;;
+      *) mark='  ' ;;
+    esac
+    printf '%s%s%s\n' "$id" "$US" "$(printf '\e[2m%-9s\e[0m %s%-42s\e[2m  %s\e[0m' "$grp" "$mark" "$title" "$keys")"
+  done <"$CACHE"
+}
+
+describe() {
+  local rec id grp title keys kind cmd state needs desc avail st
+  rec=$(awk -F"$US" -v id="$1" '$1 == id { print; exit }' "$CACHE" 2>/dev/null)
+  [[ -n $rec ]] || { echo "unknown row: $1"; return 1; }
+  IFS=$US read -r id grp title keys kind cmd state needs desc avail st <<<"$rec"
+  printf '\e[1m%s\e[0m\n' "$title"
+  printf '\e[2m%s  ·  %s\e[0m\n\n' "$grp" "$id"
+  [[ -n $desc ]] && printf '%s\n\n' "$desc"
+  [[ -n $keys ]] && printf 'key      %s\n' "$keys"
+  printf 'kind     %s\n' "$kind"
+  case $st in on) printf 'state    ON\n' ;; off) printf 'state    OFF\n' ;; esac
+  [[ $avail == 1 ]] || printf 'status   unavailable (missing: %s)\n' "${needs:-${cmd%% *}}"
+  printf '\ncommand\n  %s\n' "$cmd"
+  [[ -n $state ]] && printf '\nstate check\n  %s\n' "$state"
+}
+
+# ───────────────────────────── running ─────────────────────────────
+
+record_prev() {
+  hyprctl activewindow -j 2>/dev/null | jq -r '.address // empty' >"$PREV_FILE" || : >"$PREV_FILE"
+}
+
+prev_addr() { cat "$PREV_FILE" 2>/dev/null || true; }
+
+focus_prev() {
+  local a
+  a=$(prev_addr)
+  [[ -n $a ]] || return 0
+  if ((DRY)); then echo "DRY: hyprctl dispatch focuswindow address:$a"; else hyprctl dispatch focuswindow "address:$a" >/dev/null 2>&1; fi
+}
+
+# run one row by id; returns 10 for toggle rows so the UI can stay open
+run_row() {
+  local rec id grp title keys kind cmd state needs desc avail st target disp arg
+  rec=$(awk -F"$US" -v id="$1" '$1 == id { print; exit }' "$CACHE")
+  [[ -n $rec ]] || { echo "hub: unknown row: $1" >&2; return 1; }
+  IFS=$US read -r id grp title keys kind cmd state needs desc avail st <<<"$rec"
+  if [[ $avail != 1 ]]; then
+    notify-send -a hub -u low "hub" "$title is unavailable (missing: ${needs:-${cmd%% *}})" 2>/dev/null || true
+    echo "hub: $title is unavailable" >&2
+    return 1
+  fi
+  target=$(prev_addr)
+  case $kind in
+    tui)
+      local pause=0
+      if [[ $cmd == '+pause '* ]]; then pause=1; cmd=${cmd#+pause }; fi
+      if ((DRY)); then echo "DRY: tui in place: $cmd$( ((pause)) && echo ' (+pause)')"; return 0; fi
+      clear
+      if ((pause)); then
+        bash -c "$cmd"
+        printf '\n[press a key]'
+        read -rsn1 _
+        return 0
+      fi
+      exec bash -c "$cmd"
+      ;;
+    run | bind | toggle)
+      [[ $kind == toggle ]] || focus_prev
+      if [[ $kind == bind ]]; then
+        disp=${cmd%% *}
+        arg=""
+        [[ $cmd == *' '* ]] && arg=${cmd#* }
+        if ((DRY)); then echo "DRY: hyprctl dispatch $disp ${arg}"; return 0; fi
+        hyprctl dispatch "$disp" "$arg" >/dev/null 2>&1
+      else
+        if ((DRY)); then echo "DRY: HUB_TARGET=${target:+address:}$target bash -c '$cmd'"; [[ $kind == toggle ]] && return 10; return 0; fi
+        HUB_TARGET="${target:+address:}$target" setsid -f bash -c "$cmd" >>"$LOG" 2>&1 </dev/null
+      fi
+      [[ $kind == toggle ]] && return 10
+      return 0
+      ;;
+    *)
+      echo "hub: row $id has unknown kind '$kind'" >&2
+      return 1
+      ;;
+  esac
+}
+
+interactive() {
+  command -v fzf >/dev/null 2>&1 || { echo "hub: fzf is required" >&2; return 1; }
+  if [[ -n ${HUB_FROM_OPEN:-} ]]; then echo $$ >"$RUN_DIR/float.pid"; else record_prev; fi
+  printf '\e]2;hub\a'
+  local query="" out rc id sel
+  while :; do
+    build_cache
+    rc=0
+    out=$(fzf_rows | fzf --ansi --delimiter="$US" --with-nth=2 --layout=reverse --height=100% \
+      --prompt='hub> ' --info=inline --tiebreak=begin,index --print-query --query="$query" \
+      --header='Enter run · Esc close · ●/○ live state' \
+      --preview="$SELF --describe {1}" --preview-window='right,45%,wrap,border-left' \
+      --color='bg:#000000,fg:#d3c6aa,hl:#a7c080,fg+:#a7c080,bg+:#1f2a24,hl+:#a7c080,info:#6b7770,prompt:#a7c080,pointer:#a7c080,marker:#e67e80,spinner:#7fbbb3,header:#6b7770,border:#3a4440,gutter:#000000') || rc=$?
+    ((rc == 0)) || return 0
+    query=$(sed -n 1p <<<"$out")
+    sel=$(sed -n 2p <<<"$out")
+    id=${sel%%"$US"*}
+    [[ -n $id ]] || return 0
+    rc=0
+    run_row "$id" || rc=$?
+    if ((rc == 10)); then
+      sleep 0.35
+      continue
+    fi
+    return 0
+  done
+}
+
+open_hub() {
+  local aw cls title addr pid
+  aw=$(hyprctl activewindow -j 2>/dev/null) || aw="{}"
+  cls=$(jq -r '.class // ""' <<<"$aw")
+  title=$(jq -r '.title // ""' <<<"$aw")
+  addr=$(jq -r '.address // ""' <<<"$aw")
+  if [[ $cls == float.tui && $title == hub ]]; then
+    # second press: end the hub process, ghostty closes its window when the command exits
+    # (closewindow would pop up ghostty's "process still running" confirmation)
+    pid=$(cat "$RUN_DIR/float.pid" 2>/dev/null || true)
+    if [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null; then
+      pkill -TERM -P "$pid" 2>/dev/null
+      kill -TERM "$pid" 2>/dev/null
+    else
+      hyprctl dispatch closewindow "address:$addr" >/dev/null
+    fi
+    return 0
+  fi
+  printf '%s\n' "$addr" >"$PREV_FILE"
+  HUB_FROM_OPEN=1 exec ghostty --class=float.tui --title=hub -e "$SELF" --fzf
+}
+
+usage() { sed -n '2,/^set -u/p' "$SELF" | sed '$d; s/^# \{0,1\}//'; }
+
+# ───────────────────────────── main ─────────────────────────────
+
+args=()
+for a in "$@"; do
+  case $a in
+    --dry-run) DRY=1 ;;
+    --all) ALL=1 ;;
+    *) args+=("$a") ;;
+  esac
+done
+set -- "${args[@]}"
+
+case ${1:-} in
+  "" | --fzf) interactive ;;
+  open) open_hub ;;
+  --list) build_cache; list_table | column -t -s $'\t' ;;
+  --raw) build_cache; cat "$CACHE" ;;
+  --describe) shift; describe "${1:?row id}" ;;
+  --run) shift; build_cache; run_row "${1:?row id}" || [[ $? == 10 ]] ;;
+  -h | --help) usage ;;
+  *) echo "hub: unknown argument '$1' (try --help)" >&2; exit 2 ;;
+esac
