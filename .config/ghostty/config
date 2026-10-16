@@ -1,14 +1,39 @@
 term = xterm-256color
 
+# palette: everforest-black (themes/static/everforest-black)
 background = #000000
-foreground = #ffffff
+foreground = #d3c6aa
+cursor-color = #e7dabe
+cursor-text = #000000
+selection-background = #2a3530
+selection-foreground = cell-foreground
+minimum-contrast = 1.5
+palette = 0=#1f2a24
+palette = 1=#e67e80
+palette = 2=#a7c080
+palette = 3=#dbbc7f
+palette = 4=#7fbbb3
+palette = 5=#d699b6
+palette = 6=#83c092
+palette = 7=#b8ae96
+palette = 8=#6b7770
+palette = 9=#f29a9b
+palette = 10=#bfd39a
+palette = 11=#e8cc96
+palette = 12=#98cdc5
+palette = 13=#e3b0c8
+palette = 14=#9ad1a8
+palette = 15=#e7dabe
 
 font-family = JetBrainsMono Nerd Font
-font-size = 16.5
+font-size = 15
 font-style = Regular
 
-window-padding-x = 1
-window-padding-y = 1
+window-padding-x = 8
+window-padding-y = 6
+window-padding-balance = true
+window-padding-color = extend
+mouse-hide-while-typing = true
 
 copy-on-select = clipboard
 
@@ -16,6 +41,3 @@ clipboard-write = allow
 clipboard-read = allow
 
 app-notifications = no-clipboard-copy
-
-selection-background = #222222
-selection-foreground = #777777
