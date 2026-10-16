@@ -1,101 +1,231 @@
+// Waybar: quiet when normal, loud when abnormal. Palette: themes/static/everforest-black.
+// Alerts on the right are hidden until relevant. TUI actions open a floating ghostty (class float.tui).
 {
-	"layer": "top",
-	"position": "top",
-	"height": 27,
-	"width": 1850,
-	"margin": 0,
+  "layer": "top",
+  "position": "top",
+  "height": 28,
+  "spacing": 0,
+  "margin": 0,
 
-	"modules-left": ["cpu", "memory"],
-	"modules-center": ["hyprland/workspaces"],
-	"modules-right": ["tray", "pulseaudio", "battery", "clock", "hyprland/language"],
+  "modules-left": ["hyprland/workspaces", "hyprland/submap"],
+  "modules-center": ["clock"],
+  "modules-right": [
+    "privacy", "custom/recording", "custom/failed", "custom/updates", "custom/vpn", "custom/dnd", "custom/idle",
+    "network", "bluetooth", "pulseaudio#mic", "pulseaudio", "backlight", "battery",
+    "cpu", "memory", "temperature", "hyprland/language", "tray"
+  ],
 
-	"cpu": {
-		"format": "  {usage}%",
-		"tooltip": false
-	},
-
-	"memory": {
-		"format": "  {}%",
-		"tooltip": false
-	},
-
-	"hyprland/workspaces": {
-		"format": "{icon}",
-		"on-click": "activate",
-		"format-icons": {
-			"1": "",
-			"2": "",
-			"3": "",
-			"4": "󰊗",
-			"5": "󰖟",
-			"6": "󰳫",
-			"7": "",
-			},
-		"tooltip": false
-	},
-
-	"hyprland/language": {
-	  	"format": "{}",
-	  	"format-en": "EN",
-	  	"format-ru": "RU",
-	  	"format-uk": "UA",
-	},
-
-	"tray": {
-		"icon-size": 16,
-		"spacing": 16
-	},
-
-	"clock": {
-        "format": "{:%H:%M}  ",
-        "format-alt": "{:L%A, %B %d, %Y (%R)}  ",
-        "tooltip-format": "<span font='Maple Mono CN'>{calendar}</span>",
-        "calendar": {
-                    "mode"          : "year",
-                    "mode-mon-col"  : 3,
-                    "weeks-pos"     : "right",
-                    "on-scroll"     : 1,
-                    "format": {
-                              "months":     "<span color='#ffead3'><b>{}</b></span>",
-                              "days":       "<span color='#ecc6d9'><b>{}</b></span>",
-                              "weeks":      "<span color='#99ffdd'><b>W{}</b></span>",
-                              "weekdays":   "<span color='#ffcc66'><b>{}</b></span>",
-                              "today":      "<span color='#ff6699'><b><u>{}</u></b></span>"
-                    }
-        },
-        "actions":  {
-                    "on-click-right": "mode",
-                    "on-click-forward": "tz_up",
-                    "on-click-backward": "tz_down",
-                    "on-scroll-up": "shift_up",
-                    "on-scroll-down": "shift_down"
-        }
+  "hyprland/workspaces": {
+    "format": "{id} {windows}",
+    "format-window-separator": " ",
+    "window-rewrite-default": "󰣆",
+    "window-rewrite": {
+      "class<com.mitchellh.ghostty>": "󰆍",
+      "class<com.mitchellh.ghostty> title<.*:nvim.*>": "",
+      "class<com.mitchellh.ghostty> title<.*:(claude|codex|node).*>": "󰚩",
+      "class<float.tui>": "󰘮",
+      "class<app.zen_browser.zen>": "󰈹",
+      "class<google-chrome|Google-chrome|camoufox>": "󰊯",
+      "class<org.telegram.desktop>": "",
+      "class<obsidian>": "",
+      "class<YTMDesktop|app.ytmdesktop.ytmdesktop>": "󰗃",
+      "class<nemo|org.gnome.Nautilus>": "󰉋",
+      "class<com.obsproject.Studio>": "󰻂"
+    },
+    "show-special": true,
+    "special-visible-only": false,
+    "on-click": "activate",
+    "tooltip": false
   },
 
+  "hyprland/submap": { "format": "󰩨 {}", "tooltip": false },
+
+  "clock": {
+    "format": "{:%H:%M}",
+    "format-alt": "{:%a %d %b  %H:%M}",
+    "tooltip-format": "<span font='JetBrainsMono Nerd Font'>{calendar}</span>",
+    "calendar": {
+      "mode": "year",
+      "mode-mon-col": 3,
+      "weeks-pos": "right",
+      "on-scroll": 1,
+      "format": {
+        "months": "<span color='#d3c6aa'><b>{}</b></span>",
+        "days": "<span color='#859289'>{}</span>",
+        "weeks": "<span color='#6b7770'>W{}</span>",
+        "weekdays": "<span color='#dbbc7f'><b>{}</b></span>",
+        "today": "<span color='#a7c080'><b><u>{}</u></b></span>"
+      }
+    },
+    "actions": {
+      "on-click-right": "mode",
+      "on-scroll-up": "shift_up",
+      "on-scroll-down": "shift_down"
+    }
+  },
+
+  "privacy": {
+    "icon-size": 14,
+    "icon-spacing": 6,
+    "transition-duration": 150,
+    "modules": [{ "type": "screenshare" }, { "type": "audio-in" }]
+  },
+
+  "custom/recording": {
+    "exec": "~/.config/waybar/scripts/recording.sh",
+    "return-type": "json",
+    "interval": 2,
+    "on-click": "~/.config/hypr/scripts/rec-toggle.sh",
+    "tooltip": false
+  },
+
+  // failed units (system + user) and services with many restarts
+  "custom/failed": {
+    "exec": "~/.config/waybar/scripts/failed.sh",
+    "return-type": "json",
+    "interval": 60,
+    "on-click": "ghostty --class=float.tui -e sh -c 'systemctl --failed --no-pager; systemctl --user --failed --no-pager; read -r _'"
+  },
+
+  "custom/updates": {
+    "exec": "~/.config/waybar/scripts/updates.sh",
+    "return-type": "json",
+    "interval": 3600,
+    "signal": 9,
+    "on-click": "ghostty --class=float.tui -e zsh -ic sysup; pkill -RTMIN+9 waybar"
+  },
+
+  "custom/vpn": {
+    "exec": "~/.config/waybar/scripts/vpn.sh",
+    "return-type": "json",
+    "interval": 5
+  },
+
+  // shown only while notifications are paused; SUPER+CTRL+X toggles, click toggles, right-click pops history
+  "custom/dnd": {
+    "exec": "~/.config/waybar/scripts/dnd.sh",
+    "return-type": "json",
+    "interval": 2,
+    "signal": 8,
+    "on-click": "dunstctl set-paused toggle; pkill -RTMIN+8 waybar",
+    "on-click-right": "dunstctl history-pop"
+  },
+
+  // shown only while hypridle is stopped (SUPER+CTRL+I toggles it)
+  "custom/idle": {
+    "exec": "~/.config/waybar/scripts/idle.sh",
+    "return-type": "json",
+    "interval": 2,
+    "on-click": "~/.config/hypr/scripts/idle-toggle.sh",
+    "tooltip": false
+  },
+
+  "network": {
+    "interval": 5,
+    "format-wifi": "{icon} {essid}",
+    "format-icons": ["󰤯", "󰤟", "󰤢", "󰤥", "󰤨"],
+    "format-ethernet": "󰈀",
+    "format-linked": "󰤫",
+    "format-disconnected": "󰖪 offline",
+    "max-length": 24,
+    "tooltip-format-wifi": "{essid} {signalStrength}%\n{ipaddr}\n󰁅 {bandwidthDownBytes}  󰁝 {bandwidthUpBytes}",
+    "tooltip-format-ethernet": "{ifname}\n{ipaddr}",
+    "tooltip-format-disconnected": "no connection",
+    "on-click": "ghostty --class=float.tui -e nmtui"
+  },
+
+  "bluetooth": {
+    "format": "󰂯",
+    "format-off": "",
+    "format-disabled": "",
+    "format-connected": "󰂱 {device_alias}",
+    "tooltip-format-connected": "{controller_alias}\n{device_enumerate}",
+    "tooltip-format-enumerate-connected": "{device_alias} {device_battery_percentage}%",
+    "max-length": 24,
+    "on-click": "ghostty --class=float.tui -e bluetui"
+  },
+
+  "pulseaudio#mic": {
+    "format": "{format_source}",
+    "format-source": "󰍬",
+    "format-source-muted": "󰍭",
+    "on-click": "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle",
+    "scroll-step": 5,
+    "tooltip-format": "{source_desc} {source_volume}%"
+  },
+
+  "pulseaudio": {
+    "scroll-step": 5,
+    "max-volume": 140,
+    "states": { "over": 101 },
+    "format": "{icon} {volume}%",
+    "format-muted": "󰖁",
+    "format-bluetooth": "󰂰 {volume}%",
+    "format-bluetooth-muted": "󰖁",
+    "format-icons": { "headphone": "󰋋", "default": ["󰕿", "󰖀", "󰕾"] },
+    "tooltip-format": "{desc}",
+    "on-click": "ghostty --class=float.tui -e wiremix",
+    "on-click-right": "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
+  },
+
+  "backlight": {
+    "device": "amdgpu_bl1",
+    "format": "{icon} {percent}%",
+    "format-icons": ["󰃞", "󰃟", "󰃠"],
+    "on-scroll-up": "brightnessctl set +5%",
+    "on-scroll-down": "brightnessctl set 5%-",
+    "tooltip": false
+  },
+
+  // TLP Long_Life holds the battery near 80% ("Not charging"): waybar reports that as "plugged"
   "battery": {
     "bat": "BAT0",
-    "interval": 60,
-    "states": {
-      "warning": 30,
-      "critical": 15
-    },
+    "interval": 30,
+    "states": { "warning": 30, "critical": 15 },
+    "format": "{icon} {capacity}%",
+    "format-charging": "󰂄 {capacity}%",
+    "format-plugged": "󰚥 {capacity}%",
+    "format-full": "󰚥 {capacity}%",
+    "format-icons": ["󰂎", "󰁺", "󰁼", "󰁾", "󰂀", "󰂂", "󰁹"],
+    "tooltip-format": "{timeTo}\n{power:.1f} W",
     "events": {
-      "on-discharging-warning": "notify-send -u normal 'Low Battery'",
-      "on-discharging-critical": "notify-send -u critical 'Very Low Battery'",
-      "on-charging-100": "notify-send -u normal 'Battery Full!'"
-    },
-    "format": "{icon}  {capacity}%",
-    "format-icons": ["", "", "", "", ""],
-    "max-length": 25
+      "on-discharging-warning": "notify-send -u normal -a battery 'Low battery'",
+      "on-discharging-critical": "notify-send -u critical -a battery 'Battery critical'"
+    }
   },
 
-	"pulseaudio": {
-			"scroll-step": 5,
-			"format": "{icon}  {volume}%",
-			"format-icons": {
-				"default": ["", "", ""]
-			},
-			"on-click": "pavucontrol"
-	},
-}
+  "cpu": {
+    "interval": 3,
+    "format": "󰻠 {usage}%",
+    "states": { "warning": 70, "critical": 90 },
+    "tooltip": false
+  },
 
+  "memory": {
+    "interval": 5,
+    "format": "󰍛 {percentage}%",
+    "states": { "warning": 75, "critical": 90 },
+    "tooltip-format": "{used:.1f} / {total:.1f} GiB"
+  },
+
+  // AMD CPU (k10temp, Tctl); the glob-free hwmon dir is resolved by waybar
+  "temperature": {
+    "hwmon-path-abs": "/sys/devices/pci0000:00/0000:00:18.3/hwmon",
+    "input-filename": "temp1_input",
+    "critical-threshold": 90,
+    "format": "󰔏 {temperatureC}°",
+    "format-critical": "󱃂 {temperatureC}°",
+    "tooltip": false
+  },
+
+  // anything but EN is highlighted so a wrong layout is noticed
+  "hyprland/language": {
+    "format": "<span color='#e69875'>{}</span>",
+    "format-en": "<span color='#859289'>EN</span>",
+    "format-ru": "<span color='#dbbc7f'><b>RU</b></span>",
+    "format-uk": "<span color='#e69875'><b>UA</b></span>",
+    "tooltip": false
+  },
+
+  "tray": { "icon-size": 16, "spacing": 8 }
+}
