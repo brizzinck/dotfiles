@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# drives: removable drives without a tray icon (udiskie runs with --no-tray; automount and notifications stay on).
+#   drives            fzf-menu over the devices udiskie handles, then Mount / Unmount / Eject / Open in yazi
+#   drives list       print the devices (device, label, state, mount point)
+# Backed by udiskie-info / udiskie-mount / udiskie-umount (udisks2).
+set -u
+
+note() { notify-send -a drives -t 3000 "$@" 2>/dev/null || true; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# device TAB label TAB mounted TAB mount path TAB drive?
+list() {
+  udiskie-info -a -o '{device_file}'$'\t''{ui_device_presentation}'$'\t''{is_mounted}'$'\t''{mount_path}'$'\t''{is_drive}' 2>/dev/null |
+    awk -F'\t' '$5 != "True" && $1 != ""'
+}
+
+case ${1:-menu} in
+  list) list; exit 0 ;;
+  menu) ;;
+  *) echo "usage: drives [menu|list]" >&2; exit 2 ;;
+esac
+
+have udiskie-info || { note "Drives" "udiskie is not installed"; exit 1; }
+have fzf-menu || { note "Drives" "fzf-menu not found"; exit 1; }
+rows=$(list)
+[[ -n $rows ]] || { note "Drives" "No removable drives"; exit 0; }
+
+pick=$(awk -F'\t' '{ printf "%s\t%s  [%s]\n", $1, $2, ($3 == "True" ? "mounted at " $4 : "not mounted") }' <<<"$rows" |
+  fzf-menu -p drives --delimiter=$'\t' --with-nth=2 --accept-nth=1) || exit 0
+[[ -n $pick ]] || exit 0
+mounted=$(awk -F'\t' -v d="$pick" '$1 == d { print $3 }' <<<"$rows")
+mp=$(awk -F'\t' -v d="$pick" '$1 == d { print $4 }' <<<"$rows")
+
+if [[ $mounted == True ]]; then acts=$'Open in yazi\nUnmount\nEject (unmount and power off)'; else acts=$'Mount\nEject (unmount and power off)'; fi
+act=$(printf '%s\n' "$acts" | fzf-menu -p "$pick") || exit 0
+case $act in
+  Mount) udiskie-mount "$pick" ;;
+  Unmount) udiskie-umount "$pick" ;;
+  Eject*) udiskie-umount --detach --eject "$pick" ;;
+  'Open in yazi') setsid -f ghostty --class=float.tui --title="yazi $mp" -e yazi "$mp" >/dev/null 2>&1 </dev/null ;;
+esac

@@ -1,0 +1,1 @@
+drives	Drives	Removable drives (mount, unmount, eject, yazi)	-	run	~/.local/bin/drives	-	udiskie-info fzf-menu	udiskie handles the drives without a tray icon (--no-tray, automount and notifications stay on). Pick a device, then Mount, Unmount, Eject or Open in yazi.	s x;Removable drives
