@@ -69,7 +69,22 @@ for _ in $(seq 20); do
   sleep 0.05
 done
 
-geo=$(slurp -d) || exit 0
+# the layer shows up in `hyprctl layers` (alpha 0) before the surface has a frame; slurp started in that window cancels
+# at once ("selection cancelled"). hyprshot sleeps ~0.2 s here too, so settle first.
+sleep 0.25
+
+# retry once if slurp cancels within ~150 ms (overlay still not ready); a real Esc by the user takes longer
+geo=
+for attempt in 1 2; do
+  t0=$EPOCHREALTIME
+  geo=$(slurp -d) && break
+  geo=
+  ((attempt == 1)) || exit 0
+  # elapsed in ms (EPOCHREALTIME is s.us; drop the dot -> us)
+  el=$(((${EPOCHREALTIME/./} - ${t0/./}) / 1000))
+  ((el < 150)) || exit 0
+  sleep 0.2
+done
 [[ -n $geo ]] || exit 0
 
 if [[ $mode == save ]]; then
