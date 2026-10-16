@@ -1,0 +1,389 @@
+#!/usr/bin/env bash
+# fzf-menu: a dmenu replacement. Rows on stdin, the choice on stdout, exit code 0 = chosen, 1 = cancelled.
+# It opens the shared Telescope-like modal list (~/.config/fzf/vimfzf.sh: INSERT/NORMAL, Ctrl+j/k, Esc, ua/ru twins)
+# in a floating ghostty (class float.tui) and refocuses the window that was active before.
+#
+#   printf '%s\n' a b c | fzf-menu -p pick
+#   fzf-menu -p emoji --image 2 < rows.tsv       (image preview of the file named in tab field 2)
+#
+# Options (dmenu-compatible ones first):
+#   -p, --prompt TEXT        prompt label (default: menu)
+#   -i                       accepted and ignored (matching is smart-case)
+#   -l N                     accepted and ignored
+#   -m, --multi              multi-select (Tab / v), one line per choice
+#   --header TEXT            header line (usually the key hints)
+#   --preview CMD            preview command, `{}` = the row, `{1}` = a tab field (fzf syntax)
+#   --preview-window OPTS    fzf preview window options (default: right,55%,wrap,border-left)
+#   --image [FIELD]          preview the image file named in tab field FIELD (default 1) with chafa
+#   --title TEXT             window title (default: "menu: PROMPT")
+#   --here                   run in the current terminal instead of a new window (python/zsh/tmux popups)
+#   --no-restore             do not refocus the previously active window afterwards
+#   Any other fzf option goes to fzf as it is (`--delimiter=$'\t'`, `--with-nth=2..`, `--accept-nth=1`, `--expect=alt-p`,
+#   `--bind=...`, `--print-query`, `--query=...`). Options with a value must use the `--opt=value` form, except
+#   --bind/--expect/--with-nth/--nth/--accept-nth/--delimiter/--query/--tiebreak/--tabstop which may also take a
+#   separate argument.
+#   Extra NORMAL-mode letter binds: FZF_MENU_NORMAL_BINDS='d:execute(x)' (newline separated KEY:ACTION).
+#
+# Subcommands:
+#   --server                 hold a hidden menu terminal (special workspace "menu") that answers requests at once
+#                            (Hyprland autostart runs it); without it every menu starts a cold ghostty (~0.4 s)
+#   --server-start           start the server unless it runs (Hyprland autostart)
+#   --self-test              headless check of the modal (private tmux server), exit 0 = every case passed
+#   --cold                   force the cold path for this call (latency comparison)
+#
+# Toggle: calling it again while a menu is open closes that menu (the second press of a bind).
+# State and requests live in $XDG_RUNTIME_DIR/fzf-menu (mode 700).
+set -u
+
+SELF=$(readlink -f "${BASH_SOURCE[0]}")
+RUN="${XDG_RUNTIME_DIR:-/tmp}/fzf-menu"
+LIB="${XDG_CONFIG_HOME:-$HOME/.config}/fzf/vimfzf.sh"
+PREVIEW_IMG="${XDG_CONFIG_HOME:-$HOME/.config}/fzf/image-preview.sh"
+SERVER_TITLE="fzf-menu-server"
+SPECIAL="menu"
+
+die() { echo "fzf-menu: $*" >&2; exit 2; }
+have() { command -v "$1" >/dev/null 2>&1; }
+now_ms() { local t=${EPOCHREALTIME/./}; echo $((t / 1000)); }
+in_hypr() { [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]] && have hyprctl; }
+hdispatch() { hyprctl dispatch "$1" >/dev/null 2>&1; }
+
+active_addr() { in_hypr && hyprctl activewindow -j 2>/dev/null | sed -n 's/^[[:space:]]*"address": "\(0x[0-9a-f]*\)".*/\1/p' | head -1; }
+
+# ───────────────────────────── arguments ─────────────────────────────
+
+PROMPT=menu HERE=0 NORESTORE=0 COLD=0 TITLE=""
+FZF_ARGS=()
+parse_args() {
+  local image="" delim=$'\t'
+  while (($#)); do
+    case $1 in
+      -p | --prompt) PROMPT=${2-}; shift ;;
+      --prompt=*) PROMPT=${1#*=} ;;
+      -i) ;;
+      -l) shift ;;
+      -m | --multi) FZF_ARGS+=(--multi) ;;
+      --header) FZF_ARGS+=("--header=${2-}"); shift ;;
+      --preview) FZF_ARGS+=("--preview=${2-}"); shift ;;
+      --preview-window) FZF_ARGS+=("--preview-window=${2-}"); shift ;;
+      --image)
+        image=1
+        if [[ ${2-} =~ ^[0-9]+$ ]]; then image=$2; shift; fi
+        ;;
+      --title) TITLE=${2-}; shift ;;
+      --here) HERE=1 ;;
+      --no-restore) NORESTORE=1 ;;
+      --cold) COLD=1 ;;
+      --bind | --expect | --with-nth | --nth | --accept-nth | --delimiter | --query | --tiebreak | --tabstop | --scheme)
+        FZF_ARGS+=("$1=${2-}"); shift ;;
+      --) shift; FZF_ARGS+=("$@"); break ;;
+      -h | --help) sed -n '2,/^set -u/p' "$SELF" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+      *) FZF_ARGS+=("$1") ;;
+    esac
+    shift
+  done
+  if [[ -n $image ]]; then
+    local has_delim=0 a
+    for a in "${FZF_ARGS[@]}"; do [[ $a == --delimiter=* ]] && has_delim=1; done
+    ((has_delim)) || FZF_ARGS+=("--delimiter=$delim")
+    FZF_ARGS+=("--preview=$PREVIEW_IMG {$image}")
+    local has_pw=0
+    for a in "${FZF_ARGS[@]}"; do [[ $a == --preview-window=* ]] && has_pw=1; done
+    ((has_pw)) || FZF_ARGS+=("--preview-window=right,60%,border-left")
+  fi
+  local has_pw2=0 a
+  for a in "${FZF_ARGS[@]}"; do [[ $a == --preview-window=* ]] && has_pw2=1; done
+  if ((!has_pw2)); then
+    for a in "${FZF_ARGS[@]}"; do
+      [[ $a == --preview=* ]] && { FZF_ARGS+=("--preview-window=right,55%,wrap,border-left"); break; }
+    done
+  fi
+  [[ -n $TITLE ]] || TITLE="menu: $PROMPT"
+}
+
+# ───────────────────────────── the list itself ─────────────────────────────
+
+# run_list [IN OUT]: rows from IN (default stdin), the selection into OUT (default stdout); the fzf status is
+# mapped to 0 (chosen) / 1 (cancelled or no match) / the fzf error code
+run_list() {
+  local in=${1:-/dev/stdin} out=${2:-/dev/stdout} rc b
+  [[ -r $LIB ]] || die "missing $LIB"
+  # shellcheck source=/dev/null
+  . "$LIB"
+  export VF_PROMPT=$PROMPT
+  VF_NORMAL_BINDS=()
+  if [[ -n ${FZF_MENU_NORMAL_BINDS:-} ]]; then
+    while IFS= read -r b; do [[ -n $b ]] && VF_NORMAL_BINDS+=("$b"); done <<<"$FZF_MENU_NORMAL_BINDS"
+  fi
+  rc=0
+  vimfzf "${FZF_ARGS[@]}" <"$in" >"$out" || rc=$?
+  case $rc in 0) return 0 ;; 1 | 130 | 143) return 1 ;; *) return "$rc" ;; esac
+}
+
+# ───────────────────────────── requests (cold window or hidden server) ─────────────────────────────
+
+# a request directory holds: in (rows), out (selection), rc, cfg (bash: PROMPT, FZF_ARGS, TITLE, NORESTORE), env
+write_request() {
+  local req=$1
+  cat >"$req/in"
+  {
+    declare -p PROMPT TITLE NORESTORE
+    declare -p FZF_ARGS
+    [[ -n ${FZF_MENU_NORMAL_BINDS:-} ]] && declare -p FZF_MENU_NORMAL_BINDS
+  } >"$req/cfg"
+  env -0 >"$req/env"
+}
+
+# serve_request DIR: runs in the terminal that shows the list
+serve_request() {
+  local req=$1 rc=0 kv
+  [[ -d $req && -r $req/cfg ]] || die "bad request $req"
+  (
+    echo "$BASHPID" >"$RUN/active.pid"
+    # the caller's environment (CLIP_*, preview helpers, ...) without the terminal identity of the caller
+    while IFS= read -r -d '' kv; do
+      case ${kv%%=*} in
+        _ | SHLVL | PWD | OLDPWD | SHELL | TERM | COLORTERM | TERM_* | GHOSTTY_* | TMUX | TMUX_PANE | KITTY_* | COLUMNS | LINES | BASH* | PPID | UID | EUID) continue ;;
+      esac
+      # shellcheck disable=SC2163 # kv is a NAME=value pair
+      export "$kv" 2>/dev/null || true
+    done <"$req/env"
+    # shellcheck source=/dev/null
+    . "$req/cfg"
+    printf '\033]2;%s\007' "$TITLE"
+    [[ -n ${FZF_MENU_TRACE:-} ]] && echo "list_start $(now_ms)" >>"$req/trace"
+    run_list "$req/in" "$req/out"
+  ) || rc=$?
+  # drop kitty-graphics images a preview may have left and restore the cursor
+  printf '\033_Ga=d,d=A,q=2\033\\\033[?25h'
+  echo "$rc" >"$req/rc"
+}
+
+server_alive() {
+  local pid
+  pid=$(cat "$RUN/server.pid" 2>/dev/null) || return 1
+  [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null && [[ -p $RUN/server.fifo ]]
+}
+
+active_menu_pid() { cat "$RUN/active.pid" 2>/dev/null; }
+
+# the menu in flight is a fzf child of the server or of the cold terminal's request process
+close_active_menu() {
+  local p
+  p=$(active_menu_pid)
+  [[ -n $p ]] && kill -0 "$p" 2>/dev/null && pkill -TERM -P "$p" -x fzf 2>/dev/null
+}
+
+hot_request() { # REQ -> 0 when answered, 1 when the server did not take it
+  local req=$1 i
+  mkfifo "$req/done"
+  exec 8<>"$req/done"
+  printf '%s\n' "$req" >"$RUN/server.fifo" || { exec 8>&-; return 1; }
+  # wait for the server to finish; give up when it dies or never starts the request
+  for ((i = 0; i < 3; i++)); do
+    [[ -e $req/started ]] && break
+    read -r -t 1 -u 8 && return 0
+  done
+  [[ -e $req/started ]] || { exec 8>&-; return 1; }
+  while ! read -r -t 2 -u 8; do
+    server_alive || { exec 8>&-; return 1; }
+  done
+  exec 8>&-
+  return 0
+}
+
+cold_request() { # REQ: a fresh ghostty that exits with the list
+  local req=$1
+  env -u TMUX -u TMUX_PANE ghostty --class=float.tui --title="$TITLE" -e "$SELF" --serve-request "$req" >/dev/null 2>&1
+}
+
+REQ=""
+cleanup_req() { [[ -n $REQ && -d $REQ ]] && rm -rf "$REQ"; exec 9>&-; }
+
+menu_gui() {
+  local req prev rc=0 t0 hot=0
+  t0=$(now_ms)
+  mkdir -p "$RUN" && chmod 700 "$RUN"
+  have ghostty || die "ghostty not found (use --here)"
+  # toggle: a second call closes the menu that is open
+  exec 9>"$RUN/menu.lock"
+  if ! flock -n 9; then close_active_menu; cat >/dev/null; exit 1; fi
+  prev=$(active_addr)
+  [[ -n $prev ]] && printf '%s\n' "$prev" >"$RUN/prev-window"
+  # requests of crashed callers older than an hour
+  find "$RUN" -maxdepth 1 -name 'req.*' -mmin +60 -exec rm -rf {} + 2>/dev/null
+  req=$(mktemp -d "$RUN/req.XXXXXX") || die "cannot create a request directory"
+  REQ=$req
+  trap cleanup_req EXIT
+  write_request "$req"
+  [[ -n ${FZF_MENU_TRACE:-} ]] && echo "t0 $t0" >"$req/trace"
+  if ((!COLD)) && server_alive; then
+    hot=1
+    if ! hot_request "$req"; then hot=0; rm -f "$req/started" "$req/rc"; fi
+  fi
+  if ((!hot)); then
+    : >"$req/started"
+    cold_request "$req"
+    # a menu terminal that died before answering counts as a cancel
+    [[ -e $req/rc ]] || echo 1 >"$req/rc"
+    ensure_server
+  fi
+  rc=$(cat "$req/rc" 2>/dev/null || echo 1)
+  [[ -r $req/out ]] && cat "$req/out"
+  [[ -n ${FZF_MENU_TRACE:-} ]] && { cat "$req/trace" >&2; echo "t_end $(now_ms) hot=$hot" >&2; }
+  restore_focus "$prev"
+  return "$rc"
+}
+
+restore_focus() {
+  local prev=${1:-} cur
+  ((NORESTORE)) && return 0
+  [[ -n $prev ]] && in_hypr || return 0
+  cur=$(active_addr)
+  [[ $cur == "$prev" ]] && return 0
+  hdispatch "hl.dsp.focus({ window = \"address:$prev\" })"
+}
+
+# start the hidden server terminal (once; a lock keeps two callers from starting two)
+spawn_server() {
+  mkdir -p "$RUN" && chmod 700 "$RUN"
+  server_alive && return 0
+  in_hypr || return 0
+  (
+    exec 9>"$RUN/spawn.lock"
+    flock -n 9 || exit 0
+    server_alive && exit 0
+    env -u TMUX -u TMUX_PANE setsid -f ghostty --class=float.tui --title="$SERVER_TITLE" -e "$SELF" --server >/dev/null 2>&1 </dev/null
+    sleep 2
+  )
+}
+
+# after a cold menu: make sure the next one is fast
+ensure_server() {
+  [[ ${FZF_MENU_NO_SERVER:-} == 1 ]] && return 0
+  spawn_server >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+}
+
+# ───────────────────────────── the hidden server ─────────────────────────────
+
+SHOWN=0
+server_window() { # address of the ghostty window that runs this server (its pid is our parent)
+  hyprctl clients -j 2>/dev/null | jq -r --argjson p "$PPID" '[.[] | select(.pid == $p)][0].address // empty'
+}
+
+server_geometry() { # resize + center on the active monitor like the float.tui window rule (60% x 65%)
+  local addr=$1 mon w h
+  mon=$(hyprctl monitors -j 2>/dev/null | jq -r '[.[] | select(.focused)][0] | "\((.width / .scale) | floor) \((.height / .scale) | floor)"')
+  read -r w h <<<"$mon"
+  [[ -n ${w:-} ]] || return 0
+  hdispatch "hl.dsp.window.resize({ window = \"address:$addr\", x = $((w * 60 / 100)), y = $((h * 65 / 100)), relative = false })"
+  hdispatch "hl.dsp.window.center()"
+}
+
+server_show() {
+  local addr=$1
+  ((SHOWN)) && return 0
+  hdispatch "hl.dsp.workspace.toggle_special(\"$SPECIAL\")"
+  SHOWN=1
+  [[ -n $addr ]] && server_geometry "$addr"
+}
+
+server_hide() {
+  ((SHOWN)) || return 0
+  hdispatch "hl.dsp.workspace.toggle_special(\"$SPECIAL\")"
+  SHOWN=0
+}
+
+# one process group: the server shell, its fzf child and the request subshell
+server_main() {
+  local req addr ws
+  mkdir -p "$RUN" && chmod 700 "$RUN"
+  exec 7>"$RUN/server.lock"
+  flock -n 7 || { echo "fzf-menu: a server is already running" >&2; exit 0; }
+  rm -f "$RUN/server.fifo"
+  mkfifo "$RUN/server.fifo"
+  echo $$ >"$RUN/server.pid"
+  trap 'rm -f "$RUN/server.fifo" "$RUN/server.pid"' EXIT
+  trap 'exit 0' TERM INT HUP
+  exec 3<>"$RUN/server.fifo"
+  printf '\033]2;%s\007' "$SERVER_TITLE"
+  addr=$(server_window)
+  # the window rule parks the window on the special workspace; do it by hand when the rule is missing
+  if [[ -n $addr ]]; then
+    ws=$(hyprctl clients -j 2>/dev/null | jq -r --arg a "$addr" '.[] | select(.address == $a) | .workspace.name')
+    [[ $ws == "special:$SPECIAL" ]] || hdispatch "hl.dsp.window.move({ window = \"address:$addr\", workspace = \"special:$SPECIAL\", follow = false })"
+  fi
+  clear
+  printf 'fzf-menu server (pid %s): waiting for requests\n' "$$"
+  while read -r -u 3 req; do
+    [[ $req == "$RUN"/req.* && -d $req ]] || continue
+    : >"$req/started"
+    [[ -n ${FZF_MENU_TRACE:-} || -e $req/trace ]] && echo "server_got $(now_ms)" >>"$req/trace"
+    server_show "$addr"
+    [[ -e $req/trace ]] && echo "shown $(now_ms)" >>"$req/trace"
+    serve_request "$req"
+    server_hide
+    clear
+    printf 'fzf-menu server (pid %s): waiting for requests\n' "$$"
+    echo finished >"$req/done"
+  done
+}
+
+# ───────────────────────────── self-test ─────────────────────────────
+
+self_test() {
+  local sock="fzfmenu-selftest-$$" fails=0 out name
+  have tmux || { echo "self-test: tmux is required"; return 2; }
+  have fzf || { echo "self-test: fzf is required"; return 2; }
+  [[ -r $LIB ]] || { echo "self-test: missing $LIB"; return 2; }
+  case_run() { # NAME EXPECT KEYS...  (keys: literal text with = prefix, otherwise tmux key names)
+    local name=$1 want=$2 k
+    shift 2
+    tmux -L "$sock" kill-session -t t 2>/dev/null
+    tmux -L "$sock" new-session -d -s t -x 100 -y 24 \
+      "bash -c 'out=\$($SELF --here -p test < <(seq 30)); echo \"RES[\$out]\"; sleep 3'"
+    sleep 0.5
+    for k in "$@"; do
+      if [[ $k == =* ]]; then tmux -L "$sock" send-keys -t t -l "${k#=}"; else tmux -L "$sock" send-keys -t t "$k"; fi
+      sleep 0.1
+    done
+    sleep 0.4
+    out=$(tmux -L "$sock" capture-pane -p -t t | grep -a 'RES\[' | head -1)
+    if [[ $out == "RES[$want]" ]]; then printf 'ok    %s\n' "$name"; else printf 'FAIL  %s (got %s, want RES[%s])\n' "$name" "${out:-nothing}" "$want"; fails=$((fails + 1)); fi
+  }
+  case_run "INSERT: type filters" 2 '=2' Enter
+  case_run "INSERT: Ctrl+j moves down" 2 C-j Enter
+  case_run "INSERT: Ctrl+n / Ctrl+p" 2 C-n C-n C-p Enter
+  case_run "INSERT: Esc then j" 2 Escape '=j' Enter
+  case_run "NORMAL: G last, g first" 1 Escape '=G' '=g' Enter
+  case_run "NORMAL: G" 30 Escape '=G' Enter
+  case_run "NORMAL: stray keys are ignored" 3 Escape '=z' '=;' '=(' '=j' '=j' Enter
+  case_run "NORMAL: i resumes typing" 3 Escape '=i' '=3' Enter
+  case_run "NORMAL: / resumes typing" 3 Escape '=/' '=3' Enter
+  case_run "NORMAL: q quits" "" Escape '=q'
+  case_run "NORMAL: Esc quits" "" Escape Escape
+  case_run "NORMAL: Cyrillic twins (о о, П)" 3 Escape '=о' '=о' Enter
+  case_run "NORMAL: Cyrillic G twin" 30 Escape '=П' Enter
+  tmux -L "$sock" kill-server 2>/dev/null
+  name=${FUNCNAME[0]}
+  ((fails == 0)) && { echo "$name: all cases passed"; return 0; }
+  echo "$name: $fails case(s) failed"
+  return 1
+}
+
+# ───────────────────────────── main ─────────────────────────────
+
+case ${1:-} in
+  --serve-request) serve_request "${2:?request dir}"; exit 0 ;;
+  --server) server_main; exit 0 ;;
+  --server-start) spawn_server; exit 0 ;;
+  --self-test) self_test; exit $? ;;
+esac
+
+parse_args "$@"
+if ((HERE)); then
+  run_list
+  exit $?
+fi
+menu_gui

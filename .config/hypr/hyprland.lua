@@ -53,6 +53,7 @@ hl.on("hyprland.start", function()
     hl.exec_cmd("wl-clip-persist --clipboard regular")
     -- one master password per login: drop the rbw agent left over from the previous session (silent without rbw)
     hl.exec_cmd("~/.config/hypr/scripts/vault.sh session-start")
+    hl.exec_cmd("~/.local/bin/fzf-menu --server-start")
     hl.exec_cmd("easyeffects --service-mode --hide-window")
     hl.exec_cmd("udiskie --tray --notify")
     hl.exec_cmd("Telegram -startintray")
@@ -209,6 +210,14 @@ hl.window_rule({
     float = true,
     center = true,
     size = { "monitor_w*0.6", "monitor_h*0.65" },
+})
+
+-- Hidden menu terminal of fzf-menu (~/.local/bin/fzf-menu --server): parked on the special workspace "menu", which
+-- the server shows for the length of one menu (about 40 ms instead of a 0.4 s ghostty start).
+hl.window_rule({
+    name = "fzf-menu-server",
+    match = { class = "^(float\\.tui)$", title = "^(fzf-menu-server)$" },
+    workspace = "special:menu silent",
 })
 
 -- QR code viewer (imv): small floating window
