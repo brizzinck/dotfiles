@@ -7,7 +7,7 @@ nightlight	Toggles	Night light (hyprsunset 4500K)	SUPER+SHIFT+N	toggle	pkill -x 
 dnd	Toggles	Do not disturb (dunst)	SUPER+CTRL+X	toggle	dunstctl set-paused toggle	[ "$(dunstctl is-paused)" = true ]	dunstctl	ON = notifications are paused and collect in the history.
 wifi	Toggles	Wi-Fi radio	-	toggle	nmcli radio wifi "$(nmcli radio wifi | grep -q "^enabled" && echo off || echo on)"	nmcli radio wifi | grep -q "^enabled"	nmcli	-
 bluetooth	Toggles	Bluetooth power	-	toggle	bluetoothctl power "$(bluetoothctl show | grep -q "Powered: yes" && echo off || echo on)"	bluetoothctl show | grep -q "Powered: yes"	bluetoothctl	-
-mic-mute	Toggles	Microphone muted	SUPER+SHIFT+M	toggle	swayosd-client --input-volume mute-toggle || wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle	wpctl get-volume @DEFAULT_AUDIO_SOURCE@ | grep -q MUTED	wpctl	ON = the default microphone is muted.
+mic-mute	Toggles	All microphones muted	SUPER+SHIFT+M	toggle	~/.config/hypr/scripts/mic-mute-all.sh	~/.config/hypr/scripts/mic-mute-all.sh status >/dev/null	wpctl pw-dump	ON = every microphone is muted. Pressing again unmutes the default one only.
 out-mute	Toggles	Speakers muted	XF86AudioMute	toggle	swayosd-client --output-volume mute-toggle || wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle	wpctl get-volume @DEFAULT_AUDIO_SINK@ | grep -q MUTED	wpctl	ON = the default output is muted.
 recording	Toggles	Screen recording	SUPER+R	toggle	~/.config/hypr/scripts/rec-toggle.sh	pgrep -x gpu-screen-reco	gpu-screen-recorder	Starts or stops a gpu-screen-recorder recording of the focused monitor.
 lock	Session	Lock screen (password)	SUPER+Escape	run	pidof hyprlock || hyprlock	-	hyprlock	-

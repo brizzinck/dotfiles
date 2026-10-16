@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# menu: OCR this window (rus+eng)
+# Window-menu hook, called as `ocr ADDRESS` (window-menu.sh exports WIN_ADDR ... WIN_MON).
+dir=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+exec "$dir/capture.sh" ocr window "${1:-${WIN_ADDR:-}}"
