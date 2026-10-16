@@ -63,7 +63,7 @@ packages=(
   libqalculate rofi-calc gifski kondo lostfiles termdown bandwhich lsof                           # calculator, GIF, cleanup, timer, network, open files
   tlp-pd                                                                                          # TLP profiles daemon (tlpctl), conflicts with power-profiles-daemon
   rbw rofi-rbw kwindowsystem                                                                      # Bitwarden/Vaultwarden client + rofi front end; kwindowsystem = pinentry-qt backend
-  oo7 bitwarden bitwarden-cli                                                                     # Bitwarden desktop + CLI; oo7 only satisfies the desktop package's org.freedesktop.secrets dependency (see apply-system.sh)
+  oo7 bitwarden                                                                                   # Bitwarden desktop (the bw CLI is AUR bitwarden-cli-bin); oo7 only satisfies the desktop package's org.freedesktop.secrets dependency (see apply-system.sh)
 )
 sudo pacman -S --needed --noconfirm "${packages[@]}"
 
@@ -86,8 +86,9 @@ fi
 # hyprdynamicmonitors-bin: /usr/bin/hyprdynamicmonitors for infrastructure/systemd units (enable by hand, see CLAUDE.md)
 # bibata-cursor-theme-bin: Bibata-Modern-Ice cursor theme; shellcheck-bin: static build that replaces the repo package
 # (no haskell chain); ccusage: Claude/Codex usage from local logs; wayscrollshot-bin: scrolling screenshots;
-# pacseek: pacman/AUR TUI. Keep in sync with AUR_PACKAGES in apply-system.sh.
-for pkg in facad hyprdynamicmonitors-bin bibata-cursor-theme-bin shellcheck-bin ccusage wayscrollshot-bin pacseek; do
+# pacseek: pacman/AUR TUI; bitwarden-cli-bin: bw CLI (the repo bitwarden-cli needs nodejs-lts-jod, which conflicts with nodejs).
+# Keep in sync with AUR_PACKAGES in apply-system.sh.
+for pkg in facad hyprdynamicmonitors-bin bibata-cursor-theme-bin shellcheck-bin ccusage wayscrollshot-bin pacseek bitwarden-cli-bin; do
   yay -S --needed --noconfirm --sudoloop "$pkg" || warn "AUR install failed ($pkg) — continuing"
 done
 yay --save --cleanafter >/dev/null 2>&1 || true   # remove AUR build dirs after each install
