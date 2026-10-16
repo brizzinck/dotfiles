@@ -79,7 +79,7 @@ if id -nG 2>/dev/null | tr ' ' '\n' | grep -qx i2c; then info i2c-group "member"
 # Bitwarden / Vaultwarden (rbw): informational only
 if ! command -v rbw >/dev/null 2>&1; then
   info rbw "not installed (sudo ~/dotfiles/apply-system.sh --only install)"
-elif [ -s "${XDG_CONFIG_HOME:-$HOME/.config}/rbw/config.json" ] && grep -q '"email": "' "${XDG_CONFIG_HOME:-$HOME/.config}/rbw/config.json" 2>/dev/null; then
+elif [ -s "${XDG_CONFIG_HOME:-$HOME/.config}/rbw/config.json" ] && jq -e '.email != null' "${XDG_CONFIG_HOME:-$HOME/.config}/rbw/config.json" >/dev/null 2>&1; then
   if rbw unlocked >/dev/null 2>&1; then info rbw "configured, unlocked"; else info rbw "configured, locked (master password on first use)"; fi
 else
   info rbw "installed but not configured (run bw-setup)"

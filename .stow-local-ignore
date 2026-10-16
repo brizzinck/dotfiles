@@ -19,3 +19,4 @@
 ^/browsers
 ^/doctor\.sh
 ^/docs
+__pycache__

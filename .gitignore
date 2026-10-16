@@ -9,3 +9,4 @@ package*.json
 .config/rbw/
 .local/share/rbw/
 .cache/rofi-rbw*
+__pycache__/

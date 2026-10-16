@@ -550,13 +550,13 @@ config_i2c() {
     try modprobe i2c-dev
   fi
   if ! getent group i2c >/dev/null; then
-    run groupadd -r i2c
+    try groupadd -r i2c
     changed "created system group i2c"
   fi
   if id -nG "$OWNER" | tr ' ' '\n' | grep -qx i2c; then
     log "unchanged: $OWNER is already in group i2c"
   else
-    run usermod -aG i2c "$OWNER"
+    try usermod -aG i2c "$OWNER"
     changed "added $OWNER to group i2c (needs a re-login to take effect)"
     followup "re-login (or reboot) so the new group i2c applies; check: id -nG | tr ' ' '\n' | grep -x i2c"
   fi

@@ -245,10 +245,10 @@ fc-cache -f 2>/dev/null || true
 log "Browser settings (Zen user.js memory prefs, Chrome disk-cache flag; copied into the flatpak sandboxes)"
 "$DOTFILES/browsers/apply.sh" || warn "browsers/apply.sh failed"
 
-log "User timers: cache aging (user tmpfiles) and Codex release pruning"
+log "User timers: cache aging (user tmpfiles), Codex release pruning and the sysalert health check"
 systemctl --user daemon-reload 2>/dev/null || true
-systemctl --user enable --now systemd-tmpfiles-clean.timer codex-prune-releases.timer 2>/dev/null \
-  || later "enable the user timers once logged in: systemctl --user enable --now systemd-tmpfiles-clean.timer codex-prune-releases.timer"
+systemctl --user enable --now systemd-tmpfiles-clean.timer codex-prune-releases.timer sysalert.timer 2>/dev/null \
+  || later "enable the user timers once logged in: systemctl --user enable --now systemd-tmpfiles-clean.timer codex-prune-releases.timer sysalert.timer"
 
 # ───────────────────────────── 8. identity ────────────────────────────────────
 log "Git identity (~/.gitconfig.local)"
