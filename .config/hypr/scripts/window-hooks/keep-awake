@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# menu: Keep awake while this window is open
+# Window-menu hook, called as `keep-awake ADDRESS` (window-menu.sh exports WIN_ADDR ... WIN_MON).
+# Holds an idle+sleep inhibitor until the window closes; running it again on the same window releases it.
+dir=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+exec "$dir/keep-awake.sh" window "${1:-${WIN_ADDR:-}}"

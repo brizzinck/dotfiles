@@ -1,0 +1,7 @@
+[Unit]
+Description=System health alerts (disk, battery, temperature, memory, load)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.config/hypr/scripts/sysalert.sh
+Nice=10
