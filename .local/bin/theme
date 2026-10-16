@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+# theme - switch the Everforest variant: black (pure #000000, default) or night (near-black content background).
+#
+#   theme black | night      activate a variant and reload what is safe to reload live
+#   theme toggle             flip between the two
+#   theme status [--short]   active variant (--short prints just the name)
+#   theme init               create the link with the default variant (black) when it is missing; silent
+#   theme --help
+#   --no-reload              with black|night|toggle: only flip the link (new shells/apps pick it up)
+#
+# How it works: the generated fragments of both variants are committed in <dotfiles>/themes/generated/{black,night}
+# (rendered from themes/palette/everforest.json by themes/palette/render.py). The active variant is the symlink
+#   ${XDG_STATE_HOME:-~/.local/state}/theme/current -> <dotfiles>/themes/generated/<variant>
+# and app configs include their fragment through that path (ghostty, alacritty, tmux, zsh/fzf, git/delta, nvim).
+#
+# Live reload (only processes of this user; nothing is ever killed or restarted):
+#   ghostty     SIGUSR2, only to processes that catch it (SigCgt bit for signal 12)
+#   alacritty   touch of its config file (alacritty reloads on change)
+#   tmux        `source-file` of the tmux fragment on every tmux server this user runs
+#   nvim        palette.reload() through every nvim server socket owned by this user (no keys are typed)
+#   hooks       executable *.sh in ${XDG_CONFIG_HOME:-~/.config}/theme/hooks.d, run in name order as
+#               `hook <variant>` with THEME_VARIANT and THEME_DIR in the environment (desktop layer: Hyprland,
+#               waybar, dunst, ...). A failing hook is reported and never aborts the switch.
+set -u
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/theme"
+CURRENT="$STATE_DIR/current"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
+HOOKS_DIR="$CONFIG_DIR/theme/hooks.d"
+SELF=$(readlink -f "${BASH_SOURCE[0]}")
+REPO=$(cd "$(dirname "$SELF")/../.." && pwd)
+GEN="$REPO/themes/generated"
+DEFAULT=black
+VARIANTS=(black night)
+
+say() { printf '%s\n' "$*"; }
+warn() { printf 'theme: %s\n' "$*" >&2; }
+die() { warn "$*"; exit 1; }
+
+usage() { sed -n '2,/^set -u/p' "$SELF" | sed '$d' | sed 's/^# \{0,1\}//'; }
+
+valid_variant() {
+  local v
+  for v in "${VARIANTS[@]}"; do [[ $1 == "$v" ]] && return 0; done
+  return 1
+}
+
+active() {
+  local t
+  t=$(readlink "$CURRENT" 2>/dev/null) || return 1
+  [[ -e $CURRENT ]] || return 1
+  basename "$t"
+}
+
+link_variant() {
+  local v=$1 tmp
+  [[ -f $GEN/$v/tokens.json ]] || die "no generated files for '$v' in $GEN (run themes/palette/render.py)"
+  mkdir -p "$STATE_DIR" || die "cannot create $STATE_DIR"
+  tmp="$STATE_DIR/.current.$$"
+  if ! { ln -sfn "$GEN/$v" "$tmp" && mv -T "$tmp" "$CURRENT"; }; then
+    rm -f "$tmp"
+    die "cannot flip $CURRENT"
+  fi
+}
+
+# ── live reloaders ──────────────────────────────────────────────────────────────────────────
+
+reload_ghostty() {
+  local pid mask n=0
+  for pid in $(pgrep -u "$(id -u)" -x ghostty); do
+    mask=$(awk '/^SigCgt:/ {print $2}' "/proc/$pid/status" 2>/dev/null) || continue
+    [[ -n $mask ]] || continue
+    # SIGUSR2 is signal 12 = bit 11 of the caught-signals mask; without a handler it would terminate the process
+    (( (0x$mask >> 11) & 1 )) || continue
+    kill -USR2 "$pid" 2>/dev/null && n=$((n + 1))
+  done
+  say "ghostty: reloaded $n"
+}
+
+reload_alacritty() {
+  local cfg="$CONFIG_DIR/alacritty/alacritty.toml"
+  if pgrep -u "$(id -u)" -x alacritty >/dev/null && [[ -f $cfg ]]; then
+    touch "$cfg" && say "alacritty: config touched (live reload)"
+  fi
+}
+
+reload_tmux() {
+  command -v tmux >/dev/null 2>&1 || return 0
+  local frag="$CURRENT/tmux.conf" dir sock n=0
+  [[ -r $frag ]] || return 0
+  dir="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
+  [[ -d $dir ]] || return 0
+  for sock in "$dir"/*; do
+    [[ -S $sock && -O $sock ]] || continue
+    if tmux -S "$sock" source-file "$frag" 2>/dev/null; then
+      n=$((n + 1))
+    fi
+  done
+  say "tmux: sourced on $n server(s)"
+}
+
+reload_nvim() {
+  command -v nvim >/dev/null 2>&1 || return 0
+  local sock n=0 failed=0 expr out
+  # One expression: always dofile() the current lua/palette.lua (instances started before that module existed, or
+  # before it was last edited, would otherwise run stale code; lazy's module index does not know new files either)
+  # and reload the highlights. Nothing is typed into the editor and no buffer is touched.
+  expr='luaeval("(function() local f = vim.fn.stdpath([[config]]) .. [[/lua/palette.lua]] if not vim.uv.fs_stat(f) then return [[no palette module]] end local m = dofile(f) package.loaded.palette = m return m.reload() end)()")'
+  local runtime="${XDG_RUNTIME_DIR:-/tmp}" me="${USER:-$(id -un)}"
+  for sock in "$runtime"/nvim.*.0 "$runtime"/nvim."$me"/*/0 /tmp/nvim."$me"/*/0; do
+    [[ -S $sock && -O $sock ]] || continue
+    out=$(timeout 8 nvim --server "$sock" --remote-expr "$expr" 2>&1)
+    if [[ $out == black || $out == night ]]; then
+      n=$((n + 1))
+    else
+      failed=$((failed + 1))
+      warn "nvim $sock: ${out:-no answer}"
+    fi
+  done
+  say "nvim: reloaded $n instance(s)$([[ $failed -gt 0 ]] && echo ", $failed failed")"
+}
+
+run_hooks() {
+  local variant=$1 hook
+  [[ -d $HOOKS_DIR ]] || return 0
+  for hook in "$HOOKS_DIR"/*.sh; do
+    [[ -x $hook ]] || continue
+    if THEME_VARIANT="$variant" THEME_DIR="$CURRENT" "$hook" "$variant"; then
+      say "hook $(basename "$hook"): ok"
+    else
+      warn "hook $(basename "$hook") failed (exit $?)"
+    fi
+  done
+}
+
+set_variant() {
+  local v=$1 reload=$2
+  valid_variant "$v" || die "unknown variant '$v' (black | night)"
+  link_variant "$v"
+  say "theme: $v"
+  [[ $reload == 1 ]] || return 0
+  reload_ghostty
+  reload_alacritty
+  reload_tmux
+  reload_nvim
+  run_hooks "$v"
+}
+
+# ── commands ────────────────────────────────────────────────────────────────────────────────
+
+cmd=${1:-status}
+shift || true
+reload=1
+short=0
+for a in "$@"; do
+  case $a in
+    --no-reload) reload=0 ;;
+    --short) short=1 ;;
+    *) die "unknown argument '$a'" ;;
+  esac
+done
+
+case $cmd in
+  black | night) set_variant "$cmd" "$reload" ;;
+  toggle)
+    cur=$(active) || cur=$DEFAULT
+    if [[ $cur == black ]]; then set_variant night "$reload"; else set_variant black "$reload"; fi
+    ;;
+  init)
+    active >/dev/null 2>&1 || link_variant "$DEFAULT"
+    ;;
+  status)
+    if cur=$(active); then
+      if ((short)); then say "$cur"; else
+        say "variant: $cur"
+        say "link:    $CURRENT -> $(readlink "$CURRENT")"
+        say "default: $DEFAULT (used when the link is missing; run 'theme init')"
+      fi
+    else
+      if ((short)); then say "$DEFAULT"; else
+        say "variant: $DEFAULT (no link yet; 'theme init' creates it)"
+      fi
+    fi
+    ;;
+  -h | --help | help) usage ;;
+  *) die "unknown command '$cmd' (black | night | toggle | status | init)" ;;
+esac

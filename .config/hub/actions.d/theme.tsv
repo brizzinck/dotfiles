@@ -1,0 +1,4 @@
+# Theme variant (palette v2). Format: see the header of ~/.config/hub/hub.
+theme-toggle	Toggles	Theme: black / night	-	toggle	~/.local/bin/theme toggle	[ "$(~/.local/bin/theme status --short)" = night ]	~/.local/bin/theme	ON = night (near-black content background), OFF = black (pure #000000, default). Reloads ghostty, tmux and nvim live; the bar, lock screen and screensaver stay #000000 in both.
+theme-black	Theme	Theme: black (pure #000000)	-	run	~/.local/bin/theme black	-	~/.local/bin/theme	Default variant: OLED black everywhere.
+theme-night	Theme	Theme: night (near-black #0a0e0c)	-	run	~/.local/bin/theme night	-	~/.local/bin/theme	Forest-tinted near-black content background; no OLED smear when scrolling.

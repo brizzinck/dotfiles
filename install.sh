@@ -229,6 +229,8 @@ if [ -d "$DOTFILES/private" ] && [ -n "$(ls -A "$DOTFILES/private" 2>/dev/null)"
   (cd "$DOTFILES/private" && stow --restow .)
 fi
 touch "$DOTFILES/env.secret.sh" && chmod +x "$DOTFILES/env.secret.sh"
+# palette variant link (black by default; flip with `theme black|night`): ghostty, tmux, fzf, delta and nvim read it
+"$HOME/.local/bin/theme" init || warn "theme init failed (themes/generated missing?)"
 
 log "GTK dark theme, icons, fonts and cursor (gsettings; the cursor falls back to Adwaita until bibata is installed)"
 if command -v gsettings >/dev/null 2>&1; then

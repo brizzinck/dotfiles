@@ -156,6 +156,19 @@ fi
 n_bar="$(pgrep -xc waybar 2>/dev/null || true)"
 if [ "${n_bar:-0}" = 1 ]; then ok waybar "single instance"; else bad waybar "${n_bar:-0} instances (expected 1)"; fi
 
+# ── palette variant (black | night): link present, generated fragments in sync with the token source ───────────
+theme_link="${XDG_STATE_HOME:-$HOME/.local/state}/theme/current"
+if [ -f "$theme_link/tokens.json" ] && [ "$(dirname "$(readlink -f "$theme_link")")" = "$DOTFILES/themes/generated" ]; then
+  ok theme "variant $(basename "$(readlink -f "$theme_link")") (theme black|night|toggle)"
+else
+  bad theme "$theme_link is missing or not a generated variant (run: ~/.local/bin/theme init)"
+fi
+if PYTHONPYCACHEPREFIX=/tmp/pycache python3 "$DOTFILES/themes/palette/render.py" --check >/dev/null 2>&1; then
+  ok theme-generated "themes/generated matches themes/palette/everforest.json and templates"
+else
+  bad theme-generated "stale: run python3 themes/palette/render.py and commit themes/generated"
+fi
+
 # ── stow symlinks: every tracked config file must resolve to the repo copy ──────
 broken=""
 n_links=0

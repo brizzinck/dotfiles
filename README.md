@@ -21,5 +21,5 @@ sudo ./apply-system.sh             # apply it (idempotent, --only <section> for 
 docs/gen-keymap.sh                 # regenerate docs/keymap.md after changing Hyprland binds
 ```
 
-Palette: Everforest Black, `themes/static/everforest-black/palette.md`. Launcher: rofi (`SUPER+space`).
+Palette: Everforest v2, variants black (default) and night, `themes/palette/palette.md`; switch with `theme black|night|toggle`. Launcher: rofi (`SUPER+space`).
 Keymap: `docs/keymap.md` (live: `SUPER+/`). More detail in `CLAUDE.md`.
