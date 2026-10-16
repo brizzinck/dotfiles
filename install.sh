@@ -58,7 +58,10 @@ packages=(
   pacman-contrib earlyoom reflector smartmontools nvme-cli libva-utils amdgpu_top   # paccache/updates, OOM guard, mirrors, SMART, vainfo, GPU monitor
   hyprpolkitagent cliphist wl-clip-persist swayosd wiremix hyprshot satty hyprpicker hyprsunset
   rofimoji wtype udiskie                                                            # polkit agent, clipboard, OSD, screenshots, picker, emoji, automount
-  bat eza git-delta github-cli trash-cli dust duf watchexec just go-yq xh shellcheck shfmt direnv dive hyperfine
+  bat eza git-delta github-cli trash-cli dust duf watchexec just go-yq xh shfmt direnv dive hyperfine
+  tesseract tesseract-data-eng tesseract-data-rus zbar qrencode ddcutil pik                       # OCR (rus+eng), QR, DDC/CI monitor brightness, ports
+  libqalculate rofi-calc gifski kondo lostfiles termdown bandwhich lsof                           # calculator, GIF, cleanup, timer, network, open files
+  tlp-pd                                                                                          # TLP profiles daemon (tlpctl), conflicts with power-profiles-daemon
 )
 sudo pacman -S --needed --noconfirm "${packages[@]}"
 
@@ -79,8 +82,10 @@ if ! have yay; then
   ( cd "$tmp/yay-bin" && makepkg -si --noconfirm ); rm -rf "$tmp"
 fi
 # hyprdynamicmonitors-bin: /usr/bin/hyprdynamicmonitors for infrastructure/systemd units (enable by hand, see CLAUDE.md)
-# bibata-cursor-theme-bin: Bibata-Modern-Ice cursor theme
-for pkg in facad hyprdynamicmonitors-bin bibata-cursor-theme-bin; do
+# bibata-cursor-theme-bin: Bibata-Modern-Ice cursor theme; shellcheck-bin: static build that replaces the repo package
+# (no haskell chain); ccusage: Claude/Codex usage from local logs; wayscrollshot-bin: scrolling screenshots;
+# pacseek: pacman/AUR TUI. Keep in sync with AUR_PACKAGES in apply-system.sh.
+for pkg in facad hyprdynamicmonitors-bin bibata-cursor-theme-bin shellcheck-bin ccusage wayscrollshot-bin pacseek; do
   yay -S --needed --noconfirm --sudoloop "$pkg" || warn "AUR install failed ($pkg) — continuing"
 done
 yay --save --cleanafter >/dev/null 2>&1 || true   # remove AUR build dirs after each install

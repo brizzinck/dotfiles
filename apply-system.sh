@@ -220,11 +220,18 @@ REPO_PACKAGES=(
   # wayland desktop helpers
   hyprpolkitagent cliphist wl-clip-persist swayosd wiremix hyprshot satty hyprpicker hyprsunset
   rofimoji wtype udiskie qt6ct
-  # cli tools
-  bat eza git-delta github-cli trash-cli dust duf watchexec just go-yq xh shellcheck shfmt direnv
+  # cli tools (shellcheck comes from the AUR as shellcheck-bin, see AUR_PACKAGES)
+  bat eza git-delta github-cli trash-cli dust duf watchexec just go-yq xh shfmt direnv
   dive hyperfine
+  # phase 2: OCR (rus+eng), QR/barcodes, monitor brightness over DDC/CI, ports, calculator, GIF, cleanup, timers, network
+  tesseract tesseract-data-eng tesseract-data-rus zbar qrencode ddcutil pik
+  libqalculate rofi-calc gifski kondo lostfiles termdown bandwhich lsof
+  # TLP profiles daemon: power-profiles-daemon D-Bus API backed by TLP (tlpctl); needs tlp, conflicts with power-profiles-daemon
+  tlp-pd
 )
-AUR_CURSOR_PACKAGE="bibata-cursor-theme-bin"
+# AUR packages, built at run time as the owner (makepkg refuses root) and installed with pacman -U. A failure only warns.
+# Keep in sync with the AUR section of install.sh. shellcheck-bin replaces the repo shellcheck (see swap_shellcheck).
+AUR_PACKAGES=(bibata-cursor-theme-bin shellcheck-bin ccusage wayscrollshot-bin pacseek)
 
 cpu_ucode_package() {
   if grep -qi 'AuthenticAMD' /proc/cpuinfo 2>/dev/null; then
@@ -235,42 +242,96 @@ cpu_ucode_package() {
   return 0
 }
 
-# Build the AUR cursor theme as the owner (makepkg refuses root), install the result as root. Failure only warns.
-install_aur_cursor() {
-  local pkg="$AUR_CURSOR_PACKAGE" build_dir built
+# aur_unmet_deps SRCINFO: print the dependencies (depends + makedepends, version constraints stripped) of a
+# .SRCINFO that are not satisfied on this system. makepkg without -s fails on missing dependencies, so these are
+# installed from the repositories first.
+aur_unmet_deps() {
+  local srcinfo="$1" deps=()
+  mapfile -t deps < <(sed -nE 's/^[[:space:]]*(make)?depends(_[a-z0-9_]+)? = ([^<>=[:space:]]+).*/\3/p' "$srcinfo" | sort -u)
+  [ "${#deps[@]}" -gt 0 ] || return 0
+  pacman -T -- "${deps[@]}" || true
+}
+
+# swap_shellcheck BUILT_PKG: replace the repo shellcheck (and its haskell dependency chain) by shellcheck-bin.
+# -Rdd and -U run back to back so there is no window without shellcheck; if -U fails the repo package is restored.
+# The haskell packages become orphans and go with the orphan step of the remove section.
+swap_shellcheck() {
+  local built="$1"
+  log "replacing repo shellcheck by shellcheck-bin (pacman -Rdd, then pacman -U)"
+  if pacman -Rdd --noconfirm shellcheck && pacman -U --noconfirm "$built"; then
+    changed "installed AUR package shellcheck-bin (replaced repo shellcheck; haskell dependencies become orphans)"
+  else
+    warn "shellcheck-bin swap failed, restoring the repo shellcheck"
+    pkg_installed shellcheck-bin || try pacman -S --needed --noconfirm shellcheck
+  fi
+}
+
+# install_aur_package PKG: clone and build as the owner, install the dependencies the build needs, install the result
+# as root. Skips installed packages. Never aborts the run.
+install_aur_package() {
+  local pkg="$1" build_dir unmet=() built
   if pkg_installed "$pkg"; then
     log "unchanged: $pkg already installed"
     return 0
   fi
-  if ! command -v makepkg >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
-    warn "makepkg or git missing, skipped AUR package $pkg (install base-devel and git, then rerun --only install)"
-    return 0
-  fi
   if [ "$DRY_RUN" -eq 1 ]; then
-    log "[dry-run] would build $pkg from https://aur.archlinux.org/$pkg.git as $OWNER (makepkg, no -s) and pacman -U the result"
+    log "[dry-run] would build $pkg from https://aur.archlinux.org/$pkg.git as $OWNER (makepkg, no -s), first installing its unmet repo dependencies (pacman -S --asdeps), then pacman -U the result"
+    if [ "$pkg" = shellcheck-bin ] && pkg_installed shellcheck; then
+      log "[dry-run] would then run: pacman -Rdd --noconfirm shellcheck && pacman -U --noconfirm <shellcheck-bin package> (repo shellcheck replaced; its haskell dependencies go with the orphan step)"
+    fi
     return 0
   fi
   build_dir="$(mktemp -d /tmp/aur-build.XXXXXX)"
   chown "$OWNER": "$build_dir"
   # shellcheck disable=SC2016  # the script runs in the owner's shell, $1 and $2 must stay literal here
-  if run_as_owner bash -c '
+  if ! run_as_owner bash -c '
       set -euo pipefail
       cd "$1"
       mkdir out
       git clone --depth 1 "https://aur.archlinux.org/$2.git" src
       cd src
-      PKGDEST="$1/out" makepkg --noconfirm
+      makepkg --printsrcinfo >../srcinfo
     ' _ "$build_dir" "$pkg"; then
+    warn "fetching $pkg from the AUR failed, continuing without it"
+    rm -rf -- "$build_dir"
+    return 0
+  fi
+  mapfile -t unmet < <(aur_unmet_deps "$build_dir/srcinfo")
+  if [ "${#unmet[@]}" -gt 0 ]; then
+    log "$pkg needs from the repositories: ${unmet[*]}"
+    if ! pacman -S --needed --asdeps --noconfirm -- "${unmet[@]}"; then
+      warn "dependencies of $pkg (${unmet[*]}) could not be installed (AUR-only?), skipped $pkg"
+      rm -rf -- "$build_dir"
+      return 0
+    fi
+  fi
+  # shellcheck disable=SC2016  # the script runs in the owner's shell, $1 must stay literal here
+  if run_as_owner bash -c 'cd "$1/src" && PKGDEST="$1/out" makepkg --noconfirm' _ "$build_dir"; then
     built="$(find "$build_dir/out" -maxdepth 1 -name "$pkg-*.pkg.tar.*" ! -name '*.sig' -print -quit)"
-    if [ -n "$built" ] && pacman -U --noconfirm "$built"; then
+    if [ -z "$built" ]; then
+      warn "build of $pkg produced no package file, continuing without it"
+    elif [ "$pkg" = shellcheck-bin ] && pkg_installed shellcheck; then
+      swap_shellcheck "$built"
+    elif pacman -U --noconfirm "$built"; then
       changed "installed AUR package $pkg"
     else
-      warn "built $pkg but pacman -U failed, cursor theme not installed (fall back to Adwaita)"
+      warn "built $pkg but pacman -U failed"
     fi
   else
-    warn "building $pkg failed, continuing without it (fall back to Adwaita)"
+    warn "building $pkg failed, continuing without it"
   fi
   rm -rf -- "$build_dir"
+}
+
+install_aur_packages() {
+  local pkg
+  if ! command -v makepkg >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
+    warn "makepkg or git missing, skipped the AUR packages ${AUR_PACKAGES[*]} (install base-devel and git, then rerun --only install)"
+    return 0
+  fi
+  for pkg in "${AUR_PACKAGES[@]}"; do
+    install_aur_package "$pkg"
+  done
 }
 
 section_install() {
@@ -299,11 +360,13 @@ section_install() {
   try pacman -S --needed --noconfirm "${wanted[@]}"
   changed "repo packages ensured (${#wanted[@]} names)"
 
-  install_aur_cursor
+  install_aur_packages
 
   # pacman-contrib (paccache) exists now; trim the cache again after the downloads
   cleanup_pacman_cache post-install
   followup "vainfo    # VA-API decode check (libva-utils)"
+  followup "tesseract --list-langs    # expect eng and rus"
+  followup "pacman -Q shellcheck-bin ccusage wayscrollshot-bin pacseek    # AUR builds; a missing one failed (see warnings), rerun --only install"
 }
 
 # --- remove ------------------------------------------------------------------
@@ -472,6 +535,34 @@ section_config() {
 
   # TLP drop-in (61-battery-care.conf only sets STOP_CHARGE_THRESH_*, no overlap with these keys)
   install_file "$INFRA/tlp/62-power.conf" /etc/tlp.d/62-power.conf
+
+  config_i2c
+}
+
+# DDC/CI access for ddcutil (external monitor brightness). ddcutil ships a uaccess udev rule and i2c-tools (its
+# dependency) ships 45-i2c-tools.rules (GROUP=i2c, MODE=0660), the sysusers entry for group i2c and its own
+# modules-load entry. Uaccess alone gives intermittent EACCES on Arch, so the owner also joins the group.
+config_i2c() {
+  install_file "$INFRA/i2c/i2c-dev.conf" /etc/modules-load.d/i2c-dev.conf
+  if ! lsmod | grep -q '^i2c_dev'; then
+    try modprobe i2c-dev
+  fi
+  if ! getent group i2c >/dev/null; then
+    run groupadd -r i2c
+    changed "created system group i2c"
+  fi
+  if id -nG "$OWNER" | tr ' ' '\n' | grep -qx i2c; then
+    log "unchanged: $OWNER is already in group i2c"
+  else
+    run usermod -aG i2c "$OWNER"
+    changed "added $OWNER to group i2c (needs a re-login to take effect)"
+    followup "re-login (or reboot) so the new group i2c applies; check: id -nG | tr ' ' '\n' | grep -x i2c"
+  fi
+  # apply the group rule to the device nodes that already exist
+  if compgen -G '/dev/i2c-*' >/dev/null; then
+    try udevadm trigger --subsystem-match=i2c-dev --action=change
+  fi
+  followup "ddcutil detect    # lists DDC/CI monitors; the laptop panel is not listed, an external one over HDMI/DP is"
 }
 
 # --- services ----------------------------------------------------------------
@@ -491,11 +582,16 @@ section_services() {
   header "services"
   run systemctl daemon-reload
   local u
-  for u in fstrim.timer paccache.timer reflector.timer earlyoom.service; do
+  # tlp-pd.service (TLP Profiles Daemon) is D-Bus activated and sits next to tlp.service: it only runs "tlp <profile>"
+  # for profile switches (tlpctl), the *_ON_AC/BAT values of /etc/tlp.d/62-power.conf stay the defaults
+  for u in fstrim.timer paccache.timer reflector.timer earlyoom.service tlp-pd.service; do
     # one unit at a time: a missing unit (for example after a failed install) must not cancel the others
     try systemctl enable --now "$u"
   done
-  changed "enabled fstrim.timer paccache.timer reflector.timer earlyoom.service (per unit, failures are warnings)"
+  changed "enabled fstrim.timer paccache.timer reflector.timer earlyoom.service tlp-pd.service (per unit, failures are warnings)"
+  if pkg_installed power-profiles-daemon; then
+    warn "power-profiles-daemon is installed and owns the same D-Bus names as tlp-pd (the packages conflict); remove it"
+  fi
 
   # docker reads daemon.json only at start and a restart now would stop containers without a restart policy: no restart here
   if systemctl is-active --quiet docker.service && docker_config_stale; then
@@ -521,6 +617,7 @@ section_services() {
   followup "systemctl --failed    # expect no failed units"
   followup "journalctl -u earlyoom -b --no-pager | tail    # earlyoom started with the new arguments"
   followup "systemctl list-timers fstrim.timer paccache.timer reflector.timer"
+  followup "tlpctl list; tlpctl get    # TLP Profiles Daemon (powerprofilesctl-compatible D-Bus API, no powerprofilesctl binary); busctl introspect org.freedesktop.UPower.PowerProfiles /org/freedesktop/UPower/PowerProfiles"
 }
 
 # --- disk --------------------------------------------------------------------
