@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# claude-statusline: Claude Code statusLine.command. Taps the statusline JSON for the waybar AI module
+# (~/.cache/ai-usage/statusline.json, read by .config/waybar/scripts/ai-usage.sh for the 5h / weekly limits),
+# then runs the claude-hud statusline with the same stdin. The tap is best effort: any failure there is ignored,
+# the statusline itself must never break.
+# Owner step (Claude Code settings are not edited by this repo): statusLine.command = ~/.local/bin/claude-statusline
+set -u
+
+input=$(cat)
+
+tap() {
+  local dir="${XDG_CACHE_HOME:-$HOME/.cache}/ai-usage" tmp
+  mkdir -p "$dir" && tmp=$(umask 077 && mktemp "$dir/statusline.XXXXXX") || return 0
+  if printf '%s\n' "$input" >"$tmp" 2>/dev/null && chmod 600 "$tmp" && mv -f "$tmp" "$dir/statusline.json"; then
+    return 0
+  fi
+  rm -f "$tmp"
+}
+tap 2>/dev/null || true
+
+# claude-hud draws to the terminal width; Claude Code gives the command no tty size, so ask the controlling terminal
+cols=$({ stty size </dev/tty; } 2>/dev/null | awk '{print $2}')
+cols=${cols:-120}
+COLUMNS=$(( cols > 4 ? cols - 4 : 1 ))
+export COLUMNS
+
+# newest semver directory of the plugin cache: <config>/plugins/cache/<marketplace>/claude-hud/<x.y.z>/
+plugin_dir=$(
+  for d in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/plugins/cache/*/claude-hud/*/; do
+    [[ -d $d ]] || continue
+    v=${d%/}; v=${v##*/}
+    [[ $v =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && printf '%s\t%s\n' "$v" "$d"
+  done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n1 | cut -f2-
+)
+[[ -n $plugin_dir ]] || exit 0
+printf '%s' "$input" | exec /usr/bin/node "${plugin_dir}dist/index.js"
