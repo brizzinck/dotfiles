@@ -2,6 +2,6 @@
 vault-pass	Vault	Passwords	SUPER+CTRL+P	run	~/.config/hypr/scripts/vault.sh passwords	-	rbw rofi-rbw rofi	Enter types user and password into the focused window; Alt+t copies the TOTP code. First use after login asks for the master password. Set up once with bw-setup.
 vault-2fa	Vault	2FA codes	-	tui	~/.config/hypr/scripts/vault.sh totp-tui	-	rbw fzf curl	Logins with a TOTP key. The preview shows the live code and the seconds left; Enter copies it (sensitive: kept out of the clipboard history and cleared after 30 s).
 vault-2fa-popup	Vault	2FA codes (popup)	SUPER+CTRL+O	run	~/.config/hypr/scripts/vault.sh totp	-	rbw rofi	rofi list: Enter copies the code, Alt+t types it, Alt+r rescans the vault.
-vault-lock	Vault	Lock vault	-	run	~/.config/hypr/scripts/vault.sh lock	-	rbw	Locks rbw now; the master password is asked again on the next use. Locked automatically at every login.
-vault-sync	Vault	Sync vault	-	run	~/.config/hypr/scripts/vault.sh sync	-	rbw	Fetches the latest entries from the server (rbw sync).
+vault-lock	Vault	Lock vault	-	run	~/.config/hypr/scripts/vault.sh lock	-	rbw	Locks rbw and the bw CLI session now; the master password is asked again on the next use. Locked automatically at every login.
+vault-sync	Vault	Sync vault	-	run	~/.config/hypr/scripts/vault.sh sync	-	rbw	Fetches the latest entries from the server (rbw sync, and bw sync when its session is open).
 vault-import	Vault	Import Google Authenticator	-	tui	+pause ~/.local/bin/2fa-import	-	~/.local/bin/2fa-import	Decodes the export QR (screen region, image or pasted otpauth-migration link) and writes a Bitwarden CSV to $XDG_RUNTIME_DIR for the Vaultwarden web import.

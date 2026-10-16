@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# bw-setup: one-time setup of the Bitwarden / Vaultwarden client (rbw).
+# bw-setup: one-time setup of the Bitwarden / Vaultwarden clients (rbw, then the official CLI bw).
 # Asks for the server URL and your e-mail (neither is stored in the dotfiles repo: rbw keeps them in
 # ~/.config/rbw/config.json, which is not under stow), configures rbw, logs in, syncs and shows a test list.
+# Then, when `bw` is installed and not logged in yet, it points bw at the same server and runs `bw login`
+# (interactive: master password and 2FA are asked by bw itself; nothing is echoed). Safe to run again: an
+# existing bw login is detected (bw status) and left alone.
 #
 #   bw-setup [--url URL] [--email MAIL]
 #
@@ -63,6 +66,32 @@ rbw sync
 echo
 echo "Synced. First entries (names only):"
 rbw list | head
+setup_bw() {
+  local st ans key rundir
+  command -v bw >/dev/null 2>&1 || { echo "bw (bitwarden-cli) is not installed: skipping the official CLI."; return 0; }
+  st=$(BW_NOINTERACTION=true NODE_NO_WARNINGS=1 bw status 2>/dev/null | jq -r '.status // empty' 2>/dev/null || true)
+  case $st in
+    unauthenticated) ;;
+    locked | unlocked) echo "bw is already logged in (status: $st): skipping the official CLI setup."; return 0 ;;
+    *) echo "bw status gave no answer: skipping the official CLI setup."; return 0 ;;
+  esac
+  read -r -p "Also set up the official Bitwarden CLI (bw) for the hub actions? [Y/n] " ans
+  [[ ${ans:-y} =~ ^[Yy] ]] || return 0
+  NODE_NO_WARNINGS=1 bw config server "$url" >/dev/null
+  echo "bw login: bw asks for the master password (and the 2FA code) itself."
+  if ! key=$(NODE_NO_WARNINGS=1 bw login "$email" --raw); then
+    echo "bw login failed; run bw-setup again to retry."
+    return 1
+  fi
+  # the login leaves a session: keep it on tmpfs (mode 600) like vault.sh does, so no second prompt is needed today
+  rundir="${XDG_RUNTIME_DIR:-/tmp}/vault"
+  ( umask 077; mkdir -p "$rundir"; printf '%s' "$key" >"$rundir/bw-session.tmp" && mv -f "$rundir/bw-session.tmp" "$rundir/bw-session" )
+  BW_SESSION=$key NODE_NO_WARNINGS=1 bw sync >/dev/null && echo "bw synced."
+  key=
+}
+echo
+setup_bw || true
 echo
 echo "Done. SUPER+CTRL+P opens the passwords, SUPER+CTRL+O the 2FA codes. The master password is asked once per login."
 echo "Migrating from Google Authenticator: 2fa-import (also in the hub, SUPER+M)."
+echo "New login, Send, attachments, generator, delete: hub (SUPER+M), group Vault."

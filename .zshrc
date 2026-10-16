@@ -185,6 +185,11 @@ codex() {
 ta() { tmux new-session -A -s "${1:-main}"; }
 alias wm="workmux"
 export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/ssh-agent.socket"
+# Opt-in Bitwarden desktop SSH agent (`vault.sh ssh-agent on`): used only while its socket exists, so git over SSH keeps
+# working with the agent above when the app is not running. ~/.ssh and its keys are never touched.
+if [[ -f ${XDG_STATE_HOME:-$HOME/.local/state}/vault/ssh-agent && -S ${BITWARDEN_SSH_AUTH_SOCK:-$HOME/.bitwarden-ssh-agent.sock} ]]; then
+  export SSH_AUTH_SOCK="${BITWARDEN_SSH_AUTH_SOCK:-$HOME/.bitwarden-ssh-agent.sock}"
+fi
 
 # ── Human-only conveniences ─────────────────────────────────────────────────
 # Aliases that change command output stay out of agent shells: Claude Code captures this

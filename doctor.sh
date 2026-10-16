@@ -84,6 +84,23 @@ elif [ -s "${XDG_CONFIG_HOME:-$HOME/.config}/rbw/config.json" ] && jq -e '.email
 else
   info rbw "installed but not configured (run bw-setup)"
 fi
+# official Bitwarden CLI and the opt-in desktop SSH agent: informational only
+if ! command -v bw >/dev/null 2>&1; then
+  info bw "not installed (sudo ~/dotfiles/apply-system.sh --only install)"
+else
+  bw_st="$(BW_NOINTERACTION=true NODE_NO_WARNINGS=1 bw status 2>/dev/null | jq -r '.status // empty' 2>/dev/null)"
+  case "$bw_st" in
+    unauthenticated) info bw "installed, not logged in (run bw-setup)" ;;
+    locked | unlocked)
+      if [ -s "${XDG_RUNTIME_DIR:-/tmp}/vault/bw-session" ]; then info bw "logged in, CLI session open"; else info bw "logged in, CLI locked (master password on first use)"; fi ;;
+    *) info bw "installed, status unknown (run bw-setup)" ;;
+  esac
+fi
+if [ -f "${XDG_STATE_HOME:-$HOME/.local/state}/vault/ssh-agent" ]; then
+  if [ -S "${BITWARDEN_SSH_AUTH_SOCK:-$HOME/.bitwarden-ssh-agent.sock}" ]; then info ssh-agent "Bitwarden SSH agent flag on, socket present"; else info ssh-agent "Bitwarden SSH agent flag on, socket absent (desktop app not running or agent not enabled in its settings)"; fi
+else
+  info ssh-agent "Bitwarden SSH agent flag off (vault.sh ssh-agent on)"
+fi
 check earlyoom "active" "not active (sudo ~/dotfiles/apply-system.sh --only services)" systemctl is-active earlyoom.service
 
 # ── interactive zsh must not shadow rg / id ─────────────────────────────────────
