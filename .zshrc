@@ -49,6 +49,10 @@ plugins=(
 
 ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=8'   # ANSI 8 = muted in the Everforest palette (both variants)
 
+# never block on a key press: the default mode asks "update now?" on the terminal about every 13 days, which stalls the
+# login shell that greetd starts on a bare tty (hypr-login) until a key is pressed
+zstyle ':omz:update' mode reminder
+
 source $ZSH/oh-my-zsh.sh
 
 # ── Prompt and highlighting on the palette roles ────────────────────────────────────────────────────
