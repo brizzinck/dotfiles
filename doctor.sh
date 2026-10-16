@@ -240,6 +240,10 @@ try:
     cfg = jsonc(f"{cfgdir}/config")
     mods = jsonc(f"{cfgdir}/modules.jsonc")
     jsonc(f"{cfgdir}/full-default.jsonc")
+    try:  # the pinned apps are generated into the state dir (pinned.sh gen); the `pinned` check below verifies that file
+        mods.update(jsonc(f"{state}/pinned.jsonc"))
+    except OSError:
+        pass
     names = [b.get("name") for b in cfg]
     if names != ["waybar-compact", "waybar-full"]:
         problems.append(f"config bars {names}")
@@ -291,6 +295,11 @@ if [ "${n_bar:-0}" -ge 1 ] && command -v hyprctl >/dev/null 2>&1 && [ -n "${HYPR
   res_err="$(hyprctl monitors -j 2>/dev/null | jq -r --argjson w "$want_top" '[.[] | select(.reserved[1] != $w) | "\(.name) reserved \(.reserved[1])"] | join("; ")')"
   if [ -z "$res_err" ]; then ok bar-reserved "reserved top strip is ${want_top}px on every monitor"; else bad bar-reserved "$res_err (expected $want_top)"; fi
 fi
+# pinned apps (FIX-pinned): list parses, generated modules are current in both bars, the daemon runs, nothing else uses signal 14
+pin_err="$("$HOME/.config/waybar/scripts/pinned.sh" check 2>&1)"
+pin_sig="$(git -C "$DOTFILES" grep -nE 'RTMIN\+14' -- .config .local ':!.config/nvim' ':!.config/waybar/scripts/pinned*' ':!*.md' ':!.config/waybar/modules.jsonc' 2>/dev/null | head -2 | tr '\n' ' ')"
+[ -n "$pin_sig" ] && pin_err="${pin_err:+$pin_err; }signal 14 is also used by: $pin_sig"
+if [ -z "$pin_err" ]; then ok pinned "pinned.tsv ($(grep -cvE '^[[:space:]]*(#|$)' "$DOTFILES/.config/waybar/pinned.tsv") apps) -> group/pinned in both bars, pinned-watch.py running"; else bad pinned "$pin_err"; fi
 css_hex="$(grep -nE '#[0-9a-fA-F]{3,8}\b' "$DOTFILES/.config/waybar/style.css" 2>/dev/null | head -2 | tr '\n' ' ')"
 if [ -z "$css_hex" ]; then ok bar-css "style.css uses palette tokens only"; else bad bar-css "hex literal in style.css: $css_hex"; fi
 raw_usr1="$(git -C "$DOTFILES" grep -nE 'USR1.*waybar|waybar.*USR1' -- .config .local ':!.config/nvim' ':!.config/waybar/scripts/bar.sh' ':!*.md' ':!.config/waybar/config' ':!.config/waybar/modules.jsonc' 2>/dev/null | head -2 | tr '\n' ' ')"
