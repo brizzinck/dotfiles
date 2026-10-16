@@ -343,9 +343,42 @@ remove_snap_stack() {
   fi
 }
 
+# unit_keep_reason PKG: print "<unit> is enabled|active" for the first systemd unit shipped by PKG that is enabled or
+# active (system units, then the owner's user units); print nothing otherwise. Probe failures count as not enabled.
+unit_keep_reason() {
+  local pkg="$1" path unit state
+  while IFS= read -r path; do
+    unit="${path##*/}"
+    case "$unit" in *@.*) continue ;; esac
+    if [[ "$path" == /usr/lib/systemd/system/* ]]; then
+      state="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+      case "$state" in enabled | enabled-runtime) echo "$unit is enabled"; return 0 ;; esac
+      if systemctl is-active --quiet "$unit" 2>/dev/null; then echo "$unit is active"; return 0; fi
+    else
+      state="$(user_systemctl is-enabled "$unit" 2>/dev/null || true)"
+      case "$state" in enabled | enabled-runtime) echo "$unit is enabled"; return 0 ;; esac
+      state="$(systemctl --global is-enabled "$unit" 2>/dev/null || true)"
+      case "$state" in enabled | enabled-runtime) echo "$unit is enabled"; return 0 ;; esac
+      if user_systemctl is-active --quiet "$unit" 2>/dev/null; then echo "$unit is active"; return 0; fi
+    fi
+  done < <(pacman -Qlq -- "$pkg" 2>/dev/null | grep -E '/usr/lib/systemd/(system|user)/[^/]+\.(service|socket|timer)$' || true)
+  return 0
+}
+
+# user_systemctl ARGS...: systemctl --user against the owner's manager (works as root via runuser, or as the owner).
+user_systemctl() {
+  local uid_owner
+  uid_owner="$(id -u "$OWNER" 2>/dev/null || true)"
+  if [ "$EUID" -eq 0 ]; then
+    runuser -u "$OWNER" -- env XDG_RUNTIME_DIR="/run/user/${uid_owner:-0}" systemctl --user "$@"
+  else
+    systemctl --user "$@"
+  fi
+}
+
 section_remove() {
   header "remove"
-  local p present=() orphans=()
+  local p present=() orphans=() kept=() candidates=() reason
 
   remove_snap_stack
 
@@ -363,15 +396,29 @@ section_remove() {
     log "none of the unused toolchain packages are installed"
   fi
 
-  # orphans last, after the removals above may have created new ones; printed before removal
-  mapfile -t orphans < <(pacman -Qdtq 2>/dev/null || true)
+  # orphans last, after the removals above may have created new ones; printed before removal.
+  # An orphan that ships an enabled or active systemd unit is a deliberately used service (e.g. v2ray): keep it by
+  # marking it explicitly installed instead of removing it.
+  mapfile -t candidates < <(pacman -Qdtq 2>/dev/null || true)
+  for p in "${candidates[@]}"; do
+    [ -n "$p" ] || continue
+    reason="$(unit_keep_reason "$p")"
+    if [ -n "$reason" ]; then
+      log "keeping $p: unit $reason"
+      run pacman -D --asexplicit "$p"
+      changed "kept orphan $p (marked explicit): unit $reason"
+      kept+=("$p")
+    else
+      orphans+=("$p")
+    fi
+  done
   if [ "${#orphans[@]}" -gt 0 ]; then
     log "orphans to remove:"
     printf '  %s\n' "${orphans[@]}"
     try pacman -Rns --noconfirm "${orphans[@]}"
     changed "removed orphans: ${orphans[*]}"
   else
-    log "no orphan packages"
+    log "no orphan packages to remove"
   fi
 }
 
