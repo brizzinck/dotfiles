@@ -3,11 +3,12 @@
 //   full     overlay of the same height drawn over compact (non-exclusive, margin-top -28); SIGUSR1 toggles only this one
 // Mode and visibility live in ~/.local/state/waybar (written by scripts/bar.sh, read here through `include`), so they survive
 // restarts, theme reloads and logins. Never send SIGUSR1 by hand: use `bar.sh mode toggle` (SUPER+B) or `bar.sh hide toggle`
-// (SUPER+CTRL+B). Colours: style.css (palette tokens, themes/palette). Alerts print nothing until they are relevant.
+// (SUPER+CTRL+B). The pinned apps (group/pinned, both bars) are generated from pinned.tsv into ~/.local/state/waybar/pinned.jsonc by
+// bar.sh render. Colours: style.css (palette tokens, themes/palette). Alerts print nothing until they are relevant.
 [
   {
     "name": "waybar-compact",
-    "include": ["~/.local/state/waybar/compact.jsonc", "~/.config/waybar/modules.jsonc"],
+    "include": ["~/.local/state/waybar/compact.jsonc", "~/.local/state/waybar/pinned.jsonc", "~/.config/waybar/modules.jsonc"],
     "layer": "top",
     "position": "top",
     "height": 28,
@@ -19,12 +20,12 @@
     "modules-center": ["clock"],
     "modules-right": [
       "privacy", "custom/recording", "custom/health", "network#alert", "custom/updates#alert",
-      "hyprland/language", "custom/toggles", "battery", "custom/mode#compact"
+      "group/pinned", "hyprland/language", "custom/toggles", "battery", "custom/mode#compact"
     ]
   },
   {
     "name": "waybar-full",
-    "include": ["~/.local/state/waybar/full.jsonc", "~/.config/waybar/full-default.jsonc", "~/.config/waybar/modules.jsonc"],
+    "include": ["~/.local/state/waybar/full.jsonc", "~/.local/state/waybar/pinned.jsonc", "~/.config/waybar/full-default.jsonc", "~/.config/waybar/modules.jsonc"],
     "layer": "top",
     "position": "top",
     "height": 28,
@@ -38,7 +39,7 @@
     "modules-right": [
       "privacy", "custom/recording", "custom/health", "custom/updates",
       "group/toggles", "group/net", "group/audio", "group/system",
-      "custom/ai", "custom/vault", "hyprland/language", "group/trays",
+      "custom/ai", "custom/vault", "group/pinned", "hyprland/language", "group/trays",
       "battery", "custom/mode#full"
     ]
   }

@@ -1,0 +1,16 @@
+# Pinned apps on the waybar (scripts/pinned.sh, pinned-watch.py). One row per app, tab separated; "-" = none. Order = order on the bar.
+# After a change run: ~/.config/waybar/scripts/bar.sh reload   (renders the module list and reloads waybar)
+#   id          short unique name [a-z0-9]+ (module custom/pin#ID, state file name)
+#   label       name in tooltips and menus
+#   glyph       Nerd Font icon shown on the bar (icons only: the compact bar stays compact)
+#   class       regex for the Hyprland window class (hyprctl clients -j | jq -r '.[].class'), case-insensitive
+#   launch      shell command that starts the app or opens a new window (same .desktop entry the rofi launcher runs)
+#   notify      regex (case-insensitive, searched) for the notification app_name or desktop-entry hint: such a notification
+#               sets the soft "new" highlight until a window of the app gets focus; "-" = never highlighted (YTM sends
+#               one notification per track, which is not news)
+telegram	Telegram		^org\.telegram\.desktop$	gtk-launch org.telegram.desktop	telegram
+zen	Zen	󰈹	^app\.zen_browser\.zen$	gtk-launch app.zen_browser.zen	^zen|zen_browser
+chrome	Chrome	󰊯	^([Gg]oogle-chrome|com\.google\.Chrome)$	gtk-launch com.google.Chrome	chrome
+obsidian	Obsidian		^([Oo]bsidian|md\.obsidian\.Obsidian)$	gtk-launch obsidian	obsidian
+ytm	YouTube Music	󰗃	^(YTMDesktop|app\.ytmdesktop\.ytmdesktop|youtube-music-desktop-app|YouTube Music Desktop App)$	gtk-launch app.ytmdesktop.ytmdesktop	-
+bitwarden	Bitwarden	󰌾	^([Bb]itwarden|com\.bitwarden\.desktop)$	gtk-launch bitwarden	bitwarden

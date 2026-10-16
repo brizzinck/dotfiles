@@ -2,8 +2,9 @@
 // Roles: scripts print a `class` from  normal | dim | enabled | warning | critical  and style.css maps it to palette tokens
 // (subtext / muted / green / yellow_soft / red_soft: calm tints, no pill, no bold). No colour lives in this file except the clock calendar's pango
 // spans, which cannot use @define-color: they hold black-variant tokens fg / subtext / muted / green (doctor.sh checks them).
-// Signals (pkill -o -u $(id -u) -RTMIN+N -x waybar): 8 toggles drawer + summary, 9 updates, 15 vault. Recording is a continuous script
+// Signals (pkill -o -u $(id -u) -RTMIN+N -x waybar): 8 toggles drawer + summary, 9 updates, 14 pinned apps (pinned-watch.py), 15 vault. Recording is a continuous script
 // (it watches $XDG_RUNTIME_DIR/rec-pid itself); SIGUSR1 reaches only the full bar (bar.sh), SIGUSR2 reloads both.
+// The pinned apps are not defined here: group/pinned and custom/pin#ID come from pinned.tsv (pinned.sh gen -> state/pinned.jsonc).
 // Click grammar: L = main action (switch: toggle), R = menu or alternative, M = quick binary action, scroll = adjust value.
 // Interactive clicks open fzf-menu based scripts (vim keys); TUIs open in a float.tui ghostty.
 {
@@ -21,7 +22,7 @@
       "class<google-chrome|Google-chrome|camoufox>": "󰊯",
       "class<org.telegram.desktop>": "",
       "class<obsidian>": "",
-      "class<YTMDesktop|app.ytmdesktop.ytmdesktop>": "󰗃",
+      "class<YTMDesktop|app.ytmdesktop.ytmdesktop|youtube-music-desktop-app>": "󰗃",
       "class<nemo|org.gnome.Nautilus>": "󰉋",
       "class<com.obsproject.Studio>": "󰻂"
     },

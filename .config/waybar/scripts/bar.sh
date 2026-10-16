@@ -8,12 +8,13 @@
 #   $STATE/hidden            exists = the whole bar is hidden (cleared at login by `init`)
 #   $STATE/compact.jsonc     {"start_hidden": <hidden>}                       included by the compact bar
 #   $STATE/full.jsonc        {"start_hidden": <hidden or mode is compact>}    included by the full bar
+#   $STATE/pinned.jsonc      module definitions of the pinned apps (pinned.sh gen from pinned.tsv)  included by both bars
 #   $RT/stale                set after a SIGUSR1 toggle (the running config no longer matches the files), cleared by a reload
 #
 #   bar.sh mode toggle|compact|full   switch the mode (while hidden: show the bar, keep the mode)   SUPER+B
 #   bar.sh hide toggle|on|off         hide or show the whole bar (reload)                           SUPER+CTRL+B
 #   bar.sh status [--short]           "compact" | "full" | "compact hidden" | "full hidden" (--short: the mode only)
-#   bar.sh render                     rewrite the two include files from the state
+#   bar.sh render                     rewrite the include files from the state (and from pinned.tsv)
 #   bar.sh reload                     render and reload waybar (SIGUSR2: config, stylesheet, includes)
 #   bar.sh sync [--if-stale]          reload (with --if-stale only when a toggle left the running config stale; the
 #                                     monitor.added hook of hyprland.lua uses it so a new monitor gets the right mode)
@@ -61,6 +62,7 @@ render() {
   if hidden; then h=true; elif [[ $(mode) == full ]]; then f=false; fi
   write_file "$STATE/compact.jsonc" "{ \"start_hidden\": $h }"
   write_file "$STATE/full.jsonc" "{ \"start_hidden\": $f }"
+  write_file "$STATE/pinned.jsonc" "$("$HERE/pinned.sh" gen)"
 }
 
 # signal NAME: SIGUSR1 / SIGUSR2 to the waybar of this user; 1 when it is not running.

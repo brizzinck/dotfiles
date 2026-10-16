@@ -4,7 +4,9 @@
    Roles:  subtext  normal text            muted   dim / off / inactive (also the layout indicator and the mode icon)
            fg       clock, hover           green   active workspace, submap, enabled switch
            yellow_soft  warning           red_soft  critical (calm tints, text colour only: no pill, no bold)
-   Scripts print one class per state: normal | dim | enabled | warning | critical (the rules below map them). */
+   Scripts print one class per state: normal | dim | enabled | warning | critical (the rules below map them).
+   Pinned apps (custom/pin#ID): dim = not running, normal = running, focused = in front, new = a notification arrived
+   (soft yellow_soft text, like an urgent workspace: no pill, no bold, no blinking). */
 @import "theme-black.css";
 @import "theme.css";
 
@@ -32,7 +34,7 @@ tooltip label { color: @fg; padding: 4px 6px; }
 
 /* every module: one padding, one pill geometry (20 px high on the 28 px bar) */
 #clock, #privacy, #custom-recording, #custom-health, #custom-updates, #custom-toggles, #custom-ai, #custom-vault,
-#custom-mode, #custom-power, #custom-tray-leader, #network, #bluetooth, #pulseaudio, #backlight, #battery,
+#custom-mode, #custom-power, #custom-tray-leader, #custom-pin, #network, #bluetooth, #pulseaudio, #backlight, #battery,
 #cpu, #memory, #temperature, #language,
 #custom-sw-dnd, #custom-sw-caffeine, #custom-sw-awake, #custom-sw-lid, #custom-sw-night, #custom-sw-vpn {
   padding: 0 8px;
@@ -48,10 +50,17 @@ tooltip label { color: @fg; padding: 4px 6px; }
 
 /* hover: any clickable module */
 #clock:hover, #custom-recording:hover, #custom-health:hover, #custom-updates:hover, #custom-toggles:hover, #custom-ai:hover,
-#custom-vault:hover, #custom-mode:hover, #custom-power:hover, #network:hover, #bluetooth:hover, #pulseaudio:hover,
+#custom-vault:hover, #custom-pin:hover, #custom-mode:hover, #custom-power:hover, #network:hover, #bluetooth:hover, #pulseaudio:hover,
 #battery:hover, #cpu:hover, #memory:hover, #temperature:hover, #language:hover,
 #custom-sw-dnd:hover, #custom-sw-caffeine:hover, #custom-sw-awake:hover, #custom-sw-lid:hover, #custom-sw-night:hover,
 #custom-sw-vpn:hover { background: @surface; color: @fg; }
+
+/* pinned apps sit close together as one group (the group box itself has no padding) */
+#custom-pin { padding: 0 5px; }
+#pinned { margin: 0 4px; }
+window#waybar #custom-pin.focused { color: @fg; }
+window#waybar #custom-pin.new { color: @yellow_soft; }
+window#waybar #custom-pin:hover { color: @fg; }
 
 /* the tray is 28 px high by itself: any margin would make the bar taller than 28 */
 #tray { padding: 0 6px; margin: 0; }
