@@ -94,6 +94,9 @@ for _, path in ipairs({
     end
 end
 
+-- The pointer hides after 5 s idle; mouse mode (keyboard-driven pointer) turns that off while it is active.
+local cursor_idle_timeout = 5
+
 hl.config({
     general = {
         gaps_in = 3,
@@ -142,7 +145,7 @@ hl.config({
     },
 
     cursor = {
-        inactive_timeout = 5,
+        inactive_timeout = cursor_idle_timeout,
         hide_on_key_press = true,
     },
 
@@ -247,10 +250,90 @@ hl.layer_rule({
 -- Chrome-vs-hypridle idle exemption lives in hypridle.conf (condition_cmd -> idle-allowed.sh there);
 -- the windowrule `idleinhibit` was removed from Hyprland in 0.53+.
 
--- bindd = MODS, key, description, dispatcher, args   (descriptions feed SUPER+/ cheatsheet)
--- d = description, e = repeat while held, l = works on the lock screen, m = mouse
--- Descriptions must not contain commas.
+-- Binds: hl.bind(keys, dispatcher, { description = ..., repeating = true, locked = true, mouse = true })
+-- (descriptions feed the SUPER+/ cheatsheet, the hub and docs/keymap.md; keep them free of commas).
 local mainMod = "SUPER"
+
+-- Bind registry. A Lua bind shows up as dispatcher "__lua" in `hyprctl binds -j`, so its action cannot be read back from
+-- the listing. Wrapping hl.bind records every dispatcher under "<submap>|<mods+key>" (mods in SUPER CTRL ALT SHIFT order,
+-- lower case: the text the hub builds from the live table), and `hyprctl eval 'df_bind_run("SUPER+Return")'` replays one.
+-- The hub uses it for its keybind rows and the leader menu. Global on purpose: hyprctl eval shares this Lua state.
+DF_BINDS = {}
+local bind_submap = ""
+local MOD_ORDER = { "SUPER", "CTRL", "ALT", "SHIFT" }
+
+local function bind_label(keys)
+    local parts = {}
+    for part in keys:gmatch("[^+]+") do
+        parts[#parts + 1] = part:match("^%s*(.-)%s*$")
+    end
+    local key = table.remove(parts)
+    local present = {}
+    for _, mod in ipairs(parts) do
+        mod = mod:upper()
+        present[mod == "CONTROL" and "CTRL" or mod] = true
+    end
+    local label = {}
+    for _, mod in ipairs(MOD_ORDER) do
+        if present[mod] then label[#label + 1] = mod end
+    end
+    label[#label + 1] = key
+    return table.concat(label, "+"):lower()
+end
+
+local raw_bind, raw_define_submap = hl.bind, hl.define_submap
+hl.bind = function(keys, dispatcher, opts)
+    DF_BINDS[bind_submap .. "|" .. bind_label(keys)] = dispatcher
+    return raw_bind(keys, dispatcher, opts)
+end
+hl.define_submap = function(name, reset_or_fn, fn)
+    local body = fn or reset_or_fn
+    local function tracked(...)
+        local outer = bind_submap
+        bind_submap = name
+        local ok, err = pcall(body, ...)
+        bind_submap = outer
+        if not ok then error(err, 0) end
+    end
+    if fn then return raw_define_submap(name, reset_or_fn, tracked) end
+    return raw_define_submap(name, tracked)
+end
+
+function df_bind_run(label)
+    local dispatcher = DF_BINDS["|" .. tostring(label):lower()]
+    if not dispatcher then
+        hl.exec_cmd("notify-send -a hyprland -u low 'Keybind not found' '" .. tostring(label):gsub("'", "") .. "'")
+        return
+    end
+    hl.dispatch(dispatcher)
+end
+
+-- Catch-all leave for the repeat modes (resize, mouse). Hyprland 0.55/0.56 runs a catchall bind next to the bind that
+-- matched (hyprwm/Hyprland#15063) and also on a lone modifier press, so the callback acts only when none of the mode's own
+-- keys or a modifier is held. Key codes are evdev + 8 (physical keys, independent of the active layout).
+local EVDEV = {
+    escape = 1, q = 16, y = 21, u = 22, r = 19, ["return"] = 28, space = 57, f = 33, m = 50,
+    h = 35, j = 36, k = 37, l = 38, left = 105, right = 106, up = 103, down = 108,
+    lctrl = 29, rctrl = 97, lshift = 42, rshift = 54, lalt = 56, ralt = 100, lsuper = 125, rsuper = 126,
+}
+local MODIFIER_KEYS = { "lctrl", "rctrl", "lshift", "rshift", "lalt", "ralt", "lsuper", "rsuper" }
+local function leave_on_other_key(own_keys, leave)
+    return function()
+        for _, name in ipairs(own_keys) do
+            if hl.is_key_down(EVDEV[name] + 8) then return end
+        end
+        for _, name in ipairs(MODIFIER_KEYS) do
+            if hl.is_key_down(EVDEV[name] + 8) then return end
+        end
+        leave()
+    end
+end
+
+-- Mouse mode: the pointer must stay visible while the keyboard drives it. pointer.sh enters it only when wlrctl exists.
+function df_mouse_mode(on)
+    hl.config({ cursor = { hide_on_key_press = not on, inactive_timeout = on and 0 or cursor_idle_timeout } })
+    hl.dispatch(hl.dsp.submap(on and "mouse" or "reset"))
+end
 
 -- --- apps ---
 hl.bind("ALT + TAB", hl.dsp.window.cycle_next(), { description = "Cycle windows" })
@@ -278,6 +361,7 @@ hl.bind(mainMod .. " + SHIFT + N", hl.dsp.exec_cmd("pkill -x hyprsunset || hyprs
 hl.bind(mainMod .. " + X", hl.dsp.exec_cmd("dunstctl close"), { description = "Dismiss notification" })
 hl.bind(mainMod .. " + SHIFT + X", hl.dsp.exec_cmd("dunstctl history-pop"), { description = "Notification history" })
 hl.bind(mainMod .. " + CTRL + X", hl.dsp.exec_cmd("dunstctl set-paused toggle"), { description = "Toggle do-not-disturb" })
+hl.bind(mainMod .. " + ALT + X", hl.dsp.exec_cmd("dunstctl context"), { description = "Notification actions menu" })
 
 -- --- TUIs and pickers ---
 hl.bind(mainMod .. " + A", hl.dsp.exec_cmd(tui .. " wiremix"), { description = "Audio mixer (wiremix)" })
@@ -297,6 +381,7 @@ hl.bind(mainMod .. " + CTRL + O", hl.dsp.exec_cmd(scripts .. "/vault.sh totp"), 
 hl.bind(mainMod .. " + equal", hl.dsp.exec_cmd(scripts .. "/calc.sh"), { description = "Calculator (rofi-calc)" })
 hl.bind(mainMod .. " + slash", hl.dsp.exec_cmd(scripts .. "/keybinds.sh"), { description = "Keybind cheatsheet" })
 hl.bind(mainMod .. " + M", hl.dsp.exec_cmd("~/.config/hub/hub open"), { description = "Utility hub (fzf)" })
+hl.bind(mainMod .. " + semicolon", hl.dsp.exec_cmd("~/.config/hub/leader"), { description = "Leader menu (which-key)" })
 
 -- --- capture ---
 hl.bind("Print", hl.dsp.exec_cmd("hyprshot -m region -o ~/pics/screenshots"), { description = "Screenshot region" })
@@ -333,6 +418,17 @@ hl.bind(mainMod .. " + SHIFT + L", hl.dsp.window.move({ direction = "right" }), 
 hl.bind(mainMod .. " + SHIFT + K", hl.dsp.window.move({ direction = "up" }), { description = "Move window up" })
 hl.bind(mainMod .. " + SHIFT + J", hl.dsp.window.move({ direction = "down" }), { description = "Move window down" })
 
+-- Group tabs and relative workspaces (vim grammar: SUPER+ALT = tab / workspace axis, see docs/keymap.md)
+hl.bind(mainMod .. " + ALT + H", hl.dsp.group.prev(), { description = "Previous tab in group" })
+hl.bind(mainMod .. " + ALT + L", hl.dsp.group.next(), { description = "Next tab in group" })
+hl.bind(mainMod .. " + ALT + J", hl.dsp.focus({ workspace = "m+1" }), { description = "Next workspace on this monitor" })
+hl.bind(mainMod .. " + ALT + K", hl.dsp.focus({ workspace = "m-1" }), { description = "Previous workspace on this monitor" })
+hl.bind(mainMod .. " + ALT + SHIFT + H", hl.dsp.window.move({ into_group = "left" }), { description = "Move window into the group on the left" })
+hl.bind(mainMod .. " + ALT + SHIFT + L", hl.dsp.window.move({ into_group = "right" }), { description = "Move window into the group on the right" })
+hl.bind(mainMod .. " + ALT + SHIFT + K", hl.dsp.window.move({ into_group = "up" }), { description = "Move window into the group above" })
+hl.bind(mainMod .. " + ALT + SHIFT + J", hl.dsp.window.move({ into_group = "down" }), { description = "Move window into the group below" })
+hl.bind(mainMod .. " + CTRL + Y", hl.dsp.window.move({ out_of_group = true }), { description = "Move window out of its group" })
+
 -- --- resize: held keys repeat (binde); the submap "resize" is shown by waybar ---
 hl.bind(mainMod .. " + left", hl.dsp.window.resize({ x = -20, y = 0, relative = true }), { repeating = true, description = "Resize left" })
 hl.bind(mainMod .. " + right", hl.dsp.window.resize({ x = 20, y = 0, relative = true }), { repeating = true, description = "Resize right" })
@@ -359,6 +455,38 @@ hl.define_submap("resize", function()
     hl.bind("down", hl.dsp.window.resize({ x = 0, y = 40, relative = true }), { repeating = true, description = "Resize down" })
     hl.bind("escape", hl.dsp.submap("reset"), { description = "Leave resize mode" })
     hl.bind("Return", hl.dsp.submap("reset"), { description = "Leave resize mode" })
+    hl.bind("catchall", leave_on_other_key(
+        { "h", "j", "k", "l", "left", "right", "up", "down", "escape", "return" },
+        function() hl.dispatch(hl.dsp.submap("reset")) end), { description = "Leave resize mode (any other key)" })
+end)
+
+-- --- keyboard pointer (wl-kbptr + wlrctl, AUR): pointer.sh shows a notification when a tool is missing ---
+hl.bind(mainMod .. " + apostrophe", hl.dsp.exec_cmd(scripts .. "/pointer.sh hint"), { description = "Pointer hint: click by keyboard" })
+hl.bind(mainMod .. " + CTRL + apostrophe", hl.dsp.exec_cmd(scripts .. "/pointer.sh drag"), { description = "Pointer hint drag: select or move by keyboard" })
+hl.bind(mainMod .. " + ALT + M", hl.dsp.exec_cmd(scripts .. "/pointer.sh mode"), { description = "Mouse mode (hjkl move - space click - Esc leave)" })
+hl.define_submap("mouse", function()
+    local function ptr(args) return hl.dsp.exec_cmd(scripts .. "/pointer.sh " .. args) end
+    local step, far, wheel = 25, 150, 10
+    hl.bind("h", ptr("move -" .. step .. " 0"), { repeating = true, description = "Pointer left" })
+    hl.bind("l", ptr("move " .. step .. " 0"), { repeating = true, description = "Pointer right" })
+    hl.bind("k", ptr("move 0 -" .. step), { repeating = true, description = "Pointer up" })
+    hl.bind("j", ptr("move 0 " .. step), { repeating = true, description = "Pointer down" })
+    hl.bind("SHIFT + H", ptr("move -" .. far .. " 0"), { repeating = true, description = "Pointer left (big step)" })
+    hl.bind("SHIFT + L", ptr("move " .. far .. " 0"), { repeating = true, description = "Pointer right (big step)" })
+    hl.bind("SHIFT + K", ptr("move 0 -" .. far), { repeating = true, description = "Pointer up (big step)" })
+    hl.bind("SHIFT + J", ptr("move 0 " .. far), { repeating = true, description = "Pointer down (big step)" })
+    hl.bind("space", ptr("click left"), { description = "Left click" })
+    hl.bind("Return", ptr("click left"), { description = "Left click" })
+    hl.bind("r", ptr("click right"), { description = "Right click" })
+    hl.bind("m", ptr("click middle"), { description = "Middle click" })
+    hl.bind("y", ptr("scroll " .. wheel .. " 0"), { repeating = true, description = "Scroll down" })
+    hl.bind("u", ptr("scroll -" .. wheel .. " 0"), { repeating = true, description = "Scroll up" })
+    hl.bind("f", ptr("hint-in-mode"), { description = "Pointer hint: jump by label" })
+    hl.bind("escape", function() df_mouse_mode(false) end, { description = "Leave mouse mode" })
+    hl.bind("q", function() df_mouse_mode(false) end, { description = "Leave mouse mode" })
+    hl.bind("catchall", leave_on_other_key(
+        { "h", "j", "k", "l", "space", "return", "r", "m", "y", "u", "f", "escape", "q" },
+        function() df_mouse_mode(false) end), { description = "Leave mouse mode (any other key)" })
 end)
 
 -- --- scratchpads ---
@@ -411,10 +539,3 @@ hl.bind("XF86AudioPrev", hl.dsp.exec_cmd("playerctl previous"), { locked = true,
 -- (hub / waybar toggle, lid.sh) holds a logind inhibitor so closing the lid does not suspend ---
 hl.bind("switch:on:Lid Switch", hl.dsp.exec_cmd(scripts .. "/lid.sh event close"), { locked = true })
 hl.bind("switch:off:Lid Switch", hl.dsp.exec_cmd(scripts .. "/lid.sh event open"), { locked = true })
-
--- --- cleaning mode: swallows every key and disables the touchpad (clean-mode.sh); auto-leaves after 5 min ---
-hl.bind(mainMod .. " + CTRL + Escape", hl.dsp.exec_cmd(scripts .. "/clean-mode.sh start"), { description = "Cleaning mode (locks keyboard and touchpad)" })
-hl.define_submap("clean", function()
-    hl.bind("CTRL + SHIFT + ALT + Escape", hl.dsp.exec_cmd(scripts .. "/clean-mode.sh stop"), { description = "Leave cleaning mode" })
-    hl.bind("catchall", hl.dsp.exec_cmd("true"))
-end)

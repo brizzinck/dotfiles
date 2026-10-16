@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Keybind cheatsheet from the live bind table (descriptions come from `bindd`). SUPER+/.
+# Keybind cheatsheet from the live bind table (descriptions come from the Lua binds). SUPER+/.
 set -u
 
 hyprctl binds -j | jq -r '
@@ -8,7 +8,7 @@ hyprctl binds -j | jq -r '
       (if ($m / 4  | floor) % 2 == 1 then "CTRL"  else empty end),
       (if ($m / 8  | floor) % 2 == 1 then "ALT"   else empty end),
       (if $m % 2 == 1 then "SHIFT" else empty end) ];
-  def keylabel: (mods(.modmask) + [.key]) | join("+");
+  def keylabel: if .catch_all then "any other key" else (mods(.modmask) + [.key]) | join("+") end;
   # workspace digit binds are summarised in one line below
   [ .[]
     | select(.has_description)
