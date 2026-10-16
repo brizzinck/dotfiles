@@ -7,6 +7,7 @@
 \.git
 ^/install\.sh
 ^/apply-memory\.sh
+^/apply-system\.sh
 ^/flash\.sh
 ^/env\.secret\.sh
 ^/infrastructure
