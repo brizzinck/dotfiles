@@ -147,7 +147,7 @@
     "on-click": "~/.config/hypr/scripts/wifi.sh"
   },
 
-  // full bar only: the highest usage window (class always normal; the tooltip lists Claude, Codex, resets)
+  // full bar only: Claude and Codex % used, 5h·weekly ("–" = no data); class always normal; the tooltip has both windows and resets
   "custom/ai": {
     "exec": "~/.config/waybar/scripts/cache.sh ai 55 -- ~/.config/waybar/scripts/ai-usage.sh",
     "return-type": "json",
