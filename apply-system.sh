@@ -251,7 +251,9 @@ REPO_PACKAGES=(
 # wlrctl + wl-kbptr: keyboard-driven pointer (SUPER+', SUPER+ALT+M); wlr-which-key: the SUPER+; leader menu. Their makedepends
 # (meson, scdoc, wayland-protocols, rust) come from the repositories through aur_unmet_deps. wl-kbptr is NOT here: the AUR
 # package needs opencv4 and Arch ships opencv 5, so it is a local PKGBUILD without opencv (install_local_kbptr).
-AUR_PACKAGES=(bibata-cursor-theme-bin shellcheck-bin ccusage wayscrollshot-bin pacseek bitwarden-cli-bin wlrctl wlr-which-key)
+# tmux-fingers: prefix f hints in tmux (Crystal, built from the pinned source tarball; makedepends crystal + shards come from extra);
+# obs-cmd: OBS by keyboard over obs-websocket (leader o, hub rows; Rust, makedepends rust + git). OBS itself is never started.
+AUR_PACKAGES=(bibata-cursor-theme-bin shellcheck-bin ccusage wayscrollshot-bin pacseek bitwarden-cli-bin wlrctl wlr-which-key tmux-fingers obs-cmd)
 
 cpu_ucode_package() {
   if grep -qi 'AuthenticAMD' /proc/cpuinfo 2>/dev/null; then
