@@ -69,6 +69,13 @@ check ucode "$ucode installed" "$ucode missing (sudo ~/dotfiles/apply-system.sh 
 for t in fstrim paccache reflector; do
   check "$t.timer" "enabled" "not enabled (sudo ~/dotfiles/apply-system.sh --only services)" systemctl is-enabled "$t.timer"
 done
+# informational (never counted as a failure)
+info() { printf 'INFO  %-18s %s\n' "$1" "${2:-}"; }
+if systemctl --user is-enabled sysalert.timer >/dev/null 2>&1; then info sysalert "timer enabled"; else info sysalert "timer not enabled (systemctl --user enable --now sysalert.timer)"; fi
+for c in ddcutil tlpctl rofi-calc ccusage pik; do
+  if command -v "$c" >/dev/null 2>&1 || { [ "$c" = rofi-calc ] && [ -e /usr/lib/rofi/calc.so ]; }; then info "u4-$c" "installed"; else info "u4-$c" "missing (sudo ~/dotfiles/apply-system.sh --only install)"; fi
+done
+if id -nG 2>/dev/null | tr ' ' '\n' | grep -qx i2c; then info i2c-group "member"; else info i2c-group "not in group i2c (log in again after the root script)"; fi
 check earlyoom "active" "not active (sudo ~/dotfiles/apply-system.sh --only services)" systemctl is-active earlyoom.service
 
 # ── interactive zsh must not shadow rg / id ─────────────────────────────────────

@@ -10,7 +10,8 @@
   "modules-left": ["hyprland/workspaces", "hyprland/submap"],
   "modules-center": ["clock"],
   "modules-right": [
-    "privacy", "custom/recording", "custom/failed", "custom/updates", "custom/vpn", "custom/dnd", "custom/idle",
+    "privacy", "custom/recording", "custom/failed", "custom/updates", "custom/vpn", "custom/dnd", "custom/idle", "custom/keepawake", "custom/lid",
+    "custom/ai", "custom/power",
     "network", "bluetooth", "pulseaudio#mic", "pulseaudio", "backlight", "battery",
     "cpu", "memory", "temperature", "hyprland/language", "tray"
   ],
@@ -118,6 +119,44 @@
     "interval": 2,
     "on-click": "~/.config/hypr/scripts/idle-toggle.sh",
     "tooltip": false
+  },
+
+  // shown only while a keep-awake inhibitor is held (keep-awake.sh); click releases, right click picks a duration
+  "custom/keepawake": {
+    "exec": "~/.config/hypr/scripts/keep-awake.sh waybar",
+    "return-type": "json",
+    "interval": 30,
+    "signal": 12,
+    "on-click": "~/.config/hypr/scripts/keep-awake.sh toggle",
+    "on-click-right": "~/.config/hypr/scripts/keep-awake.sh menu"
+  },
+
+  // shown only while "keep working with the lid closed" is on (lid.sh)
+  "custom/lid": {
+    "exec": "~/.config/hypr/scripts/lid.sh waybar",
+    "return-type": "json",
+    "interval": 30,
+    "signal": 13,
+    "on-click": "~/.config/hypr/scripts/lid.sh toggle"
+  },
+
+  // Codex limit from the codex-hud cache, Claude from the statusline cache or ccusage; empty when there is no data
+  "custom/ai": {
+    "exec": "~/.config/waybar/scripts/ai-usage.sh",
+    "return-type": "json",
+    "interval": 60,
+    "on-click": "ghostty --class=float.tui -e ~/.config/waybar/scripts/ai-usage.sh report daily",
+    "on-click-right": "ghostty --class=float.tui -e ~/.config/waybar/scripts/ai-usage.sh report blocks"
+  },
+
+  // power profile (tlp-pd); click cycles, right click opens a picker
+  "custom/power": {
+    "exec": "~/.config/hypr/scripts/power-profile.sh waybar",
+    "return-type": "json",
+    "interval": 10,
+    "signal": 14,
+    "on-click": "~/.config/hypr/scripts/power-profile.sh cycle",
+    "on-click-right": "~/.config/hypr/scripts/power-profile.sh menu"
   },
 
   "network": {

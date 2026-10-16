@@ -59,7 +59,7 @@ tooltip label { color: @fg; padding: 2px 4px; }
 
 #clock { color: @fg; font-weight: 700; }
 
-#privacy, #custom-recording, #custom-failed, #custom-updates, #custom-vpn, #custom-dnd, #custom-idle,
+#privacy, #custom-recording, #custom-failed, #custom-updates, #custom-vpn, #custom-dnd, #custom-idle, #custom-keepawake, #custom-lid, #custom-ai, #custom-power,
 #network, #bluetooth, #pulseaudio, #backlight, #battery, #cpu, #memory, #temperature,
 #language, #tray { padding: 0 7px; }
 #tray { padding-right: 10px; }
@@ -72,6 +72,13 @@ tooltip label { color: @fg; padding: 2px 4px; }
 #custom-vpn.on { color: @aqua; }
 #custom-dnd.on { color: @purple; }
 #custom-idle.on { color: @yellow; }
+#custom-keepawake.on, #custom-lid.on { color: @yellow; }
+#custom-ai.ok { color: @sub; }
+#custom-ai.warning { color: @orange; }
+#custom-ai.critical { color: @red; font-weight: 700; }
+#custom-power.power-saver { color: @green; }
+#custom-power.balanced { color: @sub; }
+#custom-power.performance { color: @orange; }
 
 /* state */
 #network.disconnected { color: @red; }
