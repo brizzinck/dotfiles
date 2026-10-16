@@ -153,6 +153,7 @@ Desktop layer (applied, stage T1b; section 5.3 of the design study has the full 
 | Qt | `qt6ct.conf` | 21 roles x active/disabled/inactive; Highlight `visual`, Link `blue`, disabled text `muted` |
 | btop | `btop.theme` | gradients green -> yellow -> red, boxes `border`, dividers `line`, main_bg empty (terminal background) |
 | lazygit | `lazygit.yml` | active border `green`, inactive `line`, selected row `select`, options `blue`, search `yellow`; lazydocker keeps ANSI names (terminal palette) |
+| Vimium C | `vimium-c.css`, embedded in `browsers/vimium-c.json` | link hints `bg_oled` with a `green` frame and `yellow` typed prefix, hover highlight `green`, HUD / find bar `surface`, Vomnibar `bg` / `surface` with `select` for the chosen row; import by hand (`browsers/README.md`) |
 | Telegram, Obsidian | generated, applied by hand | see below |
 
 What follows a switch live: Hyprland (reload), waybar (SIGUSR2), dunst (reload), swayosd (restart), terminals, tmux, nvim. At the next start only: GTK and Qt apps (qt6ct is nudged by a touch of `qt6ct.conf`), btop, lazygit, rofi, wofi, hyprlock. Telegram, Obsidian and Claude Code need the manual steps below.
