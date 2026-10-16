@@ -1,0 +1,9 @@
+[Default Applications]
+x-scheme-handler/claude-cli=claude-code-url-handler.desktop
+image/jpeg=imv-dir.desktop
+x-scheme-handler/discord-455712169795780630=discord-455712169795780630.desktop
+image/png=imv.desktop
+
+[Added Associations]
+image/jpeg=imv-dir.desktop;
+image/png=imv.desktop;

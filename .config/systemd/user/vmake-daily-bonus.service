@@ -1,0 +1,10 @@
+[Unit]
+Description=Claim Vmake.ai Daily Login Bonus Credits
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/skalse/job/youtube/scripts/vmake_daily_bonus.py
+StandardOutput=journal
+StandardError=journal
