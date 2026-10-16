@@ -63,6 +63,7 @@ packages=(
   libqalculate rofi-calc gifski kondo lostfiles termdown bandwhich lsof                           # calculator, GIF, cleanup, timer, network, open files
   tlp-pd                                                                                          # TLP profiles daemon (tlpctl), conflicts with power-profiles-daemon
   rbw rofi-rbw kwindowsystem                                                                      # Bitwarden/Vaultwarden client + rofi front end; kwindowsystem = pinentry-qt backend
+  oo7 bitwarden bitwarden-cli                                                                     # Bitwarden desktop + CLI; oo7 only satisfies the desktop package's org.freedesktop.secrets dependency (see apply-system.sh)
 )
 sudo pacman -S --needed --noconfirm "${packages[@]}"
 

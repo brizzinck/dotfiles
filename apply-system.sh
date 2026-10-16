@@ -230,6 +230,11 @@ REPO_PACKAGES=(
   tlp-pd
   # phase 2 U5: Bitwarden/Vaultwarden client (rbw) with a rofi front end; pinentry-qt (themed by qt6ct) needs kwindowsystem
   rbw rofi-rbw kwindowsystem
+  # phase 2 U6: official Bitwarden desktop app (SSH agent, Wayland) and CLI (bw).
+  # The desktop package hard-depends on org.freedesktop.secrets; with no provider installed pacman --noconfirm would pick one
+  # at random (chipass came first). oo7 is the smallest provider (no deps, D-Bus activated, no PAM/keyring setup, not
+  # gnome-keyring); the app itself keeps its vault keys in the kernel keyring, not in a Secret Service.
+  oo7 bitwarden bitwarden-cli
 )
 # AUR packages, built at run time as the owner (makepkg refuses root) and installed with pacman -U. A failure only warns.
 # Keep in sync with the AUR section of install.sh. shellcheck-bin replaces the repo shellcheck (see swap_shellcheck).

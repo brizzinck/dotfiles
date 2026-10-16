@@ -160,14 +160,15 @@
   },
 
   // Bitwarden vault (rbw): lock/unlock state, empty when rbw is not installed, dim until bw-setup has run.
-  // left click = passwords (rofi-rbw), right click = 2FA codes; signal 15 refreshes it after lock/unlock actions
+  // left click = passwords (rofi-rbw), right click = 2FA codes, middle click = Bitwarden desktop app; signal 15 refreshes it after lock/unlock actions
   "custom/vault": {
     "exec": "~/.config/hypr/scripts/vault.sh waybar",
     "return-type": "json",
     "interval": 10,
     "signal": 15,
     "on-click": "~/.config/hypr/scripts/vault.sh passwords",
-    "on-click-right": "~/.config/hypr/scripts/vault.sh totp"
+    "on-click-right": "~/.config/hypr/scripts/vault.sh totp",
+    "on-click-middle": "~/.config/hypr/scripts/vault.sh app"
   },
 
   "network": {
