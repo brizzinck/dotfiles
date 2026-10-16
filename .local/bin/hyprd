@@ -89,7 +89,11 @@ def translate(d, a):
     if d == "submap":
         return f"hl.dsp.submap({s(a)})"
     if d == "togglespecialworkspace":
-        return f"hl.dsp.workspace.toggle_special({s(a)})"
+        return f"hl.dsp.workspace.toggle_special({s(a) if a.strip() else ''})"
+    if d in ("workspace", "focusworkspaceoncurrentmonitor"):
+        # waybar's hyprland/workspaces buttons (through ws-ipc-proxy.py): `workspace 3`, `workspace name:x`, `workspace m+1`
+        extra = ", on_current_monitor = true" if d == "focusworkspaceoncurrentmonitor" else ""
+        return f"hl.dsp.focus({{ workspace = {num(a.strip())}{extra} }})"
     if d == "exec":
         cmd, rules = exec_rules(a)
         r = ", " + tbl(**rules) if rules else ""

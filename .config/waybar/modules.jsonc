@@ -30,6 +30,12 @@
     // the hidden fzf-menu server terminal parks on special:menu (hyprland.lua window rule)
     "ignore-workspaces": ["^special:menu$"],
     "on-click": "activate",
+    // clicks go through scripts/ws-ipc-proxy.py (see waybar-run.sh): waybar sends legacy `dispatch workspace N`, which a
+    // Lua Hyprland config rejects. Scroll is the previous/next workspace on this monitor (same as SUPER+ALT+K/J);
+    // (waybar's own button handler reacts to any mouse button, so middle and right click also switch; nothing extra is bound)
+    "on-scroll-up": "hyprctl dispatch 'hl.dsp.focus({ workspace = \"m-1\" })'",
+    "on-scroll-down": "hyprctl dispatch 'hl.dsp.focus({ workspace = \"m+1\" })'",
+    "smooth-scrolling-threshold": 2,
     "tooltip": false
   },
 

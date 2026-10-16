@@ -25,6 +25,7 @@
 # Test hooks: BAR_STATE_DIR and BAR_RUN_DIR override the two directories.
 set -u
 
+HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 STATE="${BAR_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/waybar}"
 RT="${BAR_RUN_DIR:-${XDG_RUNTIME_DIR:-/tmp}/waybar-bar}"
 MODE_FILE="$STATE/mode"
@@ -140,7 +141,7 @@ cmd_sync() {
 
 cmd_restart() {
   local _
-  if ((DRY)); then say "would run: pkill -x waybar; render; setsid -f waybar"; return 0; fi
+  if ((DRY)); then say "would run: pkill -x waybar; render; setsid -f waybar-run.sh"; return 0; fi
   pkill -u "$(id -u)" -x waybar 2>/dev/null
   for _ in $(seq 30); do pgrep -u "$(id -u)" -x waybar >/dev/null || break; sleep 0.1; done
   if pgrep -u "$(id -u)" -x waybar >/dev/null; then # did not exit on SIGTERM
@@ -150,10 +151,10 @@ cmd_restart() {
   rm -f "$STALE_FILE"
   render
   : >"$RT/waybar.log"
-  setsid -f waybar ${WAYBAR_LOG_LEVEL:+--log-level "$WAYBAR_LOG_LEVEL"} >>"$RT/waybar.log" 2>&1 </dev/null 9>&-   # waybar must not inherit the lock
+  setsid -f "$HERE/waybar-run.sh" ${WAYBAR_LOG_LEVEL:+--log-level "$WAYBAR_LOG_LEVEL"} >>"$RT/waybar.log" 2>&1 </dev/null 9>&-   # waybar must not inherit the lock; waybar-run.sh = waybar behind ws-ipc-proxy.py
   # a start that dies at once is retried one time
   for _ in $(seq 20); do pgrep -u "$(id -u)" -x waybar >/dev/null && return 0; sleep 0.1; done
-  setsid -f waybar ${WAYBAR_LOG_LEVEL:+--log-level "$WAYBAR_LOG_LEVEL"} >>"$RT/waybar.log" 2>&1 </dev/null 9>&-
+  setsid -f "$HERE/waybar-run.sh" ${WAYBAR_LOG_LEVEL:+--log-level "$WAYBAR_LOG_LEVEL"} >>"$RT/waybar.log" 2>&1 </dev/null 9>&-
 }
 
 cmd_menu() {

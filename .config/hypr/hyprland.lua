@@ -43,7 +43,7 @@ hl.on("hyprland.start", function()
     end
     -- palette link first (black when missing): waybar, dunst, rofi, swayosd read ~/.local/state/theme/current
     hl.exec_cmd("~/.local/bin/theme init")
-    hl.exec_cmd("~/.config/waybar/scripts/bar.sh init; waybar & hypridle")
+    hl.exec_cmd("~/.config/waybar/scripts/bar.sh init; ~/.config/waybar/scripts/waybar-run.sh & hypridle")
     hl.exec_cmd("systemctl --user start hyprpolkitagent")
     hl.exec_cmd("~/.config/hypr/td_clipboard_acl.sh")
     hl.exec_cmd("dunst")
