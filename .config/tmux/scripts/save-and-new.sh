@@ -26,4 +26,4 @@ fi
 
 new="$(tmux new-session -d -P -F '#{session_name}' -c "$start_dir")"
 tmux switch-client -t "=$new"
-tmux display-message "Сессия сохранена → новая сессия (не сохранена)"
+tmux display-message "Session saved → new session (not saved)"

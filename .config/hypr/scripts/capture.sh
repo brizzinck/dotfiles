@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Capture menu in rofi (SUPER+CTRL+S) and the capture actions behind it: screenshots, OCR, QR, recording, GIF,
+# Capture menu (fzf-menu, vim keys; SUPER+CTRL+S) and the capture actions behind it: screenshots, OCR, QR, recording, GIF,
 # scrolling screenshot, colour picker. Also the engine of the OCR bind/hook and the hub rows.
 #
-#   capture.sh                     interactive rofi menu
+#   capture.sh                     interactive menu
 #   capture.sh --list              print the menu entries (id <TAB> label)
-#   capture.sh --do ID [ADDRESS]   run one action without rofi; ADDRESS (0x...) targets a window for the *-window ids
+#   capture.sh --do ID [ADDRESS]   run one action without the menu; ADDRESS (0x...) targets a window for the *-window ids
 #   capture.sh ocr [window ADDR]   OCR a region (default) or a window  (SUPER+SHIFT+O, window-menu hook `ocr`)
 #   --dry-run                      print the commands instead of running them (no slurp, no clipboard writes)
 #
@@ -249,8 +249,9 @@ do_scroll() {
 do_color() {
   local fmt
   if ((DRY)); then echo "hyprpicker -a -f <hex|rgb|hsl|hsv|cmyk>"; return 0; fi
-  need hyprpicker rofi || return 1
-  fmt=$(printf '%s\n' hex rgb hsl hsv cmyk | rofi -dmenu -i -p color -mesg 'copy the picked colour as ...') || return 0
+  need hyprpicker fzf-menu || return 1
+  fmt=$(printf '%s\n' hex rgb hsl hsv cmyk | fzf-menu -p color --header 'copy the picked colour as ...') || return 0
+  sleep 0.3   # let the menu's workspace animation finish before the picker freezes the screen
   [[ -n $fmt ]] || return 0
   hyprpicker -a -f "$fmt"
 }
@@ -312,9 +313,10 @@ case ${1:-} in
   ocr) shift; cmd_ocr "$@" ;;
   "")
     rows=$(menu_rows)
-    pick=$(cut -f2 <<<"$rows" | rofi -dmenu -i -format i -p capture) || exit 0
+    pick=$(cut -f2 <<<"$rows" | fzf-menu -p capture --index) || exit 0
     [[ -n $pick ]] || exit 0
     id=$(sed -n "$((pick + 1))p" <<<"$rows" | cut -f1)
+    sleep 0.3   # the menu's workspace animation must be gone before a screenshot or the region picker
     run_action "$id"
     ;;
   *) die "usage: capture.sh [--list | --do ID [ADDRESS] | ocr [window ADDR]] [--dry-run]" ;;

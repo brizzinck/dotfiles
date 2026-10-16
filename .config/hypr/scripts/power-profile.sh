@@ -4,7 +4,7 @@
 #   power-profile.sh set <profile>       switch (polkit allows the active session, no sudo)
 #   power-profile.sh cycle               power-saver -> balanced -> performance -> power-saver
 #   power-profile.sh waybar              JSON for the custom/power module
-#   power-profile.sh menu                rofi picker
+#   power-profile.sh menu                picker (fzf-menu)
 # Backends in order: tlpctl, D-Bus net.hadess.PowerProfiles (the API tlp-pd implements), read-only
 # /sys/firmware/acpi/platform_profile for `get`.
 set -u
@@ -65,7 +65,7 @@ waybar() {
 
 menu() {
   local pick
-  pick=$(printf '%s\n' "${ORDER[@]}" | rofi -dmenu -i -p 'power profile' -mesg "now: $(get)") || return 0
+  pick=$(printf '%s\n' "${ORDER[@]}" | fzf-menu -p 'power profile' --header "now: $(get)") || return 0
   set_profile "$pick"
 }
 

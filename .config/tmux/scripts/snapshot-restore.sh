@@ -97,14 +97,14 @@ if [ "${1:-}" = "--confirm-delete" ]; then
   if [[ "$base" =~ ^snapshot_(.+)_[0-9]{8}T[0-9]{6}\.txt$ ]]; then
     label="${BASH_REMATCH[1]}"
   fi
-  printf "\nУдалить снапшот '%s' (%s)? [y/N]: " "$label" "$base"
+  printf "\nDelete snapshot '%s' (%s)? [y/N]: " "$label" "$base"
   read -r ans
   if [[ "$ans" =~ ^[Yy]$ ]]; then
     delete_snapshot "$f"
-    echo "Снапшот удалён."
+    echo "Snapshot deleted."
     sleep 0.4
   else
-    echo "Отмена."
+    echo "Cancelled."
     sleep 0.3
   fi
   exit 0
@@ -123,25 +123,20 @@ if [ -z "$initial" ]; then
   exit 0
 fi
 
-# Modal vim keys. Normal mode (default): j/k move, g/G first/last, C-d/C-u
-# half page, C-f/C-b page, J/K scroll preview, i / a / "/" enter insert mode,
-# d / x delete snapshot, enter restore, q or esc quit.
-# Layout-independent keys: ua/ru twins of the letter binds below (generated: ~/.config/layout/layout.py)
-# shellcheck source=/dev/null
-. "${XDG_CONFIG_HOME:-$HOME/.config}/layout/layout-keys.sh" 2>/dev/null || { lk_fzf_keys() { printf '%s' "$1"; }; lk_fzf_bind() { printf '%s' "$1"; }; }
-NORMAL_KEYS="$(lk_fzf_keys 'j,k,g,G,J,K,i,a,/,q,d,x')"
-chosen="$(printf "%s\n" "$initial" | fzf \
-  --layout=reverse --delimiter=$'\t' --with-nth=2.. --no-multi --cycle \
-  --prompt='N> ' \
-  --header='j/k g/G move   J/K preview   i or / filter   esc normal   enter restore   d delete   q quit' \
-  --bind "$(lk_fzf_bind 'j:down,k:up,g:first,G:last,J:preview-down,K:preview-up,q:abort')" \
-  --bind 'ctrl-d:half-page-down,ctrl-u:half-page-up,ctrl-f:page-down,ctrl-b:page-up' \
-  --bind "$(lk_fzf_bind "d:execute(bash '$0' --confirm-delete {1})+reload(bash '$0' --list)")" \
-  --bind "$(lk_fzf_bind "x:execute(bash '$0' --confirm-delete {1})+reload(bash '$0' --list)")" \
-  --bind "$(lk_fzf_bind "i:unbind($NORMAL_KEYS)+change-prompt(I> )")" \
-  --bind "$(lk_fzf_bind "a:unbind($NORMAL_KEYS)+change-prompt(I> )")" \
-  --bind "$(lk_fzf_bind "/:unbind($NORMAL_KEYS)+change-prompt(I> )+clear-query")" \
-  --bind "esc:transform:[ \"\$FZF_PROMPT\" = 'I> ' ] && echo 'rebind($NORMAL_KEYS)+change-prompt(N> )' || echo abort" \
+# The list is the shared modal fzf (INSERT opens, Esc = NORMAL with j/k g/G, d/x delete a snapshot, Enter restore,
+# q quit; ua/ru twins come from the library). NORMAL-mode extras travel in FZF_MENU_NORMAL_BINDS.
+FZF_MENU="$HOME/.local/bin/fzf-menu"
+if [ ! -x "$FZF_MENU" ]; then
+  echo "fzf-menu is missing ($FZF_MENU): run stow in ~/dotfiles"
+  read -n1 -r -p "press any key..."
+  exit 1
+fi
+reload="reload(bash '$0' --list)"
+export FZF_MENU_NORMAL_BINDS="d:execute(bash '$0' --confirm-delete {1})+$reload
+x:execute(bash '$0' --confirm-delete {1})+$reload"
+chosen="$(printf "%s\n" "$initial" | "$FZF_MENU" --here -p snapshots --delimiter=$'\t' --with-nth=2.. \
+  --header='Enter restore   Esc: normal mode   NORMAL: j/k g/G move   J/K preview   d delete   i or / filter   q quit' \
+  --bind 'alt-j:preview-down' --bind 'alt-k:preview-up' \
   --preview="bash '$0' --preview {1}" \
   --preview-window='right,45%,wrap')" || exit 0
 

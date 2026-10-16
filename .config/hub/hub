@@ -40,9 +40,9 @@
 # $XDG_RUNTIME_DIR/hub/prev-window, exported as HUB_TARGET=address:0x... to run/toggle commands, and the
 # window is refocused before every non-TUI action.
 set -u
-# Everforest fzf colours of the active variant (generated, see themes/palette); callers outside a login shell have no env
-: "${FZF_DEFAULT_OPTS_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/theme/current/fzfrc}"
-if [[ -r $FZF_DEFAULT_OPTS_FILE ]]; then export FZF_DEFAULT_OPTS_FILE; else unset FZF_DEFAULT_OPTS_FILE; fi
+# the shared modal fzf (INSERT/NORMAL, vim keys, ua/ru twins) with the Everforest colours of the active variant
+# shellcheck source=/dev/null
+. "${XDG_CONFIG_HOME:-$HOME/.config}/fzf/vimfzf.sh"
 # lazygit colours (generated gui.theme merged after the structural config; set only when the file exists)
 if [[ -z ${LG_CONFIG_FILE:-} && -r ${XDG_STATE_HOME:-$HOME/.local/state}/theme/current/lazygit.yml ]]; then
   export LG_CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/lazygit/config.yml,${XDG_STATE_HOME:-$HOME/.local/state}/theme/current/lazygit.yml"
@@ -303,9 +303,9 @@ interactive() {
   while :; do
     build_cache
     rc=0
-    out=$(fzf_rows | fzf --ansi --delimiter="$US" --with-nth=2 --layout=reverse --height=100% \
-      --prompt='hub> ' --info=inline --tiebreak=begin,index --print-query --query="$query" \
-      --header='Enter run · Esc close · ●/○ live state' \
+    out=$(fzf_rows | VF_PROMPT=hub vimfzf --delimiter="$US" --with-nth=2 \
+      --tiebreak=begin,index --print-query --query="$query" \
+      --header='Enter run · Esc normal mode (j/k g/G, i or / to type, q close) · ●/○ live state' \
       --preview="$SELF --describe {1}" --preview-window='right,45%,wrap,border-left') || rc=$?
     ((rc == 0)) || return 0
     query=$(sed -n 1p <<<"$out")

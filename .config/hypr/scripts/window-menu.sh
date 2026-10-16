@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Window action menu in rofi. SUPER+SHIFT+W, also "This window" in the hub.
-# The target window is captured BEFORE rofi opens (rofi is a layer surface, it does not change focus) and every
-# action uses `address:` dispatchers; dispatchers that only work on the active window refocus the target first.
+# Window action menu (fzf-menu, vim keys). SUPER+SHIFT+W, also "This window" in the hub.
+# The target window is captured BEFORE the menu opens (the menu terminal takes focus and fzf-menu gives it back) and
+# every action uses `address:` dispatchers; dispatchers that only work on the active window refocus the target first.
 #
 #   window-menu.sh                       interactive menu for the active window (or $HUB_TARGET = address:0x...)
 #   window-menu.sh --addr 0x...          target a specific window
 #   window-menu.sh --list                print the top-level menu entries (id <TAB> label)
-#   window-menu.sh --do ID [ARG]         run one action without rofi (ids from --list; sub-actions below)
+#   window-menu.sh --do ID [ARG]         run one action without the menu (ids from --list; sub-actions below)
 #   window-menu.sh --dry-run ...         print the hyprctl/shell commands instead of running them
 #
 # Sub-actions for --do: opacity <1|0.9|0.8|0.7|0.5|opaque|reset>, size <60|80|pip|center>,
@@ -71,19 +71,15 @@ sh_active() {
 
 note() { if ((DRY)); then echo "notify: $*"; else notify-send -a window-menu -t 2500 "$@"; fi; }
 
-rofi_menu() { # $1 prompt, $2 mesg; entries on stdin; prints the chosen index
-  local n
-  mapfile -t _entries
-  n=${#_entries[@]}
-  ((n > 14)) && n=14
-  printf '%s\n' "${_entries[@]}" | rofi -dmenu -i -p "$1" -mesg "$2" -format i -no-custom \
-    -theme-str "window { width: 520px; } listview { lines: $n; }"
+# list of rows on stdin -> the 0-based index of the chosen one (cancel = status 1)
+fzf_index() { # $1 prompt, $2 header
+  awk '{ printf "%d\t%s\n", NR - 1, $0 }' | fzf-menu -p "$1" --header "$2" --delimiter=$'\t' --with-nth=2.. --accept-nth=1
 }
 
 confirm() {
   local answer
   if ((DRY)); then echo "confirm: $1 (skipped in dry-run)"; return 0; fi
-  answer=$(printf 'no\nyes\n' | rofi -dmenu -i -p "$1?" -theme-str 'window { width: 360px; } listview { lines: 2; }') || return 1
+  answer=$(printf 'no\nyes\n' | fzf-menu -p "$1?") || return 1
   [[ $answer == yes ]]
 }
 
@@ -248,7 +244,7 @@ sub_pick() { # $1 prompt; entries "value<TAB>label" on stdin; prints the value
   local -a vals labels
   local v l i
   while IFS=$'\t' read -r v l; do vals+=("$v"); labels+=("$l"); done
-  i=$(printf '%s\n' "${labels[@]}" | rofi_menu "$1" "$(mesg_line)") || return 1
+  i=$(printf '%s\n' "${labels[@]}" | fzf_index "$1" "$(mesg_line)") || return 1
   printf '%s' "${vals[i]}"
 }
 
@@ -279,10 +275,7 @@ sub_menu() {
 }
 
 mesg_line() {
-  local t=${TITLE:0:50}
-  t=${t//&/&amp;}; t=${t//</&lt;}; t=${t//>/&gt;}
-  local c=${CLASS//&/&amp;}
-  printf '%s · %s · pid %s · ws %s' "$c" "$t" "$PID" "$WS"
+  printf '%s · %s · pid %s · ws %s' "$CLASS" "${TITLE:0:50}" "$PID" "$WS"
 }
 
 run_do() {
@@ -302,7 +295,7 @@ interactive() {
   local -a ids labels
   local id label i
   while IFS=$'\t' read -r id label; do ids+=("$id"); labels+=("$label"); done < <(menu_entries)
-  i=$(printf '%s\n' "${labels[@]}" | rofi_menu win "$(mesg_line)") || exit 0
+  i=$(printf '%s\n' "${labels[@]}" | fzf_index win "$(mesg_line)") || exit 0
   id=${ids[i]}
   case $id in
     opacity | size | group | workspace | monitor | copy) sub_menu "$id" ;;

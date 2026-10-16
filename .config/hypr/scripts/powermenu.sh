@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
-# Power menu in rofi (dmenu mode). SUPER+SHIFT+Escape and the power key.
+# Power menu (fzf-menu, vim keys). SUPER+SHIFT+Escape and the power key.
 set -u
 
 entries=$'lock\nsuspend\nlogout\nreboot\npoweroff'
 
-choice=$(printf '%s\n' "$entries" |
-  rofi -dmenu -i -p power -theme-str 'window { width: 320px; } listview { lines: 5; }') || exit 0
+choice=$(printf '%s\n' "$entries" | fzf-menu -p power) || exit 0
 
 confirm() {
   local answer
-  answer=$(printf 'no\nyes\n' | rofi -dmenu -i -p "$1?" -theme-str 'window { width: 320px; } listview { lines: 2; }') || return 1
+  answer=$(printf 'no\nyes\n' | fzf-menu -p "$1?") || return 1
   [[ $answer == yes ]]
 }
 

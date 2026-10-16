@@ -256,14 +256,14 @@ sysup() {
   systemctl --failed --no-legend; systemctl --user --failed --no-legend
 }
 
-# fzf toggle for the VPN/proxy daemons that exist on this machine
+# fzf-menu (shared modal fzf, vim keys) toggle for the VPN/proxy daemons that exist on this machine
 vpn() {
   local u; local -a cands
   for u in v2raya v2ray xray pritunl-client happd snap.surfshark.surfsharkd; do
     systemctl cat "$u.service" &>/dev/null && cands+=("$u")
   done
   (( $#cands )) || { echo "vpn: no known VPN service units installed"; return 1 }
-  u=$(printf '%s\n' $cands | fzf --prompt='toggle vpn> ' --preview 'systemctl status {} --no-pager | head -15') || return
+  u=$(printf '%s\n' $cands | fzf-menu --here -p 'toggle vpn' --preview 'systemctl status {} --no-pager | head -15') || return
   if systemctl is-active -q "$u"; then sudo systemctl stop "$u"; else sudo systemctl start "$u"; fi
   systemctl is-active "$u"
 }
@@ -272,4 +272,4 @@ vpn() {
 hub() { "$HOME/.config/hub/hub" "$@" }
 
 # fuzzy journal: jf [journalctl args], e.g. jf -p err  /  jf -u docker  /  jf --user
-jf() { journalctl -b -o short-iso --no-pager "$@" | fzf --tac --no-sort --exact; }
+jf() { journalctl -b -o short-iso --no-pager "$@" | fzf-menu --here -p journal --tac --no-sort --exact; }

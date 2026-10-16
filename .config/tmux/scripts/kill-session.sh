@@ -121,9 +121,9 @@ safe_kill() {
 
   if [ -n "$survivor" ]; then
     if [ ${#targets[@]} -eq 1 ]; then
-      tmux display-message "Сессия '${targets[0]}' удалена" 2>/dev/null || true
+      tmux display-message "Session '${targets[0]}' killed" 2>/dev/null || true
     else
-      tmux display-message "Удалено сессий: ${#targets[@]}" 2>/dev/null || true
+      tmux display-message "Sessions killed: ${#targets[@]}" 2>/dev/null || true
     fi
   fi
 }
@@ -131,7 +131,7 @@ safe_kill() {
 confirm_kill_one() {
   local target="${1:?session required}"
   if ! tmux has-session -t "$target" 2>/dev/null; then
-    echo "Сессия '$target' уже не существует."
+    echo "Session '$target' no longer exists."
     sleep 0.5
     return 0
   fi
@@ -143,21 +143,21 @@ confirm_kill_one() {
 
   if [ "$target" = "$curr" ]; then
     if [ "$total" -le 1 ]; then
-      printf "\nВнимание: '%s' — последняя активная сессия!\nВместо неё будет создана новая. Удалить? [y/N]: " "$target"
+      printf "\nWarning: '%s' is the last active session!\nA new one will be created in its place. Kill it? [y/N]: " "$target"
     else
-      printf "\nУдалить текущую сессию '%s'?\nБудет выполнен переход в другую сессию. [y/N]: " "$target"
+      printf "\nKill the current session '%s'?\nYou will be switched to another session. [y/N]: " "$target"
     fi
   else
-    printf "\nУдалить сессию '%s'? [y/N]: " "$target"
+    printf "\nKill session '%s'? [y/N]: " "$target"
   fi
 
   read -r ans
   if [[ "$ans" =~ ^[Yy]$ ]]; then
     safe_kill "$target"
-    echo "Сессия '$target' удалена."
+    echo "Session '$target' killed."
     sleep 0.4
   else
-    echo "Отмена."
+    echo "Cancelled."
     sleep 0.3
   fi
 }
@@ -172,25 +172,25 @@ kill_unnamed() {
   done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null)
 
   if [ ${#unnamed[@]} -eq 0 ]; then
-    echo "Безымянных или временных сессий не найдено."
+    echo "No unnamed or temporary sessions found."
     sleep 0.8
     return 0
   fi
 
   if [ "$force" = "true" ]; then
     safe_kill "${unnamed[@]}"
-    echo "Безымянные сессии удалены (${#unnamed[@]})."
+    echo "Unnamed sessions killed (${#unnamed[@]})."
     return 0
   fi
 
-  printf "\nНайдено %d безымянных сессий: %s\nУдалить их? [y/N]: " "${#unnamed[@]}" "${unnamed[*]}"
+  printf "\nFound %d unnamed sessions: %s\nKill them? [y/N]: " "${#unnamed[@]}" "${unnamed[*]}"
   read -r ans
   if [[ "$ans" =~ ^[Yy]$ ]]; then
     safe_kill "${unnamed[@]}"
-    echo "Безымянные сессии удалены."
+    echo "Unnamed sessions killed."
     sleep 0.8
   else
-    echo "Отмена."
+    echo "Cancelled."
     sleep 0.4
   fi
 }
@@ -207,25 +207,25 @@ kill_others() {
   done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null)
 
   if [ ${#others[@]} -eq 0 ]; then
-    echo "Других сессий нет (активна только '$curr')."
+    echo "There are no other sessions (only '$curr' is active)."
     sleep 0.8
     return 0
   fi
 
   if [ "$force" = "true" ]; then
     safe_kill "${others[@]}"
-    echo "Другие сессии удалены (${#others[@]})."
+    echo "Other sessions killed (${#others[@]})."
     return 0
   fi
 
-  printf "\nУдалить все %d других сессий (кроме '%s'): %s\nПродолжить? [y/N]: " "${#others[@]}" "$curr" "${others[*]}"
+  printf "\nKill all %d other sessions (except '%s'): %s\nContinue? [y/N]: " "${#others[@]}" "$curr" "${others[*]}"
   read -r ans
   if [[ "$ans" =~ ^[Yy]$ ]]; then
     safe_kill "${others[@]}"
-    echo "Другие сессии удалены."
+    echo "Other sessions killed."
     sleep 0.8
   else
-    echo "Отмена."
+    echo "Cancelled."
     sleep 0.4
   fi
 }
@@ -261,7 +261,7 @@ while [[ $# -gt 0 ]]; do
     -c|--current)
       curr="$(current_session)"
       if [ -z "$curr" ]; then
-        echo "Не удалось определить текущую сессию."
+        echo "Could not determine the current session."
         exit 1
       fi
       if [ "$force" = "true" ]; then
@@ -279,7 +279,7 @@ while [[ $# -gt 0 ]]; do
         shift
       done
       if [ ${#targets[@]} -eq 0 ]; then
-        echo "Ошибка: укажите сессию для удаления."
+        echo "Error: name the session to kill."
         exit 1
       fi
       if [ "$force" = "true" ]; then
@@ -306,7 +306,7 @@ while [[ $# -gt 0 ]]; do
       exit 0
       ;;
     -*)
-      echo "Неизвестная опция: $1"
+      echo "Unknown option: $1"
       exit 1
       ;;
     *)
@@ -314,7 +314,7 @@ while [[ $# -gt 0 ]]; do
       target="$1"
       shift
       if ! tmux has-session -t "$target" 2>/dev/null; then
-        echo "Ошибка: сессия '$target' не существует!"
+        echo "Error: session '$target' does not exist!"
         exit 1
       fi
       if [ "$force" = "true" ]; then
@@ -340,24 +340,21 @@ if [ -z "$initial" ]; then
   exit 0
 fi
 
-# Layout-independent keys: ua/ru twins of the letter binds below (generated: ~/.config/layout/layout.py)
-# shellcheck source=/dev/null
-. "${XDG_CONFIG_HOME:-$HOME/.config}/layout/layout-keys.sh" 2>/dev/null || { lk_fzf_keys() { printf '%s' "$1"; }; lk_fzf_bind() { printf '%s' "$1"; }; }
-NORMAL_KEYS="$(lk_fzf_keys 'j,k,g,G,J,K,i,a,/,q,d,x,U,O')"
-chosen="$(printf "%s\n" "$initial" | fzf \
-  --layout=reverse --delimiter=$'\t' --with-nth=2.. --multi --cycle \
-  --prompt='N> ' \
-  --header='j/k move   tab select   enter/d kill   U kill unnamed   O kill others   q quit' \
-  --bind "$(lk_fzf_bind 'j:down,k:up,g:first,G:last,J:preview-down,K:preview-up,q:abort')" \
-  --bind 'ctrl-d:half-page-down,ctrl-u:half-page-up,ctrl-f:page-down,ctrl-b:page-up' \
-  --bind "$(lk_fzf_bind "d:execute(bash '$0' --confirm-kill {1})+reload(bash '$0' --list)")" \
-  --bind "$(lk_fzf_bind "x:execute(bash '$0' --confirm-kill {1})+reload(bash '$0' --list)")" \
-  --bind "$(lk_fzf_bind "U:execute(bash '$0' --unnamed)+reload(bash '$0' --list)")" \
-  --bind "$(lk_fzf_bind "O:execute(bash '$0' --others)+reload(bash '$0' --list)")" \
-  --bind "$(lk_fzf_bind "i:unbind($NORMAL_KEYS)+change-prompt(I> )")" \
-  --bind "$(lk_fzf_bind "a:unbind($NORMAL_KEYS)+change-prompt(I> )")" \
-  --bind "$(lk_fzf_bind "/:unbind($NORMAL_KEYS)+change-prompt(I> )+clear-query")" \
-  --bind "esc:transform:[ \"\$FZF_PROMPT\" = 'I> ' ] && echo 'rebind($NORMAL_KEYS)+change-prompt(N> )' || echo abort" \
+# The list is the shared modal fzf (INSERT opens, Esc = NORMAL with j/k g/G, d/x kill, U kill unnamed, O kill others,
+# q quit; ua/ru twins come from the library). NORMAL-mode extras travel in FZF_MENU_NORMAL_BINDS.
+FZF_MENU="$HOME/.local/bin/fzf-menu"
+if [ ! -x "$FZF_MENU" ]; then
+  echo "fzf-menu is missing ($FZF_MENU): run stow in ~/dotfiles"
+  read -n1 -r -p "press any key..."
+  exit 1
+fi
+reload="reload(bash '$0' --list)"
+export FZF_MENU_NORMAL_BINDS="d:execute(bash '$0' --confirm-kill {1})+$reload
+x:execute(bash '$0' --confirm-kill {1})+$reload
+U:execute(bash '$0' --unnamed)+$reload
+O:execute(bash '$0' --others)+$reload"
+chosen="$(printf "%s\n" "$initial" | "$FZF_MENU" --here -m -p sessions --delimiter=$'\t' --with-nth=2.. \
+  --header='Tab select   Enter kill   Esc: normal mode   NORMAL: j/k g/G move   d kill   U kill unnamed   O kill others   q quit' \
   --preview="bash '$0' --preview {1}" \
   --preview-window='right,50%,wrap')" || exit 0
 
@@ -375,14 +372,14 @@ done
 if [ ${#targets[@]} -eq 1 ]; then
   confirm_kill_one "${targets[0]}"
 elif [ ${#targets[@]} -gt 1 ]; then
-  printf "\nУдалить выбранные сессии (%d шт: %s)? [y/N]: " "${#targets[@]}" "${targets[*]}"
+  printf "\nKill the selected sessions (%d: %s)? [y/N]: " "${#targets[@]}" "${targets[*]}"
   read -r ans
   if [[ "$ans" =~ ^[Yy]$ ]]; then
     safe_kill "${targets[@]}"
-    echo "Выбранные сессии удалены."
+    echo "Selected sessions killed."
     sleep 0.5
   else
-    echo "Отмена."
+    echo "Cancelled."
     sleep 0.3
   fi
 fi

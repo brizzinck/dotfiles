@@ -16,4 +16,4 @@ while IFS= read -r client; do
 done < <(tmux list-clients -t "=$current" -F '#{client_name}' 2>/dev/null)
 
 tmux kill-session -t "=$current"
-tmux display-message "Сессия '${current}' удалена → новая сессия (не сохранена)"
+tmux display-message "Session '${current}' killed → new session (not saved)"

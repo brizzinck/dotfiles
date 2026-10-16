@@ -11,9 +11,9 @@ power-balanced	Energy	Power profile: balanced	-	run	~/.config/hypr/scripts/power
 power-performance	Energy	Power profile: performance	-	run	~/.config/hypr/scripts/power-profile.sh set performance	-	tlpctl	-
 bright-up	Display	Brightness up (focused monitor)	XF86MonBrightnessUp	run	~/.config/hypr/scripts/brightness.sh up	-	-	Laptop panel: brightnessctl/swayosd. External monitor: ddcutil over DDC/CI (needs ddcutil and the i2c group).
 bright-down	Display	Brightness down (focused monitor)	XF86MonBrightnessDown	run	~/.config/hypr/scripts/brightness.sh down	-	-	-
-calc	Tools	Calculator (rofi-calc)	SUPER+equal	run	~/.config/hypr/scripts/calc.sh	-	-	Units, currency and dates via libqalculate; Enter copies the result.
+calc	Tools	Calculator (qalc)	SUPER+equal	run	~/.config/hypr/scripts/calc.sh	-	-	Units, currency and dates via libqalculate; Type an expression: the header shows the live result, Enter copies it, y (NORMAL) copies a history entry.
 notes	Tools	Notes scratchpad (nvim ~/notes/scratch.md)	SUPER+SHIFT+Z	run	hyprd togglespecialworkspace notes	-	hyprctl	-
-snippets	Clipboard	Snippets picker	SUPER+SHIFT+period	run	~/.config/hypr/scripts/snippets.sh	-	rofi	Edit ~/.config/snippets/snippets.tsv. Variables: date, time, datetime, clipboard.	y s;Snippets
+snippets	Clipboard	Snippets picker	SUPER+SHIFT+period	run	~/.config/hypr/scripts/snippets.sh	-	fzf-menu	Edit ~/.config/snippets/snippets.tsv. Variables: date, time, datetime, clipboard.	y s;Snippets
 paste-plain	Clipboard	Paste clipboard as plain text	SUPER+CTRL+V	run	~/.config/hypr/scripts/paste-plain.sh	-	wl-paste	-	y p;Paste plain
 url-clean	Clipboard	Clean tracking parameters from the URL in the clipboard	-	run	~/.config/hypr/scripts/url-clean.sh	-	wl-paste python3	Manual only: removes utm_*, fbclid, gclid, yclid, igshid, ... and rewrites the clipboard.	y u;Clean URL
 ports	System	Ports / kill process (pik)	-	tui	pik	-	pik	Search by port with :8080, Ctrl+X SIGTERM, Ctrl+Alt+X SIGKILL.	s p;Ports

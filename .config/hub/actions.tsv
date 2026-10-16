@@ -11,7 +11,7 @@ mic-mute	Toggles	All microphones muted	SUPER+SHIFT+M	toggle	~/.config/hypr/scrip
 out-mute	Toggles	Speakers muted	XF86AudioMute	toggle	swayosd-client --output-volume mute-toggle || wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle	wpctl get-volume @DEFAULT_AUDIO_SINK@ | grep -q MUTED	wpctl	ON = the default output is muted.	a s;Mute speakers
 recording	Toggles	Screen recording	SUPER+R	toggle	~/.config/hypr/scripts/rec-toggle.sh	pgrep -x gpu-screen-reco	gpu-screen-recorder	Starts or stops a gpu-screen-recorder recording of the focused monitor.	c v;Record toggle
 lock	Session	Lock screen (password)	SUPER+Escape	run	pidof hyprlock || hyprlock	-	hyprlock	-	p l;Lock
-powermenu	Session	Power menu	SUPER+SHIFT+Escape	run	~/.config/hypr/scripts/powermenu.sh	-	rofi	Lock, suspend, logout, reboot, poweroff.	p m;Power menu
+powermenu	Session	Power menu	SUPER+SHIFT+Escape	run	~/.config/hypr/scripts/powermenu.sh	-	fzf-menu	Lock, suspend, logout, reboot, poweroff.	p m;Power menu
 screensaver	Session	Screensaver test (clock, any input dismisses)	-	run	~/.config/hypr/scripts/screensaver.sh start	-	hyprlock	-	p s;Screensaver
 wallpaper	Session	Reload wallpaper	SUPER+O	run	pgrep swaybg && killall swaybg; swaybg -i ~/pics/walls/lol.jpg	-	swaybg	-
 shot-region	Capture	Screenshot: region	Print	run	hyprshot -m region -o ~/pics/screenshots	-	hyprshot	Saved to ~/pics/screenshots and copied.	c r;Region
@@ -20,14 +20,14 @@ shot-window	Capture	Screenshot: active window	SUPER+Print	run	hyprshot -m window
 shot-annotate	Capture	Screenshot: region, then annotate (satty)	SUPER+SHIFT+S	run	grim -g "$(slurp)" - | satty -f - --copy-command wl-copy --output-filename ~/pics/screenshots/%F_%T.png	-	grim slurp satty	-	c a;Annotate
 rec-region	Capture	Record region	SUPER+SHIFT+R	run	~/.config/hypr/scripts/rec-toggle.sh region	-	gpu-screen-recorder	-	c b;Record region
 colorpicker	Capture	Color picker (copies hex)	SUPER+SHIFT+C	run	hyprpicker -a	-	hyprpicker	-	c p;Color picker
-clipboard	Clipboard	Clipboard history	SUPER+C	run	~/.config/hypr/scripts/clipboard.sh	-	cliphist rofi	Enter pastes into the previous window, Alt+Enter only copies, Alt+p pins, Alt+d deletes, Alt+i images only, Alt+t text only.	y h;History
-emoji	Clipboard	Emoji picker	SUPER+period	run	rofimoji	-	rofimoji	-	y e;Emoji
-notif-history	Notify	Notification history (pop last)	SUPER+SHIFT+X	run	dunstctl history-pop	-	dunstctl	-	n h;History
+clipboard	Clipboard	Clipboard history	SUPER+C	run	~/.config/hypr/scripts/clipboard.sh	-	cliphist fzf-menu	Enter pastes into the previous window, Alt+Enter / y only copies, Alt+p / m pins, Alt+d / d deletes, Alt+i / f images only, Alt+t / t text only. The preview pane shows the text or the image.	y h;History
+emoji	Clipboard	Emoji picker	SUPER+period	run	~/.config/hypr/scripts/emoji.sh	-	fzf-menu	Enter types the emoji into the previous window, Alt+Enter / y copies it. Recently used come first.	y e;Emoji
+notif-history	Notify	Notification history (fzf)	SUPER+SHIFT+X	run	~/.config/hypr/scripts/notif-history.sh	-	dunstctl fzf-menu	Newest first with a preview; Enter shows a notification again, Alt+d / d removes it from the history.	n h;History
 notif-dismiss	Notify	Dismiss notification	SUPER+X	run	dunstctl close	-	dunstctl	-	n x;Dismiss
 notif-dismiss-all	Notify	Dismiss all notifications	-	run	dunstctl close-all	-	dunstctl	-	n a;Dismiss all
-win-menu	Windows	This window: action menu	SUPER+SHIFT+W	run	~/.config/hypr/scripts/window-menu.sh	-	rofi	Float, pin, opacity, move, screenshot, copy class, close, kill... on the window that was focused before the hub opened.	w m;Action menu
-win-switch	Windows	Window switcher (all workspaces)	SUPER+SHIFT+space	run	~/.config/hypr/scripts/window-switcher.sh	-	rofi	-	w s;Switcher
-launcher	Windows	App launcher	SUPER+space	run	pkill rofi || rofi -show drun	-	rofi	-	space;Apps
+win-menu	Windows	This window: action menu	SUPER+SHIFT+W	run	~/.config/hypr/scripts/window-menu.sh	-	fzf-menu	Float, pin, opacity, move, screenshot, copy class, close, kill... on the window that was focused before the hub opened.	w m;Action menu
+win-switch	Windows	Window switcher (all workspaces)	SUPER+SHIFT+space	run	~/.config/hypr/scripts/window-switcher.sh	-	fzf-menu	The preview shows the window details and its app icon.	w s;Switcher
+launcher	Windows	App launcher (rofi: Ctrl+j/k move, Ctrl+d/u page, Esc cancel)	SUPER+space	run	pkill rofi || rofi -show drun	-	rofi	-	space;Apps
 sessionizer	TUI	Project sessions (tmux sessionizer)	SUPER+P	run	ghostty -e ~/.config/tmux/scripts/sessionizer.sh	-	ghostty tmux fzf	-
 sysup	TUI	System update (sysup)	SUPER+SHIFT+U	tui	zsh -ic 'sysup; read -k1'	-	zsh yay	Arch news, yay -Syu, flatpak, pacnew, cache cleanup.	s u;Update
 vpn	TUI	VPN / proxy toggle (vpn)	-	tui	zsh -ic vpn	-	zsh	fzf over the VPN daemons present on this machine; asks for sudo.
@@ -35,7 +35,7 @@ jf	TUI	Fuzzy journal (jf)	-	tui	zsh -ic jf	-	zsh journalctl fzf	journalctl -b pi
 btop	TUI	System monitor (btop)	SUPER+D	tui	btop	-	btop	-	s t;btop
 wiremix	TUI	Audio mixer (wiremix)	SUPER+A	tui	wiremix	-	wiremix	-	a w;Mixer
 bluetui	TUI	Bluetooth (bluetui)	SUPER+SHIFT+B	tui	bluetui	-	bluetui	-
-nmtui	TUI	Wi-Fi / network (nmtui)	SUPER+I	tui	nmtui	-	nmtui	-	s n;Network
+nmtui	TUI	Wi-Fi / network (nmtui fallback, no vim keys)	-	tui	nmtui	-	nmtui	The classic NetworkManager text UI; the Wi-Fi picker (SUPER+I) is the daily driver.	s n;Network
 lazygit	TUI	lazygit (current repo, else ~/dotfiles)	-	tui	git rev-parse --git-dir >/dev/null 2>&1 || cd ~/dotfiles; exec lazygit	-	lazygit	Inside a git directory (tmux popup) it opens that repo, otherwise the dotfiles repo.
 lazydocker	TUI	lazydocker	-	tui	lazydocker	-	lazydocker	-
 yazi	TUI	File manager (yazi)	SUPER+E	tui	yazi	-	yazi	-
@@ -45,5 +45,5 @@ failed-units	System	Failed systemd units (system + user)	-	tui	+pause systemctl 
 hypr-reload	System	Reload Hyprland config	-	run	hyprctl reload	-	hyprctl	-	s r;Reload Hyprland
 waybar-toggle	System	Show or hide waybar	SUPER+B	run	pkill -SIGUSR1 waybar	-	waybar	-	s w;Toggle bar
 waybar-restart	System	Restart waybar	-	run	pkill -x waybar; sleep 0.3; exec waybar	-	waybar	-	s b;Restart bar
-keybinds	Docs	Keybind cheatsheet (rofi)	SUPER+slash	run	~/.config/hypr/scripts/keybinds.sh	-	rofi jq	-
+keybinds	Docs	Keybind cheatsheet	SUPER+slash	run	~/.config/hypr/scripts/keybinds.sh	-	fzf-menu jq	-
 keymap	Docs	Keymap document (docs/keymap.md)	-	tui	less -R ~/dotfiles/docs/keymap.md	-	less	Hyprland, tmux and shell keys; regenerate with docs/gen-keymap.sh.

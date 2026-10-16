@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# snippets: rofi picker over ~/.config/snippets/snippets.tsv (name<TAB>text, `\n` = newline, `#` comments).
+# snippets: fzf-menu picker (vim keys) over ~/.config/snippets/snippets.tsv (name<TAB>text, `\n` = newline, `#` comments).
 # Variables: {date} {time} {datetime} {clipboard} ({clip}). Enter types the text into the focused window with wtype,
 # Alt+Enter only copies it. SUPER+SHIFT+period.
 #   snippets.sh                 pick and insert
@@ -27,15 +27,17 @@ case ${1:-} in
 esac
 
 [[ -r $FILE ]] || { notify-send -a snippets "Snippets" "missing $FILE"; exit 1; }
-rc=0
-pick=$(awk -F'\t' '!/^#/ && NF >= 2 && $1 != "" { t = $2; gsub(/\\n/, " ", t); printf "%s\t%s\n", $1, substr(t, 1, 70) }' "$FILE" |
-  rofi -dmenu -i -p snippet -display-columns 1,2 -display-column-separator '\t' -kb-custom-1 'Alt+Return' \
-    -mesg 'Enter: type    Alt+Enter: copy only') || rc=$?
-[[ $rc == 0 || $rc == 10 ]] || exit 0
+# NORMAL y (yank) = Alt+Enter: copy only
+export FZF_MENU_NORMAL_BINDS='y:become(printf "alt-enter\n%s\n" {1})'
+res=$(awk -F'\t' '!/^#/ && NF >= 2 && $1 != "" { t = $2; gsub(/\\n/, " ", t); printf "%s\t%s\n", $1, substr(t, 1, 70) }' "$FILE" |
+  fzf-menu -p snippet --delimiter=$'\t' --tabstop=24 --expect=alt-enter \
+    --header 'Enter: type    Alt+Enter / y: copy only') || exit 0
+key=$(sed -n 1p <<<"$res")
+pick=$(sed -n 2p <<<"$res")
 name=${pick%%$'\t'*}
 [[ -n $name ]] || exit 0
 out=$(expand "$(text_of "$name")"; echo x); out=${out%x}
-if [[ $rc == 10 ]] || ! command -v wtype >/dev/null 2>&1; then
+if [[ $key == alt-enter ]] || ! command -v wtype >/dev/null 2>&1; then
   printf '%s' "$out" | wl-copy
   notify-send -a snippets -t 2000 "Snippet copied" "$name"
 else

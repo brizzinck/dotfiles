@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Keybind cheatsheet from the live bind table (descriptions come from the Lua binds). SUPER+/.
+# Keybind cheatsheet (fzf-menu, vim keys) from the live bind table (descriptions come from the Lua binds). SUPER+/.
 set -u
 
 hyprctl binds -j | jq -r '
@@ -16,4 +16,4 @@ hyprctl binds -j | jq -r '
     | { sub: (if .submap == "" then "" else "[" + .submap + "] " end), key: keylabel, desc: .description } ]
   | (.[] | "\(.sub)\(.key)\t\(.desc)"),
     "SUPER+1..0 / +ALT\tWorkspace 1-10 / 11-20 (add SHIFT to move a window)"
-' | column -t -s $'\t' | rofi -dmenu -i -p keys -no-custom -theme-str 'window { width: 880px; } listview { lines: 18; }' >/dev/null
+' | column -t -s $'\t' | fzf-menu -p keys --header 'Esc: normal mode   /: search   q: close' >/dev/null

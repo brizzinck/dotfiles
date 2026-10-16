@@ -8,7 +8,7 @@
 #   keep-awake.sh off | stop               release
 #   keep-awake.sh status                   exit 0 and print the state when active, exit 1 when off
 #   keep-awake.sh waybar                   JSON for the custom/keepawake module (empty text when off)
-#   keep-awake.sh menu                     rofi duration picker
+#   keep-awake.sh menu                     duration picker (fzf-menu)
 #   --dry-run                              print what would happen, change nothing
 #
 # The inhibitor is `systemd-inhibit --what=idle:sleep --mode=block` held by a user process (pid file in
@@ -152,9 +152,9 @@ waybar() {
 
 menu() {
   local pick
-  command -v rofi >/dev/null 2>&1 || { note "Keep awake" "rofi not found"; return 1; }
+  command -v fzf-menu >/dev/null 2>&1 || { note "Keep awake" "fzf-menu not found"; return 1; }
   pick=$(printf '%s\n' '15 minutes' '1 hour' '2 hours' '4 hours' 'Until switched off' 'Off' |
-    rofi -dmenu -i -p 'keep awake') || return 0
+    fzf-menu -p 'keep awake') || return 0
   case $pick in
     '15 minutes') run 15m ;;
     '1 hour') run 1h ;;

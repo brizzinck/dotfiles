@@ -1,23 +1,26 @@
 #!/usr/bin/env bash
-# Clipboard history: cliphist + rofi, with pins, image thumbnails and a type filter. SUPER+C.
+# Clipboard history: cliphist + fzf-menu (vim keys), with pins, a large image preview and a type filter. SUPER+C.
 #   Enter      paste the entry into the window that was focused before the menu (CTRL+V, CTRL+SHIFT+V in terminals)
-#   Alt+Enter  only copy it
-#   Alt+p      pin / unpin (pins are text only, kept in ~/.local/share/clip-pins and shown first)
-#   Alt+d      delete (a pin: unpin)
-#   Alt+i      images only (again: all)        Alt+t   text only (again: all)
-# The menu reopens after Alt+p / Alt+d / Alt+i / Alt+t. Image rows get a thumbnail icon from a tmpfs cache
-# ($XDG_RUNTIME_DIR/cliphist-thumbs, one file per entry id, pruned when the entry leaves the history).
+#   Alt+Enter  only copy it                 NORMAL: y (yank) copies, Enter pastes
+#   Alt+p      pin / unpin (pins are text only, kept in ~/.local/share/clip-pins and shown first)     NORMAL: m (mark)
+#   Alt+d      delete (a pin: unpin)                                                                   NORMAL: d
+#   Alt+i      images only (again: all)     NORMAL: f          Alt+t   text only (again: all)       NORMAL: t
+# Pin, delete and the filters act inside the open list (no reopening). The preview pane shows the selected text, or
+# the image itself (kitty graphics, decoded on demand into a tmpfs cache, $XDG_RUNTIME_DIR/cliphist-preview).
 # History entries are never password-manager copies (cliphist skips the sensitive hint), so there is no hint to keep.
 #
 #   clipboard.sh --list [img|txt]     print the rows (pins first)
-#   clipboard.sh --thumbs             refresh the thumbnail cache and list it (tests)
+#   clipboard.sh --rows               the rows of the current filter (the menu reloads with this)
+#   clipboard.sh --preview ID         the preview pane for one row
+#   clipboard.sh --delete ID | --pin ID | --filter img|txt   the in-menu actions
 #   clipboard.sh --pin-text TEXT      pin text (tests / hub)
 #   clipboard.sh --unpin N            remove pin N (1-based)
 #   clipboard.sh --paste-last-image   SUPER+ALT+V: newest image from the history (else the newest file in
 #                                     ~/pics/screenshots) back into the clipboard, pasted into the active window
-#   clipboard.sh --do ROW [--copy]    run the Enter (or Alt+Enter) action on one row without rofi (tests)
+#   clipboard.sh --do ROW [--copy]    run the Enter (or Alt+Enter) action on one row without the menu (tests)
 #   --dry-run (first argument)        print what would be copied / sent, change nothing
-# Test knobs: CLIP_DB (cliphist db path), CLIP_PINS, CLIP_THUMBS, CLIP_SHOTS, CLIP_PREV (window address).
+# Test knobs: CLIP_DB (cliphist db path), CLIP_PINS, CLIP_PREVIEW, CLIP_SHOTS, CLIP_PREV (window address),
+# FZF_MENU_HERE=1 (run the menu in the current terminal).
 set -u
 
 SCRIPTS=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
@@ -25,20 +28,17 @@ SCRIPTS=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 . "$SCRIPTS/paste-lib.sh"
 
 PINS="${CLIP_PINS:-${XDG_DATA_HOME:-$HOME/.local/share}/clip-pins}"   # one base64 line per pinned text
-THUMBS="${CLIP_THUMBS:-${XDG_RUNTIME_DIR:-/tmp}/cliphist-thumbs}"
+PREVIEW_CACHE="${CLIP_PREVIEW:-${XDG_RUNTIME_DIR:-/tmp}/cliphist-preview}"
+MODE_FILE="${CLIP_MODE_FILE:-${XDG_RUNTIME_DIR:-/tmp}/cliphist-mode}"
 SHOTS="${CLIP_SHOTS:-$HOME/pics/screenshots}"
-THUMB_PX=160
+SELF=$(readlink -f "${BASH_SOURCE[0]}")
+FZF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/fzf"
 PIN_ICON='󰐃'
 DRY=0
 if [[ ${1:-} == --dry-run ]]; then DRY=1; PASTE_DRY=1; export PASTE_DRY; shift; fi
 
-# Layout-independent rofi keys (ua/ru twins), generated: ~/.config/layout/layout.py
-# shellcheck source=/dev/null
-. "${XDG_CONFIG_HOME:-$HOME/.config}/layout/layout-keys.sh" 2>/dev/null || lk_rofi() { printf '%s' "$1"; }
-
 ch() { if [[ -n ${CLIP_DB:-} ]]; then cliphist -db-path "$CLIP_DB" "$@"; else cliphist "$@"; fi; }
 
-pin_count() { [[ -f $PINS ]] && wc -l <"$PINS" || echo 0; }
 pin_get() { sed -n "${1}p" "$PINS" 2>/dev/null | base64 -d 2>/dev/null; }
 pin_add() { # text
   local enc
@@ -76,53 +76,71 @@ rows() { # [all|img|txt]
   esac
 }
 
-# --- thumbnails ---------------------------------------------------------------------------------------------------
-scale() { # stdin image -> stdout png no larger than THUMB_PX; the original bytes when no scaler is installed
-  if command -v magick >/dev/null 2>&1; then
-    magick - -thumbnail "${THUMB_PX}x${THUMB_PX}>" png:- 2>/dev/null
-  elif command -v convert >/dev/null 2>&1; then
-    convert - -thumbnail "${THUMB_PX}x${THUMB_PX}>" png:- 2>/dev/null
+# --- modes and previews -------------------------------------------------------------------------------------------
+mode_get() { cat "$MODE_FILE" 2>/dev/null || echo all; }
+mode_toggle() { # img|txt: the same filter again goes back to all
+  local cur
+  cur=$(mode_get)
+  if [[ $cur == "$1" ]]; then echo all >"$MODE_FILE"; else echo "$1" >"$MODE_FILE"; fi
+}
+mode_header() {
+  local m
+  m=$(mode_get)
+  case $m in img) m='images only' ;; txt) m='text only' ;; *) m='all' ;; esac
+  printf 'clipboard: %s\nEnter paste  Alt+Enter/y copy  Alt+p/m pin  Alt+d/d delete  Alt+i/f images  Alt+t/t text' "$m"
+}
+row_of() { # id -> the full cliphist row
+  ch list 2>/dev/null | awk -F'\t' -v id="$1" '$1 == id { print; exit }'
+}
+preview() { # id: the text, or the decoded image drawn by image-preview.sh
+  local id=$1 row f lines
+  if [[ $id == pin:* ]]; then
+    pin_get "${id#pin:}" | head -c 20000
+    return 0
+  fi
+  row=$(row_of "$id")
+  [[ -n $row ]] || { echo "entry is gone"; return 0; }
+  if [[ $row == *$'\t[[ binary data '* ]]; then
+    ( umask 077; mkdir -p "$PREVIEW_CACHE" ) && chmod 700 "$PREVIEW_CACHE"
+    f="$PREVIEW_CACHE/$id.img"
+    [[ -s $f ]] || printf '%s\t\n' "$id" | ch decode >"$f" 2>/dev/null
+    printf '%s\n' "${row#*$'\t'}"
+    lines=$(( ${FZF_PREVIEW_LINES:-24} - 2 ))
+    FZF_PREVIEW_LINES=$(( lines < 4 ? 4 : lines )) "$FZF_DIR/image-preview.sh" "$f"
   else
-    cat
+    printf '%s\t\n' "$id" | ch decode 2>/dev/null | head -c 20000
   fi
 }
-thumb_make() { # id (run in parallel by thumbs_sync)
-  local id=$1 tmp
-  [[ -s $THUMBS/$id.png ]] && return 0
-  tmp=$(mktemp "$THUMBS/.tmp.XXXXXX") || return 1
-  if printf '%s\t\n' "$id" | ch decode 2>/dev/null | scale >"$tmp" && [[ -s $tmp ]]; then
-    mv -f "$tmp" "$THUMBS/$id.png"
-  else
-    rm -f "$tmp"
-  fi
-}
-thumbs_sync() { # decode only the missing thumbnails, drop the ones whose entry left the history
-  ( umask 077; mkdir -p "$THUMBS" ) && chmod 700 "$THUMBS" || return 0
-  local ids f id
+prune_previews() { # drop cached images whose entry left the history
+  local f id ids
+  [[ -d $PREVIEW_CACHE ]] || return 0
   ids=$(list_images | cut -f1)
-  for f in "$THUMBS"/*.png; do
+  for f in "$PREVIEW_CACHE"/*.img; do
     [[ -e $f ]] || continue
-    id=${f##*/}; id=${id%.png}
+    id=${f##*/}; id=${id%.img}
     grep -qxF "$id" <<<"$ids" || rm -f "$f"
   done
-  rm -f "$THUMBS"/.tmp.* 2>/dev/null
-  export -f thumb_make scale ch
-  export THUMBS THUMB_PX CLIP_DB
-  # shellcheck disable=SC2016
-  ( umask 077
-    while read -r id; do [[ -n $id && ! -s $THUMBS/$id.png ]] && echo "$id"; done <<<"$ids" |
-      xargs -r -P4 -n1 bash -c 'thumb_make "$1"' _ )
 }
-rofi_rows() { # mode: the rows, image rows carry the thumbnail as the rofi row icon
-  local line id
-  while IFS= read -r line; do
-    id=${line%%$'\t'*}
-    if [[ $line == *$'\t[[ binary data '* && -s $THUMBS/$id.png ]]; then
-      printf '%s\0icon\x1f%s\n' "$line" "$THUMBS/$id.png"
-    else
-      printf '%s\n' "$line"
-    fi
-  done < <(rows "$1")
+rows_now() { rows "$(mode_get)"; }
+
+# in-menu actions
+act_delete() { # id
+  local id=$1 row
+  if [[ $id == pin:* ]]; then pin_del "${id#pin:}"; return 0; fi
+  row=$(row_of "$id")
+  [[ -n $row ]] && printf '%s' "$row" | ch delete
+}
+act_pin() { # id
+  local id=$1 row txt pin
+  if [[ $id == pin:* ]]; then pin_del "${id#pin:}"; return 0; fi
+  row=$(row_of "$id")
+  [[ -n $row ]] || return 0
+  if [[ $row == *'[[ binary data'* ]]; then
+    notify-send -a clipboard -t 2000 "Clipboard" "only text can be pinned"
+    return 0
+  fi
+  txt=$(printf '%s' "$row" | ch decode; echo x); txt=${txt%x}
+  if pin=$(pin_find "$txt") && [[ -n $pin ]]; then pin_del "$pin"; else pin_add "$txt"; fi
 }
 
 # --- actions ------------------------------------------------------------------------------------------------------
@@ -150,8 +168,13 @@ last_image() { # newest image of the history, else the newest screenshot file ->
 }
 
 case ${1:-} in
-  --thumbs) thumbs_sync; ls "$THUMBS"; exit 0 ;;
   --list) rows "${2:-all}"; exit 0 ;;
+  --rows) rows_now; exit 0 ;;
+  --header) mode_header; exit 0 ;;
+  --preview) preview "${2:?id}"; exit 0 ;;
+  --delete) act_delete "${2:?id}"; exit 0 ;;
+  --pin) act_pin "${2:?id}"; exit 0 ;;
+  --filter) mode_toggle "${2:?img|txt}"; exit 0 ;;
   --pin-text) pin_add "${2:?text}"; exit 0 ;;
   --unpin) pin_del "${2:?n}"; exit 0 ;;
   --paste-last-image)
@@ -166,50 +189,28 @@ case ${1:-} in
     exit 0 ;;
 esac
 
-# the window to paste into: whatever has focus before rofi takes the keyboard
+# the window to paste into: whatever has focus before the menu opens
 prev=${CLIP_PREV:-$(hyprctl activewindow -j 2>/dev/null | jq -r '.address // ""')}
-mode=all
-while true; do
-  rc=0
-  thumbs_sync
-  case $mode in img) label='clip: images' ;; txt) label='clip: text' ;; *) label=clip ;; esac
-  # text rows reserve the icon height too, so the icons stay small in the mixed list and big in the images view
-  icon=
-  case $mode in img) icon='element-icon { size: 6em; }' ;; all) [[ -n $(ls -A "$THUMBS" 2>/dev/null) ]] && icon='element-icon { size: 3.4em; }' ;; esac
-  pick=$(rofi_rows "$mode" | rofi -dmenu -i -p "$label" -display-columns 2 \
-    -kb-custom-1 "$(lk_rofi 'Alt+d')" -kb-custom-2 "$(lk_rofi 'Alt+p')" -kb-custom-3 "$(lk_rofi 'Alt+i')" \
-    -kb-custom-4 "$(lk_rofi 'Alt+t')" -kb-custom-5 'Alt+Return' \
-    -theme-str "$icon" \
-    -mesg 'Enter: paste    Alt+Enter: copy    Alt+p: pin    Alt+d: delete    Alt+i: images    Alt+t: text') || rc=$?
-  id=${pick%%$'\t'*}
-  case $rc in
-    0)
-      [[ -n $pick ]] || exit 0
-      copy_row "$pick"
-      paste_to "$prev"
-      exit 0 ;;
-    14)
-      [[ -n $pick ]] && copy_row "$pick"
-      exit 0 ;;
-    10)
-      [[ -n $pick ]] || continue
-      if [[ $id == pin:* ]]; then pin_del "${id#pin:}"; else printf '%s' "$pick" | ch delete; fi ;;
-    11)
-      [[ -n $pick ]] || continue
-      if [[ $id == pin:* ]]; then
-        pin_del "${id#pin:}"
-      else
-        txt=$(printf '%s' "$pick" | ch decode; echo x); txt=${txt%x}
-        if [[ $pick == *'[[ binary data'* ]]; then
-          notify-send -a clipboard -t 2000 "Clipboard" "only text can be pinned"
-        elif pin=$(pin_find "$txt") && [[ -n $pin ]]; then
-          pin_del "$pin"
-        else
-          pin_add "$txt"
-        fi
-      fi ;;
-    12) [[ $mode == img ]] && mode=all || mode=img ;;
-    13) [[ $mode == txt ]] && mode=all || mode=txt ;;
-    *) exit 0 ;;
-  esac
-done
+echo all >"$MODE_FILE"
+prune_previews
+# in-menu actions: edit, then reload the rows and the header; NORMAL-mode letters are the vim spellings
+reload="reload($SELF --rows)+transform-header($SELF --header)"
+act_d="execute-silent($SELF --delete {1})+$reload"
+act_p="execute-silent($SELF --pin {1})+$reload"
+act_i="execute-silent($SELF --filter img)+$reload"
+act_t="execute-silent($SELF --filter txt)+$reload"
+export FZF_MENU_NORMAL_BINDS="d:$act_d
+m:$act_p
+f:$act_i
+t:$act_t
+y:become(printf 'alt-enter\n%s\n' {})"
+out=$(rows_now | fzf-menu -p clip --delimiter=$'\t' --with-nth=2.. --no-sort --expect=alt-enter \
+  --header "$(mode_header)" \
+  --bind "alt-d:$act_d" --bind "alt-p:$act_p" --bind "alt-i:$act_i" --bind "alt-t:$act_t" \
+  --preview "$SELF --preview {1}" --preview-window 'right,55%,wrap,border-left') || exit 0
+key=$(sed -n 1p <<<"$out")
+pick=$(sed -n '2,$p' <<<"$out")
+[[ -n $pick ]] || exit 0
+copy_row "$pick"
+[[ $key == alt-enter ]] || paste_to "$prev"
+exit 0

@@ -23,7 +23,7 @@ if [ -n "${1:-}" ]; then
 else
   preview='eza -1 --git {} 2>/dev/null || ls -1 {}'
   dir=$(list_dirs | awk 'NF && !seen[$0]++' |
-    fzf --prompt='project> ' --preview "$preview" --preview-window=right:50%) || exit 0
+    "$HOME/.local/bin/fzf-menu" --here -p project --preview "$preview" --preview-window=right:50%) || exit 0
 fi
 [ -d "$dir" ] || exit 0
 dir="${dir%/}"

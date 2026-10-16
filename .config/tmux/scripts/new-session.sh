@@ -7,17 +7,17 @@ name="$(echo "$raw_name" | xargs)"
 name="${name// /_}"
 
 if [ -z "$name" ]; then
-  tmux display-message "Ошибка: имя сессии обязательно!"
+  tmux display-message "Error: a session name is required!"
   exit 1
 fi
 
 if [[ ! "$name" =~ ^[a-zA-Z0-9._-]+$ ]]; then
-  tmux display-message "Ошибка: недопустимые символы в имени сессии!"
+  tmux display-message "Error: invalid characters in the session name!"
   exit 1
 fi
 
 if tmux has-session -t "=$name" 2>/dev/null; then
-  tmux display-message "Ошибка: сессия '${name}' уже существует!"
+  tmux display-message "Error: session '${name}' already exists!"
   exit 1
 fi
 
@@ -31,4 +31,4 @@ tmux new-session -d -s "$name" -c "$start_path"
 if [ -n "${TMUX:-}" ]; then
   tmux switch-client -t "$name"
 fi
-tmux display-message "Сессия '${name}' создана"
+tmux display-message "Session '${name}' created"

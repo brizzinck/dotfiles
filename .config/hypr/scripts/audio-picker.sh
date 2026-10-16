@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Output / input device picker in rofi. SUPER+SHIFT+A, also a hub row.
+# Output / input device picker (fzf-menu, vim keys). SUPER+SHIFT+A, also a hub row.
 #   Enter      make the device the default and move the running streams to it
 #   Alt+Enter  make it the default only (running streams stay where they are)
 #   audio-picker.sh --list              print the rows (index, kind, id, default marker, name)
-#   audio-picker.sh --pick N [--keep]   apply row N without rofi (--keep = Alt+Enter behaviour)
+#   audio-picker.sh --pick N [--keep]   apply row N without the menu (--keep = Alt+Enter behaviour)
 #   --dry-run                           print the commands instead of running them
 # Pattern after Omarchy omarchy-audio-output-switch (MIT).
 set -u
@@ -49,10 +49,12 @@ if ((LIST)); then
 fi
 
 if [[ -z $PICK ]]; then
-  rc=0
-  PICK=$(printf '%s\n' "${labels[@]}" | rofi -dmenu -i -format i -p audio \
-    -kb-custom-1 'Alt+Return' -mesg '● = default    Enter: set default + move streams    Alt+Enter: set default only') || rc=$?
-  case $rc in 0) ;; 10) KEEP=1 ;; *) exit 0 ;; esac
+  # NORMAL y (yank) behaves like Alt+Enter: leave the list as if that --expect key had been pressed
+  export FZF_MENU_NORMAL_BINDS='y:become(printf "alt-enter\n%s\n" {1})'
+  out=$(printf '%s\n' "${labels[@]}" | fzf-menu -p audio --index --expect=alt-enter \
+    --header '● = default    Enter: set default + move streams    Alt+Enter / y: set default only') || exit 0
+  [[ $(sed -n 1p <<<"$out") == alt-enter ]] && KEEP=1
+  PICK=$(sed -n 2p <<<"$out")
   [[ -n $PICK ]] || exit 0
 fi
 [[ $PICK =~ ^[0-9]+$ && -n ${ROWS[$PICK]:-} ]] || { echo "audio-picker: bad row '$PICK'" >&2; exit 2; }

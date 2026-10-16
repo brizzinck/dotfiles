@@ -19,12 +19,12 @@ label="$(echo "$raw_label" | xargs)"
 label="${label// /_}"
 
 if [ -z "$label" ]; then
-  tmux display-message "Ошибка: имя снапшота обязательно!"
+  tmux display-message "Error: a snapshot name is required!"
   exit 1
 fi
 
 if [[ ! "$label" =~ ^[a-zA-Z0-9._-]+$ ]]; then
-  tmux display-message "Ошибка: недопустимые символы в имени снапшота!"
+  tmux display-message "Error: invalid characters in the snapshot name!"
   exit 1
 fi
 
@@ -39,7 +39,7 @@ existing=( "$RESURRECT_DIR"/snapshot_"${label}"_$TS_GLOB.txt )
 shopt -u nullglob
 
 if [ ${#existing[@]} -gt 0 ] && [ "$replace" = false ]; then
-  tmux display-message "Ошибка: снапшот с именем '${label}' уже существует!"
+  tmux display-message "Error: a snapshot named '${label}' already exists!"
   exit 1
 fi
 
@@ -68,7 +68,7 @@ for f in "${existing[@]}"; do
 done
 
 if [ "$replace" = true ] && [ ${#existing[@]} -gt 0 ]; then
-  tmux display-message "Снапшот '${label}' обновлён"
+  tmux display-message "Snapshot '${label}' updated"
 else
-  tmux display-message "Снапшот '${label}' успешно сохранён"
+  tmux display-message "Snapshot '${label}' saved"
 fi
