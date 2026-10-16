@@ -1,18 +1,18 @@
 # U3: sound and capture. Format: see the header of ~/.config/hub/hub.
-app-vol-up	Sound	Focused app volume up	SUPER+XF86AudioRaiseVolume	run	~/.config/hypr/scripts/win-volume.sh up --addr "${HUB_TARGET:-}"	-	pw-dump wpctl	Raises only the PipeWire playback streams of the window that was focused (native: pid and children, flatpak: portal app id = class).
-app-vol-down	Sound	Focused app volume down	SUPER+XF86AudioLowerVolume	run	~/.config/hypr/scripts/win-volume.sh down --addr "${HUB_TARGET:-}"	-	pw-dump wpctl	-
-app-vol-mute	Sound	Focused app mute / unmute	SUPER+XF86AudioMute	run	~/.config/hypr/scripts/win-volume.sh mute --addr "${HUB_TARGET:-}"	-	pw-dump wpctl	-
+app-vol-up	Sound	Focused app volume up	SUPER+XF86AudioRaiseVolume	run	~/.config/hypr/scripts/win-volume.sh up --addr "${HUB_TARGET:-}"	-	pw-dump wpctl	Raises only the PipeWire playback streams of the window that was focused (native: pid and children, flatpak: portal app id = class).	a u;App volume up
+app-vol-down	Sound	Focused app volume down	SUPER+XF86AudioLowerVolume	run	~/.config/hypr/scripts/win-volume.sh down --addr "${HUB_TARGET:-}"	-	pw-dump wpctl	-	a d;App volume down
+app-vol-mute	Sound	Focused app mute / unmute	SUPER+XF86AudioMute	run	~/.config/hypr/scripts/win-volume.sh mute --addr "${HUB_TARGET:-}"	-	pw-dump wpctl	-	a x;App mute
 app-vol-list	Sound	Focused app: show matched audio streams	-	tui	+pause ~/.config/hypr/scripts/win-volume.sh --list --addr "${HUB_TARGET:-}"	-	pw-dump wpctl	Diagnostics: which PipeWire clients and sink-input nodes match the focused window.
-audio-picker	Sound	Audio output / input picker	SUPER+SHIFT+A	run	~/.config/hypr/scripts/audio-picker.sh	-	rofi pactl wpctl	Enter sets the default device and moves running streams, Alt+Enter only sets the default.
-capture-menu	Capture	Capture menu	SUPER+CTRL+S	run	~/.config/hypr/scripts/capture.sh	-	rofi	Screenshot, OCR, QR, record, GIF, scrolling shot, colour picker.
-ocr-region	Capture	OCR region to clipboard (rus+eng)	SUPER+SHIFT+O	run	~/.config/hypr/scripts/capture.sh ocr	-	tesseract grim slurp wl-copy	Offline text recognition with tesseract (needs tesseract, tesseract-data-eng, tesseract-data-rus).
+audio-picker	Sound	Audio output / input picker	SUPER+SHIFT+A	run	~/.config/hypr/scripts/audio-picker.sh	-	rofi pactl wpctl	Enter sets the default device and moves running streams, Alt+Enter only sets the default.	a p;Output picker
+capture-menu	Capture	Capture menu	SUPER+CTRL+S	run	~/.config/hypr/scripts/capture.sh	-	rofi	Screenshot, OCR, QR, record, GIF, scrolling shot, colour picker.	c m;Menu
+ocr-region	Capture	OCR region to clipboard (rus+eng)	SUPER+SHIFT+O	run	~/.config/hypr/scripts/capture.sh ocr	-	tesseract grim slurp wl-copy	Offline text recognition with tesseract (needs tesseract, tesseract-data-eng, tesseract-data-rus).	c t;Text (OCR)
 ocr-window	Capture	OCR window to clipboard (rus+eng)	-	run	~/.config/hypr/scripts/capture.sh ocr window "${HUB_TARGET:-}"	-	tesseract grim wl-copy	OCR of the window that was focused before the hub opened.
-qr-scan	Capture	QR: scan region	-	run	~/.config/hypr/scripts/capture.sh --do qr-scan	-	zbarimg grim slurp wl-copy	Decoded text goes to the clipboard. otpauth:// and otpauth-migration:// codes are never copied (use 2fa-import).
+qr-scan	Capture	QR: scan region	-	run	~/.config/hypr/scripts/capture.sh --do qr-scan	-	zbarimg grim slurp wl-copy	Decoded text goes to the clipboard. otpauth:// and otpauth-migration:// codes are never copied (use 2fa-import).	c q;QR scan
 qr-gen	Capture	QR: generate from clipboard	-	run	~/.config/hypr/scripts/capture.sh --do qr-gen	-	qrencode wl-paste	Shows the clipboard text as a QR code in a floating image viewer.
 rec-mic	Toggles	Screen recording with system sound and mic	SUPER+ALT+R	toggle	~/.config/hypr/scripts/rec-toggle.sh --mic	pgrep -x gpu-screen-reco >/dev/null && [ -e "${XDG_RUNTIME_DIR:-/tmp}/rec-mic" ]	gpu-screen-recorder	Focused monitor, two audio tracks: default output and default input.
 rec-region-mic	Capture	Record region with mic	-	run	~/.config/hypr/scripts/rec-toggle.sh region --mic	-	gpu-screen-recorder slurp	-
 rec-window	Capture	Record active window	-	run	~/.config/hypr/scripts/rec-toggle.sh window "${HUB_TARGET:-}"	-	gpu-screen-recorder	-
 rec-stop	Capture	Stop recording	-	run	~/.config/hypr/scripts/rec-toggle.sh stop	-	gpu-screen-recorder	-
-rec-gif	Capture	GIF from the last recording	-	run	~/.config/hypr/scripts/capture.sh --do gif	-	ffmpeg	gifski when installed, ffmpeg palette otherwise. Output next to the video.
-scrollshot	Capture	Scrolling screenshot (wayscrollshot)	-	run	~/.config/hypr/scripts/capture.sh --do scroll	-	wayscrollshot	Select a region, scroll, press S to save or C to copy.
+rec-gif	Capture	GIF from the last recording	-	run	~/.config/hypr/scripts/capture.sh --do gif	-	ffmpeg	gifski when installed, ffmpeg palette otherwise. Output next to the video.	c g;GIF
+scrollshot	Capture	Scrolling screenshot (wayscrollshot)	-	run	~/.config/hypr/scripts/capture.sh --do scroll	-	wayscrollshot	Select a region, scroll, press S to save or C to copy.	c s;Scrolling shot
 color-pick	Capture	Color picker (hex/rgb/hsl/hsv/cmyk)	-	run	~/.config/hypr/scripts/capture.sh --do color	-	hyprpicker rofi	SUPER+SHIFT+C copies hex directly; this asks for the format.

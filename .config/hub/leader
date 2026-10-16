@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""leader: the SUPER+; leader menu (wlr-which-key), generated from the hub rows so the two can never drift.
+
+  leader                 open the menu (renders the config, then runs wlr-which-key)
+  leader KEYS            open it already inside a group, e.g. `leader w`
+  leader gen             print the which-key YAML (look from the active palette variant + the menu)
+  leader check           validate the rows (unknown groups, duplicate keys); exit 1 on a problem
+  leader md              markdown table of the menu (docs/keymap.md)
+
+Rows: actions.tsv and actions.d/*.tsv (format: header of ./hub). A row joins the menu with its `leader` column,
+`<group key> <item key>;<label>` (or `<key>;<label>` for a top-level item); groups are listed in leader-groups.tsv.
+Every item runs `hub --leader ID`, so the menu does what the hub row does (guards, kinds, targets). Keys are written as
+wlr-which-key wants them (a character or an xkb name such as `space`); the menu also works on the ua and ru layouts
+(`auto_kbd_layout`). wlr-which-key is an AUR package (wlr-which-key): without it the command only shows a notification.
+The generated file ~/.config/wlr-which-key/leader.yaml is rewritten on every open and is not part of the repo.
+"""
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+HUB_DIR = Path(__file__).resolve().parent
+REPO = HUB_DIR.parents[1]
+HUB = HUB_DIR / "hub"
+STATE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "wlr-which-key" / "leader.yaml"
+FIELDS = ["id", "group", "title", "keys", "kind", "command", "state", "needs", "desc", "leader"]
+
+
+def read_tsv(path):
+    for line in path.read_text().split("\n"):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        cols = line.split("\t")
+        yield [("" if c == "-" else c) for c in cols]
+
+
+def load_groups():
+    groups = {}
+    for cols in read_tsv(HUB_DIR / "leader-groups.tsv"):
+        groups[cols[0]] = cols[1] if len(cols) > 1 else cols[0]
+    return groups
+
+
+def load_rows():
+    rows = []
+    for path in [HUB_DIR / "actions.tsv", *sorted((HUB_DIR / "actions.d").glob("*.tsv"))]:
+        for cols in read_tsv(path):
+            cols += [""] * (len(FIELDS) - len(cols))
+            rows.append(dict(zip(FIELDS, cols)))
+    return rows
+
+
+def build_menu():
+    """-> (menu, errors); menu = [(key, label, cmd | [(key, label, cmd), ...])] in group-file / row order."""
+    groups = load_groups()
+    errors = []
+    top, sub = {}, {key: {} for key in groups}
+    order = []  # top-level entries in first-seen order: ("item", key) or ("group", key)
+    ids = set()
+    for row in load_rows():
+        if row["id"] in ids:
+            errors.append(f"duplicate row id {row['id']}")
+        ids.add(row["id"])
+        spec = row["leader"]
+        if not spec:
+            continue
+        path, _, label = spec.partition(";")
+        keys = path.split()
+        label = label.strip() or row["title"]
+        cmd = f"{HUB} --leader {row['id']}"
+        if len(keys) == 1:
+            if keys[0] in top or keys[0] in groups:
+                errors.append(f"{row['id']}: top-level key {keys[0]} is already used")
+                continue
+            top[keys[0]] = (label, cmd)
+            order.append(("item", keys[0]))
+        elif len(keys) == 2:
+            group, key = keys
+            if group not in groups:
+                errors.append(f"{row['id']}: unknown group key {group} (leader-groups.tsv)")
+                continue
+            if group in top:
+                errors.append(f"{row['id']}: group key {group} is a top-level item")
+                continue
+            if key in sub[group]:
+                errors.append(f"{row['id']}: duplicate key {group} {key}")
+                continue
+            sub[group][key] = (label, cmd)
+        else:
+            errors.append(f"{row['id']}: bad leader column {spec!r}")
+    menu = []
+    for kind, key in order:
+        label, cmd = top[key]
+        menu.append((key, label, cmd))
+    for key, label in groups.items():
+        if sub[key]:
+            menu.append((key, label, [(k, *v) for k, v in sorted(sub[key].items())]))
+    # top-level items first, then the groups
+    menu.sort(key=lambda e: isinstance(e[2], list))
+    return menu, errors
+
+
+def theme_yaml():
+    for path in (STATE / "theme/current/wlr-which-key.yaml", REPO / "themes/generated/black/wlr-which-key.yaml"):
+        if path.is_file():
+            return path.read_text().rstrip("\n") + "\n"
+    return 'auto_kbd_layout: true\ninhibit_compositor_keyboard_shortcuts: true\n'
+
+
+def q(text):
+    return json.dumps(text, ensure_ascii=False)
+
+
+def render():
+    menu, errors = build_menu()
+    if errors:
+        for e in errors:
+            print(f"leader: {e}", file=sys.stderr)
+        sys.exit(1)
+    out = [theme_yaml(), "menu:\n"]
+    for key, label, body in menu:
+        out.append(f"  - key: {q(key)}\n    desc: {q(label)}\n")
+        if isinstance(body, list):
+            out.append("    submenu:\n")
+            for k, lab, cmd in body:
+                out.append(f"      - key: {q(k)}\n        desc: {q(lab)}\n        cmd: {q(cmd)}\n")
+        else:
+            out.append(f"    cmd: {q(body)}\n")
+    return "".join(out)
+
+
+def markdown():
+    menu, errors = build_menu()
+    if errors:
+        sys.exit("\n".join(errors))
+    lines = ["| Keys | Action |", "|---|---|"]
+    for key, label, body in menu:
+        if isinstance(body, list):
+            items = ", ".join(f"`{k}` {lab}" for k, lab, _ in body)
+            lines.append(f"| `SUPER+;` `{key}` | {label}: {items} |")
+        else:
+            lines.append(f"| `SUPER+;` `{key}` | {label} |")
+    return "\n".join(lines) + "\n"
+
+
+def notify(text):
+    subprocess.run(["notify-send", "-a", "leader", "-u", "low", "-t", "4000", "Leader menu", text], check=False)
+
+
+def main(argv):
+    cmd = argv[0] if argv else "open"
+    if cmd == "gen":
+        sys.stdout.write(render())
+    elif cmd == "check":
+        menu, errors = build_menu()
+        for e in errors:
+            print(f"leader: {e}", file=sys.stderr)
+        if errors:
+            return 1
+        items = sum(len(b) if isinstance(b, list) else 1 for _, _, b in menu)
+        print(f"leader: {len(menu)} top-level entries, {items} items, no problems")
+    elif cmd == "md":
+        sys.stdout.write(markdown())
+    else:
+        keys = " ".join(argv) if cmd != "open" else " ".join(argv[1:])
+        binary = shutil.which("wlr-which-key")
+        if not binary:
+            notify("wlr-which-key is not installed (AUR; install it with: sudo ~/dotfiles/apply-system.sh --only install)")
+            return 0
+        text = render()
+        CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        if not CONFIG.exists() or CONFIG.read_text() != text:
+            tmp = CONFIG.with_suffix(".tmp")
+            tmp.write_text(text)
+            tmp.replace(CONFIG)
+        args = [binary, "leader"]
+        if keys:
+            args += ["--initial-keys", keys]
+        os.execv(binary, args)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

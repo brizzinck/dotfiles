@@ -2,48 +2,48 @@
 # Columns and kinds are documented at the top of ~/.config/hub/hub. `-` = empty, trailing columns may be omitted.
 # Later stages append rows here (or drop a *.tsv into actions.d/). Rows whose command/needs is not installed are hidden.
 # Every described Hyprland bind is imported live in addition to these rows; matching titles/keys are merged.
-idle	Toggles	Idle: dim, clock screensaver, panel off (hypridle)	SUPER+CTRL+I	toggle	~/.config/hypr/scripts/idle-toggle.sh	pgrep -x hypridle	hypridle	ON = hypridle runs (screen dims, clock screensaver, panel off). The machine never suspends or locks by itself.
-nightlight	Toggles	Night light (hyprsunset 4500K)	SUPER+SHIFT+N	toggle	pkill -x hyprsunset || hyprsunset -t 4500	pgrep -x hyprsunset	hyprsunset	-
-dnd	Toggles	Do not disturb (dunst)	SUPER+CTRL+X	toggle	dunstctl set-paused toggle	[ "$(dunstctl is-paused)" = true ]	dunstctl	ON = notifications are paused and collect in the history.
+idle	Toggles	Idle: dim, clock screensaver, panel off (hypridle)	SUPER+CTRL+I	toggle	~/.config/hypr/scripts/idle-toggle.sh	pgrep -x hypridle	hypridle	ON = hypridle runs (screen dims, clock screensaver, panel off). The machine never suspends or locks by itself.	p i;Idle toggle
+nightlight	Toggles	Night light (hyprsunset 4500K)	SUPER+SHIFT+N	toggle	pkill -x hyprsunset || hyprsunset -t 4500	pgrep -x hyprsunset	hyprsunset	-	p n;Night light
+dnd	Toggles	Do not disturb (dunst)	SUPER+CTRL+X	toggle	dunstctl set-paused toggle	[ "$(dunstctl is-paused)" = true ]	dunstctl	ON = notifications are paused and collect in the history.	n d;Do not disturb
 wifi	Toggles	Wi-Fi radio	-	toggle	nmcli radio wifi "$(nmcli radio wifi | grep -q "^enabled" && echo off || echo on)"	nmcli radio wifi | grep -q "^enabled"	nmcli	-
 bluetooth	Toggles	Bluetooth power	-	toggle	bluetoothctl power "$(bluetoothctl show | grep -q "Powered: yes" && echo off || echo on)"	bluetoothctl show | grep -q "Powered: yes"	bluetoothctl	-
-mic-mute	Toggles	All microphones muted	SUPER+SHIFT+M	toggle	~/.config/hypr/scripts/mic-mute-all.sh	~/.config/hypr/scripts/mic-mute-all.sh status >/dev/null	wpctl pw-dump	ON = every microphone is muted. Pressing again unmutes the default one only.
-out-mute	Toggles	Speakers muted	XF86AudioMute	toggle	swayosd-client --output-volume mute-toggle || wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle	wpctl get-volume @DEFAULT_AUDIO_SINK@ | grep -q MUTED	wpctl	ON = the default output is muted.
-recording	Toggles	Screen recording	SUPER+R	toggle	~/.config/hypr/scripts/rec-toggle.sh	pgrep -x gpu-screen-reco	gpu-screen-recorder	Starts or stops a gpu-screen-recorder recording of the focused monitor.
-lock	Session	Lock screen (password)	SUPER+Escape	run	pidof hyprlock || hyprlock	-	hyprlock	-
-powermenu	Session	Power menu	SUPER+SHIFT+Escape	run	~/.config/hypr/scripts/powermenu.sh	-	rofi	Lock, suspend, logout, reboot, poweroff.
-screensaver	Session	Screensaver test (clock, any input dismisses)	-	run	~/.config/hypr/scripts/screensaver.sh start	-	hyprlock	-
+mic-mute	Toggles	All microphones muted	SUPER+SHIFT+M	toggle	~/.config/hypr/scripts/mic-mute-all.sh	~/.config/hypr/scripts/mic-mute-all.sh status >/dev/null	wpctl pw-dump	ON = every microphone is muted. Pressing again unmutes the default one only.	a m;Mute mics
+out-mute	Toggles	Speakers muted	XF86AudioMute	toggle	swayosd-client --output-volume mute-toggle || wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle	wpctl get-volume @DEFAULT_AUDIO_SINK@ | grep -q MUTED	wpctl	ON = the default output is muted.	a s;Mute speakers
+recording	Toggles	Screen recording	SUPER+R	toggle	~/.config/hypr/scripts/rec-toggle.sh	pgrep -x gpu-screen-reco	gpu-screen-recorder	Starts or stops a gpu-screen-recorder recording of the focused monitor.	c v;Record toggle
+lock	Session	Lock screen (password)	SUPER+Escape	run	pidof hyprlock || hyprlock	-	hyprlock	-	p l;Lock
+powermenu	Session	Power menu	SUPER+SHIFT+Escape	run	~/.config/hypr/scripts/powermenu.sh	-	rofi	Lock, suspend, logout, reboot, poweroff.	p m;Power menu
+screensaver	Session	Screensaver test (clock, any input dismisses)	-	run	~/.config/hypr/scripts/screensaver.sh start	-	hyprlock	-	p s;Screensaver
 wallpaper	Session	Reload wallpaper	SUPER+O	run	pgrep swaybg && killall swaybg; swaybg -i ~/pics/walls/lol.jpg	-	swaybg	-
-shot-region	Capture	Screenshot: region	Print	run	hyprshot -m region -o ~/pics/screenshots	-	hyprshot	Saved to ~/pics/screenshots and copied.
-shot-monitor	Capture	Screenshot: active monitor	SHIFT+Print	run	hyprshot -m output -m active -o ~/pics/screenshots	-	hyprshot	-
-shot-window	Capture	Screenshot: active window	SUPER+Print	run	hyprshot -m window -m active -o ~/pics/screenshots	-	hyprshot	Targets the window that was focused before the hub opened.
-shot-annotate	Capture	Screenshot: region, then annotate (satty)	SUPER+SHIFT+S	run	grim -g "$(slurp)" - | satty -f - --copy-command wl-copy --output-filename ~/pics/screenshots/%F_%T.png	-	grim slurp satty	-
-rec-region	Capture	Record region	SUPER+SHIFT+R	run	~/.config/hypr/scripts/rec-toggle.sh region	-	gpu-screen-recorder	-
-colorpicker	Capture	Color picker (copies hex)	SUPER+SHIFT+C	run	hyprpicker -a	-	hyprpicker	-
-clipboard	Clipboard	Clipboard history	SUPER+C	run	~/.config/hypr/scripts/clipboard.sh	-	cliphist rofi	Enter pastes into the previous window, Alt+Enter only copies, Alt+p pins, Alt+d deletes, Alt+i images only, Alt+t text only.
-emoji	Clipboard	Emoji picker	SUPER+period	run	rofimoji	-	rofimoji	-
-notif-history	Notify	Notification history (pop last)	SUPER+SHIFT+X	run	dunstctl history-pop	-	dunstctl	-
-notif-dismiss	Notify	Dismiss notification	SUPER+X	run	dunstctl close	-	dunstctl	-
-notif-dismiss-all	Notify	Dismiss all notifications	-	run	dunstctl close-all	-	dunstctl	-
-win-menu	Windows	This window: action menu	SUPER+SHIFT+W	run	~/.config/hypr/scripts/window-menu.sh	-	rofi	Float, pin, opacity, move, screenshot, copy class, close, kill... on the window that was focused before the hub opened.
-win-switch	Windows	Window switcher (all workspaces)	SUPER+SHIFT+space	run	~/.config/hypr/scripts/window-switcher.sh	-	rofi	-
-launcher	Windows	App launcher	SUPER+space	run	pkill rofi || rofi -show drun	-	rofi	-
+shot-region	Capture	Screenshot: region	Print	run	hyprshot -m region -o ~/pics/screenshots	-	hyprshot	Saved to ~/pics/screenshots and copied.	c r;Region
+shot-monitor	Capture	Screenshot: active monitor	SHIFT+Print	run	hyprshot -m output -m active -o ~/pics/screenshots	-	hyprshot	-	c o;Output
+shot-window	Capture	Screenshot: active window	SUPER+Print	run	hyprshot -m window -m active -o ~/pics/screenshots	-	hyprshot	Targets the window that was focused before the hub opened.	c w;Window
+shot-annotate	Capture	Screenshot: region, then annotate (satty)	SUPER+SHIFT+S	run	grim -g "$(slurp)" - | satty -f - --copy-command wl-copy --output-filename ~/pics/screenshots/%F_%T.png	-	grim slurp satty	-	c a;Annotate
+rec-region	Capture	Record region	SUPER+SHIFT+R	run	~/.config/hypr/scripts/rec-toggle.sh region	-	gpu-screen-recorder	-	c b;Record region
+colorpicker	Capture	Color picker (copies hex)	SUPER+SHIFT+C	run	hyprpicker -a	-	hyprpicker	-	c p;Color picker
+clipboard	Clipboard	Clipboard history	SUPER+C	run	~/.config/hypr/scripts/clipboard.sh	-	cliphist rofi	Enter pastes into the previous window, Alt+Enter only copies, Alt+p pins, Alt+d deletes, Alt+i images only, Alt+t text only.	y h;History
+emoji	Clipboard	Emoji picker	SUPER+period	run	rofimoji	-	rofimoji	-	y e;Emoji
+notif-history	Notify	Notification history (pop last)	SUPER+SHIFT+X	run	dunstctl history-pop	-	dunstctl	-	n h;History
+notif-dismiss	Notify	Dismiss notification	SUPER+X	run	dunstctl close	-	dunstctl	-	n x;Dismiss
+notif-dismiss-all	Notify	Dismiss all notifications	-	run	dunstctl close-all	-	dunstctl	-	n a;Dismiss all
+win-menu	Windows	This window: action menu	SUPER+SHIFT+W	run	~/.config/hypr/scripts/window-menu.sh	-	rofi	Float, pin, opacity, move, screenshot, copy class, close, kill... on the window that was focused before the hub opened.	w m;Action menu
+win-switch	Windows	Window switcher (all workspaces)	SUPER+SHIFT+space	run	~/.config/hypr/scripts/window-switcher.sh	-	rofi	-	w s;Switcher
+launcher	Windows	App launcher	SUPER+space	run	pkill rofi || rofi -show drun	-	rofi	-	space;Apps
 sessionizer	TUI	Project sessions (tmux sessionizer)	SUPER+P	run	ghostty -e ~/.config/tmux/scripts/sessionizer.sh	-	ghostty tmux fzf	-
-sysup	TUI	System update (sysup)	SUPER+SHIFT+U	tui	zsh -ic 'sysup; read -k1'	-	zsh yay	Arch news, yay -Syu, flatpak, pacnew, cache cleanup.
+sysup	TUI	System update (sysup)	SUPER+SHIFT+U	tui	zsh -ic 'sysup; read -k1'	-	zsh yay	Arch news, yay -Syu, flatpak, pacnew, cache cleanup.	s u;Update
 vpn	TUI	VPN / proxy toggle (vpn)	-	tui	zsh -ic vpn	-	zsh	fzf over the VPN daemons present on this machine; asks for sudo.
 jf	TUI	Fuzzy journal (jf)	-	tui	zsh -ic jf	-	zsh journalctl fzf	journalctl -b piped into fzf.
-btop	TUI	System monitor (btop)	SUPER+D	tui	btop	-	btop	-
-wiremix	TUI	Audio mixer (wiremix)	SUPER+A	tui	wiremix	-	wiremix	-
+btop	TUI	System monitor (btop)	SUPER+D	tui	btop	-	btop	-	s t;btop
+wiremix	TUI	Audio mixer (wiremix)	SUPER+A	tui	wiremix	-	wiremix	-	a w;Mixer
 bluetui	TUI	Bluetooth (bluetui)	SUPER+SHIFT+B	tui	bluetui	-	bluetui	-
-nmtui	TUI	Wi-Fi / network (nmtui)	SUPER+I	tui	nmtui	-	nmtui	-
+nmtui	TUI	Wi-Fi / network (nmtui)	SUPER+I	tui	nmtui	-	nmtui	-	s n;Network
 lazygit	TUI	lazygit (current repo, else ~/dotfiles)	-	tui	git rev-parse --git-dir >/dev/null 2>&1 || cd ~/dotfiles; exec lazygit	-	lazygit	Inside a git directory (tmux popup) it opens that repo, otherwise the dotfiles repo.
 lazydocker	TUI	lazydocker	-	tui	lazydocker	-	lazydocker	-
 yazi	TUI	File manager (yazi)	SUPER+E	tui	yazi	-	yazi	-
-doctor	System	Dotfiles doctor (health check)	-	tui	+pause ~/dotfiles/doctor.sh	-	~/dotfiles/doctor.sh	Read-only PASS/FAIL check of the approved workstation state.
-configerrors	System	Hyprland config errors	-	tui	+pause hyprctl configerrors	-	hyprctl	-
-failed-units	System	Failed systemd units (system + user)	-	tui	+pause systemctl --failed --no-pager; systemctl --user --failed --no-pager	-	systemctl	-
-hypr-reload	System	Reload Hyprland config	-	run	hyprctl reload	-	hyprctl	-
-waybar-toggle	System	Show or hide waybar	SUPER+B	run	pkill -SIGUSR1 waybar	-	waybar	-
-waybar-restart	System	Restart waybar	-	run	pkill -x waybar; sleep 0.3; exec waybar	-	waybar	-
+doctor	System	Dotfiles doctor (health check)	-	tui	+pause ~/dotfiles/doctor.sh	-	~/dotfiles/doctor.sh	Read-only PASS/FAIL check of the approved workstation state.	s d;Doctor
+configerrors	System	Hyprland config errors	-	tui	+pause hyprctl configerrors	-	hyprctl	-	s e;Hyprland errors
+failed-units	System	Failed systemd units (system + user)	-	tui	+pause systemctl --failed --no-pager; systemctl --user --failed --no-pager	-	systemctl	-	s f;Failed units
+hypr-reload	System	Reload Hyprland config	-	run	hyprctl reload	-	hyprctl	-	s r;Reload Hyprland
+waybar-toggle	System	Show or hide waybar	SUPER+B	run	pkill -SIGUSR1 waybar	-	waybar	-	s w;Toggle bar
+waybar-restart	System	Restart waybar	-	run	pkill -x waybar; sleep 0.3; exec waybar	-	waybar	-	s b;Restart bar
 keybinds	Docs	Keybind cheatsheet (rofi)	SUPER+slash	run	~/.config/hypr/scripts/keybinds.sh	-	rofi jq	-
 keymap	Docs	Keymap document (docs/keymap.md)	-	tui	less -R ~/dotfiles/docs/keymap.md	-	less	Hyprland, tmux and shell keys; regenerate with docs/gen-keymap.sh.

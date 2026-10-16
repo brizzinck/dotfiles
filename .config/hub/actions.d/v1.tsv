@@ -1,0 +1,18 @@
+# V1a: desktop vim (leader menu, keyboard pointer, window grammar). Format: see the header of ~/.config/hub/hub.
+# kind bind = replay the Hyprland keybind named in `command` (the Lua config's bind registry), so these rows and the
+# SUPER+; leader menu run exactly what the key combination runs.
+hub-open	Hub	Utility hub (fzf)	SUPER+M	run	~/.config/hub/hub open	-	-	This list; a second press closes it.	h;Hub
+win-float	Windows	Toggle floating	SUPER+V	bind	SUPER+V	-	-	-	w f;Float
+win-fullscreen	Windows	Fullscreen	SUPER+F	bind	SUPER+F	-	-	-	w z;Fullscreen
+win-maximize	Windows	Maximize (keep bar)	SUPER+SHIFT+F	bind	SUPER+SHIFT+F	-	-	-	w x;Maximize
+win-pin	Windows	Pin floating window	SUPER+SHIFT+P	bind	SUPER+SHIFT+P	-	-	-	w p;Pin
+win-group	Windows	Toggle group (tabs)	SUPER+Y	bind	SUPER+Y	-	-	Tabs: SUPER+ALT+H / SUPER+ALT+L switch the tab, SUPER+ALT+SHIFT+hjkl moves a window into a group, SUPER+CTRL+Y out of it.	w g;Group (tabs)
+win-tab-next	Windows	Next tab in group	SUPER+ALT+L	bind	SUPER+ALT+L	-	-	-	w n;Next tab
+win-tab-prev	Windows	Previous tab in group	SUPER+ALT+H	bind	SUPER+ALT+H	-	-	-	w b;Previous tab
+win-ungroup	Windows	Move window out of its group	SUPER+CTRL+Y	bind	SUPER+CTRL+Y	-	-	-	w o;Out of group
+win-resize	Windows	Resize mode (Esc to leave)	SUPER+CTRL+R	bind	SUPER+CTRL+R	-	-	hjkl resize, any other key leaves the mode.	w r;Resize mode
+win-close	Windows	Close window (twice for browsers and terminals)	SUPER+W	bind	SUPER+W	-	-	-	w c;Close
+pointer-hint	Input	Pointer hint: click by keyboard	SUPER+apostrophe	bind	SUPER+apostrophe	-	wl-kbptr	wl-kbptr: type the label of a grid cell, bisect the area with the on-screen labels, then g / h / b click left / right / middle (Space or Enter only move the pointer; Backspace goes one step back). Runs on the us layout and restores your layout afterwards.	m h;Hint click
+pointer-drag	Input	Pointer hint drag: select or move by keyboard	SUPER+CTRL+apostrophe	bind	SUPER+CTRL+apostrophe	-	wl-kbptr	Pick the start point, then the end point: the pointer presses, moves and releases (text selection, drag and drop).	m d;Hint drag
+mouse-mode	Input	Mouse mode (hjkl move - space click - Esc leave)	SUPER+ALT+M	bind	SUPER+ALT+M	-	wlrctl	h j k l move the pointer, H J K L move it in big steps, Space or Enter left click, r right click, m middle click, y / u scroll down / up, f jump by label, Esc or q or any other key leaves.	m m;Mouse mode
+notif-context	Notify	Notification actions menu	SUPER+ALT+X	bind	SUPER+ALT+X	-	dunstctl	dunst context menu of the visible notification (its actions and URLs). It is drawn with the dmenu command from dunstrc (rofi today).	n c;Actions

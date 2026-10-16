@@ -1,11 +1,11 @@
 # U4: energy, display, utilities, packages, AI. Format: see the header of ~/.config/hub/hub.
-keepawake	Toggles	Keep awake (until switched off)	-	toggle	~/.config/hypr/scripts/keep-awake.sh toggle	~/.config/hypr/scripts/keep-awake.sh status >/dev/null	systemd-inhibit	ON = an idle+sleep inhibitor is held, hypridle skips dim, screensaver and panel-off. Waybar shows the remaining time.
+keepawake	Toggles	Keep awake (until switched off)	-	toggle	~/.config/hypr/scripts/keep-awake.sh toggle	~/.config/hypr/scripts/keep-awake.sh status >/dev/null	systemd-inhibit	ON = an idle+sleep inhibitor is held, hypridle skips dim, screensaver and panel-off. Waybar shows the remaining time.	p k;Keep awake
 keepawake-15m	Energy	Keep awake 15 minutes	-	run	~/.config/hypr/scripts/keep-awake.sh 15m	-	systemd-inhibit	-
 keepawake-1h	Energy	Keep awake 1 hour	-	run	~/.config/hypr/scripts/keep-awake.sh 1h	-	systemd-inhibit	-
 keepawake-2h	Energy	Keep awake 2 hours	-	run	~/.config/hypr/scripts/keep-awake.sh 2h	-	systemd-inhibit	-
 keepawake-win	Energy	Keep awake while this window is open	-	run	~/.config/hypr/scripts/keep-awake.sh window "${HUB_TARGET:-}"	-	systemd-inhibit	Released when the window that was focused before the hub opened closes.
-lid-awake	Toggles	Keep working with the lid closed	-	toggle	~/.config/hypr/scripts/lid.sh toggle	~/.config/hypr/scripts/lid.sh status >/dev/null	systemd-inhibit	ON = closing the lid does not suspend. With an external monitor the lid only turns the laptop panel off.
-power-profile	Toggles	Power profile: cycle (saver / balanced / performance)	-	run	~/.config/hypr/scripts/power-profile.sh cycle	-	tlpctl	tlp-pd profile. Needs the tlp-pd package and service.
+lid-awake	Toggles	Keep working with the lid closed	-	toggle	~/.config/hypr/scripts/lid.sh toggle	~/.config/hypr/scripts/lid.sh status >/dev/null	systemd-inhibit	ON = closing the lid does not suspend. With an external monitor the lid only turns the laptop panel off.	p c;Lid closed
+power-profile	Toggles	Power profile: cycle (saver / balanced / performance)	-	run	~/.config/hypr/scripts/power-profile.sh cycle	-	tlpctl	tlp-pd profile. Needs the tlp-pd package and service.	p p;Power profile
 power-saver	Energy	Power profile: power-saver	-	run	~/.config/hypr/scripts/power-profile.sh set power-saver	-	tlpctl	-
 power-balanced	Energy	Power profile: balanced	-	run	~/.config/hypr/scripts/power-profile.sh set balanced	-	tlpctl	-
 power-performance	Energy	Power profile: performance	-	run	~/.config/hypr/scripts/power-profile.sh set performance	-	tlpctl	-
@@ -13,11 +13,10 @@ bright-up	Display	Brightness up (focused monitor)	XF86MonBrightnessUp	run	~/.con
 bright-down	Display	Brightness down (focused monitor)	XF86MonBrightnessDown	run	~/.config/hypr/scripts/brightness.sh down	-	-	-
 calc	Tools	Calculator (rofi-calc)	SUPER+equal	run	~/.config/hypr/scripts/calc.sh	-	-	Units, currency and dates via libqalculate; Enter copies the result.
 notes	Tools	Notes scratchpad (nvim ~/notes/scratch.md)	SUPER+SHIFT+Z	run	hyprd togglespecialworkspace notes	-	hyprctl	-
-snippets	Clipboard	Snippets picker	SUPER+SHIFT+period	run	~/.config/hypr/scripts/snippets.sh	-	rofi	Edit ~/.config/snippets/snippets.tsv. Variables: date, time, datetime, clipboard.
-paste-plain	Clipboard	Paste clipboard as plain text	SUPER+CTRL+V	run	~/.config/hypr/scripts/paste-plain.sh	-	wl-paste	-
-url-clean	Clipboard	Clean tracking parameters from the URL in the clipboard	-	run	~/.config/hypr/scripts/url-clean.sh	-	wl-paste python3	Manual only: removes utm_*, fbclid, gclid, yclid, igshid, ... and rewrites the clipboard.
-clean-mode	Tools	Cleaning mode (lock keyboard and touchpad)	SUPER+CTRL+Escape	run	~/.config/hypr/scripts/clean-mode.sh start	-	hyprctl	Leave with CTRL+SHIFT+ALT+Escape; it also leaves by itself after 5 minutes.
-ports	System	Ports / kill process (pik)	-	tui	pik	-	pik	Search by port with :8080, Ctrl+X SIGTERM, Ctrl+Alt+X SIGKILL.
+snippets	Clipboard	Snippets picker	SUPER+SHIFT+period	run	~/.config/hypr/scripts/snippets.sh	-	rofi	Edit ~/.config/snippets/snippets.tsv. Variables: date, time, datetime, clipboard.	y s;Snippets
+paste-plain	Clipboard	Paste clipboard as plain text	SUPER+CTRL+V	run	~/.config/hypr/scripts/paste-plain.sh	-	wl-paste	-	y p;Paste plain
+url-clean	Clipboard	Clean tracking parameters from the URL in the clipboard	-	run	~/.config/hypr/scripts/url-clean.sh	-	wl-paste python3	Manual only: removes utm_*, fbclid, gclid, yclid, igshid, ... and rewrites the clipboard.	y u;Clean URL
+ports	System	Ports / kill process (pik)	-	tui	pik	-	pik	Search by port with :8080, Ctrl+X SIGTERM, Ctrl+Alt+X SIGKILL.	s p;Ports
 bandwhich	System	Network by process (bandwhich)	-	tui	sudo bandwhich	-	bandwhich	Needs root.
 pkg-install	Packages	Install package (repo + AUR)	-	tui	~/.config/hypr/scripts/pkg-install.sh	-	yay fzf	Tab selects several; preview is yay -Si.
 pkg-remove	Packages	Remove package (size, reverse deps, leftovers to Trash)	-	tui	~/.config/hypr/scripts/pkg-remove.sh	-	yay fzf	yay -Rns, then offers config/data/cache leftovers for trash-put.

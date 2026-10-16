@@ -1,0 +1,12 @@
+# Groups of the SUPER+; leader menu: key <TAB> label. Rows join a group with the first word of their `leader` column
+# in actions.tsv / actions.d/*.tsv (format: header of ./hub). Rows whose `leader` is a single key are top-level items.
+w	Windows
+c	Capture
+a	Audio
+y	Clipboard
+p	Power
+v	Vault
+t	Theme
+n	Notifications
+m	Mouse
+s	System

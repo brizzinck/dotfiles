@@ -8,11 +8,13 @@
 #   hub --raw                print the merged, evaluated records (fields below, then avail + state)
 #   hub --describe ID        description of one row (used by the fzf preview)
 #   hub --run ID             run one row without the UI
-#   --dry-run                with --run (or the UI): print what would run instead of running it
+#   hub --leader ID          run one row for the leader menu (SUPER+;): the focused window is the target and TUI rows open
+#                            in their own float.tui terminal (see .config/hub/leader)
+#   --dry-run                with --run/--leader (or the UI): print what would run instead of running it
 #
 # Data (merged on every open):
 #   actions.tsv, actions.d/*.tsv   tab separated, `#` comments, `-` or a missing trailing column = empty
-#     id  group  title  keys  kind  command  state  needs  desc
+#     id  group  title  keys  kind  command  state  needs  desc  leader
 #       id     unique slug
 #       group  section label shown as a prefix (short, <= 9 chars looks best)
 #       keys   human key text, e.g. SUPER+CTRL+I (also used to dedupe against the live bind table)
@@ -20,13 +22,19 @@
 #              toggle  like run, but the hub stays open and shows the new state
 #              tui     runs in this terminal in place (hub is replaced); prefix the command with `+pause `
 #                      to wait for a key afterwards
-#       command  shell command line
+#              bind    replays a Hyprland keybind by its key text (command = e.g. SUPER+V, same text as `keys`); the
+#                      Lua config records every bind in a registry that `hyprctl eval df_bind_run(...)` replays
+#       command  shell command line (kind bind: the bind's key text)
 #       state    optional shell snippet, exit status 0 = ON (toggles show a live "on"/"off" marker)
 #       needs    optional space separated commands that must exist; default = first word of command.
 #                The row is hidden when one is missing (~ is expanded, a path is tested with -x)
 #       desc     optional text for the preview pane
+#       leader   optional key path in the SUPER+; leader menu: `w m` = group key + item key, `space` = a top-level item.
+#                Group keys and labels live in leader-groups.tsv; .config/hub/leader renders the which-key menu from
+#                these columns, so the leader and the hub cannot drift (the hub itself ignores this column).
 #   every `bindd` from `hyprctl binds -j` (global submap, no mouse binds, workspace digits collapsed)
 #   is appended as group "Keybinds"; rows that share a title or a key with an actions.tsv row are merged.
+#   Keybind rows are executable: they replay the bind through the Lua registry (hyprctl eval df_bind_run).
 #
 # Window/app actions target the window that was focused before the hub opened: its address is saved in
 # $XDG_RUNTIME_DIR/hub/prev-window, exported as HUB_TARGET=address:0x... to run/toggle commands, and the
@@ -49,6 +57,7 @@ LOG="$RUN_DIR/last.log"
 US=$'\037'
 DRY=0
 ALL=0
+LEADER=0
 mkdir -p "$RUN_DIR"
 
 # ───────────────────────────── data pipeline ─────────────────────────────
@@ -66,7 +75,7 @@ load_actions() {
   }'
 }
 
-# live bind table -> same 9 fields (kind=bind, command = "dispatcher arg"; "__lua" on a Lua config)
+# live bind table -> same 9 fields (kind=bind, command = the bind's key text, replayed through the Lua bind registry)
 load_binds() {
   hyprctl binds -j 2>/dev/null | jq -r --arg us "$US" '
     def mods($m):
@@ -84,7 +93,7 @@ load_binds() {
         | if $i == null then . + [$b + {keys: [$b.key]}] else .[$i].keys += [$b.key] end)
     | .[]
     | [ "bind:" + .keys[0], "Keybinds", .desc, (.keys | join(" / ")), "bind",
-        (.disp + (if .arg == "" then "" else " " + .arg end)), "",
+        .keys[0], "",
         (if .disp == "exec" and ((.arg | split(" ")[0]) | startswith("$") | not) then (.arg | split(" ")[0]) else "" end),
         "" ]
     | join($us)'
@@ -233,12 +242,12 @@ focus_prev() {
 
 # run one row by id; returns 10 for toggle rows so the UI can stay open
 run_row() {
-  local rec id grp title keys kind cmd state needs desc avail st target disp arg
+  local rec id grp title keys kind cmd state needs desc avail st target
   rec=$(awk -F"$US" -v id="$1" '$1 == id { print; exit }' "$CACHE")
   [[ -n $rec ]] || { echo "hub: unknown row: $1" >&2; return 1; }
   IFS=$US read -r id grp title keys kind cmd state needs desc avail st <<<"$rec"
   if [[ $avail != 1 ]]; then
-    notify-send -a hub -u low "hub" "$title is unavailable (missing: ${needs:-${cmd%% *}})" 2>/dev/null || true
+    ((DRY)) || notify-send -a hub -u low "hub" "$title is unavailable (missing: ${needs:-${cmd%% *}})" 2>/dev/null || true
     echo "hub: $title is unavailable" >&2
     return 1
   fi
@@ -247,6 +256,14 @@ run_row() {
     tui)
       local pause=0
       if [[ $cmd == '+pause '* ]]; then pause=1; cmd=${cmd#+pause }; fi
+      if ((LEADER)); then
+        # no terminal around the leader menu: give the TUI its own floating ghostty
+        local inner=$cmd
+        ((pause)) && inner="$cmd; printf '\\n[press a key]'; read -rsn1 _"
+        if ((DRY)); then echo "DRY: ghostty --class=float.tui -e bash -c '$inner'"; return 0; fi
+        setsid -f ghostty --class=float.tui --title="$title" -e bash -c "$inner" >>"$LOG" 2>&1 </dev/null
+        return 0
+      fi
       if ((DRY)); then echo "DRY: tui in place: $cmd$( ((pause)) && echo ' (+pause)')"; return 0; fi
       clear
       if ((pause)); then
@@ -258,19 +275,12 @@ run_row() {
       exec bash -c "$cmd"
       ;;
     run | bind | toggle)
-      [[ $kind == toggle ]] || focus_prev
+      [[ $kind == toggle || $LEADER == 1 ]] || focus_prev
       if [[ $kind == bind ]]; then
-        disp=${cmd%% *}
-        arg=""
-        [[ $cmd == *' '* ]] && arg=${cmd#* }
-        if [[ $disp == __lua ]]; then
-          # Lua binds expose no dispatcher text (`hyprctl binds -j` reports "__lua"), so a bind row cannot be replayed
-          if ((DRY)); then echo "DRY: keybind only: $keys"; return 0; fi
-          notify-send -a hub -u low "$title" "Keybind only: press $keys" 2>/dev/null || true
-          return 0
-        fi
-        if ((DRY)); then echo "DRY: hyprd $disp ${arg}"; return 0; fi
-        hyprd "$disp" "$arg" >/dev/null 2>&1
+        # the Lua config keeps a registry of every bind (hyprland.lua, df_bind_run); `cmd` is the bind's key text
+        if [[ ! $cmd =~ ^[A-Za-z0-9_+:.-]+$ ]]; then echo "hub: bad bind label '$cmd'" >&2; return 1; fi
+        if ((DRY)); then echo "DRY: hyprctl eval df_bind_run([==[$cmd]==])"; return 0; fi
+        hyprctl eval "df_bind_run([==[$cmd]==])" >/dev/null 2>&1
       else
         if ((DRY)); then echo "DRY: HUB_TARGET=${target:+address:}$target bash -c '$cmd'"; [[ $kind == toggle ]] && return 10; return 0; fi
         HUB_TARGET="${target:+address:}$target" setsid -f bash -c "$cmd" >>"$LOG" 2>&1 </dev/null
@@ -355,6 +365,7 @@ case ${1:-} in
   --raw) build_cache; cat "$CACHE" ;;
   --describe) shift; describe "${1:?row id}" ;;
   --run) shift; build_cache; run_row "${1:?row id}" || [[ $? == 10 ]] ;;
+  --leader) shift; LEADER=1; build_cache; record_prev; run_row "${1:?row id}" || [[ $? == 10 ]] ;;
   -h | --help) usage ;;
   *) echo "hub: unknown argument '$1' (try --help)" >&2; exit 2 ;;
 esac
