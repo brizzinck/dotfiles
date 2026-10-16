@@ -70,11 +70,11 @@ fi
 
 # ── packages / timers / services ────────────────────────────────────────────────
 if grep -qi 'GenuineIntel' /proc/cpuinfo; then ucode=intel-ucode; else ucode=amd-ucode; fi
-check ucode "$ucode installed" "$ucode missing (apply-system.sh --only install)" pacman -Q "$ucode"
+check ucode "$ucode installed" "$ucode missing (sudo ~/dotfiles/apply-system.sh --only install)" pacman -Q "$ucode"
 for t in fstrim paccache reflector; do
-  check "$t.timer" "enabled" "not enabled (apply-system.sh --only services)" systemctl is-enabled "$t.timer"
+  check "$t.timer" "enabled" "not enabled (sudo ~/dotfiles/apply-system.sh --only services)" systemctl is-enabled "$t.timer"
 done
-check earlyoom "active" "not active (apply-system.sh --only services)" systemctl is-active earlyoom.service
+check earlyoom "active" "not active (sudo ~/dotfiles/apply-system.sh --only services)" systemctl is-active earlyoom.service
 
 # ── interactive zsh must not shadow rg / id ─────────────────────────────────────
 if command -v zsh >/dev/null 2>&1; then
@@ -90,7 +90,7 @@ fi
 if [ "$(jq -r '.builder.gc.enabled // false' /etc/docker/daemon.json 2>/dev/null)" = "true" ]; then
   ok docker-gc "builder.gc enabled in /etc/docker/daemon.json"
 else
-  bad docker-gc "builder.gc missing in /etc/docker/daemon.json (apply-system.sh --only config)"
+  bad docker-gc "builder.gc missing in /etc/docker/daemon.json (sudo ~/dotfiles/apply-system.sh --only config)"
 fi
 
 # ── pacman cache / pacnew ───────────────────────────────────────────────────────

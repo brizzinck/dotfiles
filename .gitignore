@@ -3,3 +3,5 @@ node_modules
 *.claude
 package*.json
 .config/tmux/plugins
+# host/LAN specific unit, kept only in ~/.config/systemd/user (public repo)
+.config/systemd/user/bredllm-reverse-socks.service

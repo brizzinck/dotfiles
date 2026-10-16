@@ -9,6 +9,7 @@
 # System config files live in infrastructure/<area>/ and are installed from there (see apply-memory.sh).
 set -euo pipefail
 
+ORIG_ARGS=("$@")
 DRY_RUN=0
 ONLY=""
 STAMP="20261016"
@@ -45,7 +46,7 @@ fi
 # --- privileges / owner ------------------------------------------------------
 # A dry run only reads, so it works unprivileged; a real run re-execs itself under sudo.
 if [ "$EUID" -ne 0 ] && [ "$DRY_RUN" -eq 0 ]; then
-  exec sudo "$0" "$@"
+  exec sudo "$0" "${ORIG_ARGS[@]}"
 fi
 
 if [ "$EUID" -eq 0 ]; then
@@ -162,6 +163,11 @@ section_cleanup() {
         log "skip (in use): $e"
         continue
       fi
+      # a test may hold files open inside the spool without fuser seeing it: skip if anything inside changed recently
+      if [ -n "$(find "$e" -mmin -120 -print -quit 2>/dev/null)" ]; then
+        log "skip (modified in the last 120 min): $e"
+        continue
+      fi
       run rm -rf -- "$e"
     done < <(find /tmp -mindepth 1 -maxdepth 1 -user td -mmin +120 -name 'core-e2e-spool-*' -print0)
     changed "td-owned /tmp/core-e2e-spool-* (older than 120 min, not in use) removed"
@@ -226,6 +232,7 @@ cpu_ucode_package() {
   elif grep -qi 'GenuineIntel' /proc/cpuinfo 2>/dev/null; then
     echo intel-ucode
   fi
+  return 0
 }
 
 # Build the AUR cursor theme as the owner (makepkg refuses root), install the result as root. Failure only warns.
@@ -254,7 +261,7 @@ install_aur_cursor() {
       cd src
       PKGDEST="$1/out" makepkg --noconfirm
     ' _ "$build_dir" "$pkg"; then
-    built="$(find "$build_dir/out" -maxdepth 1 -name "$pkg-*.pkg.tar.*" ! -name '*.sig' | head -n 1)"
+    built="$(find "$build_dir/out" -maxdepth 1 -name "$pkg-*.pkg.tar.*" ! -name '*.sig' -print -quit)"
     if [ -n "$built" ] && pacman -U --noconfirm "$built"; then
       changed "installed AUR package $pkg"
     else
@@ -342,7 +349,9 @@ section_remove() {
 
   remove_snap_stack
 
-  # explicit list from the package review (only those actually installed)
+  # explicit list from the package review (only those actually installed).
+  # kotlin is the only package that requires jdk-openjdk; no java/gradle/maven usage was found (no shell history,
+  # ~/.gradle, ~/.m2 or project files), so the JDK goes with it. To keep java: pacman -D --asexplicit jdk-openjdk
   for p in lazarus fpc fpc-src kotlin zig dolphin-emu modemmanager; do
     pkg_installed "$p" && present+=("$p")
   done
@@ -434,14 +443,17 @@ docker_config_stale() {
 section_services() {
   header "services"
   run systemctl daemon-reload
-  try systemctl enable --now fstrim.timer paccache.timer reflector.timer earlyoom.service
-  changed "enabled fstrim.timer paccache.timer reflector.timer earlyoom.service"
+  local u
+  for u in fstrim.timer paccache.timer reflector.timer earlyoom.service; do
+    # one unit at a time: a missing unit (for example after a failed install) must not cancel the others
+    try systemctl enable --now "$u"
+  done
+  changed "enabled fstrim.timer paccache.timer reflector.timer earlyoom.service (per unit, failures are warnings)"
 
-  # docker reads daemon.json only at start: restart when the file is newer than the running daemon (or still differs from the repo copy)
+  # docker reads daemon.json only at start and a restart now would stop containers without a restart policy: no restart here
   if systemctl is-active --quiet docker.service && docker_config_stale; then
-    note "restarting docker.service to apply daemon.json; containers without a restart policy stop"
-    try systemctl restart docker.service
-    changed "docker restarted (new daemon.json)"
+    note "restart docker or reboot to apply daemon.json (BuildKit GC cap); the reboot at the end of this run applies it"
+    followup "after reboot: docker info --format '{{json .BuilderGC}}' 2>/dev/null; docker start pgadmin   # restart=no container"
   else
     log "docker restart not needed (daemon.json already applied or docker is not running)"
   fi
@@ -539,6 +551,21 @@ section_boot() {
   else
     sed_edit /etc/default/grub 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=1/'
     changed "GRUB_TIMEOUT=1"
+  fi
+
+  # 2.16 templates add bootnext entries (/etc/grub.d/31_efi_bootnext) that the installed 2.14 EFI core cannot run
+  if [ -f /etc/grub.d/31_efi_bootnext ]; then
+    if grep -qE '^GRUB_DISABLE_BOOTNEXT=' /etc/default/grub; then
+      log "unchanged: GRUB_DISABLE_BOOTNEXT already set"
+    else
+      backup_file /etc/default/grub
+      if [ "$DRY_RUN" -eq 1 ]; then
+        log "[dry-run] would append GRUB_DISABLE_BOOTNEXT=true to /etc/default/grub"
+      else
+        echo 'GRUB_DISABLE_BOOTNEXT=true' >>/etc/default/grub
+      fi
+      changed "GRUB_DISABLE_BOOTNEXT=true (no broken bootnext menu entries)"
+    fi
   fi
 
   backup_file "$cfg"
