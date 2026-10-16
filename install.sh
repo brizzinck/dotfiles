@@ -39,8 +39,8 @@ packages=(
   neovim vim nano go nodejs npm python python-pip protobuf
   # wayland desktop
   hyprland hypridle hyprlock hyprpaper xdg-desktop-portal-hyprland xdg-desktop-portal-gtk waybar wofi rofi dunst
-  swaybg grim slurp swappy imv wl-clipboard brightnessctl wmctrl seatd
-  kanshi nemo libnotify xdg-utils xdg-user-dirs qt5ct qt6ct   # hyprland.conf: exec-once kanshi, $fileManagerGUI, notify-send, xdg-open, QT_QPA_PLATFORMTHEME
+  swaybg grim slurp swappy imv wl-clipboard brightnessctl seatd
+  nemo libnotify xdg-utils xdg-user-dirs qt6ct   # hyprland.conf: $fileManagerGUI, notify-send, xdg-open, QT_QPA_PLATFORMTHEME (qt6ct)
   pipewire pipewire-alsa pipewire-pulse wireplumber pavucontrol
   easyeffects noise-suppression-for-voice lsp-plugins lsp-plugins-lv2
   ttf-jetbrains-mono-nerd noto-fonts-cjk noto-fonts-emoji
