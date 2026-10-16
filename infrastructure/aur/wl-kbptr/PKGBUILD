@@ -1,0 +1,28 @@
+# Local copy of the AUR PKGBUILD wl-kbptr 0.4.1-2 (Clément Martinez), same source and checksum, built without opencv.
+# The AUR one configures -Dopencv=enabled and depends on opencv, but Arch ships opencv 5 (opencv5.pc only) and meson looks
+# for opencv4. opencv is only needed for the `floating` mode; dotfiles use `-o modes=tile,bisect` (hypr/scripts/pointer.sh).
+# pkgrel 2.1 sorts above the AUR 2 and below a future AUR 3.
+pkgname=wl-kbptr
+pkgver=0.4.1
+pkgrel=2.1
+url="https://github.com/moverest/wl-kbptr"
+pkgdesc="Control the mouse pointer with the keyboard on Wayland (local build without opencv: no floating mode)"
+arch=('x86_64' 'aarch64')
+license=('GPL-3.0')
+depends=('cairo' 'wayland' 'libxkbcommon' 'pixman')
+makedepends=('meson' 'wayland-protocols')
+source=("https://github.com/moverest/wl-kbptr/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('03ac52afa42d7aa88f909f96b2c0e57f5706a11d5d0ff451f6052927571e0624')
+
+build() {
+    arch-meson "$pkgname-$pkgver" build -Dopencv=disabled
+    ninja -C build
+}
+
+package() {
+    DESTDIR="$pkgdir" ninja -C build install
+    cd "$pkgname-$pkgver"
+    install -Dm 0755 helpers/wl-kbptr-sway-active-win -t "$pkgdir/usr/bin/"
+    install -Dm 0644 LICENSE -t "$pkgdir/usr/share/licenses/wl-kbptr/"
+    install -Dm 0644 README.md -t "$pkgdir/usr/share/doc/wl-kbptr/"
+}

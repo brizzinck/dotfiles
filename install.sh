@@ -89,9 +89,9 @@ fi
 # bibata-cursor-theme-bin: Bibata-Modern-Ice cursor theme; shellcheck-bin: static build that replaces the repo package
 # (no haskell chain); ccusage: Claude/Codex usage from local logs; wayscrollshot-bin: scrolling screenshots;
 # pacseek: pacman/AUR TUI; bitwarden-cli-bin: bw CLI (the repo bitwarden-cli needs nodejs-lts-jod, which conflicts with nodejs);
-# wl-kbptr + wlrctl: keyboard-driven pointer (SUPER+', SUPER+ALT+M); wlr-which-key: the SUPER+; leader menu.
+# wlrctl: keyboard-driven pointer (SUPER+', SUPER+ALT+M, with wl-kbptr below); wlr-which-key: the SUPER+; leader menu.
 # Keep in sync with AUR_PACKAGES in apply-system.sh.
-for pkg in facad hyprdynamicmonitors-bin bibata-cursor-theme-bin shellcheck-bin ccusage wayscrollshot-bin pacseek bitwarden-cli-bin wl-kbptr wlrctl wlr-which-key; do
+for pkg in facad hyprdynamicmonitors-bin bibata-cursor-theme-bin shellcheck-bin ccusage wayscrollshot-bin pacseek bitwarden-cli-bin wlrctl wlr-which-key; do
   yay -S --needed --noconfirm --sudoloop "$pkg" || warn "AUR install failed ($pkg) — continuing"
 done
 yay --save --cleanafter >/dev/null 2>&1 || true   # remove AUR build dirs after each install
@@ -101,6 +101,11 @@ yay --save --cleanafter >/dev/null 2>&1 || true   # remove AUR build dirs after 
 # Bibata (above) stays installed as the fallback. Same build as `sudo ./apply-system.sh --only install`.
 log "Everforest cursor (local package)"
 "$DOTFILES/infrastructure/cursor/build.sh" --install || warn "Everforest cursor build failed — the pointer stays Bibata"
+
+# wl-kbptr: local PKGBUILD without opencv (infrastructure/aur/wl-kbptr; the AUR one needs opencv4, Arch ships opencv 5)
+log "wl-kbptr (local package, no opencv)"
+sudo pacman -S --needed --asdeps --noconfirm meson wayland-protocols cairo wayland libxkbcommon pixman || true
+"$DOTFILES/infrastructure/aur/wl-kbptr/build.sh" --install || warn "wl-kbptr build failed — SUPER+' and the mouse mode will not work"
 
 log "Flatpak apps"
 flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true

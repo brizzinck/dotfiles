@@ -246,9 +246,10 @@ REPO_PACKAGES=(
 )
 # AUR packages, built at run time as the owner (makepkg refuses root) and installed with pacman -U. A failure only warns.
 # Keep in sync with the AUR section of install.sh. shellcheck-bin replaces the repo shellcheck (see swap_shellcheck).
-# wl-kbptr + wlrctl: keyboard-driven pointer (SUPER+', SUPER+ALT+M); wlr-which-key: the SUPER+; leader menu. Their makedepends
-# (meson, scdoc, wayland-protocols, rust) come from the repositories through aur_unmet_deps; wl-kbptr needs opencv (installed).
-AUR_PACKAGES=(bibata-cursor-theme-bin shellcheck-bin ccusage wayscrollshot-bin pacseek bitwarden-cli-bin wl-kbptr wlrctl wlr-which-key)
+# wlrctl + wl-kbptr: keyboard-driven pointer (SUPER+', SUPER+ALT+M); wlr-which-key: the SUPER+; leader menu. Their makedepends
+# (meson, scdoc, wayland-protocols, rust) come from the repositories through aur_unmet_deps. wl-kbptr is NOT here: the AUR
+# package needs opencv4 and Arch ships opencv 5, so it is a local PKGBUILD without opencv (install_local_kbptr).
+AUR_PACKAGES=(bibata-cursor-theme-bin shellcheck-bin ccusage wayscrollshot-bin pacseek bitwarden-cli-bin wlrctl wlr-which-key)
 
 cpu_ucode_package() {
   if grep -qi 'AuthenticAMD' /proc/cpuinfo 2>/dev/null; then
@@ -386,6 +387,42 @@ install_local_cursor() {
   rm -rf -- "$out"
 }
 
+# Local package from this repo (infrastructure/aur/wl-kbptr): the AUR PKGBUILD with -Dopencv=disabled and no opencv dependency
+# (the AUR one looks for opencv4.pc, Arch ships opencv 5; opencv is only for the unused `floating` mode). Built as the owner by
+# infrastructure/aur/wl-kbptr/build.sh, installed with pacman -U; skipped when the installed pkgver-pkgrel is the PKGBUILD's.
+install_local_kbptr() {
+  local helper="$REPO/infrastructure/aur/wl-kbptr/build.sh" out built unmet=()
+  if [ ! -x "$helper" ]; then
+    warn "infrastructure/aur/wl-kbptr/build.sh missing, skipped wl-kbptr"
+    return 0
+  fi
+  if "$helper" --installed-current >/dev/null 2>&1; then
+    log "unchanged: wl-kbptr is installed and up to date"
+    return 0
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "[dry-run] would build wl-kbptr (infrastructure/aur/wl-kbptr/PKGBUILD, -Dopencv=disabled) as $OWNER with makepkg, then pacman -U it"
+    return 0
+  fi
+  mapfile -t unmet < <(pacman -T meson wayland-protocols cairo wayland libxkbcommon pixman || true)
+  if [ "${#unmet[@]}" -gt 0 ] && ! pacman -S --needed --asdeps --noconfirm -- "${unmet[@]}"; then
+    warn "dependencies of wl-kbptr (${unmet[*]}) could not be installed, skipped wl-kbptr"
+    return 0
+  fi
+  out="$(mktemp -d /tmp/wl-kbptr-pkg.XXXXXX)"
+  chown "$OWNER": "$out"
+  if built="$(run_as_owner "$helper" --build "$out")" && [ -n "$built" ]; then
+    if pacman -U --noconfirm "$built"; then
+      changed "installed wl-kbptr (local build without opencv)"
+    else
+      warn "built wl-kbptr but pacman -U failed"
+    fi
+  else
+    warn "building wl-kbptr failed, continuing without it"
+  fi
+  rm -rf -- "$out"
+}
+
 section_install() {
   header "install"
   local ucode p wanted=() missing=()
@@ -414,6 +451,7 @@ section_install() {
 
   install_aur_packages
   install_local_cursor
+  install_local_kbptr
 
   # pacman-contrib (paccache) exists now; trim the cache again after the downloads
   cleanup_pacman_cache post-install
