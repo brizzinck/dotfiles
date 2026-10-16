@@ -1,0 +1,76 @@
+# Local package (not in the AUR): the Everforest pointer, built by apply-system.sh (as the owner, makepkg; root only runs
+# pacman -U) so it lands in /usr/share/icons and every flatpak sandbox and X11/Wayland client sees it.
+#
+# Artwork: Bibata Modern (vector sources, GPL-3.0-or-later) through the rtgiskard/bibata_cursor build tool, which writes the
+# hyprcursor (SVG) and the XCursor build of the same art. Colours come from the palette: pointer.json is rendered by
+# themes/palette/render.py (fill = fg, outline = bg_oled, accent = green) and copied next to this file by apply-system.sh,
+# together with `build-stamp` (sha256 of PKGBUILD + pointer.json) that the package ships so apply-system.sh can tell whether
+# the installed theme is current.
+#
+# Test build as a normal user (no install):
+#   cp PKGBUILD /tmp/ec && cp ~/dotfiles/themes/generated/black/pointer.json /tmp/ec/ && cd /tmp/ec &&
+#   cat PKGBUILD pointer.json | sha256sum > build-stamp && makepkg -f
+pkgname=everforest-cursor-theme
+pkgver=2025.01.28
+pkgrel=1
+pkgdesc='Everforest pointer theme: Bibata Modern shape recoloured from the palette (hyprcursor SVG + XCursor)'
+arch=(any)
+url='https://github.com/rtgiskard/bibata_cursor'
+license=('GPL-3.0-or-later')
+makedepends=(git python librsvg xorg-xcursorgen)
+options=(!strip !debug)
+# The git source is pinned by commit (that is its integrity check); pointer.json and build-stamp are generated per palette.
+_commit=f4ccfe8abb63fddc7b3ce51a866fd8378395cb3d
+source=("bibata_cursor::git+https://github.com/rtgiskard/bibata_cursor.git#commit=$_commit"
+        pointer.json
+        build-stamp)
+sha256sums=('SKIP' 'SKIP' 'SKIP')
+
+prepare() {
+  cd bibata_cursor
+  [ "$(git rev-parse HEAD)" = "$_commit" ] || { echo "unexpected upstream commit" >&2; return 1; }
+  # add the Everforest-Cursor entry to config/render.json and shrink the XCursor size list to what this machine uses:
+  # 32 logical = 48 px on the 1.5 panel; GTK3/Xwayland load 2x (64) and 1.5x (48); 24/36 cover a size change
+  python3 -I - ../pointer.json <<'PY'
+import json, re, sys
+
+p = json.load(open(sys.argv[1]))
+for key in ("name", "fill", "outline", "accent"):
+    assert re.fullmatch(r"[A-Za-z0-9_-]+|#[0-9a-fA-F]{6}", p[key]), key
+rj = json.load(open("config/render.json"))
+# Bibata placeholders: 00FF00 body, 0000FF outline, FF0000 busy disk; the four pies of the busy cursor are hard-coded
+# Windows colours that do not belong to any palette, so they become the accent
+colors = [
+    {"match": "#00FF00", "replace": p["fill"]},
+    {"match": "#0000FF", "replace": p["outline"]},
+    {"match": "#FF0000", "replace": p["fill"]},
+]
+colors += [{"match": c, "replace": p["accent"]} for c in ("#F05024", "#FCB813", "#7EBA41", "#32A0DA")]
+rj[p["name"]] = {"desc": "Bibata Modern shape recoloured from the Everforest palette", "dir": "svg/modern", "colors": colors}
+json.dump(rj, open("config/render.json", "w"), indent=1)
+toml = open("config/build.toml").read()
+toml, n = re.subn(r"(?m)^x11_sizes = .*$", "x11_sizes = [16, 24, 32, 36, 48, 64, 72, 96]", toml)
+assert n == 1
+open("config/build.toml", "w").write(toml)
+print(p["name"])
+PY
+}
+
+build() {
+  cd bibata_cursor
+  local theme
+  theme=$(python3 -I -c 'import json; print(json.load(open("../pointer.json"))["name"])')
+  python3 src/cursor_utils.py --hypr --x11 --theme "$theme" --out-dir out --log-level warn
+}
+
+package() {
+  local theme
+  theme=$(python3 -I -c 'import json; print(json.load(open("pointer.json"))["name"])')
+  install -d "$pkgdir/usr/share/icons"
+  cp -a "bibata_cursor/out/$theme" "$pkgdir/usr/share/icons/"
+  # missing shapes fall back to Adwaita (the upstream index.theme says hicolor, which has no cursors)
+  sed -i 's/^Inherits=.*/Inherits=Adwaita/' "$pkgdir/usr/share/icons/$theme/index.theme"
+  install -Dm644 build-stamp "$pkgdir/usr/share/icons/$theme/.build-stamp"
+  find "$pkgdir/usr/share/icons/$theme" -type d -exec chmod 755 {} +
+  find "$pkgdir/usr/share/icons/$theme" -type f -exec chmod 644 {} +
+}

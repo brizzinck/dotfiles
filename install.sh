@@ -57,6 +57,7 @@ packages=(
   # workstation additions — keep in sync with REPO_PACKAGES in apply-system.sh (it verifies each name with pacman -Si)
   pacman-contrib earlyoom reflector smartmontools nvme-cli libva-utils amdgpu_top   # paccache/updates, OOM guard, mirrors, SMART, vainfo, GPU monitor
   hyprpolkitagent cliphist wl-clip-persist swayosd wiremix hyprshot satty hyprpicker hyprsunset
+  xorg-xcursorgen librsvg                                                           # build deps of the local everforest-cursor-theme package (infrastructure/cursor)
   rofimoji wtype udiskie                                                            # polkit agent, clipboard, OSD, screenshots, picker, emoji (rofimoji = the emoji data of emoji.sh), automount
   bat eza git-delta github-cli trash-cli dust duf watchexec just go-yq xh shfmt direnv dive hyperfine
   tesseract tesseract-data-eng tesseract-data-rus zbar qrencode ddcutil pik                       # OCR (rus+eng), QR, DDC/CI monitor brightness, ports
@@ -93,6 +94,12 @@ for pkg in facad hyprdynamicmonitors-bin bibata-cursor-theme-bin shellcheck-bin 
   yay -S --needed --noconfirm --sudoloop "$pkg" || warn "AUR install failed ($pkg) — continuing"
 done
 yay --save --cleanafter >/dev/null 2>&1 || true   # remove AUR build dirs after each install
+
+# the Everforest pointer: local package (infrastructure/cursor/PKGBUILD, hyprcursor SVG + XCursor, colours from the palette),
+# built here with makepkg and installed with pacman -U so every app and flatpak sees it in /usr/share/icons; skipped when current.
+# Bibata (above) stays installed as the fallback. Same build as `sudo ./apply-system.sh --only install`.
+log "Everforest cursor (local package)"
+"$DOTFILES/infrastructure/cursor/build.sh" --install || warn "Everforest cursor build failed — the pointer stays Bibata"
 
 log "Flatpak apps"
 flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
@@ -236,17 +243,19 @@ touch "$DOTFILES/env.secret.sh" && chmod +x "$DOTFILES/env.secret.sh"
 # waybar bar mode (compact/full) and visibility files; the bar config includes them
 "$HOME/.config/waybar/scripts/bar.sh" init || warn "bar.sh init failed (waybar scripts not stowed?)"
 
-log "GTK dark theme, icons, fonts and cursor (gsettings; the cursor falls back to Adwaita until bibata is installed)"
+log "GTK dark theme, icons, fonts and cursor (gsettings; the cursor is Everforest-Cursor once installed, else Bibata, else Adwaita)"
+cursor_theme=Bibata-Modern-Ice
+[ -r /usr/share/icons/Everforest-Cursor/index.theme ] && cursor_theme=Everforest-Cursor
 if command -v gsettings >/dev/null 2>&1; then
   gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark' || true
   gsettings set org.gnome.desktop.interface accent-color 'green' || true   # libadwaita apps that ignore gtk.css (closest enum to the palette green)
   gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark' || true
   gsettings set org.gnome.desktop.interface icon-theme 'breeze-dark' || true
   gsettings set org.gnome.desktop.interface monospace-font-name 'JetBrainsMono Nerd Font 11' || true
-  gsettings set org.gnome.desktop.interface cursor-theme 'Bibata-Modern-Ice' || true
+  gsettings set org.gnome.desktop.interface cursor-theme "$cursor_theme" || true
   gsettings set org.gnome.desktop.interface cursor-size 32 || true
 else
-  later "set GTK dark theme: gsettings set org.gnome.desktop.interface color-scheme prefer-dark (and gtk-theme Adwaita-dark, icon-theme breeze-dark, cursor-theme Bibata-Modern-Ice)"
+  later "set GTK dark theme: gsettings set org.gnome.desktop.interface color-scheme prefer-dark (and gtk-theme Adwaita-dark, icon-theme breeze-dark, cursor-theme Everforest-Cursor, cursor-size 32)"
 fi
 fc-cache -f 2>/dev/null || true
 

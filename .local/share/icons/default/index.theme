@@ -1,0 +1,4 @@
+[Icon Theme]
+Name=Default
+Comment=Default pointer theme of this user: Everforest-Cursor once it is installed (infrastructure/cursor), then Bibata, then Adwaita
+Inherits=Everforest-Cursor,Bibata-Modern-Ice,Adwaita

@@ -69,7 +69,23 @@ end)
 -- ───────────────────────────── environment ──────────────────────────
 hl.env("XDG_CURRENT_DESKTOP", "Hyprland")
 hl.env("QT_QPA_PLATFORMTHEME", "qt6ct")
-hl.env("XCURSOR_THEME", "Bibata-Modern-Ice")
+-- Pointer: Everforest-Cursor (local package infrastructure/cursor, installed system-wide by apply-system.sh so flatpaks see it:
+-- hyprcursor SVG build + XCursor build of one artwork). Until it is installed the config falls back to Bibata-Modern-Ice and
+-- leaves HYPRCURSOR_THEME unset (a missing hyprcursor theme is never requested). Size 32 = 48 px on the 1.5 panel, 1:1.
+local pointer_theme = "Bibata-Modern-Ice"
+local function readable(path)
+    local f = io.open(path, "r")
+    if f then
+        f:close()
+        return true
+    end
+    return false
+end
+if readable("/usr/share/icons/Everforest-Cursor/manifest.hl") and readable("/usr/share/icons/Everforest-Cursor/cursors/left_ptr") then
+    pointer_theme = "Everforest-Cursor"
+    hl.env("HYPRCURSOR_THEME", pointer_theme)
+end
+hl.env("XCURSOR_THEME", pointer_theme)
 hl.env("XCURSOR_SIZE", "32")
 hl.env("HYPRCURSOR_SIZE", "32")
 

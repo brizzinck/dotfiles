@@ -226,6 +226,9 @@ REPO_PACKAGES=(
   # phase 2: OCR (rus+eng), QR/barcodes, monitor brightness over DDC/CI, ports, calculator, GIF, cleanup, timers, network
   tesseract tesseract-data-eng tesseract-data-rus zbar qrencode ddcutil pik
   libqalculate chafa gifski kondo lostfiles termdown bandwhich lsof
+  # C1: build dependencies of the local everforest-cursor-theme package (infrastructure/cursor); kept explicit so the orphan
+  # step of the remove section does not drop them between runs (git, python and librsvg are installed anyway)
+  xorg-xcursorgen librsvg
   # TLP profiles daemon: power-profiles-daemon D-Bus API backed by TLP (tlpctl); needs tlp, conflicts with power-profiles-daemon
   tlp-pd
   # phase 2 U5: Bitwarden/Vaultwarden client (rbw) with an fzf-menu front end; pinentry-qt (themed by qt6ct) needs kwindowsystem
@@ -344,6 +347,41 @@ install_aur_packages() {
   done
 }
 
+# Local package from this repo (infrastructure/cursor): the Everforest pointer, hyprcursor SVG + XCursor of one artwork, colours from
+# the palette (themes/generated/black/pointer.json). Built as the owner by infrastructure/cursor/build.sh (makepkg refuses
+# root), installed with pacman -U; skipped when the installed theme carries the current build stamp (PKGBUILD + pointer.json).
+# bibata-cursor-theme-bin stays installed as the fallback until the owner confirms the new pointer.
+install_local_cursor() {
+  local helper="$REPO/infrastructure/cursor/build.sh" out built
+  if [ ! -x "$helper" ] || [ ! -r "$REPO/themes/generated/black/pointer.json" ]; then
+    warn "infrastructure/cursor/build.sh or themes/generated/black/pointer.json missing, skipped the Everforest cursor"
+    return 0
+  fi
+  if "$helper" --installed-current >/dev/null 2>&1; then
+    log "unchanged: Everforest-Cursor is installed and up to date"
+    return 0
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "[dry-run] would build everforest-cursor-theme (infrastructure/cursor/PKGBUILD, git pinned by commit) as $OWNER with makepkg, then pacman -U it into /usr/share/icons/Everforest-Cursor"
+    return 0
+  fi
+  if ! pacman -T git python librsvg xorg-xcursorgen >/dev/null; then
+    try pacman -S --needed --noconfirm git python librsvg xorg-xcursorgen
+  fi
+  out="$(mktemp -d /tmp/everforest-cursor-pkg.XXXXXX)"
+  chown "$OWNER": "$out"
+  if built="$(run_as_owner "$helper" --build "$out")" && [ -n "$built" ]; then
+    if pacman -U --noconfirm "$built"; then
+      changed "installed everforest-cursor-theme (Everforest-Cursor; run ~/.local/bin/cursor-apply after logging in again, or it is used at the next Hyprland start)"
+    else
+      warn "built everforest-cursor-theme but pacman -U failed"
+    fi
+  else
+    warn "building everforest-cursor-theme failed, Bibata stays the pointer"
+  fi
+  rm -rf -- "$out"
+}
+
 section_install() {
   header "install"
   local ucode p wanted=() missing=()
@@ -371,6 +409,7 @@ section_install() {
   changed "repo packages ensured (${#wanted[@]} names)"
 
   install_aur_packages
+  install_local_cursor
 
   # pacman-contrib (paccache) exists now; trim the cache again after the downloads
   cleanup_pacman_cache post-install

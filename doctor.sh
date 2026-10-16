@@ -296,6 +296,28 @@ if [ -z "$css_hex" ]; then ok bar-css "style.css uses palette tokens only"; else
 raw_usr1="$(git -C "$DOTFILES" grep -nE 'USR1.*waybar|waybar.*USR1' -- .config .local ':!.config/nvim' ':!.config/waybar/scripts/bar.sh' ':!*.md' ':!.config/waybar/config' ':!.config/waybar/modules.jsonc' 2>/dev/null | head -2 | tr '\n' ' ')"
 if [ -z "$raw_usr1" ]; then ok bar-sigusr1 "only bar.sh sends SIGUSR1 to waybar"; else bad bar-sigusr1 "raw SIGUSR1: $raw_usr1"; fi
 
+# ── pointer (C1): Everforest-Cursor is a local package; until the root script installed it, Bibata is the fallback ──
+cur_dir="${DOCTOR_CURSOR_DIR:-/usr/share/icons/Everforest-Cursor}"   # override for tests
+if [ ! -r "$cur_dir/index.theme" ]; then
+  info cursor "Everforest-Cursor not installed (sudo ~/dotfiles/apply-system.sh --only install); Bibata-Modern-Ice is the pointer, hyprland.lua falls back to it"
+else
+  cur_err=""
+  [ -r "$cur_dir/manifest.hl" ] && [ -e "$cur_dir/cursors/left_ptr" ] && [ -r "$cur_dir/hyprcursors/left_ptr.hlc" ] || cur_err="theme dir incomplete (manifest.hl, cursors/left_ptr, hyprcursors/left_ptr.hlc)"
+  if [ -z "$cur_err" ] && [ "$(cat "$cur_dir/.build-stamp" 2>/dev/null)" != "$("$DOTFILES/infrastructure/cursor/build.sh" --stamp 2>/dev/null)" ]; then
+    cur_err="built from an older palette or PKGBUILD (sudo ~/dotfiles/apply-system.sh --only install rebuilds it)"
+  fi
+  if [ -z "$cur_err" ]; then
+    want_fill="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["fill"].lower())' "$DOTFILES/themes/generated/black/pointer.json" 2>/dev/null)"
+    unzip -p "$cur_dir/hyprcursors/left_ptr.hlc" '*.svg' 2>/dev/null | grep -qi "$want_fill" || cur_err="left_ptr fill is not $want_fill"
+  fi
+  if [ -z "$cur_err" ]; then ok cursor "Everforest-Cursor installed (hyprcursor + XCursor), up to date with the palette"; else bad cursor "$cur_err"; fi
+  if command -v gsettings >/dev/null 2>&1; then
+    cur_gs="$(gsettings get org.gnome.desktop.interface cursor-theme 2>/dev/null | tr -d "'")"
+    if [ "$cur_gs" = Everforest-Cursor ]; then ok cursor-gtk "gsettings cursor-theme is Everforest-Cursor"; else info cursor-gtk "gsettings cursor-theme is '$cur_gs' (log in again, or run cursor-apply)"; fi
+  fi
+fi
+if grep -q 'Everforest-Cursor' "$DOTFILES/.config/hypr/hyprland.lua"; then ok cursor-env "hyprland.lua selects Everforest-Cursor when installed, Bibata otherwise"; else bad cursor-env "hyprland.lua has no Everforest-Cursor selection"; fi
+
 # ── palette variant (black | night): link present, generated fragments in sync with the token source ───────────
 theme_link="${XDG_STATE_HOME:-$HOME/.local/state}/theme/current"
 if [ -f "$theme_link/tokens.json" ] && [ "$(dirname "$(readlink -f "$theme_link")")" = "$DOTFILES/themes/generated" ]; then

@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# cursor-apply: switch the running session to the Everforest pointer after `sudo ./apply-system.sh` installed it
+# (infrastructure/cursor). hyprland.lua already picks the theme at the next Hyprland start; this does it now.
+#   cursor-apply              gsettings cursor-theme/size + `hyprctl setcursor` (GTK3 and the compositor pointer switch at once;
+#                             running GTK3 apps such as waybar and Zen keep the old pointer until they restart)
+#   cursor-apply --status     print what is installed and what is active
+#   cursor-apply --revert     back to Bibata-Modern-Ice (the fallback that stays installed)
+# Safe to rerun; refuses to switch while the theme is not installed.
+set -u
+
+THEME=Everforest-Cursor
+FALLBACK=Bibata-Modern-Ice
+SIZE=32
+ICONS=/usr/share/icons
+
+installed() { [[ -r $ICONS/$1/index.theme ]]; }
+has_hypr() { [[ -r $ICONS/$1/manifest.hl ]]; }
+current() { gsettings get org.gnome.desktop.interface cursor-theme 2>/dev/null | tr -d "'"; }
+
+apply() {
+  local name=$1
+  installed "$name" || { echo "cursor-apply: $name is not installed (sudo ~/dotfiles/apply-system.sh --only install)" >&2; return 1; }
+  command -v gsettings >/dev/null 2>&1 && {
+    gsettings set org.gnome.desktop.interface cursor-theme "$name"
+    gsettings set org.gnome.desktop.interface cursor-size "$SIZE"
+  }
+  if command -v hyprctl >/dev/null 2>&1 && [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]]; then
+    hyprctl setcursor "$name" "$SIZE" >/dev/null
+  fi
+  echo "cursor: $name, size $SIZE (new Hyprland sessions pick it from hyprland.lua)"
+}
+
+case ${1:-} in
+  --status)
+    for t in "$THEME" "$FALLBACK"; do
+      if installed "$t"; then echo "$t: installed$(has_hypr "$t" && echo ', hyprcursor SVG build')"; else echo "$t: not installed"; fi
+    done
+    echo "gsettings cursor-theme: $(current)"
+    echo "env: HYPRCURSOR_THEME=${HYPRCURSOR_THEME:-} XCURSOR_THEME=${XCURSOR_THEME:-} XCURSOR_SIZE=${XCURSOR_SIZE:-}" ;;
+  --revert) apply "$FALLBACK" ;;
+  "") apply "$THEME" ;;
+  *) echo "usage: cursor-apply [--status | --revert]" >&2; exit 2 ;;
+esac
