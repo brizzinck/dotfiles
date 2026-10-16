@@ -197,6 +197,13 @@ def tmux_live():
 BIND_RE = re.compile(r"^bind-key\s+(-r\s+)?-T\s+(\S+)\s+(\S+)\s+(.*)$")
 
 
+def portable_cmd(cmd):
+    """list-keys prints absolute paths: keep the file user-agnostic (home -> ~, a plugin binary found by PATH)."""
+    home = os.path.expanduser("~")
+    cmd = re.sub(r"(?<![\w/.-])" + re.escape(home) + r"/", "~/", cmd)
+    return re.sub(r"(?<![\w.-])(?:~|/)[^\s\"']*/tmux-fingers(?= )", "tmux-fingers", cmd)
+
+
 def gen_tmux(L, listing=None):
     listing = listing if listing is not None else tmux_live()
     tables = {}
@@ -216,7 +223,7 @@ def gen_tmux(L, listing=None):
         else:
             continue
         for t in twins:
-            tables.setdefault(table, []).append(f"bind-key {'-r ' if rep else ''}-T {table} {mk(t)} {cmd}")
+            tables.setdefault(table, []).append(f"bind-key {'-r ' if rep else ''}-T {table} {mk(t)} {portable_cmd(cmd)}")
     out = [header("#"), "# Sourced at the end of tmux.conf (after the plugins). Every letter / M-letter binding in the\n",
            "# prefix, copy-mode and copy-mode-vi tables gets its ua/ru twin: tmux receives the Cyrillic character\n",
            "# when a Cyrillic layout is active (Ctrl keys arrive as C0 bytes and need nothing).\n",
