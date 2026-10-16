@@ -51,10 +51,13 @@ fi
 
 HP=
 tmp=
-cleanup() {
+unfreeze() {
   [[ -n $HP ]] && kill "$HP" 2>/dev/null
-  [[ -n $tmp ]] && rm -f "$tmp"
   HP=
+}
+cleanup() {
+  unfreeze
+  [[ -n $tmp ]] && rm -f "$tmp"
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP
@@ -96,9 +99,7 @@ if [[ $mode == save ]]; then
 else
   tmp=$(mktemp "$RT/freeze-shot-XXXXXX.png")
   grim -g "$geo" "$tmp" || { notify-send -a capture -u critical "Frozen screenshot failed" "grim could not capture"; exit 1; }
-  cleanup   # unfreeze before the editor opens; tmp is removed by the next cleanup call (EXIT trap)
-  tmp=$(readlink -f "$tmp")
-  trap 'rm -f "$tmp"' EXIT
+  unfreeze   # unfreeze before the editor opens; tmp must outlive this, the EXIT trap removes it after satty exits
   exec 9>&-   # do not hold the lock while the editor is open
   "${SATTY[@]}" -f "$tmp"
 fi
