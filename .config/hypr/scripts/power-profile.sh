@@ -18,7 +18,7 @@ DBUS=(net.hadess.PowerProfiles /net/hadess/PowerProfiles net.hadess.PowerProfile
 get() {
   local p
   if command -v tlpctl >/dev/null 2>&1 && p=$(tlpctl get 2>/dev/null) && [[ -n $p ]]; then echo "$p"; return 0; fi
-  if p=$(busctl --user --system get-property "${DBUS[@]}" ActiveProfile 2>/dev/null | awk '{ gsub(/"/, "", $2); print $2 }') && [[ -n $p ]]; then echo "$p"; return 0; fi
+  if p=$(busctl --system get-property "${DBUS[@]}" ActiveProfile 2>/dev/null | awk '{ gsub(/"/, "", $2); print $2 }') && [[ -n $p ]]; then echo "$p"; return 0; fi
   if p=$(busctl get-property "${DBUS[@]}" ActiveProfile 2>/dev/null | awk '{ gsub(/"/, "", $2); print $2 }') && [[ -n $p ]]; then echo "$p"; return 0; fi
   if [[ -r /sys/firmware/acpi/platform_profile ]]; then
     case $(cat /sys/firmware/acpi/platform_profile) in
@@ -41,7 +41,7 @@ set_profile() {
   elif busctl introspect net.hadess.PowerProfiles /net/hadess/PowerProfiles >/dev/null 2>&1; then
     busctl set-property "${DBUS[@]}" ActiveProfile s "$want" >/dev/null 2>&1 && ok=1
   else
-    note -u normal "Power profile" "tlp-pd is not installed or running (sudo ~/dotfiles/apply-system.sh --only install,services)"
+    note -u normal "Power profile" "tlp-pd is not installed or running (sudo ~/dotfiles/apply-system.sh --only install && sudo ~/dotfiles/apply-system.sh --only services)"
     return 1
   fi
   if ((ok)); then note "Power profile: $want"; poke_bar; else note -u critical "Power profile" "could not switch to $want"; return 1; fi

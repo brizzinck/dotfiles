@@ -24,7 +24,10 @@ rows() { # size-in-MiB  required-by-count  name
 leftovers() {
   local n=${1%-bin}; n=${n%-git}
   command -v fd >/dev/null 2>&1 || return 0
-  fd -H -d1 -i -- "$n" "$HOME/.config" "$HOME/.local/share" "$HOME/.cache" "$HOME/.local/state" 2>/dev/null
+  # exact name, or the name followed by . _ - (e.g. gopls-cache); never a loose substring ("go" must not match "google-chrome")
+  local re
+  re=$(printf '%s' "$n" | sed 's/[][\\.^$*+?(){}|/]/\\&/g')
+  fd -H -d1 -i --regex "^${re}([._-].*)?\$" "$HOME/.config" "$HOME/.local/share" "$HOME/.cache" "$HOME/.local/state" 2>/dev/null
 }
 case $mode in
   list) rows; exit 0 ;;
@@ -48,6 +51,10 @@ fi
 for n in "${names[@]}"; do
   mapfile -t found < <(leftovers "$n")
   ((${#found[@]})) || continue
-  mapfile -t trash < <(printf '%s\n' "${found[@]}" | fzf -m --reverse --prompt "trash $n> " --header 'leftovers: Tab select, Enter moves to Trash')
-  ((${#trash[@]})) && trash-put -- "${trash[@]}"
+  mapfile -t trash < <(printf '%s\n' "${found[@]}" | fzf -m --reverse --prompt "trash $n> " \
+    --header 'leftovers of '"$n"': Tab selects, Enter accepts (asks again before anything moves), Esc keeps everything')
+  ((${#trash[@]})) || continue
+  printf 'Move to Trash:\n'; printf '  %s\n' "${trash[@]}"
+  read -r -p "Move ${#trash[@]} path(s) to Trash? [y/N] " ans </dev/tty || ans=n
+  [[ $ans == [yY]* ]] && trash-put -- "${trash[@]}"
 done

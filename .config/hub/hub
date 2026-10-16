@@ -129,7 +129,7 @@ needs_ok() {
     [[ $kind == bind ]] && return 0
     read -r -a words <<<"$cmd"
     for w in "${words[@]}"; do
-      [[ $w == [A-Za-z_]*=* ]] && continue
+      [[ $w == +pause || $w == [A-Za-z_]*=* ]] && continue
       needs=$w
       break
     done

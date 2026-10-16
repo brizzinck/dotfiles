@@ -43,7 +43,11 @@ holder_pid() { # print the pid of the live holder, or fail
 
 stop_holder() {
   local p
-  if p=$(holder_pid); then kill "$p" 2>/dev/null || true; fi
+  if p=$(holder_pid); then
+    kill "$p" 2>/dev/null || true
+    # wait for the old holder's trap to finish so it cannot delete the state files of the next one
+    for _ in $(seq 20); do kill -0 "$p" 2>/dev/null || break; sleep 0.05; done
+  fi
   rm -f "$PIDF" "$UNTILF" "$LABELF" "$WINF"
 }
 
@@ -90,7 +94,8 @@ hold() { # internal: runs as the child of systemd-inhibit; the inhibitor lives a
   local mode=$1 value=$2 end
   mkdir -p "$STATE"
   echo $$ >"$PIDF"
-  trap 'rm -f "$PIDF" "$UNTILF" "$LABELF" "$WINF"; poke_bar; exit 0' TERM INT HUP
+  # only remove the state when it still belongs to this holder (a replacement may already have written its own)
+  trap '[[ $(cat "$PIDF" 2>/dev/null) == "$$" ]] && rm -f "$PIDF" "$UNTILF" "$LABELF" "$WINF"; poke_bar; exit 0' TERM INT HUP
   case $mode in
     secs)
       end=$(($(date +%s) + value))
@@ -101,7 +106,7 @@ hold() { # internal: runs as the child of systemd-inhibit; the inhibitor lives a
         sleep 4 & wait $!
       done ;;
   esac
-  rm -f "$PIDF" "$UNTILF" "$LABELF" "$WINF"
+  if [[ $(cat "$PIDF" 2>/dev/null) == "$$" ]]; then rm -f "$PIDF" "$UNTILF" "$LABELF" "$WINF"; fi
   poke_bar
   note "Keep awake: finished" "normal idle behaviour is back"
 }
