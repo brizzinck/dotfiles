@@ -1,0 +1,8 @@
+[Unit]
+Description=Prune old Codex app-server releases (keep current + 1)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.config/systemd/user/scripts/codex-prune-releases.sh
+Nice=19
+IOSchedulingClass=idle

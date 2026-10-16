@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly prune of old Codex app-server releases
+
+[Timer]
+OnCalendar=weekly
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
