@@ -14,7 +14,7 @@ git submodule update --init --recursive
 chmod +x install.sh && ./install.sh
 ```
 
-`install.sh` does a full machine bootstrap: pacman packages, AUR (via yay), Flatpak apps, Go/NPM/Rust toolchains, Oh My Zsh, Docker setup, SSH key generation, then runs `stow .` to link the dotfiles.
+`install.sh` does a full machine bootstrap: pacman packages, AUR (via yay), Flatpak apps, Go/NPM/Rust toolchains, Oh My Zsh, Docker setup, SSH key generation, then runs `stow .` to link the dotfiles and `browsers/apply.sh` to copy the browser settings. Root-level system changes (packages, `/etc`, timers, fstab, grub) are applied separately by `sudo ./apply-system.sh`; `./doctor.sh` verifies the result.
 
 After modifying dotfiles, re-apply with:
 ```bash
@@ -27,19 +27,25 @@ cd ~/dotfiles && stow .
 All configs live under `.config/` following XDG Base Dir. Root-level files (`.zshrc`, `.gitconfig`) stow directly to `$HOME`.
 
 ### Monitor management
-Two layers:
-1. `.config/hypr/monitors.conf` — static Hyprland monitor declarations (resolution, scale, position)
-2. `.config/kanshi/config` — dynamic profiles that override monitor state based on what's connected (e.g. disable `eDP-1` when `HDMI-A-1` is present). Kanshi is started via `exec-once = kanshi` in `hyprland.conf`.
+Static Hyprland rules in the `monitors` block of `.config/hypr/hyprland.conf`: `HDMI-A-1` 2560x1440@144 at `0x0`, the laptop panel `eDP-1` 2880x1800@120 scaled 1.5 at `0x1440` (below the external one), plus a `preferred, auto` fallback for any other output. Hyprland applies them on hotplug, so there is no kanshi, no polling script and no monitor daemon. GPU-specific env lives in `.config/hypr/gpu-nvidia.conf`, sourced from `.config/hypr/host.conf` only on NVIDIA machines (`install.sh` appends the `source` line).
 
 ### Theme system
-`themes/static/` — pre-built color schemes (rose-pine, dracula, catppuccin-mocha, etc.), each with a `theme.toml` for HyprDynamicMonitors.  
-`themes/templates/` — dynamic generators: `matugen/` (Material You), `wallust/`, `pywal/` (both wallpaper-based extraction).
+The active palette is **Everforest Black** (pure `#000000` backgrounds), stored in `themes/static/everforest-black/` (`palette.md` is the source of truth; `waybar.css`, `rofi.rasi`, `ansi.txt` are reusable fragments). It is applied to ghostty, alacritty, tmux, nvim, Hyprland, hyprlock, waybar, rofi, wofi, dunst, lazygit, lazydocker, btop, GTK (prefer-dark) and Qt (`.config/qt6ct`). The other directories in `themes/static/` (rose-pine, dracula, catppuccin-mocha, ...) and `themes/templates/` (matugen, wallust, pywal) are unused leftovers of the old HyprDynamicMonitors setup.
+
+### Launcher
+**rofi** is the launcher (`$menu`, `SUPER+space`) and the dmenu backend for the power menu, clipboard history, dunst history, keybind cheatsheet and emoji picker (`.config/rofi/`). wofi stays installed and is themed, but nothing binds it.
+
+### Docs and tools in the repo (not stowed)
+- `doctor.sh` — read-only health check of the approved workstation state (PASS/FAIL per item: lock screen, NVIDIA env, ucode, timers, earlyoom, docker GC, pacman cache, pacnew, failed units, zram, Hyprland config errors, waybar, stow links). Run `./doctor.sh` (`--fails` for failures only).
+- `docs/keymap.md` — Hyprland / tmux / shell-helper keymap; regenerate the Hyprland part with `docs/gen-keymap.sh` after changing binds.
+- `browsers/` — Zen `user.js` (memory/cache prefs) and Chrome `chrome-flags.conf` (1 GiB disk cache). They must be copied into the flatpak sandboxes, so `browsers/apply.sh` (called by `install.sh`, merges, idempotent) does that instead of stow.
+- `pkg/*.txt` — package lists written by a pacman hook; `infrastructure/` — system files installed by `apply-system.sh` / `apply-memory.sh`.
 
 ### Neovim
 `.config/nvim/` is a git submodule pointing to a custom NvChad fork. Update with `git submodule update --remote`.
 
 ### Infrastructure
-`infrastructure/systemd/` — systemd user services for `hyprdynamicmonitors` (automatic monitor config daemon). Install with `systemctl --user enable --now hyprdynamicmonitors.service`.
+`infrastructure/systemd/` — `coredump-limits.conf` (installed by `apply-system.sh`) and legacy `hyprdynamicmonitors` user units (unused: monitors are static now).
 
 `infrastructure/tlp/` — TLP drop-in configs (`/etc/tlp.d/`), not stowed (system path, outside `$HOME`, machine-wide rather than per-user). `61-battery-care.conf` caps battery charging; `install.sh` copies it into `/etc/tlp.d/` and enables `tlp.service` (copied, not symlinked, so it doesn't dangle if the installing user's account is later removed on a shared machine). Non-ThinkPad Lenovo hardware (`ideapad_laptop` driver) only supports a binary `Long_Life` charge mode (vendor-fixed ~55-60% cutoff) via the kernel's `charge_types` API — no exact percentage like ThinkPads' `charge_control_end_threshold`. To pick up edits without a full rerun: `sudo cp infrastructure/tlp/61-battery-care.conf /etc/tlp.d/ && sudo systemctl restart tlp`.
 
@@ -50,7 +56,8 @@ Two layers:
 ### Shell aliases (`.zshrc`)
 - `gtx` navigation: `gtj`=~/job, `gtd`=~/dotfiles, `gtn`=~/.config/nvim
 - Git: `gs`, `ga`, `gcm`, `gp`, `gl`, etc.
-- Go: `tg` (test all), `lg` (lint+tidy), `rg()` (smart run, finds main.go)
+- Go: `tg` (test all), `lg` (lint+tidy), `grun` (smart run, finds main.go; was `rg`, which shadowed ripgrep)
+- Helpers: `sysup` (system upgrade), `vpn` (fzf VPN toggle), `jf` (fuzzy journal), `lzd` (lazydocker), `tp` (trash-put); full list in `docs/keymap.md`
 - Rust/Cargo: `rr`=run, `rc`=clippy, `of()` (fmt with edition flag)
 
 ## AI agent cockpit (Neovim + tmux)
