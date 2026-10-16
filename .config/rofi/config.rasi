@@ -1,5 +1,10 @@
-/* rofi 2.0 — Everforest Black (themes/static/everforest-black/palette.md).
+/* rofi 2.0 - Everforest v2 (themes/palette). The token variables (bg, surface, select, border, fg, muted, subtext, green,
+   red, blue, ...) come from the generated rofi.rasi: black first (always there), then the active variant
+   (~/.local/state/theme/current, flipped by `theme`; a missing import is skipped silently, checked with rofi 2.0).
    Scripts pass only -theme-str (width/lines), -p and -mesg on top of this. */
+@import "~/dotfiles/themes/generated/black/rofi.rasi"
+@import "~/.local/state/theme/current/rofi.rasi"
+
 configuration {
   modes: "drun,run,window,ssh";
   show-icons: true;
@@ -23,15 +28,9 @@ configuration {
 }
 
 * {
-  bg: #000000;
-  surface: #0b0e0d;
-  sel: #1f2a24;
-  border: #3a4440;
-  fg: #d3c6aa;
-  dim: #6b7770;
-  accent: #a7c080;
-  urgent: #e67e80;
-  active: #7fbbb3;
+  accent: @green;
+  urgent: @red;
+  active: @blue;
   background-color: transparent;
   text-color: @fg;
 }
@@ -64,7 +63,7 @@ prompt { text-color: @accent; }
 
 entry {
   placeholder: "search";
-  placeholder-color: @dim;
+  placeholder-color: @subtext;
   cursor: text;
 }
 
@@ -83,7 +82,7 @@ element {
 }
 
 element normal.normal, element alternate.normal { background-color: transparent; text-color: @fg; }
-element selected.normal { background-color: @sel; text-color: @accent; }
+element selected.normal { background-color: @select; text-color: @accent; }
 element normal.urgent, element alternate.urgent, element selected.urgent { text-color: @urgent; }
 element normal.active, element alternate.active, element selected.active { text-color: @active; }
 

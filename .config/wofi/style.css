@@ -1,19 +1,23 @@
-/* wofi fallback launcher — Everforest Black, fully opaque (themes/static/everforest-black/palette.md) */
+/* wofi fallback launcher - Everforest v2 (themes/palette), fully opaque. Named colours come from the generated
+   waybar.css: black first (always there), then the active variant (~/.local/state/theme/current, flipped by `theme`). */
+@import "theme-black.css";
+@import "theme.css";
+
 window {
     font-family: "JetBrainsMono Nerd Font";
     font-size: 16px;
     font-weight: 500;
-    background-color: #000000;
+    background-color: @bg;
     border-radius: 8px;
-    border: 1px solid #3a4440;
+    border: 1px solid @border;
     padding: 8px;
 }
 
 #input {
-    color: #d3c6aa;
+    color: @fg;
     background-color: transparent;
     border: none;
-    border-bottom: 1px solid #3a4440;
+    border-bottom: 1px solid @border;
     border-radius: 0;
     box-shadow: none;
     padding: 8px;
@@ -21,7 +25,7 @@ window {
 }
 
 #input:focus {
-    border-bottom: 1px solid #a7c080;
+    border-bottom: 1px solid @green;
 }
 
 #outer-box {
@@ -38,7 +42,7 @@ window {
 }
 
 #entry {
-    color: #d3c6aa;
+    color: @fg;
     background-color: transparent;
     padding: 6px 12px;
     margin: 0;
@@ -46,21 +50,21 @@ window {
 }
 
 #entry:selected {
-    background-color: #1f2a24;
-    color: #a7c080;
+    background-color: @select;
+    color: @green;
 }
 
 #text {
-    color: #d3c6aa;
+    color: @fg;
 }
 
 #text:selected {
-    color: #a7c080;
+    color: @green;
 }
 
 #message {
-    background-color: #0b0e0d;
-    color: #d3c6aa;
+    background-color: @surface;
+    color: @fg;
     border: none;
     border-radius: 6px;
     padding: 6px 10px;

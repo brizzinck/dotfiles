@@ -1,0 +1,41 @@
+/* swayosd - Everforest v2 (themes/palette). Named colours come from the generated waybar.css: black first (always
+   there), then the active variant (~/.local/state/theme/current, flipped by `theme`, which restarts swayosd-server).
+   Pure black pill (bg_oled) with a border frame; the bar is green, its trough the quiet line colour. */
+@import "theme-black.css";
+@import "theme.css";
+
+window#osd {
+  padding: 12px 20px;
+  border-radius: 999px;
+  border: 1px solid @border;
+  background: @bg_oled;
+}
+
+window#osd #container { margin: 16px; }
+
+window#osd image,
+window#osd label { color: @fg; }
+
+window#osd progressbar:disabled,
+window#osd image:disabled { opacity: 0.5; }
+
+window#osd progressbar {
+  min-height: 6px;
+  border-radius: 999px;
+  background: transparent;
+  border: none;
+}
+
+window#osd trough {
+  min-height: inherit;
+  border-radius: inherit;
+  border: none;
+  background: @line;
+}
+
+window#osd progress {
+  min-height: inherit;
+  border-radius: inherit;
+  border: none;
+  background: @green;
+}

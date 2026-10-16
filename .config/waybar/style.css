@@ -1,22 +1,8 @@
-/* Everforest Black. Tokens mirror themes/static/everforest-black/waybar.css. */
-@define-color bg #000000;
-@define-color surface #0b0e0d;
-@define-color raised #141a17;
-@define-color select #1f2a24;
-@define-color visual #2a3530;
-@define-color line #222a27;
-@define-color border #3a4440;
-@define-color dim #6b7770;
-@define-color sub #859289;
-@define-color fg #d3c6aa;
-@define-color fg_hi #e7dabe;
-@define-color green #a7c080;
-@define-color aqua #83c092;
-@define-color blue #7fbbb3;
-@define-color yellow #dbbc7f;
-@define-color orange #e69875;
-@define-color red #e67e80;
-@define-color purple #d699b6;
+/* Everforest v2 (themes/palette). The @define-color names come from the generated waybar.css of the black variant
+   (always present, repo symlink) and of the active variant (symlink to ~/.local/state/theme/current, flipped by
+   `theme`; `theme` reloads waybar with SIGUSR2). The bar and its tooltip sit on @bg_oled, which is #000000 in both. */
+@import "theme-black.css";
+@import "theme.css";
 
 * {
   font-family: "JetBrainsMono Nerd Font", "JetBrainsMono Nerd Font Propo";
@@ -27,9 +13,9 @@
   border-radius: 0;
 }
 
-window#waybar { background: @bg; color: @sub; }
+window#waybar { background: @bg_oled; color: @subtext; }
 
-tooltip { background: @bg; border: 1px solid @border; border-radius: 8px; }
+tooltip { background: @bg_oled; border: 1px solid @border; border-radius: 8px; }
 tooltip label { color: @fg; padding: 2px 4px; }
 
 /* workspaces: active = green text on a quiet pill with a 2px underline (no bright filled block) */
@@ -37,19 +23,19 @@ tooltip label { color: @fg; padding: 2px 4px; }
 #workspaces button {
   padding: 0 8px;
   margin: 3px 2px;
-  color: @dim;
+  color: @muted;
   background: transparent;
   border-radius: 6px;
   border-bottom: 2px solid transparent;
 }
-#workspaces button.visible { color: @sub; }
+#workspaces button.visible { color: @subtext; }
 #workspaces button.active { color: @green; background: @raised; border-bottom: 2px solid @green; }
-#workspaces button.urgent { color: @bg; background: @yellow; }
+#workspaces button.urgent { color: @bg_oled; background: @yellow; }
 #workspaces button.special { color: @purple; border-bottom: 2px solid @purple; }
 #workspaces button:hover { background: @surface; box-shadow: none; text-shadow: none; }
 
 #submap {
-  color: @bg;
+  color: @bg_oled;
   background: @yellow;
   font-weight: 700;
   padding: 0 10px;
@@ -73,26 +59,26 @@ tooltip label { color: @fg; padding: 2px 4px; }
 #custom-dnd.on { color: @purple; }
 #custom-idle.on { color: @yellow; }
 #custom-keepawake.on, #custom-lid.on { color: @yellow; }
-#custom-ai.ok { color: @sub; }
+#custom-ai.ok { color: @subtext; }
 #custom-ai.warning { color: @orange; }
 #custom-ai.critical { color: @red; font-weight: 700; }
 #custom-vault.unlocked { color: @green; }
-#custom-vault.locked { color: @sub; }
-#custom-vault.unconfigured { color: @dim; }
+#custom-vault.locked { color: @subtext; }
+#custom-vault.unconfigured { color: @muted; }
 #custom-power.power-saver { color: @green; }
-#custom-power.balanced { color: @sub; }
+#custom-power.balanced { color: @subtext; }
 #custom-power.performance { color: @orange; }
 
 /* state */
 #network.disconnected { color: @red; }
 #bluetooth.connected { color: @blue; }
-#pulseaudio.muted { color: @dim; }
+#pulseaudio.muted { color: @muted; }
 #pulseaudio.over { color: @orange; }
-#pulseaudio.mic { color: @sub; }
+#pulseaudio.mic { color: @subtext; }
 #pulseaudio.mic.source-muted { color: @red; }
 #battery.charging, #battery.plugged, #battery.full { color: @aqua; }
 #battery.warning:not(.charging):not(.plugged) { color: @orange; }
-#battery.critical:not(.charging):not(.plugged) { color: @bg; background: @red; border-radius: 6px; margin: 3px 0; }
+#battery.critical:not(.charging):not(.plugged) { color: @bg_oled; background: @red; border-radius: 6px; margin: 3px 0; }
 #cpu.warning, #memory.warning { color: @orange; }
 #cpu.critical, #memory.critical, #temperature.critical { color: @red; }
-#language { color: @sub; }
+#language { color: @subtext; }

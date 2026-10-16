@@ -1,5 +1,7 @@
-# dunst 1.13 — Everforest Black (themes/static/everforest-black/palette.md)
-# Reload: pkill -x dunst (dbus activation restarts it) or `hyprctl dispatch exec dunst`.
+# dunst 1.13 - structure only; the colours are Everforest v2 (themes/palette) and arrive as drop-ins from dunstrc.d/:
+# 40-theme-black.conf (repo symlink to the generated black file, always valid) and 50-theme.conf (symlink to
+# ~/.local/state/theme/current/dunstrc, flipped by `theme`). Drop-ins are read in name order after this file.
+# Reload: `dunstctl reload` (theme does it); pkill -x dunst restarts it (dbus activation).
 
 [global]
     monitor = 0
@@ -47,24 +49,12 @@
     mouse_right_click = close_current
 
 [urgency_low]
-    background = "#000000"
-    foreground = "#859289"
-    frame_color = "#3a4440"
-    highlight = "#6b7770"
     timeout = 4
 
 [urgency_normal]
-    background = "#000000"
-    foreground = "#d3c6aa"
-    frame_color = "#7fbbb3"
-    highlight = "#a7c080"
     timeout = 6
 
 [urgency_critical]
-    background = "#000000"
-    foreground = "#e7dabe"
-    frame_color = "#e67e80"
-    highlight = "#e67e80"
     timeout = 0
 
 # Do not cover fullscreen video/presentations with low/normal notifications.
@@ -78,29 +68,24 @@
     msg_urgency = critical
     fullscreen = show
 
-# Per-app accents. Critical keeps the red frame (these rules only match normal/low).
+# Per-app accents (frame_color/highlight come from the theme drop-in: red = recording, yellow = attention, orange =
+# caution). Critical keeps the red frame (these rules only match normal/low).
 # Screen recorder (hypr/scripts/rec-toggle.sh): red = recording
 [recorder]
     appname = recorder
     msg_urgency = normal
-    frame_color = "#e67e80"
-    highlight = "#e67e80"
     timeout = 3
 
 # Idle toggle (hypr/scripts/idle-toggle.sh): yellow = attention; replaces itself via the stack tag
 [idle]
     appname = idle
     msg_urgency = normal
-    frame_color = "#dbbc7f"
-    highlight = "#dbbc7f"
     timeout = 2
 
 # Battery warnings from waybar
 [battery]
     appname = battery
     msg_urgency = normal
-    frame_color = "#e69875"
-    highlight = "#e69875"
 
 # Volume/brightness OSD (swayosd draws its own overlay; this rule only keeps any osd-style
 # notifications short and out of the history)

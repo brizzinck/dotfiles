@@ -51,11 +51,13 @@
       "weeks-pos": "right",
       "on-scroll": 1,
       "format": {
-        "months": "<span color='#d3c6aa'><b>{}</b></span>",
-        "days": "<span color='#859289'>{}</span>",
-        "weeks": "<span color='#6b7770'>W{}</span>",
-        "weekdays": "<span color='#dbbc7f'><b>{}</b></span>",
-        "today": "<span color='#a7c080'><b><u>{}</u></b></span>"
+        // pango cannot use @define-color: these are the black-variant tokens fg / subtext / muted / yellow / green
+        // (doctor.sh checks that every hex here is a palette token; night differs from black by <= 3/255 on muted and subtext)
+        "months": "<span color='#dbd8c9'><b>{}</b></span>",
+        "days": "<span color='#8d998f'>{}</span>",
+        "weeks": "<span color='#6c7871'>W{}</span>",
+        "weekdays": "<span color='#d9bc7f'><b>{}</b></span>",
+        "today": "<span color='#abc682'><b><u>{}</u></b></span>"
       }
     },
     "actions": {
@@ -270,12 +272,12 @@
     "tooltip": false
   },
 
-  // anything but EN is highlighted so a wrong layout is noticed
+  // anything but EN is highlighted so a wrong layout is noticed (colours: orange / subtext / yellow / orange tokens)
   "hyprland/language": {
-    "format": "<span color='#e69875'>{}</span>",
-    "format-en": "<span color='#859289'>EN</span>",
-    "format-ru": "<span color='#dbbc7f'><b>RU</b></span>",
-    "format-uk": "<span color='#e69875'><b>UA</b></span>",
+    "format": "<span color='#ea9e77'>{}</span>",
+    "format-en": "<span color='#8d998f'>EN</span>",
+    "format-ru": "<span color='#d9bc7f'><b>RU</b></span>",
+    "format-uk": "<span color='#ea9e77'><b>UA</b></span>",
     "tooltip": false
   },
 
