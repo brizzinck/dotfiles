@@ -72,21 +72,41 @@ safe_kill() {
     fi
   done
 
-  # Find a session that will survive
-  local survivor=""
-  for s in "${all_sessions[@]}"; do
-    local is_target=0
+  is_target() {
+    local s="$1" t
     for t in "${targets[@]}"; do
-      if [ "$s" = "$t" ]; then
-        is_target=1
+      [ "$s" = "$t" ] && return 0
+    done
+    return 1
+  }
+
+  # Find a session that will survive: the client's previous session first,
+  # otherwise any session not being killed
+  local survivor=""
+  local last
+  last="$(tmux display-message -p '#{client_last_session}' 2>/dev/null || echo "")"
+  if [ -n "$last" ] && tmux has-session -t "=$last" 2>/dev/null && ! is_target "$last"; then
+    survivor="$last"
+  else
+    for s in "${all_sessions[@]}"; do
+      if ! is_target "$s"; then
+        survivor="$s"
         break
       fi
     done
-    if [ "$is_target" -eq 0 ]; then
-      survivor="$s"
-      break
-    fi
-  done
+  fi
+
+  # Killing the current (and only remaining) session: create a fresh one so the
+  # client moves there instead of the tmux server exiting
+  if [ "$includes_curr" -eq 1 ] && [ -z "$survivor" ]; then
+    local fresh="main" i=1
+    while tmux has-session -t "=$fresh" 2>/dev/null || is_target "$fresh"; do
+      fresh="main-$i"
+      i=$((i + 1))
+    done
+    tmux new-session -d -s "$fresh" -c "$HOME"
+    survivor="$fresh"
+  fi
 
   # If current session will be killed, switch client first
   if [ "$includes_curr" -eq 1 ] && [ -n "$survivor" ]; then
@@ -123,7 +143,7 @@ confirm_kill_one() {
 
   if [ "$target" = "$curr" ]; then
     if [ "$total" -le 1 ]; then
-      printf "\nВнимание: '%s' — последняя активная сессия!\nЕё удаление закроет tmux сервер. Удалить? [y/N]: " "$target"
+      printf "\nВнимание: '%s' — последняя активная сессия!\nВместо неё будет создана новая. Удалить? [y/N]: " "$target"
     else
       printf "\nУдалить текущую сессию '%s'?\nБудет выполнен переход в другую сессию. [y/N]: " "$target"
     fi

@@ -16,7 +16,7 @@ if [[ ! "$name" =~ ^[a-zA-Z0-9._-]+$ ]]; then
   exit 1
 fi
 
-if tmux has-session -t "$name" 2>/dev/null; then
+if tmux has-session -t "=$name" 2>/dev/null; then
   tmux display-message "Ошибка: сессия '${name}' уже существует!"
   exit 1
 fi
