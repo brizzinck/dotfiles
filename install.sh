@@ -129,6 +129,8 @@ go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 go install github.com/bufbuild/buf-language-server/cmd/bufls@latest
 go install github.com/vektra/mockery/v3@latest
 go install github.com/swaggo/swag/cmd/swag@latest
+go install golang.org/x/vuln/cmd/govulncheck@latest
+go install gotest.tools/gotestsum@latest
 # YaCodeDev tooling (private GitHub org, needs SSH access) — used by the agent skills in private/
 # SSH rewrite is passed per-command via GIT_CONFIG_* so ~/.gitconfig (stowed from this repo) stays untouched.
 if [ -d "$DOTFILES/private/.claude" ]; then
@@ -168,6 +170,7 @@ fi
 ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
 [ -d "$ZSH_CUSTOM/plugins/zsh-autosuggestions" ]     || git clone https://github.com/zsh-users/zsh-autosuggestions "$ZSH_CUSTOM/plugins/zsh-autosuggestions"
 [ -d "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting" ] || git clone https://github.com/zsh-users/zsh-syntax-highlighting.git "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting"
+[ -d "$ZSH_CUSTOM/plugins/fzf-tab" ]                 || git clone https://github.com/Aloxaf/fzf-tab "$ZSH_CUSTOM/plugins/fzf-tab"
 if [ "$SHELL" != "$(command -v zsh)" ]; then
   chsh -s "$(command -v zsh)" || warn "chsh failed — run: chsh -s $(command -v zsh)"
 fi

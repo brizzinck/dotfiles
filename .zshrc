@@ -2,43 +2,68 @@ export USER="${USER:-$(whoami)}"
 
 export WGPU_BACKEND=vulkan
 
-export FPCDIR="/usr/lib/fpc/3.2.2"
-export PP="/usr/lib/fpc/3.2.2/ppcx64"
-export LAZARUSDIR="/usr/lib/lazarus"   
-export FPCTARGET="x86_64-linux"
-export FPCTARGETCPU="x86_64"
+if [[ -d /usr/lib/fpc/3.2.2 ]]; then
+  export FPCDIR="/usr/lib/fpc/3.2.2"
+  export PP="/usr/lib/fpc/3.2.2/ppcx64"
+  export LAZARUSDIR="/usr/lib/lazarus"
+  export FPCTARGET="x86_64-linux"
+  export FPCTARGETCPU="x86_64"
+fi
 
-export ANDROID_HOME="$HOME/Android/Sdk"     
-export ANDROID_SDK_ROOT="$ANDROID_HOME"
-export ANDROID_NDK_ROOT="$ANDROID_HOME/ndk/25.2.9519653"
-export NDK_HOME="$ANDROID_NDK_ROOT"
-export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+if [[ -d "$HOME/Android/Sdk" ]]; then
+  export ANDROID_HOME="$HOME/Android/Sdk"
+  export ANDROID_SDK_ROOT="$ANDROID_HOME"
+  export ANDROID_NDK_ROOT="$ANDROID_HOME/ndk/25.2.9519653"
+  export NDK_HOME="$ANDROID_NDK_ROOT"
+  export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+fi
 export JAVA_HOME="/usr/lib/jvm/default"
 
 export ZSH="$HOME/.oh-my-zsh"
 
 export PATH="$PATH:$HOME/go/bin"
 export PATH="$HOME/.local/bin:$PATH"
-export PATH="$HOME/.bun/bin:$PATH"
-export PATH="$HOME/.npm/bin:$PATH"
 export PATH="$HOME/.cargo/bin:$PATH"
-export PATH="$HOME/.local/share/npm/bin:$PATH"
-export PATH="$HOME/.local/share/cargo/bin:$PATH"
-export PATH="$HOME/.local/share/go/bin:$PATH"
-export PATH="$HOME/.local/share/rustup/bin:$PATH"
 
 export CLAUDE_CODE_MAX_OUTPUT_TOKENS=66384
 
 ZSH_THEME="robbyrussell"
 
+# fzf-tab must load before the plugins that wrap widgets (autosuggestions, syntax-highlighting last)
 plugins=(
   git
   web-search
+  sudo
+  extract
+  copypath
+  docker
+  golang
+  fzf-tab
   zsh-autosuggestions
   zsh-syntax-highlighting
 )
 
+ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=8'   # ANSI 8 = #6b7770 in the everforest-black palette
+
 source $ZSH/oh-my-zsh.sh
+
+# ── History ─────────────────────────────────────────────────────────────────
+HISTSIZE=200000
+SAVEHIST=200000
+setopt HIST_IGNORE_ALL_DUPS HIST_REDUCE_BLANKS
+
+# ── fzf: Ctrl-R history, Ctrl-T files, Alt-C dirs (fd/bat only when installed) ──
+if (( $+commands[fzf] )); then
+  [[ -t 0 && -o zle ]] && source <(fzf --zsh)   # needs a tty line editor: skipped in non-tty shells (agent snapshots)
+  if (( $+commands[fd] )); then
+    export FZF_DEFAULT_COMMAND='fd --type f --hidden --exclude .git'
+    export FZF_CTRL_T_COMMAND=$FZF_DEFAULT_COMMAND
+    export FZF_ALT_C_COMMAND='fd --type d --hidden --exclude .git'
+  fi
+  if (( $+commands[bat] )); then
+    export FZF_CTRL_T_OPTS="--preview 'bat -n --color=always {} 2>/dev/null | head -200'"
+  fi
+fi
 
 export EDITOR="nvim"
 export GIT_EDITOR="nvim"
@@ -48,13 +73,7 @@ export BROWSER="flatpak run app.zen_browser.zen"
 
 export MOZ_ENABLE_WAYLAND=1
 export MOZ_GTK_TITLEBAR_DECORATION=client
-export QT_SCALE_FACTOR=1.5
 export XCURSOR_SIZE=32
-export PNPM_HOME="$HOME/.local/share/pnpm"
-case ":$PATH:" in
-  *":$PNPM_HOME:"*) ;;
-  *) export PATH="$PNPM_HOME:$PATH" ;;
-esac
 
 export NVM_DIR="$HOME/.nvm"
 
@@ -64,8 +83,6 @@ export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  
 
 [ -s "/home/$USER/.bun/_bun" ] && source "/home/$USER/.bun/_bun"
-
-wmctrl -r ":ACTIVE:" -b add,maximized_vert,maximized_horz 2>/dev/null
 
 alias firefox="firefox --start-maximized"
 
@@ -101,7 +118,7 @@ alias gbs="git switch"
 
 alias ig="lazygit"
 
-alias id="lazydocker"
+alias lzd="lazydocker"
 
 alias rr="cargo r"
 alias rc="cargo clippy"
@@ -116,8 +133,8 @@ of() {
   done
 }
 
-unalias rg 2>/dev/null
-rg() {
+# was rg(): shadowed ripgrep (false "no matches" for agents via the shell snapshot)
+grun() {
   if [ -f "./main.go" ]; then 
     go run . "$@"
   elif [ -f "./cmd/main.go" ]; then
@@ -134,9 +151,6 @@ alias tg="go test ./..."
 alias lf="facad"
 
 eval "$(zoxide init zsh)"
-
-alias f="$HOME/.local/bin/fzfman.sh"
-alias cht="$HOME/.local/bin/chtman.sh"
 
 center_text() {
   local text="$1"
@@ -158,9 +172,6 @@ center_text "└─┘┴ ┴┴ ┴┴─┘└─┘└─┘"
 
 echo -e "\e[0m" 
 
-source "$ZSH/custom/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
-
-
 # Added by Antigravity CLI installer
 export PATH="$HOME/.npm-global/bin:$PATH"
 
@@ -174,3 +185,48 @@ codex() {
 ta() { tmux new-session -A -s "${1:-main}"; }
 alias wm="workmux"
 export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/ssh-agent.socket"
+
+# ── Human-only conveniences ─────────────────────────────────────────────────
+# Aliases that change command output stay out of agent shells: Claude Code captures this
+# file into its shell snapshot, and agents must see stock ls/cat/etc.
+if [[ -z $CLAUDECODE ]]; then
+  if (( $+commands[eza] )); then
+    alias ls='eza --group-directories-first'
+    alias ll='eza -la --git --group-directories-first'
+    alias lt='eza -T -L2 --git-ignore'
+  fi
+  (( $+commands[trash-put] )) && alias tp='trash-put'
+  (( $+commands[bat] )) && export BAT_THEME=ansi   # inherits the terminal palette
+fi
+
+(( $+commands[direnv] )) && eval "$(direnv hook zsh)"
+
+# ── Maintenance helpers ─────────────────────────────────────────────────────
+# One command for system upgrades: news first, then packages, flatpaks, pacnew, cache, status.
+sysup() {
+  yay -Pw                                               # Arch news: read before upgrading
+  read -q "?Upgrade now? [y/N] " || { echo; return 1 }; echo
+  yay -Syu --sudoloop || return
+  (( $+commands[flatpak] )) && flatpak update -y
+  (( $+commands[pacdiff] )) && sudo pacdiff -o | sed 's/^/pacnew: /'   # merge: sudo DIFFPROG='nvim -d' pacdiff
+  if (( $+commands[paccache] )); then
+    sudo paccache -rk2; sudo paccache -ruk0
+  fi
+  [[ "$(pacman -Q linux | awk '{print $2}' | sed 's/\.arch/-arch/')" != "$(uname -r)" ]] && echo ">> kernel updated: reboot"
+  systemctl --failed --no-legend; systemctl --user --failed --no-legend
+}
+
+# fzf toggle for the VPN/proxy daemons that exist on this machine
+vpn() {
+  local u; local -a cands
+  for u in v2raya v2ray xray pritunl-client happd snap.surfshark.surfsharkd; do
+    systemctl cat "$u.service" &>/dev/null && cands+=("$u")
+  done
+  (( $#cands )) || { echo "vpn: no known VPN service units installed"; return 1 }
+  u=$(printf '%s\n' $cands | fzf --prompt='toggle vpn> ' --preview 'systemctl status {} --no-pager | head -15') || return
+  if systemctl is-active -q "$u"; then sudo systemctl stop "$u"; else sudo systemctl start "$u"; fi
+  systemctl is-active "$u"
+}
+
+# fuzzy journal: jf [journalctl args], e.g. jf -p err  /  jf -u docker  /  jf --user
+jf() { journalctl -b -o short-iso --no-pager "$@" | fzf --tac --no-sort --exact; }
