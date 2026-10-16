@@ -6,7 +6,7 @@
 // (SUPER+CTRL+B). Colours: style.css (palette tokens, themes/palette). Alerts print nothing until they are relevant.
 [
   {
-    "name": "compact",
+    "name": "waybar-compact",
     "include": ["~/.local/state/waybar/compact.jsonc", "~/.config/waybar/modules.jsonc"],
     "layer": "top",
     "position": "top",
@@ -23,7 +23,7 @@
     ]
   },
   {
-    "name": "full",
+    "name": "waybar-full",
     "include": ["~/.local/state/waybar/full.jsonc", "~/.config/waybar/full-default.jsonc", "~/.config/waybar/modules.jsonc"],
     "layer": "top",
     "position": "top",

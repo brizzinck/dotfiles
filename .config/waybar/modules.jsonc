@@ -191,7 +191,7 @@
   // ── drawers (open on hover, close by themselves; the leader keeps its own clicks) ──
   "group/toggles": {
     "orientation": "inherit",
-    "drawer": { "transition-duration": 200, "transition-left-to-right": false, "children-class": "drawer-child" },
+    "drawer": { "transition-duration": 220, "transition-left-to-right": false, "children-class": "drawer-child" },
     "modules": ["custom/toggles#leader", "custom/sw-dnd", "custom/sw-caffeine", "custom/sw-awake", "custom/sw-lid", "custom/sw-night", "custom/power"]
   },
   "custom/toggles#leader": {
@@ -251,7 +251,7 @@
 
   "group/net": {
     "orientation": "inherit",
-    "drawer": { "transition-duration": 200, "transition-left-to-right": false, "children-class": "drawer-child" },
+    "drawer": { "transition-duration": 220, "transition-left-to-right": false, "children-class": "drawer-child" },
     "modules": ["network", "bluetooth", "custom/sw-vpn"]
   },
   "network": {
@@ -291,7 +291,7 @@
 
   "group/audio": {
     "orientation": "inherit",
-    "drawer": { "transition-duration": 200, "transition-left-to-right": false, "children-class": "drawer-child" },
+    "drawer": { "transition-duration": 220, "transition-left-to-right": false, "children-class": "drawer-child" },
     "modules": ["pulseaudio", "pulseaudio#mic", "backlight"]
   },
   "pulseaudio": {
@@ -329,7 +329,7 @@
 
   "group/system": {
     "orientation": "inherit",
-    "drawer": { "transition-duration": 200, "transition-left-to-right": false, "children-class": "drawer-child" },
+    "drawer": { "transition-duration": 220, "transition-left-to-right": false, "children-class": "drawer-child" },
     "modules": ["memory", "cpu", "temperature"]
   },
   "memory": {
@@ -361,7 +361,7 @@
   // tray icons live in a drawer (group name "trays": the tray module itself already owns the CSS id #tray)
   "group/trays": {
     "orientation": "inherit",
-    "drawer": { "transition-duration": 200, "transition-left-to-right": false, "children-class": "drawer-child" },
+    "drawer": { "transition-duration": 220, "transition-left-to-right": false, "children-class": "drawer-child" },
     "modules": ["custom/tray-leader", "tray"]
   },
   "custom/tray-leader": { "format": "󰇘", "tooltip-format": "Tray icons (hover)" },

@@ -241,7 +241,7 @@ try:
     mods = jsonc(f"{cfgdir}/modules.jsonc")
     jsonc(f"{cfgdir}/full-default.jsonc")
     names = [b.get("name") for b in cfg]
-    if names != ["compact", "full"]:
+    if names != ["waybar-compact", "waybar-full"]:
         problems.append(f"config bars {names}")
     for b in cfg:
         for m in b["modules-left"] + b["modules-center"] + b["modules-right"]:
@@ -277,8 +277,8 @@ if [ "${n_bar:-0}" -ge 1 ] && command -v hyprctl >/dev/null 2>&1 && [ -n "${HYPR
     --argjson hidden "$bar_hidden" --arg mode "$bar_mode" '
     [ $M[] | . as $m
       | ($L[$m.name].levels // {} | to_entries
-         | map(.key as $lv | .value[] | select(.namespace == "compact" or .namespace == "full") | {n: .namespace, lv: ($lv | tonumber), y: .y, h: .h})) as $s
-      | ($s | map(select(.n == "compact")) | .[0]) as $c | ($s | map(select(.n == "full")) | .[0]) as $f
+         | map(.key as $lv | .value[] | select(.namespace == "waybar-compact" or .namespace == "waybar-full") | {n: .namespace, lv: ($lv | tonumber), y: .y, h: .h})) as $s
+      | ($s | map(select(.n == "waybar-compact")) | .[0]) as $c | ($s | map(select(.n == "waybar-full")) | .[0]) as $f
       | if ($c == null or $f == null) then "\($m.name): compact/full surface missing"
         elif $hidden == 1 then (if ($c.lv != 1 or $f.lv != 1) then "\($m.name): hidden but a bar is above the bottom layer" else empty end)
         elif ($c.y != $m.y or $f.y != $m.y) then "\($m.name): a bar is not at the top edge (y \($c.y)/\($f.y), expected \($m.y)); the negative margin was clamped, switch to the fallback in waybar-design.md 4.1"
