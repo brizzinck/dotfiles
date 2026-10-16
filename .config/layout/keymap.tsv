@@ -1,0 +1,52 @@
+# Physical-key map for the layouts us, ua, ru (kb_layout = us,ua,ru). Source of truth for layout.py.
+# Rebuilt from the system xkb data with `layout.py dump-map`; columns:
+#   xkb key name, W3C code (ghostty trigger), then character (and _sym = xkb keysym name) per layout,
+#   unshifted and _shift.
+xkb	w3c	us	us_shift	ua	ua_shift	ru	ru_shift	us_sym	us_shift_sym	ua_sym	ua_shift_sym	ru_sym	ru_shift_sym
+TLDE	Backquote	`	~	'	ʼ	ё	Ё	grave	asciitilde	apostrophe	U02BC	Cyrillic_io	Cyrillic_IO
+AE11	Minus	-	_	-	_	-	_	minus	underscore	minus	underscore	minus	underscore
+AE12	Equal	=	+	=	+	=	+	equal	plus	equal	plus	equal	plus
+AD11	BracketLeft	[	{	х	Х	х	Х	bracketleft	braceleft	Cyrillic_ha	Cyrillic_HA	Cyrillic_ha	Cyrillic_HA
+AD12	BracketRight	]	}	ї	Ї	ъ	Ъ	bracketright	braceright	Ukrainian_yi	Ukrainian_YI	Cyrillic_hardsign	Cyrillic_HARDSIGN
+BKSL	Backslash	\	|	ґ	Ґ	\	/	backslash	bar	Ukrainian_ghe_with_upturn	Ukrainian_GHE_WITH_UPTURN	backslash	slash
+AC10	Semicolon	;	:	ж	Ж	ж	Ж	semicolon	colon	Cyrillic_zhe	Cyrillic_ZHE	Cyrillic_zhe	Cyrillic_ZHE
+AC11	Quote	'	"	є	Є	э	Э	apostrophe	quotedbl	Ukrainian_ie	Ukrainian_IE	Cyrillic_e	Cyrillic_E
+AB08	Comma	,	<	б	Б	б	Б	comma	less	Cyrillic_be	Cyrillic_BE	Cyrillic_be	Cyrillic_BE
+AB09	Period	.	>	ю	Ю	ю	Ю	period	greater	Cyrillic_yu	Cyrillic_YU	Cyrillic_yu	Cyrillic_YU
+AB10	Slash	/	?	.	,	.	,	slash	question	period	comma	period	comma
+AE01	Digit1	1	!	1	!	1	!	1	exclam	1	exclam	1	exclam
+AE02	Digit2	2	@	2	"	2	"	2	at	2	quotedbl	2	quotedbl
+AE03	Digit3	3	#	3	№	3	№	3	numbersign	3	numerosign	3	numerosign
+AE04	Digit4	4	$	4	;	4	;	4	dollar	4	semicolon	4	semicolon
+AE05	Digit5	5	%	5	%	5	%	5	percent	5	percent	5	percent
+AE06	Digit6	6	^	6	:	6	:	6	asciicircum	6	colon	6	colon
+AE07	Digit7	7	&	7	?	7	?	7	ampersand	7	question	7	question
+AE08	Digit8	8	*	8	*	8	*	8	asterisk	8	asterisk	8	asterisk
+AE09	Digit9	9	(	9	(	9	(	9	parenleft	9	parenleft	9	parenleft
+AE10	Digit0	0	)	0	)	0	)	0	parenright	0	parenright	0	parenright
+AD01	KeyQ	q	Q	й	Й	й	Й	q	Q	Cyrillic_shorti	Cyrillic_SHORTI	Cyrillic_shorti	Cyrillic_SHORTI
+AD02	KeyW	w	W	ц	Ц	ц	Ц	w	W	Cyrillic_tse	Cyrillic_TSE	Cyrillic_tse	Cyrillic_TSE
+AD03	KeyE	e	E	у	У	у	У	e	E	Cyrillic_u	Cyrillic_U	Cyrillic_u	Cyrillic_U
+AD04	KeyR	r	R	к	К	к	К	r	R	Cyrillic_ka	Cyrillic_KA	Cyrillic_ka	Cyrillic_KA
+AD05	KeyT	t	T	е	Е	е	Е	t	T	Cyrillic_ie	Cyrillic_IE	Cyrillic_ie	Cyrillic_IE
+AD06	KeyY	y	Y	н	Н	н	Н	y	Y	Cyrillic_en	Cyrillic_EN	Cyrillic_en	Cyrillic_EN
+AD07	KeyU	u	U	г	Г	г	Г	u	U	Cyrillic_ghe	Cyrillic_GHE	Cyrillic_ghe	Cyrillic_GHE
+AD08	KeyI	i	I	ш	Ш	ш	Ш	i	I	Cyrillic_sha	Cyrillic_SHA	Cyrillic_sha	Cyrillic_SHA
+AD09	KeyO	o	O	щ	Щ	щ	Щ	o	O	Cyrillic_shcha	Cyrillic_SHCHA	Cyrillic_shcha	Cyrillic_SHCHA
+AD10	KeyP	p	P	з	З	з	З	p	P	Cyrillic_ze	Cyrillic_ZE	Cyrillic_ze	Cyrillic_ZE
+AC01	KeyA	a	A	ф	Ф	ф	Ф	a	A	Cyrillic_ef	Cyrillic_EF	Cyrillic_ef	Cyrillic_EF
+AC02	KeyS	s	S	і	І	ы	Ы	s	S	Ukrainian_i	Ukrainian_I	Cyrillic_yeru	Cyrillic_YERU
+AC03	KeyD	d	D	в	В	в	В	d	D	Cyrillic_ve	Cyrillic_VE	Cyrillic_ve	Cyrillic_VE
+AC04	KeyF	f	F	а	А	а	А	f	F	Cyrillic_a	Cyrillic_A	Cyrillic_a	Cyrillic_A
+AC05	KeyG	g	G	п	П	п	П	g	G	Cyrillic_pe	Cyrillic_PE	Cyrillic_pe	Cyrillic_PE
+AC06	KeyH	h	H	р	Р	р	Р	h	H	Cyrillic_er	Cyrillic_ER	Cyrillic_er	Cyrillic_ER
+AC07	KeyJ	j	J	о	О	о	О	j	J	Cyrillic_o	Cyrillic_O	Cyrillic_o	Cyrillic_O
+AC08	KeyK	k	K	л	Л	л	Л	k	K	Cyrillic_el	Cyrillic_EL	Cyrillic_el	Cyrillic_EL
+AC09	KeyL	l	L	д	Д	д	Д	l	L	Cyrillic_de	Cyrillic_DE	Cyrillic_de	Cyrillic_DE
+AB01	KeyZ	z	Z	я	Я	я	Я	z	Z	Cyrillic_ya	Cyrillic_YA	Cyrillic_ya	Cyrillic_YA
+AB02	KeyX	x	X	ч	Ч	ч	Ч	x	X	Cyrillic_che	Cyrillic_CHE	Cyrillic_che	Cyrillic_CHE
+AB03	KeyC	c	C	с	С	с	С	c	C	Cyrillic_es	Cyrillic_ES	Cyrillic_es	Cyrillic_ES
+AB04	KeyV	v	V	м	М	м	М	v	V	Cyrillic_em	Cyrillic_EM	Cyrillic_em	Cyrillic_EM
+AB05	KeyB	b	B	и	И	и	И	b	B	Cyrillic_i	Cyrillic_I	Cyrillic_i	Cyrillic_I
+AB06	KeyN	n	N	т	Т	т	Т	n	N	Cyrillic_te	Cyrillic_TE	Cyrillic_te	Cyrillic_TE
+AB07	KeyM	m	M	ь	Ь	ь	Ь	m	M	Cyrillic_softsign	Cyrillic_SOFTSIGN	Cyrillic_softsign	Cyrillic_SOFTSIGN

@@ -31,6 +31,9 @@ if [[ -r $FZF_DEFAULT_OPTS_FILE ]]; then export FZF_DEFAULT_OPTS_FILE; else unse
 
 HERE=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 TOTP_PY="$HERE/vault-totp.py"
+# Layout-independent rofi keys (ua/ru twins), generated: ~/.config/layout/layout.py
+# shellcheck source=/dev/null
+. "${XDG_CONFIG_HOME:-$HOME/.config}/layout/layout-keys.sh" 2>/dev/null || lk_rofi() { printf '%s' "$1"; }
 BW_PY="$HERE/vault-bw.py"
 RUN="${XDG_RUNTIME_DIR:-/tmp}/vault"
 BW_SESSION_FILE="$RUN/bw-session"
@@ -100,7 +103,7 @@ totp() {
     [[ -n $rows ]] || { note "Vault" "No logins with a TOTP key. Import them: 2fa-import"; return 0; }
     rc=0
     pick=$(printf '%s\n' "$rows" | awk -F'\t' '{ printf "%s\t%s%s%s\n", $1, $2, ($3 != "" ? "   " $3 : ""), ($4 != "" ? "   [" $4 "]" : "") }' |
-      rofi -dmenu -i -p 2fa -display-columns 2 -kb-custom-1 'Alt+t' -kb-custom-2 'Alt+r' \
+      rofi -dmenu -i -p 2fa -display-columns 2 -kb-custom-1 "$(lk_rofi 'Alt+t')" -kb-custom-2 "$(lk_rofi 'Alt+r')" \
         -mesg 'Enter: copy the code (clears after 30 s)    Alt+t: type it    Alt+r: rescan') || rc=$?
     id=${pick%%$'\t'*}
     case $rc in

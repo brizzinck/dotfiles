@@ -340,20 +340,23 @@ if [ -z "$initial" ]; then
   exit 0
 fi
 
-NORMAL_KEYS='j,k,g,G,J,K,i,a,/,q,d,x,U,O'
+# Layout-independent keys: ua/ru twins of the letter binds below (generated: ~/.config/layout/layout.py)
+# shellcheck source=/dev/null
+. "${XDG_CONFIG_HOME:-$HOME/.config}/layout/layout-keys.sh" 2>/dev/null || { lk_fzf_keys() { printf '%s' "$1"; }; lk_fzf_bind() { printf '%s' "$1"; }; }
+NORMAL_KEYS="$(lk_fzf_keys 'j,k,g,G,J,K,i,a,/,q,d,x,U,O')"
 chosen="$(printf "%s\n" "$initial" | fzf \
   --layout=reverse --delimiter=$'\t' --with-nth=2.. --multi --cycle \
   --prompt='N> ' \
   --header='j/k move   tab select   enter/d kill   U kill unnamed   O kill others   q quit' \
-  --bind 'j:down,k:up,g:first,G:last,J:preview-down,K:preview-up,q:abort' \
+  --bind "$(lk_fzf_bind 'j:down,k:up,g:first,G:last,J:preview-down,K:preview-up,q:abort')" \
   --bind 'ctrl-d:half-page-down,ctrl-u:half-page-up,ctrl-f:page-down,ctrl-b:page-up' \
-  --bind "d:execute(bash '$0' --confirm-kill {1})+reload(bash '$0' --list)" \
-  --bind "x:execute(bash '$0' --confirm-kill {1})+reload(bash '$0' --list)" \
-  --bind "U:execute(bash '$0' --unnamed)+reload(bash '$0' --list)" \
-  --bind "O:execute(bash '$0' --others)+reload(bash '$0' --list)" \
-  --bind "i:unbind($NORMAL_KEYS)+change-prompt(I> )" \
-  --bind "a:unbind($NORMAL_KEYS)+change-prompt(I> )" \
-  --bind "/:unbind($NORMAL_KEYS)+change-prompt(I> )+clear-query" \
+  --bind "$(lk_fzf_bind "d:execute(bash '$0' --confirm-kill {1})+reload(bash '$0' --list)")" \
+  --bind "$(lk_fzf_bind "x:execute(bash '$0' --confirm-kill {1})+reload(bash '$0' --list)")" \
+  --bind "$(lk_fzf_bind "U:execute(bash '$0' --unnamed)+reload(bash '$0' --list)")" \
+  --bind "$(lk_fzf_bind "O:execute(bash '$0' --others)+reload(bash '$0' --list)")" \
+  --bind "$(lk_fzf_bind "i:unbind($NORMAL_KEYS)+change-prompt(I> )")" \
+  --bind "$(lk_fzf_bind "a:unbind($NORMAL_KEYS)+change-prompt(I> )")" \
+  --bind "$(lk_fzf_bind "/:unbind($NORMAL_KEYS)+change-prompt(I> )+clear-query")" \
   --bind "esc:transform:[ \"\$FZF_PROMPT\" = 'I> ' ] && echo 'rebind($NORMAL_KEYS)+change-prompt(N> )' || echo abort" \
   --preview="bash '$0' --preview {1}" \
   --preview-window='right,50%,wrap')" || exit 0

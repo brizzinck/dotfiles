@@ -74,6 +74,34 @@ Prefix is `Ctrl+Space`. Config: `.config/tmux/tmux.conf`.
 
 Status badges: `PREFIX` (yellow), `COPY` (blue), `ZOOM` (purple), `SYNC` (red); a red bell marks a background window that needs attention.
 
+## Clipboard history (`SUPER+C`)
+
+| Keys | Action |
+|---|---|
+| `Enter` | Paste the entry into the window that was focused before the menu (`CTRL+SHIFT+V` in terminals) |
+| `Alt+Enter` | Only copy it |
+| `Alt+p` / `Alt+d` | Pin or unpin / delete |
+| `Alt+i` / `Alt+t` | Images only / text only (press again for all) |
+| `SUPER+ALT+V` | Paste the newest image (else the newest file in `~/pics/screenshots`) into the focused window |
+
+## Layout-independent keys (us, ua, ru)
+
+Every bind works while the Ukrainian or Russian layout is active. One physical-key map, `.config/layout/keymap.tsv`,
+feeds `.config/layout/layout.py`, which writes the per-tool files (committed): `ghostty/layout-keys.conf`,
+`tmux/tmux-layout.conf`, `zsh/layout-keys.zsh`, `layout/layout-keys.sh`, `rofi/layout-keys.rasi`,
+`nvim/lua/configs/layout_data.lua`. Regenerate with `layout.py gen` (hub row "Regenerate layout-independent keys").
+
+| Tool | How |
+|---|---|
+| Hyprland | `input:resolve_binds_by_sym = false`: binds match the first layout (us) whatever is active, nothing to do |
+| ghostty | Ctrl+letter arrives as the C0 byte on any layout; Alt+Cyrillic would lose its Alt, so `alt+<physical key>` sends `ESC` + the us letter |
+| tmux | Cyrillic twins of every letter / `M-` bind in the prefix and copy-mode tables |
+| nvim | `langmap` (built-in commands) + langmapper.nvim (every mapping, `<leader>`, `<C-x>`, `<M-x>`) |
+| zsh | `layout_dup_meta` (Alt widgets) now, `layout_dup_keys` for the vi keymaps (V1) |
+| rofi / fzf | rofi key lists get Cyrillic keysyms (`lk_rofi`); fzf letter binds get twin characters (`lk_fzf_bind`) |
+
+Known gaps: ASCII characters that sit on other physical keys in ru/ua (ru `.` on the us `/` key) are not remapped.
+
 ## Shell helpers (`.zshrc`)
 
 | Command | What it does |

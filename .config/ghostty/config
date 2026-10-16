@@ -6,6 +6,8 @@ term = xterm-256color
 # ~/.local/state/theme/current, flipped by `theme black|night`, which also reloads ghostty with SIGUSR2).
 config-file = ?~/dotfiles/themes/generated/black/ghostty.conf
 config-file = ?~/.local/state/theme/current/ghostty.conf
+# Alt+<physical key> sends ESC + the us letter on every layout (generated: ~/.config/layout/layout.py)
+config-file = ?~/.config/ghostty/layout-keys.conf
 
 font-family = JetBrainsMono Nerd Font
 font-size = 15

@@ -32,6 +32,10 @@ PIN_ICON='󰐃'
 DRY=0
 if [[ ${1:-} == --dry-run ]]; then DRY=1; PASTE_DRY=1; export PASTE_DRY; shift; fi
 
+# Layout-independent rofi keys (ua/ru twins), generated: ~/.config/layout/layout.py
+# shellcheck source=/dev/null
+. "${XDG_CONFIG_HOME:-$HOME/.config}/layout/layout-keys.sh" 2>/dev/null || lk_rofi() { printf '%s' "$1"; }
+
 ch() { if [[ -n ${CLIP_DB:-} ]]; then cliphist -db-path "$CLIP_DB" "$@"; else cliphist "$@"; fi; }
 
 pin_count() { [[ -f $PINS ]] && wc -l <"$PINS" || echo 0; }
@@ -173,7 +177,8 @@ while true; do
   icon=
   case $mode in img) icon='element-icon { size: 6em; }' ;; all) [[ -n $(ls -A "$THUMBS" 2>/dev/null) ]] && icon='element-icon { size: 3.4em; }' ;; esac
   pick=$(rofi_rows "$mode" | rofi -dmenu -i -p "$label" -display-columns 2 \
-    -kb-custom-1 'Alt+d' -kb-custom-2 'Alt+p' -kb-custom-3 'Alt+i' -kb-custom-4 'Alt+t' -kb-custom-5 'Alt+Return' \
+    -kb-custom-1 "$(lk_rofi 'Alt+d')" -kb-custom-2 "$(lk_rofi 'Alt+p')" -kb-custom-3 "$(lk_rofi 'Alt+i')" \
+    -kb-custom-4 "$(lk_rofi 'Alt+t')" -kb-custom-5 'Alt+Return' \
     -theme-str "$icon" \
     -mesg 'Enter: paste    Alt+Enter: copy    Alt+p: pin    Alt+d: delete    Alt+i: images    Alt+t: text') || rc=$?
   id=${pick%%$'\t'*}

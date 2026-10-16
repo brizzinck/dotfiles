@@ -85,6 +85,14 @@ if (( $+commands[fzf] )); then
   fi
 fi
 
+# Layout-independent keys: Cyrillic (ua/ru) twins of the Alt+letter widgets (fzf Alt-C, ...). ghostty already sends
+# ESC + the us letter for Alt+<physical key> (ghostty/layout-keys.conf); this covers terminals that send ESC + UTF-8.
+# layout_dup_keys (same file) is for the vi keymaps in stage V1. Table and map: ~/.config/layout/.
+if [[ -o zle && -r ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/layout-keys.zsh ]]; then
+  source ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/layout-keys.zsh
+  layout_dup_meta emacs
+fi
+
 # lazygit colours of the active variant: generated gui.theme merged after the structural config (only when the
 # generated file exists, lazygit refuses a list with a missing file); tmux and hub set the same value
 [[ -r ${XDG_STATE_HOME:-$HOME/.local/state}/theme/current/lazygit.yml ]] && export LG_CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/lazygit/config.yml,${XDG_STATE_HOME:-$HOME/.local/state}/theme/current/lazygit.yml"

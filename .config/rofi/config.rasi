@@ -4,6 +4,7 @@
    Scripts pass only -theme-str (width/lines), -p and -mesg on top of this. */
 @import "~/dotfiles/themes/generated/black/rofi.rasi"
 @import "~/.local/state/theme/current/rofi.rasi"
+@import "~/.config/rofi/layout-keys.rasi"   /* ua/ru twins of the default letter keys, generated: ~/.config/layout/layout.py */
 
 configuration {
   modes: "drun,run,window,ssh";
