@@ -335,6 +335,36 @@ if [ -x "$HOME/.local/bin/mcp-gateway" ]; then
   else bad mcp-add "Claude Code has no desktop-ro entry although mcp-add ran (rerun: mcp-add)"; fi
   if mcp_test="$("$DOTFILES/infrastructure/tests/mcp/run.sh" --quick 2>&1)"; then ok mcp-test "offline tests: $(printf '%s' "$mcp_test" | tail -1 | sed 's/^mcp tests: //')"
   else bad mcp-test "offline test failed (infrastructure/tests/mcp/run.sh): $(printf '%s' "$mcp_test" | grep -m1 '^FAIL')"; fi
+  # Telegram MCP (root part: sudo ./apply-system.sh --only users,mcp; then mcp-telegram-setup): INFO until applied, FAIL on drift
+  tg_dir="$DOTFILES/infrastructure/mcp/telegram"
+  if [ -x /usr/local/lib/telegram-mcp/run ] && [ -r /etc/systemd/system/telegram-mcp.service ]; then
+    tg_drift=""
+    for tg_f in run serve.py creds-install login.py; do cmp -s "$tg_dir/$tg_f" "/usr/local/lib/telegram-mcp/$tg_f" || tg_drift="$tg_drift $tg_f"; done
+    for tg_f in telegram-mcp.service telegram-whisper.service telegram-whisper-proxy.service telegram-whisper-proxy.socket; do cmp -s "$tg_dir/$tg_f" "/etc/systemd/system/$tg_f" || tg_drift="$tg_drift $tg_f"; done
+    if [ -z "$tg_drift" ]; then ok mcp-tg-files "telegram-mcp scripts and units match the repo"; else bad mcp-tg-files "installed files differ from the repo:$tg_drift (sudo ./apply-system.sh --only mcp)"; fi
+  else
+    info mcp-tg-files "Telegram service not installed yet: sudo ./apply-system.sh --only users,mcp"
+  fi
+  if getent passwd aimcp >/dev/null; then
+    aimcp_home="$(getent passwd aimcp | cut -d: -f6)"
+    if [ "$(getent passwd aimcp | cut -d: -f7)" = /usr/bin/nologin ] && [ "$(stat -c %a "$aimcp_home" 2>/dev/null)" = 700 ] && ! id -nG aimcp | tr ' ' '\n' | grep -qxE 'wheel|docker|sudo'; then
+      ok mcp-aimcp "aimcp: nologin, home 0700, not in wheel/docker"
+    else bad mcp-aimcp "aimcp must have shell nologin, home 0700 and no wheel/docker membership"; fi
+    if sudo -n -u aimcp true >/dev/null 2>&1; then bad mcp-aimcp-sudo "the owner can reach aimcp without a password (sudo -n -u aimcp works)"
+    elif machinectl --no-ask-password --quiet shell aimcp@ /usr/bin/true >/dev/null 2>&1; then bad mcp-aimcp-sudo "machinectl shell aimcp@ needs no password"
+    else ok mcp-aimcp-sudo "aimcp is reachable only with a sudo password (no passwordless sudo -u / machinectl)"; fi
+  else
+    info mcp-aimcp "service user aimcp does not exist yet: sudo ./apply-system.sh --only users,mcp"
+  fi
+  tg_state="$(systemctl is-active telegram-mcp.service 2>/dev/null)"
+  tg_creds="$(systemctl show telegram-mcp.service -p LoadCredentialEncrypted --value 2>/dev/null | wc -w)"
+  case "$tg_state" in
+    active) if [ "$tg_creds" -ge 5 ]; then ok mcp-telegram "telegram-mcp.service is active with $tg_creds encrypted credentials (TPM2 + host key)"; else bad mcp-telegram "telegram-mcp.service is active but has $tg_creds LoadCredentialEncrypted entries"; fi ;;
+    failed) bad mcp-telegram "telegram-mcp.service failed: journalctl -u telegram-mcp -n 40 (mcp-telegram-setup status)" ;;
+    *) info mcp-telegram "telegram-mcp.service is $tg_state: one-time setup pending (mcp-telegram-setup)" ;;
+  esac
+  if [ -s /srv/models/ggml-small.bin ]; then ok mcp-whisper "Whisper model shared in /srv/models ($(stat -c %s /srv/models/ggml-small.bin) bytes)"; else info mcp-whisper "no /srv/models/ggml-small.bin yet (sudo ./apply-system.sh --only mcp)"; fi
+  if [ -x /usr/bin/chromium ]; then ok mcp-chromium "Chromium for the clean chrome-devtools server is installed"; else info mcp-chromium "chromium not installed: chrome-devtools answers with a stub (sudo ./apply-system.sh --only mcp)"; fi
 else
   bad mcp-gateway ".local/bin/mcp-gateway missing (cd ~/dotfiles && stow .)"
 fi
