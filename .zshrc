@@ -139,7 +139,10 @@ fi
 
 export NVM_DIR="$HOME/.nvm"
 
-[ -f "$HOME/dotfiles/env.secret.sh" ] && source "$HOME/dotfiles/env.secret.sh"
+# secrets: ~/.config/secrets/env.sh (0600; the place for managed users) and, for the owner, ~/dotfiles/env.secret.sh
+for _f in "$HOME/.config/secrets/env.sh" "$HOME/dotfiles/env.secret.sh"; do [ -f "$_f" ] && source "$_f"; done; unset _f
+# per-user overrides that are never shared (usr link writes the accent marker of a managed user's prompt here)
+[ -r "$HOME/.zshrc.local" ] && source "$HOME/.zshrc.local"
 
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  
@@ -163,7 +166,7 @@ alias gto="cd $HOME/job/obsidian"
 alias gtjr="cd $HOME/job/rust && clear && ls -a"
 alias gtjg="cd $HOME/job/go && clear && ls -a"
 
-alias tdterm='ghostty -e su - td -c "tmux set-environment -g XDG_RUNTIME_DIR /run/user/1000; tmux set-environment -g WAYLAND_DISPLAY wayland-1; tmux source-file ~/.config/tmux/tmux.conf; exec tmux new-session -A -s main" &'
+alias tdterm='usr term td'   # managed users: usr list | usr term USER | SUPER+SHIFT+T
 
 alias g="git"
 alias gs="git status"

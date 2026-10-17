@@ -18,6 +18,7 @@
 ^/private
 ^/browsers
 ^/apps
+^/\.githooks
 ^/doctor\.sh
 ^/docs
 __pycache__

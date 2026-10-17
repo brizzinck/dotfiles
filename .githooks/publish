@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Shared by post-commit, post-merge and post-rewrite (core.hooksPath = .githooks, set by install.sh): publish the committed
+# state of ~/dotfiles to /srv/dotfiles for the managed users (`usr sync`). It never blocks or fails a commit:
+# it runs detached, and it does nothing in linked worktrees (agents' workmux worktrees), when /srv/dotfiles does not
+# exist yet (before `sudo ./apply-system.sh --only users`) or when `usr` is not installed.
+[ -d /srv/dotfiles ] || exit 0
+usr="$HOME/.local/bin/usr"
+[ -x "$usr" ] || exit 0
+gd=$(git rev-parse --absolute-git-dir 2>/dev/null) || exit 0
+cd_common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0
+[ "$gd" = "$cd_common" ] || exit 0
+# only the owner's checkout (the one `usr` publishes from)
+top=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+[ "$(readlink -f "$top")" = "$(cd "$(dirname "$(readlink -f "$usr")")/../.." && pwd)" ] || exit 0
+setsid -f "$usr" sync --quiet </dev/null >/dev/null 2>&1 || true
+exit 0

@@ -1,0 +1,510 @@
+#!/usr/bin/env bash
+# usr - the owner's tool for the managed child users (td, yc, later service users). Registry: infrastructure/users/managed.tsv.
+#
+#   usr [list [--json]]            one line per managed user: uid, flags, state (sessions, processes), dotfiles link, home ACL
+#   usr menu                       SUPER+SHIFT+T: fzf-menu picker; Enter = terminal (new tmux session in a new window),
+#                                  NORMAL a = attach to the user's tmux, s / Alt+Enter = plain login shell, f = files, l = logs
+#   usr term USER [--attach|--shell] [--dry-run]   open a ghostty window as USER (machinectl shell USER@, no password)
+#   usr shell USER                 same as term --shell
+#   usr exec USER [-C DIR] [--] [CMD...]   run a command (or a login shell) as USER: sudo -n -u USER -i
+#   usr edit USER PATH             edit a file of USER with your own editor, written back as USER (sudoedit -u)
+#   usr files USER [--as]          yazi on /home/USER (as you, through the ACL); --as runs yazi as USER (0600 files visible)
+#   usr logs USER                  follow the journal of USER's processes
+#   usr link USER [--dry-run|--restore]   link USER's profile from /srv/dotfiles into its home (runs as USER)
+#   usr sync [--quiet] [--worktree] [--dry-run]   publish the committed ~/dotfiles to /srv/dotfiles (no secrets), relink on
+#                                  profile changes; the git hooks in .githooks call it after every commit/merge/rewrite
+#   usr nvim-sync [--background] [--force]   install nvim plugins + Mason into /srv/nvim-shared (read by the managed users)
+#   usr clipboard-acl              give the users flagged `clipboard` write access to the Wayland socket and nothing else of
+#                                  $XDG_RUNTIME_DIR (Hyprland autostart runs it)
+#
+# No password anywhere: the sudoers drop-in and the polkit rule come from `sudo ./apply-system.sh --only users`. Terminals are
+# launched by hand only; closing the window ends the tmux session in it (destroy-unattached) and nothing lingers.
+# Env: USR_MANAGED_TSV, USR_SRV_DOTFILES, USR_NVIM_SHARED (paths; tests and unusual layouts).
+set -u
+
+SELF=$(readlink -f "${BASH_SOURCE[0]}")
+REPO=$(cd "$(dirname "$SELF")/../.." && pwd)
+SRV="${USR_SRV_DOTFILES:-/srv/dotfiles}"
+NVIM_SHARED="${USR_NVIM_SHARED:-/srv/nvim-shared}"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/usr"
+ME=$(command id -un)
+# shellcheck source=../../infrastructure/users/lib.sh
+source "$REPO/infrastructure/users/lib.sh" || { echo "usr: cannot read $REPO/infrastructure/users/lib.sh" >&2; exit 2; }
+
+die() { echo "usr: $*" >&2; exit 2; }
+have() { command -v "$1" >/dev/null 2>&1; }
+note() { [ "${QUIET:-0}" = 1 ] || echo "$*"; }
+notify() { have notify-send && notify-send -a usr -u low "$@" || true; }
+
+need_managed() { # need_managed USER [interactive]
+  managed_users | grep -qx -- "$1" || die "$1 is not a managed user (infrastructure/users/managed.tsv)"
+  getent passwd "$1" >/dev/null || die "the account $1 does not exist yet (sudo ./apply-system.sh --only users)"
+  if [ "${2:-}" = interactive ] && ! managed_has "$1" interactive; then die "$1 is a service user: no terminal, no shell (use usr exec, which needs the sudo password for such users)"; fi
+}
+user_home() { getent passwd "$1" | cut -d: -f6; }
+user_uid() { getent passwd "$1" | cut -d: -f3; }
+user_shell() { getent passwd "$1" | cut -d: -f7; }
+accent_hex() { # accent_hex USER -> #rrggbb of the user's palette token ("" when unknown)
+  local tok json
+  tok=$(managed_field "$1" accent)
+  for json in "$REPO/themes/palette/everforest.json" "$SRV/themes/palette/everforest.json"; do
+    [ -r "$json" ] && have jq && { jq -r --arg t "$tok" '.shared.tokens[$t] // empty' "$json"; return; }
+  done
+}
+
+# ───────────────────────────── list ─────────────────────────────
+
+cmd_list() {
+  local json=0 u uid flags sess procs linked acl first=1
+  [ "${1:-}" = --json ] && json=1
+  [ "$json" = 1 ] && printf '['
+  [ "$json" = 0 ] && printf '%-8s %-6s %-30s %-9s %-6s %-7s %s\n' USER UID FLAGS SESSIONS PROCS DOTFILES OWNER-ACL
+  for u in $(managed_users); do
+    if ! getent passwd "$u" >/dev/null; then
+      [ "$json" = 0 ] && printf '%-8s %-6s %-30s (account does not exist yet)\n' "$u" - "$(managed_field "$u" flags)"
+      continue
+    fi
+    uid=$(user_uid "$u")
+    flags=$(managed_field "$u" flags)
+    sess=$(loginctl list-sessions --no-legend 2>/dev/null | awk -v n="$u" '$3 == n' | wc -l)
+    procs=$(ps -u "$u" --no-headers 2>/dev/null | wc -l)
+    linked=no
+    [ -L "$(user_home "$u")/.zshrc" ] && [ "$(readlink "$(user_home "$u")/.zshrc")" = "$SRV/.zshrc" ] && linked=yes
+    managed_has "$u" profile || linked=-
+    acl=no
+    getfacl -p "$(user_home "$u")" 2>/dev/null | grep -q "^user:$ME:rwx" && acl=yes
+    managed_has "$u" acl || acl=-
+    if [ "$json" = 1 ]; then
+      [ "$first" = 1 ] || printf ','
+      first=0
+      printf '{"user":"%s","uid":%s,"flags":"%s","sessions":%s,"processes":%s,"dotfiles":"%s","owner_acl":"%s"}' "$u" "$uid" "$flags" "$sess" "$procs" "$linked" "$acl"
+    else
+      printf '%-8s %-6s %-30s %-9s %-6s %-7s %s\n' "$u" "$uid" "$flags" "$sess" "$procs" "$linked" "$acl"
+    fi
+  done
+  [ "$json" = 1 ] && printf ']\n'
+  return 0
+}
+
+# ───────────────────────────── clipboard ACL ─────────────────────────────
+# td keeps writing into the owner's Wayland clipboard: traverse-only on the runtime dir (x, no listing), rw on the Wayland
+# socket, and an explicit deny (empty named-user entry beats `other`) on every other world-accessible socket there
+# (pipewire-0, pipewire-0-manager, bus, ...). Verified need: nothing a managed user runs uses PipeWire or the session bus.
+
+cmd_clipboard_acl() {
+  local rt="${XDG_RUNTIME_DIR:-}" wl="${WAYLAND_DISPLAY:-}" u f n=0
+  [ -n "$rt" ] && [ -n "$wl" ] || return 0
+  [ "${wl#/}" = "$wl" ] || { rt=$(dirname "$wl"); wl=$(basename "$wl"); }
+  [ -S "$rt/$wl" ] || return 0
+  have setfacl || die "setfacl is missing (acl package)"
+  for u in $(managed_users clipboard); do
+    getent passwd "$u" >/dev/null || continue
+    setfacl -m "u:$u:--x" "$rt" 2>/dev/null || continue
+    setfacl -m "u:$u:rw" "$rt/$wl"
+    while IFS= read -r -d '' f; do
+      [ "$f" = "$rt/$wl" ] && continue
+      setfacl -m "u:$u:---" "$f" 2>/dev/null && n=$((n + 1))
+    done < <(find "$rt" -mindepth 1 -maxdepth 1 -type s -print0 2>/dev/null)
+    note "clipboard ACL for $u: $rt x, $wl rw, $n other sockets closed"
+  done
+}
+
+# ───────────────────────────── terminals ─────────────────────────────
+
+# the command line run inside the window (as the owner): tries machinectl, then sudo, then the old su as the last resort
+cmd_session() {
+  local user="$1" mode="${2:-tmux}" shell wl name cmd="" rc t0 abs="" envs=()
+  need_managed "$user" interactive
+  shell=$(user_shell "$user")
+  case "$shell" in */nologin | */false | "") shell=/bin/sh ;; esac
+  if managed_has "$user" clipboard && [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    wl="$WAYLAND_DISPLAY"
+    [ "${wl#/}" = "$wl" ] && wl="$XDG_RUNTIME_DIR/$wl"
+    abs="$wl"
+    cmd_clipboard_acl >/dev/null 2>&1 || true
+  fi
+  name="term-$(date +%s%N)"
+  case "$mode" in
+    tmux) cmd="exec tmux new-session -s $name ${abs:+-e WAYLAND_DISPLAY=$abs} \\; set-option destroy-unattached on" ;;
+    attach) cmd="tmux attach 2>/dev/null || exec tmux new-session -s $name ${abs:+-e WAYLAND_DISPLAY=$abs} \\; set-option destroy-unattached on" ;;
+    shell) cmd="exec $shell -l" ;;
+    *) die "unknown mode $mode" ;;
+  esac
+  envs=(-E "TERM=${TERM:-xterm-256color}")
+  [ -n "${COLORTERM:-}" ] && envs+=(-E "COLORTERM=$COLORTERM")
+  [ -n "$abs" ] && envs+=(-E "WAYLAND_DISPLAY=$abs")
+  t0=$SECONDS
+  if machinectl --quiet shell "${envs[@]}" "$user@" "$shell" -lc "$cmd"; then return 0; fi
+  rc=$?
+  if [ $((SECONDS - t0)) -ge 3 ]; then return "$rc"; fi   # it ran for a while: the shell ended with a status, nothing failed to start
+  echo "usr: machinectl shell $user@ failed at once (polkit rule missing? sudo ./apply-system.sh --only users); trying sudo -u" >&2
+  if sudo -n -u "$user" -H env TERM="${TERM:-xterm-256color}" ${abs:+WAYLAND_DISPLAY="$abs"} "$shell" -lc "$cmd"; then return 0; fi
+  echo "usr: sudo -n -u $user failed too; falling back to su (asks $user's password)" >&2
+  su - "$user" -c "$cmd"
+  rc=$?
+  [ "$rc" = 0 ] || { echo "usr: could not open a session as $user (rc $rc). Press Enter." >&2; read -r _; }
+  return "$rc"
+}
+
+cmd_term() {
+  local user="" mode=tmux dry=0 a term
+  for a in "$@"; do
+    case "$a" in
+      --attach) mode=attach ;;
+      --shell) mode=shell ;;
+      --dry-run) dry=1 ;;
+      -*) die "term: unknown option $a" ;;
+      *) user="$a" ;;
+    esac
+  done
+  [ -n "$user" ] || die "term: which user? (usr list)"
+  need_managed "$user" interactive
+  term="${TERMINAL:-ghostty}"
+  have "$term" || die "term: terminal $term not found"
+  if [ "$dry" = 1 ]; then
+    echo "$term --title=$user -e $SELF _session $user $mode"
+    return 0
+  fi
+  # the window runs this script's _session; nothing is detached: closing the window ends the session
+  setsid -f "$term" "--title=$user" -e "$SELF" _session "$user" "$mode" >/dev/null 2>&1
+}
+
+cmd_menu() {
+  local u uid dot sess procs hex rows out key who
+  rows=$(
+    for u in $(managed_users interactive); do
+      getent passwd "$u" >/dev/null || continue
+      uid=$(user_uid "$u")
+      sess=$(loginctl list-sessions --no-legend 2>/dev/null | awk -v n="$u" '$3 == n' | wc -l)
+      procs=$(ps -u "$u" --no-headers 2>/dev/null | wc -l)
+      hex=$(accent_hex "$u")
+      dot="●"
+      if [ -n "$hex" ]; then dot=$(printf '\033[38;2;%d;%d;%dm●\033[0m' "0x${hex:1:2}" "0x${hex:3:2}" "0x${hex:5:2}"); fi
+      printf '%s\t%s %-8s uid %-5s %s session(s), %s process(es)\n' "$u" "$dot" "$u" "$uid" "$sess" "$procs"
+    done
+  )
+  [ -n "$rows" ] || { notify "usr" "No managed interactive user exists"; exit 1; }
+  # Enter = terminal; NORMAL letters leave the list like an --expect key (the library twins them for ua/ru)
+  export FZF_MENU_NORMAL_BINDS='a:become(printf "attach\n%s\n" {1})
+s:become(printf "alt-enter\n%s\n" {1})
+f:become(printf "files\n%s\n" {1})
+l:become(printf "logs\n%s\n" {1})'
+  out=$(printf '%s\n' "$rows" | fzf-menu -p user --delimiter=$'\t' --with-nth=2.. --accept-nth=1 --ansi --expect=alt-enter \
+    --header='Enter terminal | a attach | s shell | f files | l logs') || exit 1
+  key=$(printf '%s\n' "$out" | sed -n 1p)
+  who=$(printf '%s\n' "$out" | sed -n 2p)
+  [ -n "$who" ] || exit 1
+  case "$key" in
+    attach) cmd_term "$who" --attach ;;
+    alt-enter) cmd_term "$who" --shell ;;
+    files) cmd_files "$who" ;;
+    logs) cmd_logs "$who" ;;
+    *) cmd_term "$who" ;;
+  esac
+}
+
+# ───────────────────────────── act as a user ─────────────────────────────
+
+cmd_exec() {
+  local user="${1:-}" dir=""
+  [ -n "$user" ] || die "exec: which user?"
+  shift
+  need_managed "$user"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -C) dir="${2:-}"; shift 2 ;;
+      --) shift; break ;;
+      *) break ;;
+    esac
+  done
+  if [ $# -eq 0 ]; then exec sudo -n -u "$user" -i; fi
+  if [ -n "$dir" ]; then exec sudo -n -u "$user" -i -- sh -c 'cd -- "$1" && shift && exec "$@"' _ "$dir" "$@"; fi
+  exec sudo -n -u "$user" -i -- "$@"
+}
+
+cmd_edit() {
+  local user="${1:-}" path="${2:-}"
+  [ -n "$user" ] && [ -n "$path" ] || die "edit: usage: usr edit USER PATH"
+  need_managed "$user"
+  SUDO_EDITOR="${VISUAL:-${EDITOR:-nvim}}" exec sudoedit -n -u "$user" -- "$path"
+}
+
+cmd_files() {
+  local user="${1:-}" as=0 term="${TERMINAL:-ghostty}"
+  [ -n "$user" ] || die "files: which user?"
+  [ "${2:-}" = --as ] && as=1
+  need_managed "$user"
+  if [ "$as" = 1 ]; then setsid -f "$term" --title="files $user" -e sudo -n -u "$user" -H yazi "$(user_home "$user")" >/dev/null 2>&1
+  else setsid -f "$term" --title="files $user" -e yazi "$(user_home "$user")" >/dev/null 2>&1; fi
+}
+
+cmd_logs() {
+  local user="${1:-}" term="${TERMINAL:-ghostty}"
+  [ -n "$user" ] || die "logs: which user?"
+  need_managed "$user"
+  setsid -f "$term" --title="logs $user" -e journalctl -f -o short-iso "_UID=$(user_uid "$user")" >/dev/null 2>&1
+}
+
+# ───────────────────────────── profile links ─────────────────────────────
+
+# a managed block in a user's own file (never shared): block_set FILE ID TEXT
+block_set() {
+  local file="$1" id="$2" text="$3" tmp
+  mkdir -p "$(dirname "$file")"
+  [ -e "$file" ] || : >"$file"
+  tmp=$(mktemp)
+  awk -v b="# >>> usr:$id >>>" -v e="# <<< usr:$id <<<" '$0 == b { skip = 1; next } $0 == e { skip = 0; next } !skip { print }' "$file" >"$tmp"
+  printf '# >>> usr:%s >>>\n%s\n# <<< usr:%s <<<\n' "$id" "$text" "$id" >>"$tmp"
+  cat "$tmp" >"$file"   # keep the inode (and a link, if any) of the user's file
+  rm -f "$tmp"
+}
+
+# runs as the managed user (or, with USR_TARGET_USER/USR_TARGET_HOME and --dry-run, as the owner reading that home)
+cmd__link() {
+  local dry=0 restore=0 a user home profile list path src dst bdir ts kind target hex n_ok=0 n_link=0 n_skip=0 n_move=0
+  for a in "$@"; do
+    case "$a" in
+      --dry-run) dry=1 ;;
+      --restore) restore=1 ;;
+    esac
+  done
+  user="${USR_TARGET_USER:-$ME}"
+  home="${USR_TARGET_HOME:-$HOME}"
+  managed_users | grep -qx -- "$user" || die "link: $user is not a managed user"
+  managed_has "$user" profile || { note "$user has no dotfiles profile (service user): nothing to link"; return 0; }
+  profile=$(managed_field "$user" profile)
+  list="$REPO/infrastructure/users/profiles/$profile.txt"
+  [ -r "$list" ] || die "link: $list is missing"
+  [ -d "$SRV" ] || die "link: $SRV does not exist yet (usr sync, after sudo ./apply-system.sh --only users)"
+
+  if [ "$restore" = 1 ]; then
+    bdir=$(find "$home/.local/state/usr" -maxdepth 1 -type d -name 'backup-*' 2>/dev/null | sort | tail -1)
+    [ -n "$bdir" ] && [ -r "$bdir/MANIFEST" ] || die "link --restore: no backup in $home/.local/state/usr"
+    while IFS=$'\t' read -r path kind target; do
+      dst="$home/$path"
+      if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$SRV/$path" ]; then rm -f -- "$dst"; fi
+      if [ -e "$bdir/$path" ] || [ -L "$bdir/$path" ]; then
+        [ "$dry" = 1 ] && { echo "restore ~/$path (was: $kind $target)"; continue; }
+        mkdir -p "$(dirname "$dst")"
+        [ -e "$dst" ] || [ -L "$dst" ] || mv -- "$bdir/$path" "$dst"
+        echo "restored ~/$path (was: $kind $target)"
+      fi
+    done <"$bdir/MANIFEST"
+    # links the profile added where nothing was before
+    while IFS= read -r path; do
+      path="${path%%#*}"; path="${path//[[:space:]]/}"
+      [ -n "$path" ] || continue
+      if [ -L "$home/$path" ] && [ "$(readlink "$home/$path")" = "$SRV/$path" ]; then
+        if [ "$dry" = 1 ]; then echo "remove ~/$path (profile link)"; else rm -f -- "$home/$path"; echo "removed ~/$path (profile link)"; fi
+      fi
+    done <"$list"
+    return 0
+  fi
+
+  ts=$(date +%Y%m%d-%H%M%S)
+  bdir="$home/.local/state/usr/backup-$ts"
+  while IFS= read -r path; do
+    path="${path%%#*}"
+    path="${path#"${path%%[![:space:]]*}"}"
+    path="${path%"${path##*[![:space:]]}"}"
+    [ -n "$path" ] || continue
+    src="$SRV/$path"
+    dst="$home/$path"
+    if [ ! -e "$src" ] && [ ! -L "$src" ]; then echo "skip   $path (not in $SRV yet)"; n_skip=$((n_skip + 1)); continue; fi
+    if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then n_ok=$((n_ok + 1)); continue; fi
+    if [ -L "$(dirname "$dst")" ]; then echo "skip   $path (its parent directory is a link; fix it by hand)"; n_skip=$((n_skip + 1)); continue; fi
+    kind=none target=-
+    if [ -L "$dst" ]; then kind=link target=$(readlink "$dst")
+    elif [ -d "$dst" ]; then kind=dir
+    elif [ -e "$dst" ]; then kind="file"; fi
+    if [ "$kind" != none ]; then
+      echo "move   ~/$path ($kind${target:+ -> $target}) to the backup"
+      n_move=$((n_move + 1))
+    fi
+    echo "link   ~/$path -> $src"
+    n_link=$((n_link + 1))
+    [ "$dry" = 1 ] && continue
+    mkdir -p "$(dirname "$dst")"
+    if [ "$kind" != none ]; then
+      mkdir -p "$bdir/$(dirname "$path")"
+      mv -- "$dst" "$bdir/$path"
+      printf '%s\t%s\t%s\n' "$path" "$kind" "$target" >>"$bdir/MANIFEST"
+    fi
+    ln -s -- "$src" "$dst"
+  done <"$list"
+  echo "profile $profile for $user: $n_link linked, $n_ok already linked, $n_skip skipped, $n_move replaced (backup: $bdir)"
+  [ "$dry" = 1 ] && return 0
+
+  # per-user overlays (never shared): the accent marker in the prompt and the tmux status, the private config places
+  hex=$(accent_hex "$user")
+  if [ -n "$hex" ]; then
+    block_set "$home/.zshrc.local" accent "PROMPT=\"%F{$hex}$user%f \${PROMPT}\""
+    block_set "$home/.tmux.local.conf" accent "set -ga status-left \"#[fg=$hex,bold]$user #[default]\""
+  fi
+  mkdir -p "$home/.config/secrets"
+  chmod 700 "$home/.config/secrets"
+  return 0
+}
+
+cmd_link() {
+  local user="${1:-}"
+  shift || true
+  [ -n "$user" ] || die "link: which user?"
+  need_managed "$user"
+  if printf '%s ' "$@" | grep -q -- '--dry-run'; then
+    # a dry run only reads the user's home: no become needed
+    USR_TARGET_USER="$user" USR_TARGET_HOME="$(user_home "$user")" cmd__link "$@"
+    return
+  fi
+  [ -x "$SRV/.local/bin/usr" ] || die "link: $SRV/.local/bin/usr is missing (usr sync first)"
+  if [ "$ME" = "$user" ]; then exec "$SRV/.local/bin/usr" _link "$@"; fi
+  exec sudo -n -u "$user" -H "$SRV/.local/bin/usr" _link "$@"
+}
+
+# ───────────────────────────── publish ─────────────────────────────
+
+cmd_sync() {
+  local quiet=0 worktree=0 dry=0 a stage rev nvim_sha sub path exclude log phash old_phash u
+  for a in "$@"; do
+    case "$a" in
+      --quiet) quiet=1 ;;
+      --worktree) worktree=1 ;;
+      --dry-run) dry=1 ;;
+      *) die "sync: unknown option $a" ;;
+    esac
+  done
+  QUIET=$quiet
+  [ -d "$REPO/.git" ] || [ -f "$REPO/.git" ] || die "sync: $REPO is not a git checkout (publish from ~/dotfiles)"
+  [ "$REPO" != "$SRV" ] || die "sync: run it from the owner's checkout, not from the published copy"
+  [ -d "$SRV" ] || die "sync: $SRV does not exist (sudo ./apply-system.sh --only users)"
+  [ -w "$SRV" ] || die "sync: $SRV is not writable for $ME (sudo ./apply-system.sh --only users fixes the owner)"
+  mkdir -p "$STATE"
+  log="$STATE/sync.log"
+  exec 9>"$STATE/sync.lock"
+  flock -w 120 9 || die "sync: another sync holds the lock"
+  exclude="$REPO/infrastructure/users/publish.exclude"
+  stage=$(mktemp -d)
+  # shellcheck disable=SC2064
+  trap "rm -rf '$stage'" EXIT
+  if [ "$worktree" = 1 ]; then
+    git -C "$REPO" ls-files -z --recurse-submodules | rsync -a --from0 --files-from=- "$REPO/" "$stage/" 2>>"$log"
+    rev="worktree"
+  else
+    git -C "$REPO" archive --format=tar HEAD | tar -x -C "$stage" || die "sync: git archive failed"
+    rev=$(git -C "$REPO" rev-parse HEAD)
+    # submodules at the commit the superproject records; the private one is never published
+    while read -r _ sub path _; do
+      [ -n "$path" ] || continue
+      [ "$path" = private ] && continue
+      nvim_sha="$sub"
+      if git -C "$REPO/$path" cat-file -e "$nvim_sha^{commit}" 2>/dev/null; then
+        mkdir -p "$stage/$path"
+        git -C "$REPO/$path" archive --format=tar "$nvim_sha" | tar -x -C "$stage/$path" 2>/dev/null || echo "sync: could not archive $path" >>"$log"
+      else
+        echo "sync: submodule $path at $nvim_sha is not available locally, skipped" >>"$log"
+        note "warning: submodule $path at $nvim_sha is not available locally (git submodule update --init $path)"
+      fi
+    done < <(git -C "$REPO" ls-tree -r HEAD | awk '$2 == "commit" { print $1, $3, $4 }')
+  fi
+  # the secret-bearing paths never leave the owner's checkout, whatever git says
+  rm -rf -- "$stage/private" "$stage/env.secret.sh"
+  if [ "$dry" = 1 ]; then
+    rsync -a --delete --delete-excluded --filter="P /.published" --exclude-from="$exclude" --dry-run --itemize-changes "$stage/" "$SRV/" | head -50
+    return 0
+  fi
+  rsync -a --delete --delete-excluded --filter="P /.published" --exclude-from="$exclude" "$stage/" "$SRV/" 2>>"$log" || die "sync: rsync failed (see $log)"
+  chmod -R u+rwX,go+rX "$SRV" 2>/dev/null
+  printf 'rev=%s\ntime=%s\n' "$rev" "$(date -Is)" >"$SRV/.published"
+  echo "$(date -Is) published $rev" >>"$log"
+  note "published $rev to $SRV"
+
+  # git in the managed homes: the owner may run git there although the repos belong to the managed users
+  if [ -f "$HOME/.gitconfig.local" ] || [ -w "$HOME" ]; then
+    for u in $(managed_users acl); do
+      git config --file "$HOME/.gitconfig.local" --get-all safe.directory 2>/dev/null | grep -qxF "$(user_home "$u")/*" ||
+        { getent passwd "$u" >/dev/null && git config --file "$HOME/.gitconfig.local" --add safe.directory "$(user_home "$u")/*"; }
+    done
+  fi
+  # relink only when a profile changed
+  phash=$(cat "$SRV"/infrastructure/users/profiles/*.txt "$SRV/infrastructure/users/managed.tsv" 2>/dev/null | sha256sum | cut -d' ' -f1)
+  old_phash=$(cat "$STATE/profiles.sha" 2>/dev/null || true)
+  if [ "$phash" != "$old_phash" ]; then
+    for u in $(managed_users profile); do
+      getent passwd "$u" >/dev/null || continue
+      # shellcheck disable=SC2024  # the log belongs to the owner, who runs this redirect
+      if sudo -n -u "$u" -H "$SRV/.local/bin/usr" _link >>"$log" 2>&1; then note "relinked the profile of $u"; else note "could not relink $u (sudoers drop-in missing? usr link $u)"; fi
+    done
+    echo "$phash" >"$STATE/profiles.sha"
+  fi
+}
+
+# ───────────────────────────── shared nvim ─────────────────────────────
+
+cmd_nvim_sync() {
+  local bg=0 force=0 a want have cfg log tmp rc fargs=()
+  for a in "$@"; do
+    case "$a" in
+      --background) bg=1 ;;
+      --force) force=1 ;;
+      --_fg) ;;
+      *) die "nvim-sync: unknown option $a" ;;
+    esac
+  done
+  [ -d "$NVIM_SHARED" ] && [ -w "$NVIM_SHARED" ] || die "nvim-sync: $NVIM_SHARED is missing or not writable for $ME (sudo ./apply-system.sh --only users)"
+  have nvim || die "nvim-sync: nvim is not installed"
+  mkdir -p "$STATE"
+  log="$STATE/nvim-sync.log"
+  cfg="$SRV/.config/nvim"
+  [ -d "$cfg" ] || cfg="$REPO/.config/nvim"
+  want=$(cat "$cfg/lazy-lock.json" "$cfg/lua/plugins/mason.lua" 2>/dev/null | sha256sum | cut -d' ' -f1)
+  have=$(sed -n 's/^stamp=//p' "$NVIM_SHARED/.ready" 2>/dev/null)
+  if [ "$force" = 0 ] && [ "$want" = "$have" ]; then note "nvim-sync: $NVIM_SHARED is up to date"; return 0; fi
+  if [ "$bg" = 1 ]; then
+    # shellcheck disable=SC2016
+    fargs=()
+    [ "$force" = 1 ] && fargs=(--force)
+    setsid -f bash -c 'log=$1; shift; exec "$@" >>"$log" 2>&1' _ "$log" "$SELF" nvim-sync --_fg "${fargs[@]}" </dev/null >/dev/null 2>&1 || true
+    note "nvim-sync runs in the background: tail -f $log"
+    return 0
+  fi
+  # the committed config (the published copy) populates the shared directories; paths inside the packages become /srv/...
+  tmp=$(mktemp -d)
+  ln -s "$cfg" "$tmp/nvim"
+  echo "$(date -Is) nvim-sync start (config $cfg)"
+  NVIM_SHARED="$NVIM_SHARED" NVIM_BOOTSTRAP_ONLY=shared XDG_CONFIG_HOME="$tmp" \
+    nvim --headless -c "luafile $cfg/scripts/bootstrap.lua"
+  rc=$?
+  rm -rf "$tmp"
+  if [ "$rc" = 0 ]; then
+    chmod -R go+rX "$NVIM_SHARED" 2>/dev/null
+    printf 'stamp=%s\ntime=%s\n' "$want" "$(date -Is)" >"$NVIM_SHARED/.ready"
+    chmod 644 "$NVIM_SHARED/.ready"
+    echo "$(date -Is) nvim-sync done"
+  else
+    echo "$(date -Is) nvim-sync FAILED (rc $rc); $NVIM_SHARED/.ready not updated"
+  fi
+  return "$rc"
+}
+
+# ───────────────────────────── main ─────────────────────────────
+
+cmd="${1:-list}"
+[ $# -gt 0 ] && shift
+case "$cmd" in
+  list | ls) cmd_list "$@" ;;
+  menu) cmd_menu ;;
+  term) cmd_term "$@" ;;
+  shell) cmd_term "$@" --shell ;;
+  _session) cmd_session "$@" ;;
+  exec) cmd_exec "$@" ;;
+  edit) cmd_edit "$@" ;;
+  files) cmd_files "$@" ;;
+  logs) cmd_logs "$@" ;;
+  link) cmd_link "$@" ;;
+  _link) cmd__link "$@" ;;
+  sync) cmd_sync "$@" ;;
+  nvim-sync) cmd_nvim_sync "$@" ;;
+  clipboard-acl) cmd_clipboard_acl ;;
+  -h | --help | help) sed -n '2,24p' "$SELF" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown command: $cmd (usr --help)" ;;
+esac
