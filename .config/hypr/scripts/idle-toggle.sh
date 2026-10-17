@@ -13,4 +13,4 @@ else
   setsid -f hypridle >/dev/null 2>&1
   notify-send -a idle -h string:x-dunst-stack-tag:idle -t 2000 "Idle: on"
 fi
-pkill -o -u "$UID" -RTMIN+8 -x waybar 2>/dev/null || true   # signal 8 = waybar toggles drawer
+rm -f "${XDG_RUNTIME_DIR:-/tmp}/waybar-cache/toggles.json"; pkill -o -u "$UID" -RTMIN+8 -x waybar 2>/dev/null || true   # signal 8 = waybar toggles drawer

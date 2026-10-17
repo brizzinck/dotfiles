@@ -34,19 +34,29 @@ render() { # status player artist title album
 }
 
 follow() {
-  local status player artist title album
+  local status player artist title album pid="" fd
+  # playerctl runs in a process substitution that survives the SIGTERM of this script (it only dies on its next write into the
+  # closed pipe, which never comes while no player plays): every waybar restart left one orphan. Kill it on every way out.
+  reap() { [[ -n $pid ]] && kill "$pid" 2>/dev/null; pid=""; }
+  trap 'reap; exit 0' TERM INT HUP
+  trap reap EXIT
   while :; do
     if command -v playerctl >/dev/null 2>&1; then
-      while IFS= read -r line; do
+      exec {fd}< <(playerctl --follow metadata --format "{{status}}$SEP{{playerName}}$SEP{{artist}}$SEP{{title}}$SEP{{album}}" 2>/dev/null)
+      pid=$!
+      while IFS= read -r -u "$fd" line; do
         status=${line%%"$SEP"*}; line=${line#*"$SEP"}
         player=${line%%"$SEP"*}; line=${line#*"$SEP"}
         artist=${line%%"$SEP"*}; line=${line#*"$SEP"}
         title=${line%%"$SEP"*}; album=${line#*"$SEP"}
         render "$status" "$player" "$artist" "$title" "$album"
-      done < <(playerctl --follow metadata --format "{{status}}$SEP{{playerName}}$SEP{{artist}}$SEP{{title}}$SEP{{album}}" 2>/dev/null)
+      done
+      exec {fd}<&-
+      reap
     fi
     echo "$EMPTY"
-    sleep 5
+    sleep 5 &
+    wait $!
   done
 }
 

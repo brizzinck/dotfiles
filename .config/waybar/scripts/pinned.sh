@@ -3,7 +3,8 @@
 # app, custom/pin#ID, in both bars. pinned-watch.py (one daemon) renders the module output; this script prints it and
 # handles the clicks.
 #
-#   pinned.sh module ID    print the module JSON (waybar exec; also starts the daemon when it is not running)
+#   pinned.sh module ID    print the module JSON (waybar exec of the first pin, and the fallback of the others when their file does
+#                          not exist yet; also starts the daemon when it is not running; the other pins just `cat` the file)
 #   pinned.sh click ID     L: focus the app (repeat: next window of the app); launch it when it has no window
 #   pinned.sh middle ID    M: mark as read (clears the soft "new" highlight)
 #   pinned.sh menu ID      R: fzf-menu with the windows, New window / Launch, Mark read, Close all windows
@@ -44,11 +45,13 @@ row() {
 
 ids() { grep -vE '^[[:space:]]*(#|$)' "$TSV" 2>/dev/null | cut -f1; }
 
-# daemon_alive: cheap check (no python start): the pid file names a live pinned-watch.py
+# daemon_alive: cheap check (builtins only, no python start, no fork): the pid file names a live pinned-watch.py
 daemon_alive() {
-  local pid
+  local pid argv=()
   { pid=$(<"$DIR/pid"); } 2>/dev/null || return 1
-  [[ $pid =~ ^[0-9]+$ ]] && grep -qs pinned-watch "/proc/$pid/cmdline"
+  [[ $pid =~ ^[0-9]+$ ]] || return 1
+  mapfile -d '' -t argv <"/proc/$pid/cmdline" 2>/dev/null || return 1
+  [[ ${argv[*]} == *pinned-watch* ]]
 }
 
 start_daemon() {
@@ -156,12 +159,20 @@ cmd_menu() {
 
 # gen: module definitions for the rows, as jsonc for bar.sh render
 cmd_gen() {
-  local id mods="" defs=()
+  local id mods="" defs=() ex
   while read -r id; do
     [[ $id =~ ^[a-z0-9]+$ ]] || continue
+    if [[ -z $mods ]]; then
+      # the first pin is the one place that runs the script: it prints the file and restarts a dead daemon
+      ex="~/.config/waybar/scripts/pinned.sh module $id"
+    else
+      # every other pin only reads the file pinned-watch.py wrote (8 ms of bash saved per pin and poke); the script is
+      # the fallback while the file does not exist yet (login race)
+      ex="cat \\\"\$XDG_RUNTIME_DIR/pinned/$id.json\\\" 2>/dev/null || ~/.config/waybar/scripts/pinned.sh module $id"
+    fi
     mods+="${mods:+, }\"custom/pin#$id\""
     defs+=("  \"custom/pin#$id\": {
-    \"exec\": \"~/.config/waybar/scripts/pinned.sh module $id\",
+    \"exec\": \"$ex\",
     \"return-type\": \"json\",
     \"signal\": 14,
     \"interval\": 300,

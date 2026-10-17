@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # toggles: the switch modules of the waybar "toggles" drawer and the one-glyph summary of the enabled switches.
+#   toggles.sh summary-raw         the same JSON as summary (full variant), probed now; summary caches it through cache.sh
 #   toggles.sh summary [--alert]   JSON: glyphs of every enabled switch (class enabled). Nothing enabled: the leader shows a
 #                                  dim "all off" glyph; with --alert (compact bar) the text is empty
 #   toggles.sh switch NAME         JSON for one child: on = glyph + class enabled, off = glyph + class dim
@@ -11,6 +12,7 @@
 set -u
 
 SCRIPTS="$HOME/.config/hypr/scripts"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAMES=(dnd caffeine awake lid night vpn tgsend power)
 G_OFF='󰨙'
 G_DND_ON='󰂛' G_DND_OFF='󰂜'
@@ -22,7 +24,7 @@ G_VPN_ON='󰦝' G_VPN_OFF='󰦜'
 G_TGS_ON='󰒊' G_TGS_OFF='󰒊'
 G_SAVER='󰌪' G_PERF='󰓅'
 
-poke_bar() { pkill -o -u "$UID" -RTMIN+8 -x waybar 2>/dev/null || true; }
+poke_bar() { rm -f "${XDG_RUNTIME_DIR:-/tmp}/waybar-cache/toggles.json"; pkill -o -u "$UID" -RTMIN+8 -x waybar 2>/dev/null || true; }
 
 # probe NAME: sets ON (0/1), GLYPH_ON, GLYPH_OFF, LABEL, DETAIL (short text), TEXT_ON (what the summary shows), HINT
 probe() {
@@ -103,16 +105,24 @@ json() { # json TEXT CLASS TOOLTIP
   jq -cn --arg t "$1" --arg c "$2" --arg tip "$3" '{text: $t, class: $c, tooltip: $tip}'
 }
 
+# summary [--alert]: both bars (compact --alert, full leader) tick every 10 s, so the probes run once for the two through
+# cache.sh (TTL 8 s, entry `toggles`); every toggle action drops the entry before it pokes signal 8. The compact variant
+# is derived from the cached full JSON: "all off" is the only state with class dim, and it prints an empty text there.
 summary() {
-  local alert=0 n on=() lines=() text
-  [[ ${1:-} == --alert ]] && alert=1
+  local out
+  out=$("$HERE/cache.sh" toggles 8 -- "${BASH_SOURCE[0]}" summary-raw) || out=""
+  [[ -n $out ]] || out=$(summary_raw)
+  if [[ ${1:-} == --alert && $out == *'"class":"dim"'* ]]; then echo '{"text":""}'; else echo "$out"; fi
+}
+
+summary_raw() { # the full-bar JSON, probed now
+  local n on=() lines=() text
   for n in "${NAMES[@]}"; do
     probe "$n" || continue
     ((ON)) && on+=("$TEXT_ON")
     lines+=("$(state_line)")
   done
   if ((${#on[@]} == 0)); then
-    ((alert)) && { echo '{"text":""}'; return 0; }
     json "$G_OFF" dim "Toggles: all off"$'\n'"$(printf '%s\n' "${lines[@]}")"$'\n\nL: toggles menu'
     return 0
   fi
@@ -150,6 +160,7 @@ toggle() {
 
 case ${1:-} in
   summary) shift; summary "$@" ;;
+  summary-raw) summary_raw ;;
   switch) shift; switch "${1:-}" ;;
   toggle) shift; toggle "${1:-}" ;;
   state) shift; probe "${1:-}" && ((ON)) ;;

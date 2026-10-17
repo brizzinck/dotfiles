@@ -5,20 +5,21 @@
 #   power-profile.sh cycle               power-saver -> balanced -> performance -> power-saver
 #   power-profile.sh waybar              JSON for the custom/power module
 #   power-profile.sh menu                picker (fzf-menu)
-# Backends in order: tlpctl, D-Bus net.hadess.PowerProfiles (the API tlp-pd implements), read-only
-# /sys/firmware/acpi/platform_profile for `get`.
+# Backends in order for `get`: system D-Bus net.hadess.PowerProfiles (the API tlp-pd implements, 4 ms), tlpctl (170 ms), session
+# D-Bus, read-only /sys/firmware/acpi/platform_profile (last resort: tlp-pd balanced on battery shows low-power there).
 set -u
 
 ORDER=(power-saver balanced performance)
 G_SAVER='󰌪' G_BAL='󰗑' G_PERF='󰓅'
 note() { notify-send -a power-profile -h string:x-dunst-stack-tag:power-profile -t 2500 "$@" 2>/dev/null || true; }
-poke_bar() { pkill -o -u "$UID" -RTMIN+8 -x waybar 2>/dev/null || true; }   # signal 8 = waybar toggles drawer
+poke_bar() { rm -f "${XDG_RUNTIME_DIR:-/tmp}/waybar-cache/toggles.json"; pkill -o -u "$UID" -RTMIN+8 -x waybar 2>/dev/null || true; }   # signal 8 = waybar toggles drawer
 DBUS=(net.hadess.PowerProfiles /net/hadess/PowerProfiles net.hadess.PowerProfiles)
 
 get() {
   local p
-  if command -v tlpctl >/dev/null 2>&1 && p=$(tlpctl get 2>/dev/null) && [[ -n $p ]]; then echo "$p"; return 0; fi
+  # D-Bus first (4 ms, the same value tlp-pd serves); `tlpctl get` is a python start (170 ms) and stays the fallback
   if p=$(busctl --system get-property "${DBUS[@]}" ActiveProfile 2>/dev/null | awk '{ gsub(/"/, "", $2); print $2 }') && [[ -n $p ]]; then echo "$p"; return 0; fi
+  if command -v tlpctl >/dev/null 2>&1 && p=$(tlpctl get 2>/dev/null) && [[ -n $p ]]; then echo "$p"; return 0; fi
   if p=$(busctl get-property "${DBUS[@]}" ActiveProfile 2>/dev/null | awk '{ gsub(/"/, "", $2); print $2 }') && [[ -n $p ]]; then echo "$p"; return 0; fi
   if [[ -r /sys/firmware/acpi/platform_profile ]]; then
     case $(cat /sys/firmware/acpi/platform_profile) in

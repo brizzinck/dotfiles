@@ -36,7 +36,7 @@ note() {
   if ((DRY)); then echo "note: $*"; return 0; fi
   notify-send -a lid -h string:x-dunst-stack-tag:lid -t 2500 "$@" 2>/dev/null || true
 }
-poke_bar() { pkill -o -u "$UID" -RTMIN+8 -x waybar 2>/dev/null || true; }   # signal 8 = waybar toggles drawer
+poke_bar() { rm -f "${XDG_RUNTIME_DIR:-/tmp}/waybar-cache/toggles.json"; pkill -o -u "$UID" -RTMIN+8 -x waybar 2>/dev/null || true; }   # signal 8 = waybar toggles drawer
 do_cmd() { if ((DRY)); then echo "would run: $*"; else "$@"; fi; }
 
 holder_pid() {

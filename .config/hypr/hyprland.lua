@@ -511,10 +511,10 @@ hl.bind(mainMod .. " + SHIFT + Escape", hl.dsp.exec_cmd(scripts .. "/powermenu.s
 hl.bind("XF86PowerOff", hl.dsp.exec_cmd(scripts .. "/powermenu.sh"), { description = "Power menu" })
 hl.bind(mainMod .. " + SHIFT + U", hl.dsp.exec_cmd("~/.local/bin/sysup open"), { description = "System update (sysup: install everything now)" })
 hl.bind(mainMod .. " + CTRL + I", hl.dsp.exec_cmd(scripts .. "/idle-toggle.sh"), { description = "Toggle idle (hypridle)" })
-hl.bind(mainMod .. " + SHIFT + N", hl.dsp.exec_cmd("pkill -x hyprsunset || hyprsunset -t 4500; pkill -o -u $(id -u) -RTMIN+8 -x waybar"), { description = "Toggle night light" })
+hl.bind(mainMod .. " + SHIFT + N", hl.dsp.exec_cmd("pkill -x hyprsunset || hyprsunset -t 4500; rm -f $XDG_RUNTIME_DIR/waybar-cache/toggles.json; pkill -o -u $(id -u) -RTMIN+8 -x waybar"), { description = "Toggle night light" })
 hl.bind(mainMod .. " + X", hl.dsp.exec_cmd("dunstctl close"), { description = "Dismiss notification" })
 hl.bind(mainMod .. " + SHIFT + X", hl.dsp.exec_cmd(scripts .. "/notif-history.sh"), { description = "Notification history (fzf)" })
-hl.bind(mainMod .. " + CTRL + X", hl.dsp.exec_cmd("dunstctl set-paused toggle; pkill -o -u $(id -u) -RTMIN+8 -x waybar"), { description = "Toggle do-not-disturb" })
+hl.bind(mainMod .. " + CTRL + X", hl.dsp.exec_cmd("dunstctl set-paused toggle; rm -f $XDG_RUNTIME_DIR/waybar-cache/toggles.json; pkill -o -u $(id -u) -RTMIN+8 -x waybar"), { description = "Toggle do-not-disturb" })
 hl.bind(mainMod .. " + ALT + X", hl.dsp.exec_cmd("dunstctl context"), { description = "Notification actions menu" })
 
 -- --- TUIs and pickers ---

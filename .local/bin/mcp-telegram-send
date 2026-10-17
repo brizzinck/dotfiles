@@ -38,6 +38,11 @@ def notify(title: str, body: str, urgency: str = "normal") -> None:
 
 def poke_bar() -> None:
     if os.environ.get("MCP_TGSEND_NO_POKE") != "1":
+        # the toggles summary is cached for both bars (waybar-cache/toggles.json); drop it so the poke shows the new state
+        try:
+            os.unlink(os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "waybar-cache", "toggles.json"))
+        except OSError:
+            pass
         subprocess.run(["pkill", "-o", "-u", str(os.getuid()), "-RTMIN+8", "-x", "waybar"], stderr=subprocess.DEVNULL, check=False)
 
 

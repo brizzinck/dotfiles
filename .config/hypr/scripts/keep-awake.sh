@@ -31,7 +31,7 @@ done
 set -- "${args[@]+"${args[@]}"}"
 
 note() { notify-send -a keep-awake -h string:x-dunst-stack-tag:keep-awake -t 2500 "$@" 2>/dev/null || true; }
-poke_bar() { pkill -o -u "$UID" -RTMIN+8 -x waybar 2>/dev/null || true; }   # signal 8 = waybar toggles drawer
+poke_bar() { rm -f "${XDG_RUNTIME_DIR:-/tmp}/waybar-cache/toggles.json"; pkill -o -u "$UID" -RTMIN+8 -x waybar 2>/dev/null || true; }   # signal 8 = waybar toggles drawer
 
 holder_pid() { # print the pid of the live holder, or fail
   local p
