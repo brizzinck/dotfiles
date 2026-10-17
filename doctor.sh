@@ -120,6 +120,25 @@ else
   bad docker-gc "builder.gc missing in /etc/docker/daemon.json (sudo ~/dotfiles/apply-system.sh --only config)"
 fi
 
+# ── wallpaper: palette-driven vector, one swaybg per output, no raster in the repo (W2) ──────────────────────────
+wp_err=""
+for v in black night; do
+  svgf="$DOTFILES/themes/generated/$v/wallpaper.svg"
+  fillv="$(jq -r '.tokens.green_soft' "$DOTFILES/themes/generated/$v/tokens.json" 2>/dev/null)"
+  if [ ! -s "$svgf" ]; then wp_err="$wp_err $v: wallpaper.svg missing;"
+  elif ! grep -q "fill=\"$fillv\"" "$svgf"; then wp_err="$wp_err $v: fill is not green_soft ($fillv);"; fi
+done
+raster="$(git -C "$DOTFILES" ls-files themes | grep -Ei '\.(png|jpe?g|webp|bmp|gif)$' | head -3 | tr '\n' ' ')"
+[ -z "$raster" ] || wp_err="$wp_err raster committed under themes/: $raster;"
+if [ -n "$hl_pid" ]; then
+  while read -r mon; do
+    n="$(pgrep -af '^swaybg ' | grep -c -- "-o $mon ")"
+    [ "$n" = 1 ] || wp_err="$wp_err $mon has $n swaybg (want 1);"
+  done < <(hyprctl monitors -j 2>/dev/null | jq -r '.[].name')
+  [ "$(pgrep -cx swaybg)" = "$(hyprctl monitors -j 2>/dev/null | jq length)" ] || wp_err="$wp_err swaybg count differs from the connected outputs;"
+fi
+if [ -z "$wp_err" ]; then ok wallpaper "wallpaper.svg = green_soft in both variants, one swaybg per output, no raster in themes/"; else bad wallpaper "${wp_err# }"; fi
+
 # ── pacman cache / pacnew ───────────────────────────────────────────────────────
 cache_mb="$(du -sm /var/cache/pacman/pkg 2>/dev/null | cut -f1)"
 if [ -z "$cache_mb" ]; then

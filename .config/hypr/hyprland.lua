@@ -20,7 +20,8 @@ local fileManagerGUI = "nemo"
 local menu = "pkill rofi || rofi -show drun"
 local editor = "nvim"
 local browser = "flatpak run app.zen_browser.zen"
-local wallpaper = "swaybg -i ~/pics/walls/lol.jpg"
+-- palette-driven vector wallpaper, one swaybg per output (scripts/wallpaper.sh renders the PNGs, see themes/palette/palette.md)
+local wallpaper = "~/.config/hypr/scripts/wallpaper.sh apply"
 -- Floating terminal for TUIs; matched by the float-tui window rule below
 local tui = "ghostty --class=float.tui -e"
 local scripts = "~/.config/hypr/scripts"
@@ -67,13 +68,15 @@ hl.on("hyprland.start", function()
     hl.exec_cmd("easyeffects --service-mode --hide-window")
     hl.exec_cmd("udiskie --automount --notify --no-tray")
     hl.exec_cmd("Telegram -startintray")
-    hl.exec_cmd("pgrep swaybg && killall swaybg; " .. wallpaper)
+    hl.exec_cmd(wallpaper)
 end)
 
 -- A new monitor gets its bars from the config waybar parsed at startup. After a compact/full toggle that config is stale,
 -- so bar.sh reloads waybar on hotplug, but only when a toggle left it stale (see .config/waybar/scripts/bar.sh).
 hl.on("monitor.added", function()
     hl.exec_cmd("~/.config/waybar/scripts/bar.sh sync --if-stale")
+    -- the new output gets its own render (native size) and swaybg
+    hl.exec_cmd(wallpaper)
 end)
 
 -- ───────────────────────────── environment ──────────────────────────
@@ -415,7 +418,7 @@ hl.bind(mainMod .. " + space", hl.dsp.exec_cmd(menu), { description = "App launc
 hl.bind(mainMod .. " + T", hl.dsp.exec_cmd("Telegram"), { description = "Telegram" })
 hl.bind(mainMod .. " + S", hl.dsp.exec_cmd("if pgrep -x \"ytm\" > /dev/null; then hyprd focuswindow class:youtube-music-desktop-app; else flatpak run app.ytmdesktop.ytmdesktop; fi"), { description = "YouTube Music" })
 hl.bind(mainMod .. " + N", hl.dsp.exec_cmd("obsidian"), { description = "Obsidian" })
-hl.bind(mainMod .. " + O", hl.dsp.exec_cmd("pgrep swaybg && killall swaybg; " .. wallpaper), { description = "Reload wallpaper" })
+hl.bind(mainMod .. " + O", hl.dsp.exec_cmd(wallpaper .. " --force"), { description = "Reload wallpaper" })
 hl.bind(mainMod .. " + B", hl.dsp.exec_cmd("~/.config/waybar/scripts/bar.sh mode toggle"), { description = "Bar compact or full" })
 hl.bind(mainMod .. " + CTRL + B", hl.dsp.exec_cmd("~/.config/waybar/scripts/bar.sh hide toggle"), { description = "Hide or show the bar" })
 
