@@ -1,0 +1,11 @@
+# V1c: OBS Studio over obs-websocket (obs-cmd through ~/.local/bin/obs-ctl). Format: see the header of ~/.config/hub/hub.
+# One-time setup, only in OBS: Tools > WebSocket Server Settings > Enable WebSocket server (obs-ctl reads the port and
+# password from OBS itself; nothing is stored in the repo). Rows hide when obs-cmd is not installed; every action says so
+# in a notification when OBS is not running. Streaming is only in the OBS menu (and only when a stream key is configured).
+obs-record	OBS	Recording: start / stop	-	toggle	~/.local/bin/obs-ctl record	~/.local/bin/obs-ctl is-recording	obs-cmd	ON = OBS is recording. Needs OBS running with the WebSocket server enabled.	o r;Recording start or stop
+obs-pause	OBS	Recording: pause / resume	-	toggle	~/.local/bin/obs-ctl record-pause	~/.local/bin/obs-ctl is-paused	obs-cmd	ON = the recording is paused.	o p;Recording pause or resume
+obs-scene	OBS	Scene: switch (list)	-	run	~/.local/bin/obs-ctl scene	-	obs-cmd fzf-menu	fzf-menu over `obs-cmd scene list`; the current scene is marked.	o s;Switch scene
+obs-mute	OBS	Audio: toggle mute of an input (mic, desktop)	-	run	~/.local/bin/obs-ctl mute	-	obs-cmd fzf-menu	fzf-menu over `obs-cmd input list`; Enter toggles the mute of that input.	o m;Mute or unmute an input
+obs-replay	OBS	Replay buffer: save the last seconds	-	run	~/.local/bin/obs-ctl replay-save	-	obs-cmd	Needs the replay buffer running (OBS > Start Replay Buffer).	o b;Save replay buffer
+obs-status	OBS	Status (version, scene, recording, streaming, replay)	-	run	~/.local/bin/obs-ctl status	-	obs-cmd	One notification with the state of OBS.	o i;OBS status
+obs-menu	OBS	OBS menu (all actions, streaming when configured)	-	run	~/.local/bin/obs-ctl menu	-	obs-cmd fzf-menu	fzf-menu with every OBS action; offers Start OBS when it is not running and Streaming only when a stream key is set in the OBS profile.	o o;OBS menu

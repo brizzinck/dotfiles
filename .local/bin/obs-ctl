@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+# obs-ctl: control a running OBS Studio from hub rows and the leader menu (SUPER+; o ...) through obs-cmd (obs-websocket).
+#
+#   obs-ctl record            start / stop recording (toggle)          obs-ctl record-pause   pause / resume the recording
+#   obs-ctl replay-save       save the replay buffer (it must run: OBS > Start Replay Buffer)
+#   obs-ctl scene [NAME]      switch scene; without NAME an fzf-menu over `obs-cmd scene list`
+#   obs-ctl mute [NAME]       toggle the mute of an input (mic, desktop audio ...); without NAME an fzf-menu over the inputs
+#   obs-ctl stream            start / stop streaming, only when a stream key is configured in the OBS profile
+#   obs-ctl status            notification: OBS version, scene, recording, streaming, replay buffer
+#   obs-ctl menu              fzf-menu with all of the above (streaming only when configured; "Start OBS" when OBS is down)
+#   obs-ctl is-recording | is-paused   exit 0 when true (hub toggle state; silent, 1 when OBS is not reachable)
+#   obs-ctl scenes | inputs   print the parsed names (what the menus show)
+#   obs-ctl raw ARGS...       run `obs-cmd ARGS...` with the connection settings, output as it is
+#   --dry-run (first)         print the obs-cmd command lines instead of running them
+#
+# Connection (never committed, never on argv): obs-cmd reads the URL from OBS_WEBSOCKET_URL, which this script sets for the
+# one obs-cmd process only, in this order:
+#   1. OBS_WEBSOCKET_URL in the environment (obsws://host:port/password)
+#   2. first line of ~/.config/obs-cmd/url  (same format; for a remote OBS)
+#   3. OBS's own obs-websocket settings, ~/.config/obs-studio/plugin_config/obs-websocket/config.json (port + password)
+# So the one-time setup is only in OBS: Tools > WebSocket Server Settings > Enable WebSocket server, Apply.
+# Everything needs OBS to be running; nothing here starts a recording by itself.
+# Test hooks: OBS_CMD_BIN (obs-cmd replacement), OBS_CTL_ASSUME_RUNNING=1 (skip the pgrep check), OBS_CTL_MENU (menu
+# command instead of fzf-menu), OBS_CONFIG_DIR (instead of ~/.config/obs-studio).
+set -u
+
+CMD=${OBS_CMD_BIN:-obs-cmd}
+OBS_DIR=${OBS_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/obs-studio}
+URL_FILE=${XDG_CONFIG_HOME:-$HOME/.config}/obs-cmd/url
+MENU=${OBS_CTL_MENU:-fzf-menu}
+DRY=0
+[[ ${1:-} == --dry-run ]] && { DRY=1; shift; }
+
+note() { notify-send -a obs -h string:x-dunst-stack-tag:obs-ctl -t 3500 "$@" 2>/dev/null || true; }
+have() { command -v "$1" >/dev/null 2>&1; }
+obs_running() { [[ ${OBS_CTL_ASSUME_RUNNING:-} == 1 ]] || pgrep -x obs >/dev/null 2>&1; }
+
+# the websocket URL (see the header); empty when nothing is known
+ws_url() {
+  local f="$OBS_DIR/plugin_config/obs-websocket/config.json" port pw
+  if [[ -n ${OBS_WEBSOCKET_URL:-} ]]; then printf '%s' "$OBS_WEBSOCKET_URL"; return 0; fi
+  if [[ -r $URL_FILE ]]; then head -n1 "$URL_FILE" | tr -d '\r\n'; return 0; fi
+  if [[ -r $f ]] && have jq; then
+    port=$(jq -r '.server_port // 4455' "$f" 2>/dev/null)
+    pw=$(jq -r '.server_password // ""' "$f" 2>/dev/null)
+    printf 'obsws://localhost:%s/%s' "${port:-4455}" "$pw"
+  fi
+}
+
+ws_enabled() {
+  local f="$OBS_DIR/plugin_config/obs-websocket/config.json"
+  [[ -r $f ]] && have jq || return 0 # unknown: assume yes
+  [[ $(jq -r '.server_enabled' "$f" 2>/dev/null) != false ]]
+}
+
+# oc ARGS...: run obs-cmd with the URL in its environment only. Output on stdout, errors on stderr.
+oc() {
+  local url
+  if ((DRY)); then printf 'would run: obs-cmd %s\n' "$*"; return 0; fi
+  url=$(ws_url)
+  if [[ -n $url ]]; then OBS_WEBSOCKET_URL=$url "$CMD" "$@"; else "$CMD" "$@"; fi
+}
+
+# need: OBS running and obs-cmd installed, else a notification and exit 1 (quiet = no notification)
+need() {
+  local quiet=${1:-}
+  if ! have "$CMD"; then [[ $quiet == quiet ]] || note "OBS" "obs-cmd is not installed"; exit 1; fi
+  ((DRY)) && return 0
+  if ! obs_running; then [[ $quiet == quiet ]] || note "OBS" "OBS is not running"; exit 1; fi
+}
+
+# act TITLE ARGS...: run one obs-cmd action and show its own message (or the error) as a notification
+act() {
+  local title=$1 out rc
+  shift
+  need
+  out=$(oc "$@" 2>&1)
+  rc=$?
+  if ((DRY)); then printf '%s\n' "$out"; return 0; fi
+  if ((rc)); then fail "$out"; return 1; fi
+  note "OBS: $title" "$(printf '%s' "$out" | head -n1)"
+}
+
+fail() {
+  local msg=${1:-failed} hint=''
+  if grep -qiE 'refused|connect|timeout|handshake|resolve' <<<"$msg"; then
+    if ws_enabled; then hint="OBS did not answer on the WebSocket port (check the port and password in Tools > WebSocket Server Settings)"
+    else hint="the OBS WebSocket server is off: Tools > WebSocket Server Settings > Enable WebSocket server"; fi
+  fi
+  note "OBS" "${hint:-$(printf '%s' "$msg" | grep -v '^[[:space:]]*$' | tail -n1)}"
+}
+
+# names OUTPUT-OF-obs-cmd: one name per line, headers and decoration dropped (the exact format of `scene list` /
+# `input list` depends on the obs-cmd version, so this is tolerant: bullets, numbering, quotes, trailing commas)
+names() {
+  sed -E 's/\x1b\[[0-9;]*m//g' |
+    sed -E 's/^[[:space:]]*([-*•]|[0-9]+[.)])[[:space:]]+//; s/^[[:space:]]+//; s/[[:space:]]+$//; s/,$//; s/^"(.*)"$/\1/' |
+    grep -vE '^$|:$|^(Available|Current|Inputs?|Scenes?)([[:space:]]|$)'
+}
+
+list_names() { # list_names scene list | input list
+  need
+  local out
+  out=$(oc "$@" 2>&1) || { fail "$out"; return 1; }
+  names <<<"$out"
+}
+
+pick() { # pick PROMPT: names on stdin, choice on stdout (exit 1 = cancel)
+  have "${MENU%% *}" || { note "OBS" "fzf-menu not found"; return 1; }
+  $MENU -p "$1"
+}
+
+stream_configured() {
+  local f
+  have jq || return 1
+  for f in "$OBS_DIR"/basic/profiles/*/service.json; do
+    [[ -r $f ]] || continue
+    [[ -n $(jq -r '.settings.key // empty' "$f" 2>/dev/null) ]] && return 0
+  done
+  return 1
+}
+
+cmd_scene() {
+  local name=${1:-} cur list
+  if [[ -z $name ]]; then
+    list=$(list_names scene list) || return 1
+    [[ -n $list ]] || { note "OBS" "no scenes found"; return 1; }
+    cur=$(oc scene current 2>/dev/null | names | head -n1)
+    name=$(awk -v c="$cur" '{ print ($0 == c ? $0 "  (current)" : $0) }' <<<"$list" | pick scene) || return 0
+    name=${name%  \(current\)}
+  fi
+  [[ -n $name ]] || return 0
+  act "scene" scene switch "$name"
+}
+
+cmd_mute() {
+  local name=${1:-} list
+  if [[ -z $name ]]; then
+    list=$(list_names input list) || return 1
+    [[ -n $list ]] || { note "OBS" "no inputs found"; return 1; }
+    name=$(pick "toggle mute" <<<"$list") || return 0
+  fi
+  [[ -n $name ]] || return 0
+  act "mute: $name" input mute "$name" toggle
+}
+
+cmd_stream() {
+  if ! stream_configured; then
+    note "OBS" "Streaming is not configured (no stream key in the OBS profile: Settings > Stream)"
+    return 1
+  fi
+  act "streaming" streaming toggle
+}
+
+cmd_status() {
+  local info scene rec stream rb
+  need
+  info=$(oc info 2>&1) || { fail "$info"; return 1; }
+  scene=$(oc scene current 2>&1 | head -n1)
+  rec=$(oc recording status 2>&1 | tr '\n' ' ')
+  stream=$(oc streaming status 2>&1 | tr '\n' ' ')
+  rb=$(oc replay status 2>&1 | head -n1)
+  note "OBS status" "$(printf '%s\n%s\nRecording: %s\nStreaming: %s\n%s' "$(head -n1 <<<"$info")" "$scene" "$rec" "$stream" "$rb")"
+}
+
+# state probes for the hub toggles: silent, exit 0 = true
+cmd_is_recording() {
+  local out
+  need quiet
+  out=$(oc recording status-active 2>/dev/null) || exit 1
+  grep -qiE 'not (currently )?active|inactive|false|not recording' <<<"$out" && exit 1
+  grep -qiE 'active|true|running|recording' <<<"$out"
+}
+
+cmd_is_paused() {
+  local out
+  need quiet
+  out=$(oc recording status 2>/dev/null) || exit 1
+  grep -qiE 'paused: *true|outputPaused: *true|is paused|currently paused' <<<"$out"
+}
+
+cmd_menu() {
+  local -a rows=() acts=()
+  local pick
+  if ! obs_running && ((!DRY)); then
+    rows+=("Start OBS"); acts+=(start)
+  else
+    rows+=("Recording: start / stop"); acts+=(record)
+    rows+=("Recording: pause / resume"); acts+=(record-pause)
+    rows+=("Scene: switch"); acts+=(scene)
+    rows+=("Audio: toggle mute of an input"); acts+=(mute)
+    rows+=("Replay buffer: save"); acts+=(replay-save)
+    stream_configured && { rows+=("Streaming: start / stop"); acts+=(stream); }
+    rows+=("Status"); acts+=(status)
+  fi
+  pick=$(printf '%s\n' "${rows[@]}" | $MENU -p obs --index) || return 0
+  case ${acts[$pick]:-} in
+    start) if have obs; then setsid -f obs </dev/null >/dev/null 2>&1; else note "OBS" "obs is not installed"; fi ;;
+    '') ;;
+    *) "$0" "${acts[$pick]}" ;;
+  esac
+}
+
+case ${1:-menu} in
+  record) act "recording" recording toggle ;;
+  record-pause) act "recording" recording toggle-pause ;;
+  replay-save) act "replay buffer" replay save ;;
+  scene) cmd_scene "${2:-}" ;;
+  mute) cmd_mute "${2:-}" ;;
+  stream) cmd_stream ;;
+  status) cmd_status ;;
+  menu) cmd_menu ;;
+  is-recording) cmd_is_recording ;;
+  is-paused) cmd_is_paused ;;
+  scenes) list_names scene list ;;
+  inputs) list_names input list ;;
+  raw) shift; need; oc "$@" ;;
+  -h | --help | help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) echo "usage: obs-ctl [--dry-run] record|record-pause|replay-save|scene|mute|stream|status|menu|raw ARGS" >&2; exit 2 ;;
+esac

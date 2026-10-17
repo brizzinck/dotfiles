@@ -264,6 +264,19 @@ if [ -r "$DOTFILES/.config/hypr/scripts/vault-browse.py" ]; then
 else
   bad vault-browse ".config/hypr/scripts/vault-browse.py missing"
 fi
+# V1c: OBS control (obs-ctl over obs-cmd): hub rows, leader group o and the offline test with a fake obs-cmd
+if [ -x "$HOME/.local/bin/obs-ctl" ]; then
+  obs_rows="$("$DOTFILES/.config/hub/hub" --list --all 2>/dev/null | grep -c '^OBS ')"
+  if [ "${obs_rows:-0}" -ge 7 ]; then ok obs-rows "hub rows for OBS ($obs_rows, .config/hub/actions.d/v1c.tsv)"; else bad obs-rows "hub rows for OBS missing (${obs_rows:-0}, .config/hub/actions.d/v1c.tsv)"; fi
+  if obs_out="$("$DOTFILES/infrastructure/tests/obs-ctl/run.sh" 2>&1)"; then
+    ok obs-ctl "offline test with a fake obs-cmd: $(printf '%s' "$obs_out" | tail -1 | sed 's/^obs-ctl test: //')"
+  else
+    bad obs-ctl "offline test failed (infrastructure/tests/obs-ctl/run.sh): $(printf '%s' "$obs_out" | grep -m1 '^FAIL')"
+  fi
+  if command -v obs-cmd >/dev/null 2>&1; then :; else info obs-cmd "obs-cmd is not installed: the OBS hub rows stay hidden"; fi
+else
+  bad obs-ctl ".local/bin/obs-ctl missing"
+fi
 # ── V1b: the shared modal fzf (vim keys in every menu) ──────────────────────────────────────────────────────────
 if [ -x "$HOME/.local/bin/fzf-menu" ] && [ -r "$HOME/.config/fzf/vimfzf.sh" ]; then
   if out="$("$HOME/.local/bin/fzf-menu" --self-test 2>&1)"; then ok fzf-menu "modal self-test passed ($(printf '%s\n' "$out" | grep -c '^ok') cases)"; else bad fzf-menu "$(printf '%s\n' "$out" | grep -m1 'FAIL\|self-test')"; fi

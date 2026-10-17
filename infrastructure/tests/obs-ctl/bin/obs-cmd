@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# fake obs-cmd for infrastructure/tests/obs-ctl/run.sh: logs argv and the URL it got in its environment
+printf '%s\n' "$*" >>"$FAKE_DIR/argv.log"
+printf '%s\n' "${OBS_WEBSOCKET_URL-<unset>}" >>"$FAKE_DIR/url.log"
+[[ -e $FAKE_DIR/down ]] && { echo "Error: Connection refused (os error 111)" >&2; exit 1; }
+case "$1 $2" in
+  "scene list") printf 'Available scenes:\n  Game\n  - "Just Chatting"\n  1. Desk\n' ;;
+  "scene current") echo "Current scene: Game" ;;
+  "input list") printf 'Mic/Aux\nDesktop Audio\n' ;;
+  "recording status-active") if [[ -e $FAKE_DIR/rec ]]; then echo "Recording is active and running"; else echo "Recording is not active"; fi ;;
+  "recording status") if [[ -e $FAKE_DIR/paused ]]; then echo "Recording Status: active, paused: true"; else echo "Recording Status: active, paused: false"; fi ;;
+  "recording toggle") echo "Recording toggled successfully" ;;
+  "replay save") echo "Replay buffer saved successfully" ;;
+  *) echo "ok $*" ;;
+esac

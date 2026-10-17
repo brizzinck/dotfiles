@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# fake notify-send: last two args are summary and body
+printf '%s | %s\n' "${@: -2:1}" "${@: -1}" >>"$FAKE_DIR/notify.log"

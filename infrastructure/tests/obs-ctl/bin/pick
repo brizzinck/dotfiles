@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# fake fzf-menu: choose the row named by $FAKE_PICK (exact line; with --index its position), else cancel
+rows=$(cat); idx=0; for a in "$@"; do [[ $a == --index ]] && idx=1; done
+[[ -n ${FAKE_PICK:-} ]] || exit 1
+printf '%s\n' "$rows" >"$FAKE_DIR/rows.log"
+if ((idx)); then n=$(grep -nxF -- "$FAKE_PICK" <<<"$rows" | head -n1 | cut -d: -f1); [[ -n $n ]] || exit 1; echo $((n - 1)); else echo "$FAKE_PICK"; fi
