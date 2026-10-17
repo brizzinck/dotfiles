@@ -347,7 +347,7 @@ function df_bind_run(label)
         hl.exec_cmd("notify-send -a hyprland -u low 'Keybind not found' '" .. tostring(label):gsub("'", "") .. "'")
         return
     end
-    hl.dispatch(dispatcher)
+    if type(dispatcher) == "function" then dispatcher() else hl.dispatch(dispatcher) end
 end
 
 -- Catch-all leave for the repeat modes (resize, mouse). Hyprland 0.55/0.56 runs a catchall bind next to the bind that
@@ -369,6 +369,31 @@ local function leave_on_other_key(own_keys, leave)
         end
         leave()
     end
+end
+
+-- Typing binds (wtype): the text must not start while the bind's own keys are still down. Hyprland combines the
+-- modifiers of all keyboards, so a password typed under a held SUPER+CTRL would fire binds instead of typing. Polls every
+-- 30 ms (3 s at most) until `own_keys` and every modifier are up, then runs cmd; gives up with a notification.
+local function exec_when_keys_up(cmd, own_keys)
+    local tries = 0
+    local function poll()
+        tries = tries + 1
+        local down = false
+        for _, name in ipairs(own_keys) do
+            if hl.is_key_down(EVDEV[name] + 8) then down = true end
+        end
+        for _, name in ipairs(MODIFIER_KEYS) do
+            if hl.is_key_down(EVDEV[name] + 8) then down = true end
+        end
+        if not down then
+            hl.exec_cmd(cmd)
+        elseif tries >= 100 then
+            hl.exec_cmd("notify-send -a hyprland -u normal 'Nothing typed' 'Release the modifier keys and press the bind again'")
+        else
+            hl.timer(poll, { timeout = 30, type = "oneshot" })
+        end
+    end
+    poll()
 end
 
 -- Mouse mode: the pointer must stay visible while the keyboard drives it. pointer.sh enters it only when wlrctl exists.
@@ -421,6 +446,7 @@ hl.bind(mainMod .. " + CTRL + V", hl.dsp.exec_cmd(scripts .. "/paste-plain.sh"),
 hl.bind(mainMod .. " + ALT + V", hl.dsp.exec_cmd(scripts .. "/clipboard.sh --paste-last-image"), { description = "Paste last screenshot or image" })
 hl.bind(mainMod .. " + CTRL + P", hl.dsp.exec_cmd(scripts .. "/vault.sh passwords"), { description = "Passwords (Bitwarden via rbw and fzf)" })
 hl.bind(mainMod .. " + CTRL + O", hl.dsp.exec_cmd(scripts .. "/vault.sh totp"), { description = "2FA codes (copy the current code)" })
+hl.bind(mainMod .. " + CTRL + U", function() exec_when_keys_up(scripts .. "/vault.sh user-pass", { "u" }) end, { description = "Type the Linux password of the current user (terminal or polkit)" })
 hl.bind(mainMod .. " + equal", hl.dsp.exec_cmd(scripts .. "/calc.sh"), { description = "Calculator (qalc)" })
 hl.bind(mainMod .. " + slash", hl.dsp.exec_cmd(scripts .. "/keybinds.sh"), { description = "Keybind cheatsheet" })
 hl.bind(mainMod .. " + M", hl.dsp.exec_cmd("~/.config/hub/hub open"), { description = "Utility hub (fzf)" })
