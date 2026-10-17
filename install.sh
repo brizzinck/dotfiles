@@ -244,7 +244,7 @@ git -C "$DOTFILES" config core.hooksPath .githooks
 if [ -d "$DOTFILES/private" ] && [ -n "$(ls -A "$DOTFILES/private" 2>/dev/null)" ]; then
   (cd "$DOTFILES/private" && stow --restow .)
 fi
-touch "$DOTFILES/env.secret.sh" && chmod +x "$DOTFILES/env.secret.sh"
+touch "$DOTFILES/env.secret.sh" && chmod 600 "$DOTFILES/env.secret.sh"   # sourced by .zshrc, holds API keys: owner-only
 # palette variant link (black by default; flip with `theme black|night`): ghostty, tmux, fzf, delta and nvim read it
 "$HOME/.local/bin/theme" init || warn "theme init failed (themes/generated missing?)"
 # waybar bar mode (compact/full) and visibility files; the bar config includes them
