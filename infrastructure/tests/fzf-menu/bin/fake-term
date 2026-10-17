@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# fake terminal for the fzf-menu tests (FZF_MENU_TERMINAL): parses `--class=X --title=T -e CMD...`, runs CMD in a new window of the
+# private tmux server $FT_SOCK, logs "TITLE<TAB>WINDOW_ID" to $FT_DIR/term.log and blocks until the command ended (like ghostty)
+title=""
+while (($#)); do
+  case $1 in
+    --title=*) title=${1#*=} ;;
+    -e) shift; break ;;
+  esac
+  shift
+done
+done_f=$(mktemp -u "$FT_DIR/done.XXXXXX")
+cmd=$(printf '%q ' "$@")
+envs=()
+for n in XDG_RUNTIME_DIR XDG_CONFIG_HOME PATH HOME HYPRLAND_INSTANCE_SIGNATURE FZF_MENU_TERMINAL FZF_MENU_SERVER_ADDR FZF_MENU_TRACE FZF_MENU_NO_SERVER FT_DIR FT_SOCK TERM; do
+  [[ -v $n ]] && envs+=(-e "$n=${!n}")
+done
+id=$(tmux -L "$FT_SOCK" new-window -d -P -F '#{window_id}' "${envs[@]}" -n "$title" "$cmd; touch $done_f") || exit 1
+printf '%s\t%s\n' "$title" "$id" >>"$FT_DIR/term.log"
+for ((i = 0; i < 1200; i++)); do [[ -e $done_f ]] && break; sleep 0.05; done
+exit 0

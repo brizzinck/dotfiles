@@ -67,7 +67,7 @@ refresh() { "$WATCH" --refresh 2>/dev/null || start_daemon; }
 # windows: "address<TAB>class<TAB>workspace<TAB>title" per window of the app, most recently focused first
 windows() {
   hyprctl clients -j 2>/dev/null | jq -r --arg re "$CLS" '
-    [.[] | select(.mapped and .workspace.name != "special:menu" and (.class | test($re; "i")))] | sort_by(.focusHistoryID) | .[]
+    [.[] | select(.mapped and (.workspace.name | startswith("special:menu") | not) and (.class | test($re; "i")))] | sort_by(.focusHistoryID) | .[]
     | [.address, .class, .workspace.name, (.title | gsub("[\t\n\r]"; " "))] | @tsv'
 }
 

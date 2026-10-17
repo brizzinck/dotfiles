@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# fake hyprctl for the fzf-menu tests: canned JSON from $FT_DIR/*.json, every eval chunk and dispatch logged to $FT_DIR/hypr.log
+log() { printf '%s\n' "$*" >>"$FT_DIR/hypr.log"; }
+case "$*" in
+  "-j clients" | "clients -j") cat "$FT_DIR/clients.json" ;;
+  "-j monitors" | "monitors -j") cat "$FT_DIR/monitors.json" ;;
+  "activewindow -j" | "-j activewindow") cat "$FT_DIR/activewindow.json" ;;
+  eval\ *) log "EVAL ${*#eval }"; echo ok ;;
+  dispatch\ *) log "DISPATCH ${*#dispatch }"; echo ok ;;
+  *) log "OTHER $*" ;;
+esac

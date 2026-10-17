@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# fake fzf: logs its argv (one per line, blocks separated by ---) and prints the first row
+{ printf '%s\n' "$@"; echo ---; } >>"$FT_DIR/fzf.log"
+head -n1

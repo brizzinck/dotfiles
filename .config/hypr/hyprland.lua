@@ -212,6 +212,9 @@ hl.config({
         -- on-resume listener of hypridle did not run (a black panel with the screensaver still up)
         key_press_enables_dpms = true,
         mouse_move_enables_dpms = true,
+        -- fzf-menu relies on it: a one-shot menu terminal exits after its menu, and the then empty special workspace must close by
+        -- itself (the window closes like any window, with its own animation, instead of a workspace toggle)
+        close_special_on_empty = true,
     },
 
     cursor = {
@@ -307,13 +310,19 @@ hl.window_rule({
     size = { 900, 360 },
 })
 
--- Hidden menu terminal of fzf-menu (~/.local/bin/fzf-menu --server): parked on the special workspace "menu", which
--- the server shows for the length of one menu (about 40 ms instead of a 0.4 s ghostty start).
-hl.window_rule({
-    name = "fzf-menu-server",
-    match = { class = "^(float\\.tui)$", title = "^(fzf-menu-server)$" },
-    workspace = "special:menu silent",
-})
+-- Hidden menu terminals of fzf-menu (~/.local/bin/fzf-menu --server a|b): ONE-SHOT. Each terminal serves exactly one menu and
+-- exits, so a menu closes like any window (popin + fade of its last frame, the empty special workspace closes by itself,
+-- misc.close_special_on_empty) instead of a workspace toggle with a blank terminal in it. Opening stays hot (~40 ms): a standby
+-- terminal waits on the OTHER slot's special workspace (menu-a / menu-b) and takes the next request.
+-- Fallback if a menu still shows motion on close: add `no_anim = true,` to both rules (menus then vanish instantly).
+for _, slot in ipairs({ "a", "b" }) do
+    hl.window_rule({
+        name = "fzf-menu-server-" .. slot,
+        match = { class = "^(float\\.tui)$", title = "^(fzf-menu-server-" .. slot .. ")$" },
+        workspace = "special:menu-" .. slot .. " silent",
+        -- no_anim = true,  -- fallback: menus vanish instantly
+    })
+end
 
 -- Picture-in-picture (Zen/Firefox "Picture-in-Picture", Chromium "Picture in picture"): small, pinned, top right, 16:9
 hl.window_rule({

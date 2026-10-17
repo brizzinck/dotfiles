@@ -144,7 +144,7 @@ def windows_of(app, clients):
     w = [
         c
         for c in clients
-        if c.get("mapped", True) and app["cls"].search(c.get("class", "")) and c.get("workspace", {}).get("name") != "special:menu"
+        if c.get("mapped", True) and app["cls"].search(c.get("class", "")) and not c.get("workspace", {}).get("name", "").startswith("special:menu")
     ]
     return sorted(w, key=lambda c: c.get("focusHistoryID", 99))
 

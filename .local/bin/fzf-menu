@@ -18,6 +18,8 @@
 #   --index                  print the 0-based line number of the chosen row instead of its text (rofi -format i);
 #                            `{}` in a preview is then "N<TAB>row", use `{2..}` for the row text
 #   --title TEXT             window title (default: "menu: PROMPT")
+#   --size normal|large      window size: normal = 60% x 65% of the monitor (the float.tui rule), large = 85% x 85% (wide lists
+#                            such as the shortcut search); the hidden server resizes + centres its window when it differs
 #   --here                   run in the current terminal instead of a new window (python/zsh/tmux popups)
 #   --no-restore             do not refocus the previously active window afterwards
 #   Any other fzf option goes to fzf as it is (`--delimiter=$'\t'`, `--with-nth=2..`, `--accept-nth=1`, `--expect=alt-p`,
@@ -28,9 +30,11 @@
 #   Extra NORMAL-mode letter binds: FZF_MENU_NORMAL_BINDS='d:execute(x)' (newline separated KEY:ACTION).
 #
 # Subcommands:
-#   --server                 hold a hidden menu terminal (special workspace "menu") that answers requests at once
-#                            (Hyprland autostart runs it); without it every menu starts a cold ghostty (~0.4 s)
-#   --server-start           start the server unless it runs (Hyprland autostart)
+#   --server [a|b]           hold a hidden menu terminal (special workspace "menu-a" / "menu-b") that answers ONE request at once
+#                            and then exits: the window closes like any window (the hub closes the same way, no jerk), and a
+#                            standby terminal of the other slot, started 250 ms after a menu opened, takes the next request
+#                            (~40 ms instead of a 0.4 s cold ghostty)
+#   --server-start           start the server unless one runs or waits (Hyprland autostart)
 #   --self-test              headless check of the modal (private tmux server), exit 0 = every case passed
 #   --cold                   force the cold path for this call (latency comparison)
 #
@@ -43,7 +47,8 @@ RUN="${XDG_RUNTIME_DIR:-/tmp}/fzf-menu"
 LIB="${XDG_CONFIG_HOME:-$HOME/.config}/fzf/vimfzf.sh"
 PREVIEW_IMG="${XDG_CONFIG_HOME:-$HOME/.config}/fzf/image-preview.sh"
 SERVER_TITLE="fzf-menu-server"
-SPECIAL="menu"
+SPECIAL="menu"                       # becomes menu-a / menu-b in server_main
+TERMINAL=${FZF_MENU_TERMINAL:-ghostty}   # test hook: a fake terminal that starts the command in a private tmux
 
 die() { echo "fzf-menu: $*" >&2; exit 2; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -55,7 +60,7 @@ active_addr() { in_hypr && hyprctl activewindow -j 2>/dev/null | sed -n 's/^[[:s
 
 # ───────────────────────────── arguments ─────────────────────────────
 
-PROMPT=menu HERE=0 NORESTORE=0 COLD=0 INDEX=0 TITLE=""
+PROMPT=menu HERE=0 NORESTORE=0 COLD=0 INDEX=0 TITLE="" SIZE=normal
 FZF_ARGS=()
 parse_args() {
   local image="" delim=$'\t'
@@ -74,6 +79,8 @@ parse_args() {
         if [[ ${2-} =~ ^[0-9]+$ ]]; then image=$2; shift; fi
         ;;
       --title) TITLE=${2-}; shift ;;
+      --size) SIZE=${2-normal}; shift ;;
+      --size=*) SIZE=${1#*=} ;;
       --here) HERE=1 ;;
       --index) INDEX=1 ;;
       --no-restore) NORESTORE=1 ;;
@@ -104,7 +111,11 @@ parse_args() {
   fi
   if ((INDEX)); then FZF_ARGS+=(--delimiter=$'\t' --with-nth=2.. --accept-nth=1); fi
   [[ -n $TITLE ]] || TITLE="menu: $PROMPT"
+  case $SIZE in normal | large) ;; *) die "--size takes normal or large" ;; esac
 }
+
+# window size of a menu in percent of the monitor (logical pixels): "W H"
+size_pct() { case ${1:-normal} in large) echo "85 85" ;; *) echo "60 65" ;; esac; }
 
 # rows on stdin; --index prepends the 0-based line number as a hidden first field
 rows_in() { if ((INDEX)); then awk '{ printf "%d\t%s\n", NR - 1, $0 }'; else cat; fi; }
@@ -124,7 +135,11 @@ run_list() {
     while IFS= read -r b; do [[ -n $b ]] && VF_NORMAL_BINDS+=("$b"); done <<<"$FZF_MENU_NORMAL_BINDS"
   fi
   rc=0
-  vimfzf "${FZF_ARGS[@]}" <"$in" >"$out" || rc=$?
+  # a menu window closes right after fzf: --no-clear keeps the menu itself as the last frame (fzf would leave the alternate
+  # screen and show the blank terminal during the close animation); --here keeps the terminal clean for the caller
+  local keep=()
+  ((HERE)) || keep=(--no-clear)
+  vimfzf "${FZF_ARGS[@]}" "${keep[@]}" <"$in" >"$out" || rc=$?
   case $rc in 0) return 0 ;; 1 | 130 | 143) return 1 ;; *) return "$rc" ;; esac
 }
 
@@ -135,7 +150,7 @@ write_request() {
   local req=$1
   rows_in >"$req/in"
   {
-    declare -p PROMPT TITLE NORESTORE
+    declare -p PROMPT TITLE NORESTORE SIZE
     declare -p FZF_ARGS
     [[ -n ${FZF_MENU_NORMAL_BINDS:-} ]] && declare -p FZF_MENU_NORMAL_BINDS
   } >"$req/cfg"
@@ -159,18 +174,36 @@ serve_request() {
     # shellcheck source=/dev/null
     . "$req/cfg"
     printf '\033]2;%s\007' "$TITLE"
+    # a cold window opens at the float.tui rule size; a server window was already sized by server_show
+    if [[ $SERVER_MODE != 1 && $SIZE != normal ]] && in_hypr; then geometry_apply "$(server_window)" "$SIZE"; fi
     [[ -n ${FZF_MENU_TRACE:-} ]] && echo "list_start $(now_ms)" >>"$req/trace"
     run_list "$req/in" "$req/out"
   ) || rc=$?
-  # drop kitty-graphics images a preview may have left and restore the cursor
-  printf '\033_Ga=d,d=A,q=2\033\\\033[?25h'
+  # no terminal reset here: the window closes right after, and fzf --no-clear left the menu itself as the last frame
   echo "$rc" >"$req/rc"
 }
+
+SERVER_MODE=0
 
 server_alive() {
   local pid
   pid=$(cat "$RUN/server.pid" 2>/dev/null) || return 1
   [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null && [[ -p $RUN/server.fifo ]]
+}
+
+# a standby terminal holds standby.lock while it waits for the active server to finish
+standby_waiting() { ( exec 6>"$RUN/standby.lock"; flock -n 6 ) && return 1; return 0; }
+
+# the hand-over gap of a one-shot server: the active one just finished and the standby takes over within milliseconds
+wait_server() {
+  local i
+  server_alive && return 0
+  standby_waiting || return 1
+  for ((i = 0; i < 30; i++)); do
+    server_alive && return 0
+    sleep 0.01
+  done
+  return 1
 }
 
 active_menu_pid() { cat "$RUN/active.pid" 2>/dev/null; }
@@ -186,15 +219,19 @@ hot_request() { # REQ -> 0 when answered, 1 when the server did not take it
   local req=$1 i
   mkfifo "$req/done"
   exec 8<>"$req/done"
-  printf '%s\n' "$req" >"$RUN/server.fifo" || { exec 8>&-; return 1; }
-  # wait for the server to finish; give up when it dies or never starts the request
-  for ((i = 0; i < 3; i++)); do
+  if [[ -p $RUN/server.fifo ]]; then printf '%s\n' "$req" >"$RUN/server.fifo"; else exec 8>&-; return 1; fi
+  # the server answers at once; no `started` within 0.5 s means it is busy or gone (the cold path takes over)
+  for ((i = 0; i < 50; i++)); do
     [[ -e $req/started ]] && break
-    read -r -t 1 -u 8 && return 0
+    read -r -t 0.01 -u 8 && return 0
   done
   [[ -e $req/started ]] || { exec 8>&-; return 1; }
   while ! read -r -t 2 -u 8; do
-    server_alive || { exec 8>&-; return 1; }
+    # a one-shot server removes its pid file just before it reports `finished`: a missing pid file with an rc file is done
+    server_alive && continue
+    [[ -e $req/rc ]] && break
+    exec 8>&-
+    return 1
   done
   exec 8>&-
   return 0
@@ -202,7 +239,7 @@ hot_request() { # REQ -> 0 when answered, 1 when the server did not take it
 
 cold_request() { # REQ: a fresh ghostty that exits with the list
   local req=$1
-  env -u TMUX -u TMUX_PANE ghostty --class=float.tui --title="$TITLE" -e "$SELF" --serve-request "$req" >/dev/null 2>&1
+  env -u TMUX -u TMUX_PANE "$TERMINAL" --class=float.tui --title="$TITLE" -e "$SELF" --serve-request "$req" >/dev/null 2>&1
 }
 
 REQ=""
@@ -212,7 +249,7 @@ menu_gui() {
   local req prev rc=0 t0 hot=0
   t0=$(now_ms)
   mkdir -p "$RUN" && chmod 700 "$RUN"
-  have ghostty || die "ghostty not found (use --here)"
+  have "$TERMINAL" || die "$TERMINAL not found (use --here)"
   # toggle: a second call closes the menu that is open
   exec 9>"$RUN/menu.lock"
   if ! flock -n 9; then close_active_menu; cat >/dev/null; exit 1; fi
@@ -225,7 +262,7 @@ menu_gui() {
   trap cleanup_req EXIT
   write_request "$req"
   [[ -n ${FZF_MENU_TRACE:-} ]] && echo "t0 $t0" >"$req/trace"
-  if ((!COLD)) && server_alive; then
+  if ((!COLD)) && wait_server; then
     hot=1
     if ! hot_request "$req"; then hot=0; rm -f "$req/started" "$req/rc"; fi
   fi
@@ -252,7 +289,17 @@ restore_focus() {
   hdispatch "hl.dsp.focus({ window = \"address:$prev\" })"
 }
 
-# start the hidden server terminal (once; a lock keeps two callers from starting two)
+other_slot() { [[ $1 == a ]] && echo b || echo a; }
+
+# start one hidden terminal of a slot (it blocks on the locks in server_main until it is its turn)
+spawn_slot() {
+  local slot=${1:-a}
+  # the lock descriptors of the caller must not leak into the new terminal (the active server's lock would never be released)
+  env -u TMUX -u TMUX_PANE setsid -f "$TERMINAL" --class=float.tui --title="$SERVER_TITLE-$slot" -e "$SELF" --server "$slot" \
+    3>&- 6>&- 7>&- 8>&- 9>&- >/dev/null 2>&1 </dev/null
+}
+
+# start the first hidden terminal: only when no server is running and none waits (a lock keeps two callers from starting two)
 spawn_server() {
   mkdir -p "$RUN" && chmod 700 "$RUN"
   server_alive && return 0
@@ -261,7 +308,8 @@ spawn_server() {
     exec 9>"$RUN/spawn.lock"
     flock -n 9 || exit 0
     server_alive && exit 0
-    env -u TMUX -u TMUX_PANE setsid -f ghostty --class=float.tui --title="$SERVER_TITLE" -e "$SELF" --server >/dev/null 2>&1 </dev/null
+    standby_waiting && exit 0
+    spawn_slot a
     sleep 2
   )
 }
@@ -273,69 +321,122 @@ ensure_server() {
   disown 2>/dev/null || true
 }
 
+# ───────────────────────────── geometry (server windows) ─────────────────────────────
+
+# window_state ADDR: "WIDTH HEIGHT MONITOR_ID FOCUSED_MONITOR_ID FOCUSED_W FOCUSED_H" (sizes in logical pixels)
+window_state() {
+  jq -rn --arg a "$1" --argjson c "$(hyprctl -j clients 2>/dev/null || echo '[]')" --argjson m "$(hyprctl -j monitors 2>/dev/null || echo '[]')" '
+    ([$m[] | select(.focused)][0]) as $f | ([$c[] | select(.address == $a)][0]) as $w
+    | if $f == null then empty
+      else "\(($w.size[0]) // 0) \(($w.size[1]) // 0) \(($w.monitor) // -1) \($f.id) \(($f.width / $f.scale) | floor) \(($f.height / $f.scale) | floor)" end'
+}
+
+# geometry_lua ADDR SIZE [TOGGLE_SPECIAL]: the Lua chunk for ONE `hyprctl eval` (one IPC round trip for the whole show).
+# Plain toggle when the window already has the target size on the focused monitor; otherwise toggle + resize + centre with the
+# window's own animations off for those dispatches (the resize must not be seen as a move). Prints nothing when there is
+# nothing to do and no toggle was asked for.
+geometry_lua() {
+  local addr=$1 size=$2 toggle=${3:-} st cw ch cmon fmon fw fh pw ph tw th w lua=""
+  [[ -n $toggle ]] && lua="hl.dispatch(hl.dsp.workspace.toggle_special(\"$toggle\"))"
+  st=$(window_state "$addr") && [[ -n $st ]] || { printf '%s' "$lua"; return 0; }
+  read -r cw ch cmon fmon fw fh <<<"$st"
+  read -r pw ph <<<"$(size_pct "$size")"
+  tw=$((fw * pw / 100)) th=$((fh * ph / 100))
+  if ((cmon == fmon && cw - tw <= 2 && tw - cw <= 2 && ch - th <= 2 && th - ch <= 2)); then printf '%s' "$lua"; return 0; fi
+  w="address:$addr"
+  printf '%s\n' \
+    "hl.dispatch(hl.dsp.window.set_prop({ prop = \"no_anim\", value = \"1\", window = \"$w\" }))" \
+    "$lua" \
+    "hl.dispatch(hl.dsp.window.resize({ x = $tw, y = $th, relative = false, window = \"$w\" }))" \
+    "hl.dispatch(hl.dsp.window.center({ window = \"$w\" }))" \
+    "hl.dispatch(hl.dsp.window.set_prop({ prop = \"no_anim\", value = \"unset\", window = \"$w\" }))"
+}
+
+geometry_apply() { # ADDR SIZE: resize + centre only (cold window)
+  local lua
+  [[ -n ${1:-} ]] || return 0
+  lua=$(geometry_lua "$1" "$2")
+  [[ -n $lua ]] && hyprctl eval "$lua" >/dev/null 2>&1
+  return 0
+}
+
 # ───────────────────────────── the hidden server ─────────────────────────────
 
 SHOWN=0
 server_window() { # address of the ghostty window that runs this server (its pid is our parent)
+  [[ -n ${FZF_MENU_SERVER_ADDR:-} ]] && { printf '%s\n' "$FZF_MENU_SERVER_ADDR"; return 0; }
   hyprctl clients -j 2>/dev/null | jq -r --argjson p "$PPID" '[.[] | select(.pid == $p)][0].address // empty'
 }
 
-server_geometry() { # resize + center on the active monitor like the float.tui window rule (60% x 65%)
-  local addr=$1 mon w h
-  mon=$(hyprctl monitors -j 2>/dev/null | jq -r '[.[] | select(.focused)][0] | "\((.width / .scale) | floor) \((.height / .scale) | floor)"')
-  read -r w h <<<"$mon"
-  [[ -n ${w:-} ]] || return 0
-  hdispatch "hl.dsp.window.resize({ window = \"address:$addr\", x = $((w * 60 / 100)), y = $((h * 65 / 100)), relative = false })"
-  hdispatch "hl.dsp.window.center()"
-}
-
+# show the server window: the special workspace opens instantly (no animation in), the size is fixed in the same eval
 server_show() {
-  local addr=$1
+  local addr=$1 lua
   ((SHOWN)) && return 0
-  hdispatch "hl.dsp.workspace.toggle_special(\"$SPECIAL\")"
   SHOWN=1
-  [[ -n $addr ]] && server_geometry "$addr"
+  in_hypr || return 0
+  lua=$(geometry_lua "$addr" "$SIZE" "$SPECIAL")
+  hyprctl eval "$lua" >/dev/null 2>&1
 }
 
-server_hide() {
-  ((SHOWN)) || return 0
-  hdispatch "hl.dsp.workspace.toggle_special(\"$SPECIAL\")"
-  SHOWN=0
+# only the active server owns the fifo and the pid file (a standby of the other slot may already have made its own)
+server_cleanup() {
+  [[ $(cat "$RUN/server.pid" 2>/dev/null) == "$$" ]] || return 0
+  rm -f "$RUN/server.fifo" "$RUN/server.pid"
 }
 
-# one process group: the server shell, its fzf child and the request subshell
+# One-shot server terminal of a slot (a or b): waits hidden, serves exactly ONE request, then exits. The window therefore
+# closes like any window (the hub does the same): Hyprland fades the last frame (the menu itself, fzf --no-clear) and closes
+# the empty special workspace by itself (misc:close_special_on_empty). 250 ms after a menu opened a standby of the other slot
+# is started, so the next menu is hot again.
 server_main() {
-  local req addr ws
+  local slot=${1:-a} req="" addr ws
+  case $slot in a | b) ;; *) slot=a ;; esac
+  SPECIAL="menu-$slot"
   mkdir -p "$RUN" && chmod 700 "$RUN"
+  SERVER_MODE=1
+  # at most one waiting standby; then wait (blocking) until the active server is done
+  exec 6>"$RUN/standby.lock"
+  flock -n 6 || exit 0
   exec 7>"$RUN/server.lock"
-  flock -n 7 || { echo "fzf-menu: a server is already running" >&2; exit 0; }
+  flock 7
+  flock -u 6
+  exec 6>&-
   rm -f "$RUN/server.fifo"
   mkfifo "$RUN/server.fifo"
   echo $$ >"$RUN/server.pid"
-  trap 'rm -f "$RUN/server.fifo" "$RUN/server.pid"' EXIT
+  echo "$slot" >"$RUN/server.slot"
+  trap server_cleanup EXIT
   trap 'exit 0' TERM INT HUP
   exec 3<>"$RUN/server.fifo"
-  printf '\033]2;%s\007' "$SERVER_TITLE"
+  printf '\033]2;%s\007' "$SERVER_TITLE-$slot"
   addr=$(server_window)
-  # the window rule parks the window on the special workspace; do it by hand when the rule is missing
-  if [[ -n $addr ]]; then
+  # the window rule parks the window on its special workspace; do it by hand when the rule is missing
+  if [[ -n $addr && -z ${FZF_MENU_SERVER_ADDR:-} ]]; then
     ws=$(hyprctl clients -j 2>/dev/null | jq -r --arg a "$addr" '.[] | select(.address == $a) | .workspace.name')
     [[ $ws == "special:$SPECIAL" ]] || hdispatch "hl.dsp.window.move({ window = \"address:$addr\", workspace = \"special:$SPECIAL\", follow = false })"
   fi
   clear
-  printf 'fzf-menu server (pid %s): waiting for requests\n' "$$"
   while read -r -u 3 req; do
-    [[ $req == "$RUN"/req.* && -d $req ]] || continue
+    [[ $req == "$RUN"/req.* && -d $req ]] && break
+    req=""
+  done
+  if [[ -n $req ]]; then
     : >"$req/started"
     [[ -n ${FZF_MENU_TRACE:-} || -e $req/trace ]] && echo "server_got $(now_ms)" >>"$req/trace"
+    # the standby of the other slot, detached (the window and this shell are gone by then)
+    setsid -f "$SELF" --spawn-standby "$(other_slot "$slot")" 3>&- 6>&- 7>&- >/dev/null 2>&1 </dev/null
+    # the size of THIS request (the cfg is bash `declare` output; only its SIZE line is read here)
+    SIZE=$(sed -n 's/^declare -- SIZE="\(.*\)"$/\1/p' "$req/cfg")
+    [[ $SIZE == large ]] || SIZE=normal
     server_show "$addr"
     [[ -e $req/trace ]] && echo "shown $(now_ms)" >>"$req/trace"
     serve_request "$req"
-    server_hide
-    clear
-    printf 'fzf-menu server (pid %s): waiting for requests\n' "$$"
-    echo finished >"$req/done"
-  done
+  fi
+  server_cleanup
+  trap - EXIT
+  flock -u 7
+  [[ -n $req ]] && echo finished >"$req/done"
+  exit 0
 }
 
 # ───────────────────────────── self-test ─────────────────────────────
@@ -405,8 +506,9 @@ self_test() {
 
 case ${1:-} in
   --serve-request) serve_request "${2:?request dir}"; exit 0 ;;
-  --server) server_main; exit 0 ;;
+  --server) server_main "${2:-a}" ;;
   --server-start) spawn_server; exit 0 ;;
+  --spawn-standby) mkdir -p "$RUN"; sleep 0.25; standby_waiting || spawn_slot "${2:-b}"; exit 0 ;;
   --self-test) self_test; exit $? ;;
 esac
 

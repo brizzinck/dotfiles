@@ -28,8 +28,8 @@
     },
     "show-special": true,
     "special-visible-only": false,
-    // the hidden fzf-menu server terminal parks on special:menu (hyprland.lua window rule)
-    "ignore-workspaces": ["^special:menu$"],
+    // the hidden fzf-menu server terminals park on special:menu-a / special:menu-b (hyprland.lua window rules)
+    "ignore-workspaces": ["^special:menu(-[ab])?$"],
     "on-click": "activate",
     // clicks go through scripts/ws-ipc-proxy.py (see waybar-run.sh): waybar sends legacy `dispatch workspace N`, which a
     // Lua Hyprland config rejects. Scroll is the previous/next workspace on this monitor (same as SUPER+ALT+K/J);
