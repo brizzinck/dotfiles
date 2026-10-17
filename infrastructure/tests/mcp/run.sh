@@ -527,7 +527,7 @@ check "popup ghostty config: no keybinds, no clipboard access, no shell integrat
 check "popup.py: the code comes from the system RNG and is never written or logged" bash -c 'grep -q "SystemRandom" "$1" && ! grep -n "print(.*code\|write.*code\|json.dump.*code" "$1"' _ "$CFD/popup.py"
 count_py python3 -I "$HERE/test_confirm.py" "$REPO"
 count_py python3 -I "$HERE/test_wayland.py" "$REPO"
-count_py python3 -I "$HERE/test_popup.py" "$REPO"
+count_py env TGPOPUP_QUICK="$QUICK" python3 -I "$HERE/test_popup.py" "$REPO"
 
 # --- mcp-guard: deny rules in a throwaway settings.json -----------------------------------------------------------------------
 GUARD="$REPO/.local/bin/mcp-guard"
