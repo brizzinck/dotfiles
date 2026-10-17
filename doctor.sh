@@ -731,6 +731,11 @@ if [ -r /var/lib/dotfiles-predownload/state ] && systemctl is-enabled dotfiles-p
 else
   info sysup-download "background download not installed yet (sudo ./apply-system.sh --only services)"
 fi
+if [ -x "$DOTFILES/.config/hypr/scripts/safe-close.sh" ] && [ -f "$DOTFILES/.config/hypr/scripts/term-procs.py" ]; then
+  if sc_out="$("$DOTFILES/infrastructure/tests/safe-close/run.sh" 2>&1)"; then ok safe-close-tests "SUPER+W terminal warning: $(printf '%s' "$sc_out" | tail -1)"; else bad safe-close-tests "$(printf '%s' "$sc_out" | grep -m1 '^FAIL') (infrastructure/tests/safe-close/run.sh)"; fi
+else
+  bad safe-close "safe-close.sh / term-procs.py missing"
+fi
 hub_groups="$("$DOTFILES/.config/hub/hub" groups 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"
 hub_missing=""
 for g in Setup Update Learn Fix; do case " $hub_groups " in *" $g "*) ;; *) hub_missing="$hub_missing $g" ;; esac; done
