@@ -201,13 +201,23 @@ if not tmux:
     print("SKIP the curses screen (no tmux)")
     sys.exit(0 if all(results) else 1)
 TMP = tempfile.mkdtemp(prefix="tgpopup-test.")
-SOCK = f"{TMP}/tmux.sock"
+CUR = f"{TMP}/none.sock"                       # tmux socket of the current popup: one socket per popup (see start)
 FOCUS_IN, FOCUS_OUT = "\x1b[I", "\x1b[O"
 QUICK = os.environ.get("TGPOPUP_QUICK") == "1"      # doctor / run.sh --quick: the essential screens only
 
 
 def t(*a):
-    return subprocess.run([tmux, "-S", SOCK, "-f", "/dev/null", *a], capture_output=True, text=True).stdout
+    return subprocess.run([tmux, "-S", CUR, "-f", "/dev/null", *a], capture_output=True, text=True).stdout
+
+
+def wait_for(pred, timeout=10):
+    """poll pred every 50 ms; True as soon as it holds"""
+    end = time.time() + timeout
+    while time.time() < end:
+        if pred():
+            return True
+        time.sleep(0.05)
+    return bool(pred())
 
 
 def start(req, name, size=(100, 30), focus=True):
@@ -217,11 +227,14 @@ def start(req, name, size=(100, 30), focus=True):
            "chat_kind": "Supergroup", "reply_preview": "", "text": "hello", "nonce": name, "timeout": 20, "result_file": res, **req}
     rf = f"{TMP}/{name}.req"
     json.dump(req, open(rf, "w"))
-    t("kill-server")
+    global CUR
+    t("kill-server")                            # the previous popup's server; its socket path is never reused, so a new-session can
+    CUR = f"{TMP}/{name}.sock"                  # not hit a server that is still dying (that race was the flake under load)
     t("new-session", "-d", "-x", str(size[0]), "-y", str(size[1]),
       f"TERM=xterm-256color TGCONFIRM_KEYMAP={KEYMAP} {sys.executable} {popup.__file__} --req {rf}")
     if focus:
-        time.sleep(0.4)
+        # the first frame is drawn after the popup wrote ?1004h (focus reporting), so wait for it instead of sleeping
+        wait_for(lambda: "Send this" in screen() or "Allow" in screen() or "unexpected size" in screen(), 10)
         t("send-keys", "-l", FOCUS_IN)
     return res
 
@@ -243,7 +256,7 @@ def code_from_screen(timeout=6):
     return None, None, screen()
 
 
-def result(res, wait=3):
+def result(res, wait=10):
     end = time.time() + wait
     while time.time() < end:
         if os.path.exists(res):
@@ -376,15 +389,28 @@ check("screen: the enable popup shows its question and also needs the code, no r
 # geometry: a resize after the code is shown cancels; a window of the wrong size never shows a code
 res = start({}, "k")
 k1, k2, scr = code_from_screen()
-t("resize-window", "-x", "90", "-y", "28")
+check("screen: the code is shown before the resize", k1 is not None)
+
+
+def resize_to(x, y, res=None):
+    """resize the private window and wait until tmux reports the new size (retry once). A popup that already decided has exited and
+    taken its tmux server with it, so an existing result file also counts as 'the resize arrived'."""
+    done = lambda: bool(res and os.path.exists(res)) or t("display-message", "-p", "#{window_width}x#{window_height}").strip() == f"{x}x{y}"
+    for _ in range(2):
+        t("resize-window", "-x", str(x), "-y", str(y))
+        if wait_for(done, 3):
+            return True
+    return False
+
+
+check("screen: the window really has the new size", resize_to(90, 28, res))
 check("screen: any size change after the code was shown cancels", result(res) == {"nonce": "k", "result": "cancelled"})
 res = start({}, "k2", size=(100, 30))
-t("resize-window", "-x", "90", "-y", "28")          # before the code is drawn: allowed, the guard restarts
+resize_to(90, 28)                                   # before the code is drawn: allowed, the guard restarts
 k1, k2, scr = code_from_screen()
 check("screen: a resize BEFORE the code is shown is tolerated (the compositor applies the window rule's size at map time), the code appears afterwards", k1 is not None and not os.path.exists(res))
-t("kill-server")
 res = start({}, "k3", size=(50, 14))
-time.sleep(3.5)
+wait_for(lambda: "unexpected size" in screen(), 10)
 scr = screen()
 check("screen: a window smaller than the minimum shows a refusal and never a code", "unexpected size" in scr and "Press" not in scr and "Work chat" not in scr)
 key("g")
