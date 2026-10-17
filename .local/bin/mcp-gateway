@@ -6,7 +6,8 @@
 #   mcp-gateway servers          names of the servers the gateway serves (config minus servers that are not set up yet)
 #   mcp-gateway url NAME         endpoint of one server, http://127.0.0.1:PORT/NAME/mcp
 #   mcp-gateway headers          {"Authorization":"Bearer <token>"} (the clients' headers helper; also: mcp-gateway-headers)
-#   mcp-gateway token ensure     create the token file once (0600); `token path` prints where it is; `token rotate` makes a new one
+#   mcp-gateway token ensure     create the token file once (0600), and always repair the modes (dir 0700, files 0600, no ACL) without
+#                                changing the token; `token path` prints where it is; `token rotate` makes a new one
 #   mcp-gateway restart | logs [N] | check
 #
 # Config (repo, stowed): ~/.config/mcp/gateway.json in mcp-proxy's own format. It holds ${ENV} placeholders only; the tokens come
@@ -39,16 +40,31 @@ addr() { jq -r '.mcpProxy.addr' "$SRC_CONFIG"; }
 
 new_token() { head -c 48 /dev/urandom | base64 -w0 | tr '+/' '-_' | tr -d '='; }   # 64 URL-safe characters
 
+# harden_state: the state directory is 0700 and the token files 0600 with no ACL entries. Leftover default ACLs on the home tree
+# (from the managed-users setup) make new files group-readable (0650 + mask), so they are stripped; tokens are never rotated here.
+harden_state() {
+  local f
+  [[ -d $STATE_DIR ]] || return 0
+  command -v setfacl >/dev/null && setfacl -b -k "$STATE_DIR" 2>/dev/null
+  chmod 700 "$STATE_DIR" 2>/dev/null
+  for f in "$GATEWAY_TOKEN" "$TELEGRAM_TOKEN"; do
+    [[ -e $f ]] || continue
+    command -v setfacl >/dev/null && setfacl -b "$f" 2>/dev/null
+    chmod 600 "$f" 2>/dev/null
+  done
+  return 0
+}
+
 # ensure_token FILE: create FILE (0600, directory 0700) with a random token when it does not exist
 ensure_token() {
   local f=$1 tmp
-  [[ -s $f ]] && return 0
+  if [[ -s $f ]]; then harden_state; return 0; fi
   (umask 077; mkdir -p "$STATE_DIR") || die "cannot create $STATE_DIR"
-  chmod 700 "$STATE_DIR"
+  harden_state
   tmp=$(umask 077; mktemp "$f.XXXXXX") || die "cannot write $f"
   new_token >"$tmp"
   mv -f "$tmp" "$f"
-  chmod 600 "$f"
+  harden_state
 }
 
 # render_config: effective config on stdout (jq): the telegram server only exists once its token file does, telegram-send once
@@ -67,6 +83,7 @@ cmd_run() {
   bin=$(proxy_bin) || die "mcp-proxy is not installed (run: mcp-install)"
   [[ -r $SRC_CONFIG ]] || die "$SRC_CONFIG is missing (stow the dotfiles)"
   ensure_token "$GATEWAY_TOKEN"
+  harden_state
   MCP_GATEWAY_TOKEN=$(<"$GATEWAY_TOKEN")
   export MCP_GATEWAY_TOKEN
   if [[ -s $TELEGRAM_TOKEN ]]; then MCP_TELEGRAM_TOKEN=$(<"$TELEGRAM_TOKEN"); export MCP_TELEGRAM_TOKEN; fi

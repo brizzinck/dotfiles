@@ -56,6 +56,19 @@ check "state directory is mode 700" bash -c '[ "$(stat -c %a "$1")" = 700 ]' _ "
 T1=$(<"$MCP_STATE_DIR/gateway.token")
 "$GW" token ensure >/dev/null
 check "token ensure is idempotent" bash -c '[ "$(cat "$1/gateway.token")" = "$2" ]' _ "$MCP_STATE_DIR" "$T1"
+# leftover default ACLs on the parent make new files group-readable (0650): token ensure strips them and fixes the modes, token unchanged
+ACLD="$SCRATCH/acl-state"
+if command -v setfacl >/dev/null && mkdir -p "$ACLD" && setfacl -d -m u:nobody:rwx "$ACLD" 2>/dev/null; then
+  mkdir -p "$ACLD/mcp"; chmod 755 "$ACLD/mcp"; (umask 0; printf 'existing-token-value-1234567890abcdef' >"$ACLD/mcp/gateway.token"; printf 'tg' >"$ACLD/mcp/telegram.token")
+  setfacl -m u:nobody:rw "$ACLD/mcp/gateway.token"; chmod 660 "$ACLD/mcp/gateway.token"; chmod 664 "$ACLD/mcp/telegram.token"
+  MCP_STATE_DIR="$ACLD/mcp" "$GW" token ensure >/dev/null
+  check "token ensure repairs a 0650+ACL token file: dir 700, files 600, no ACL entry left" bash -c '[ "$(stat -c %a "$1")" = 700 ] && [ "$(stat -c %a "$1/gateway.token")" = 600 ] && [ "$(stat -c %a "$1/telegram.token")" = 600 ] && ! getfacl -p "$1" "$1/gateway.token" | grep -q nobody' _ "$ACLD/mcp"
+  check "token ensure does not rotate the token while repairing" bash -c '[ "$(cat "$1/gateway.token")" = existing-token-value-1234567890abcdef ]' _ "$ACLD/mcp"
+  (umask 0; MCP_STATE_DIR="$ACLD/mcp2" "$GW" token ensure >/dev/null)
+  check "a token created under a default ACL and a loose umask is still 600 in a 700 directory" bash -c '[ "$(stat -c %a "$1/gateway.token")" = 600 ] && [ "$(stat -c %a "$1")" = 700 ]' _ "$ACLD/mcp2"
+else
+  skip "token ACL repair (no setfacl or no ACL support in the scratch directory)"
+fi
 check "token is long and URL-safe" bash -c '[[ $1 =~ ^[A-Za-z0-9_-]{40,}$ ]]' _ "$T1"
 check "headers print a Bearer JSON object" bash -c '"$1" headers | jq -e ".Authorization == \"Bearer $2\""' _ "$GW" "$T1"
 check "mcp-gateway-headers is the same" bash -c '[ "$("$1")" = "$("$2" headers)" ]' _ "$REPO/.local/bin/mcp-gateway-headers" "$GW"
@@ -75,6 +88,7 @@ check "telegram-send toolFilter: an allow list of exactly send_message and statu
 check "telegram-send: stdio server from the pinned venv, no secret and no URL in its entry, timeout 90s" jq -e '.mcpServers["telegram-send"] | .timeout == "90s" and (.command | endswith("/venv/bin/python")) and (.args[0] | endswith("/telegram-send.py")) and (has("env") | not) and (has("headers") | not) and (has("url") | not)' "$MCP_CONFIG_DIR/gateway.json"
 check "the effective config with the broker installed passes mcp-proxy's own check" bash -c 'p="$2"; [ -x "$p" ] || exit 0; : >"$3"; MCP_TGCONFIRM_UNIT="$3" MCP_PROXY_BIN="$p" "$1" check' _ "$GW" "$PROXY" "$SCRATCH/tgc.service"
 check "no toolFilter lists a send/edit/delete tool for telegram" bash -c '! jq -r ".mcpServers.telegram.options.toolFilter.list[]" "$1" | grep -E "^(send|reply|edit|delete|forward|mark|save|upload|download|press|join|leave|invite|ban|pin|set_|create|update|promote|demote|add_|remove|block|mute|archive|import|export)"' _ "$MCP_CONFIG_DIR/gateway.json"
+check "telegram toolFilter is still exactly the 16 read tools (sending lives only in telegram-send)" jq -e '.mcpServers.telegram.options.toolFilter.list | length == 16 and (map(select(test("send|post|reply|forward|edit|delete"))) | length == 0)' "$MCP_CONFIG_DIR/gateway.json"
 check "telegram toolFilter is an allow list" jq -e '.mcpServers.telegram.options.toolFilter.mode == "allow"' "$MCP_CONFIG_DIR/gateway.json"
 
 # `run` with a fake mcp-proxy: the token reaches it through the environment only
@@ -223,6 +237,8 @@ if [[ $QUICK -eq 0 && -n $CLAUDE_BIN ]]; then
   check "claude: direct chrome-devtools replaced by the gateway entry" jq -e '.mcpServers["chrome-devtools"] | .type == "http" and (.url | endswith("/chrome-devtools/mcp"))' "$CJ"
   check "claude: gateway servers registered with a headers helper" jq -e '[.mcpServers["desktop-ro"], .mcpServers["context7"]] | all(.type == "http" and (.headersHelper | endswith("mcp-gateway-headers")))' "$CJ"
   check "claude: telegram-send is registered (Claude Code only)" jq -e '.mcpServers["telegram-send"] | .type == "http" and (.url | endswith("/telegram-send/mcp")) and (.headersHelper | endswith("mcp-gateway-headers"))' "$CJ"
+  check "claude: registering telegram-send applied the mcp-guard deny rules in the throwaway settings.json" jq -e '.permissions.deny | index("Bash(wtype:*)") and index("Bash(grim:*)")' "$CLAUDE_CONFIG_DIR/settings.json"
+  check "claude: --dry-run would run mcp-guard but did not" bash -c 'grep -q "would run mcp-guard" "$1"' _ "$SCRATCH/add-dry.out"
   check "claude: stdio entry goes through mcp-run" jq -e '.mcpServers.demo | .type == "stdio" and (.command | endswith("/mcp-run")) and .args == ["demo"]' "$CJ"
   check "claude: unrelated entry kept" jq -e '.mcpServers.keepme' "$CJ"
   check "claude: no token anywhere in the config" bash -c '! grep -q -i -F -e "$2" -e "Bearer" "$1"' _ "$CJ" "$T1"

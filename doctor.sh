@@ -372,12 +372,49 @@ if [ -x "$HOME/.local/bin/mcp-gateway" ]; then
     info mcp-aimcp "service user aimcp does not exist yet: sudo ./apply-system.sh --only users,mcp"
   fi
   tg_state="$(systemctl is-active telegram-mcp.service 2>/dev/null)"
-  tg_creds="$(systemctl show telegram-mcp.service -p LoadCredentialEncrypted --value 2>/dev/null | wc -w)"
+  # `systemctl show -p LoadCredentialEncrypted` prints "[unprintable]" (credential paths are hidden), so count the directives in the
+  # unit file and its drop-ins instead (5 base credentials, plus the 2 send credentials of send.conf once sending is set up)
+  tg_creds="$(systemctl cat telegram-mcp.service 2>/dev/null | grep -c '^LoadCredentialEncrypted=')"
   case "$tg_state" in
     active) if [ "$tg_creds" -ge 5 ]; then ok mcp-telegram "telegram-mcp.service is active with $tg_creds encrypted credentials (TPM2 + host key)"; else bad mcp-telegram "telegram-mcp.service is active but has $tg_creds LoadCredentialEncrypted entries"; fi ;;
     failed) bad mcp-telegram "telegram-mcp.service failed: journalctl -u telegram-mcp -n 40 (mcp-telegram-setup status)" ;;
     *) info mcp-telegram "telegram-mcp.service is $tg_state: one-time setup pending (mcp-telegram-setup)" ;;
   esac
+  # Telegram sending (M1-send): the repo-side facts always, the machine-side ones once the root part ran (INFO until then)
+  snd_bad=""
+  jq -e '.mcpServers["telegram-send"].options.toolFilter | .mode == "allow" and ((.list | sort) == ["send_message", "status"])' "$HOME/.config/mcp/gateway.json" >/dev/null 2>&1 \
+    || snd_bad="$snd_bad; gateway.json: telegram-send toolFilter is not an allow list of exactly send_message + status"
+  grep -qs 'telegram-send' "${CODEX_HOME:-$HOME/.codex}/config.toml" && snd_bad="$snd_bad; telegram-send is registered for Codex (Codex has no permission rules: mcp-add removes it)"
+  for snd_f in /etc/credstore.encrypted/telegram-mcp.send_token /etc/credstore.encrypted/tgconfirm.send_token; do
+    [ -r "$snd_f" ] && snd_bad="$snd_bad; $snd_f is readable by $USER"
+  done
+  find "$mcp_state" -maxdepth 1 -iname '*send*token*' 2>/dev/null | grep -q . && snd_bad="$snd_bad; a send token file exists in $mcp_state"
+  if [ -r /etc/systemd/system/tgconfirm.service ]; then
+    snd_drift=""
+    for snd_f in broker.py popup.py; do cmp -s "$DOTFILES/infrastructure/mcp/confirm/$snd_f" "/usr/local/lib/tgconfirm/$snd_f" || snd_drift="$snd_drift $snd_f"; done
+    cmp -s "$DOTFILES/infrastructure/mcp/confirm/tgconfirm.service" /etc/systemd/system/tgconfirm.service || snd_drift="$snd_drift tgconfirm.service"
+    cmp -s "$tg_dir/send.conf" /usr/local/lib/telegram-mcp/send.conf || snd_drift="$snd_drift send.conf"
+    if [ -z "$snd_drift" ]; then ok mcp-send-files "tgconfirm broker, popup, unit and send.conf match the repo"; else bad mcp-send-files "installed files differ from the repo:$snd_drift (sudo ./apply-system.sh --only mcp)"; fi
+    if getent passwd tgconfirm >/dev/null; then
+      getfacl -p "$HOME" 2>/dev/null | grep -q 'tgconfirm' && snd_bad="$snd_bad; tgconfirm has an ACL entry on $HOME"
+      snd_acl="$(getfacl -p /run/user/"$(id -u)"/* 2>/dev/null | awk '/^# file:/ {f = $3} /^user:tgconfirm:/ && $0 !~ /:---$/ {print f}' | grep -vE '/wayland-[0-9]+$' | paste -sd' ')"
+      [ -n "$snd_acl" ] && snd_bad="$snd_bad; tgconfirm can reach in /run/user/$(id -u): $snd_acl (only the Wayland socket is allowed)"
+      sudo -n -u tgconfirm true >/dev/null 2>&1 && snd_bad="$snd_bad; the owner can reach tgconfirm without a password"
+    fi
+    snd_tok="$mcp_state/telegram.token"
+    if [ "$(systemctl is-active telegram-mcp.service 2>/dev/null)" = active ] && [ -r "$snd_tok" ]; then
+      snd_code="$(curl -s -o /dev/null -m 5 -w '%{http_code}' -X POST -H @<(printf 'Authorization: Bearer %s' "$(cat "$snd_tok")") -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:8765/x-send 2>/dev/null)"
+      case "$snd_code" in 401 | 503) ;; *) snd_bad="$snd_bad; POST /x-send with the MCP token answered ${snd_code:-nothing} (expected 401, or 503 while sending is not set up)" ;; esac
+    fi
+    if [ -z "$snd_bad" ]; then ok mcp-send-route "/x-send refuses the MCP token, telegram-send is Claude-only with an allow list of send_message + status, no send credential readable, tgconfirm has only the Wayland socket"
+    else bad mcp-send-route "${snd_bad#; }"; fi
+  else
+    info mcp-send-files "tgconfirm is not installed yet: sudo ./apply-system.sh --only users,mcp, then mcp-telegram-setup send-chats"
+    if [ -z "$snd_bad" ]; then info mcp-send-route "sending is not set up yet; the repo-side rules hold (telegram-send allow list, not in Codex, no send credential readable)"
+    else bad mcp-send-route "${snd_bad#; }"; fi
+  fi
+  if "$HOME/.local/bin/mcp-guard" --check >/dev/null 2>&1; then ok mcp-guard "Claude Code denies wtype, wlrctl, hyprd, hyprctl eval/dispatch and grim to the agents' Bash"
+  else info mcp-guard "deny rules for key injection and capture are not in Claude Code's settings yet: mcp-guard (mcp-add runs it)"; fi
   if [ -s /srv/models/ggml-small.bin ]; then ok mcp-whisper "Whisper model shared in /srv/models ($(stat -c %s /srv/models/ggml-small.bin) bytes)"; else info mcp-whisper "no /srv/models/ggml-small.bin yet (sudo ./apply-system.sh --only mcp)"; fi
   if [ -x /usr/bin/chromium ]; then ok mcp-chromium "Chromium for the clean chrome-devtools server is installed"; else info mcp-chromium "chromium not installed: chrome-devtools answers with a stub (sudo ./apply-system.sh --only mcp)"; fi
 else

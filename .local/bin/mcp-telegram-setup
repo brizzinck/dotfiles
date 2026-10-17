@@ -351,7 +351,7 @@ def cmd_send_chats(account: str) -> None:
     names = {c["id"]: c["title"] for c in out["chats"]}
     eprint(f"\nThe AI may ask to write to ({len(send)}): " + ", ".join(names.get(i, str(i)) for i in send))
     eprint("Sending is OFF until you switch it on: hub > Telegram: allow sending (SUPER+; x m). Every message then needs your confirmation\n"
-           "in a popup. Also run  mcp-guard  once (deny rules for key-injection tools in Claude Code).")
+           "in a popup. (mcp-add also applied mcp-guard: Claude Code may not use key-injection or capture tools in its Bash.)")
 
 
 def cmd_status() -> int:

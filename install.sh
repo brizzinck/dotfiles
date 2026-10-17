@@ -320,7 +320,7 @@ systemctl --user daemon-reload 2>/dev/null || true
 systemctl --user enable --now mcp-gateway.service 2>/dev/null || later "start the MCP gateway once logged in: systemctl --user enable --now mcp-gateway.service"
 # registering the gateway servers in Claude Code / Codex edits the CLIs' own config files: the bootstrap (B1) runs it, on the
 # owner's machine it is run by hand once. Root parts (Telegram service, Chromium, whisper): sudo ./apply-system.sh --only mcp
-later "register the MCP gateway servers with Claude Code and Codex (also removes the old mcphub entry): mcp-add"
+later "register the MCP gateway servers with Claude Code and Codex (also removes the old mcphub entry; for Claude Code it applies mcp-guard when telegram-send is served): mcp-add"
 
 log "workmux agent status hooks"
 if [ "$IS_TTY" = 1 ]; then

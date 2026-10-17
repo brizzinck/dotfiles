@@ -18,7 +18,9 @@ Claude Code is driven through its own CLI (`claude mcp add-json/remove -s user`)
 written first and the result is parsed back (tomllib) and compared with the old file before it is saved.
 telegram-send (owner-confirmed Telegram sending) is registered for Claude Code ONLY and removed from Codex when found there: Codex runs
 with --dangerously-bypass-approvals-and-sandbox, so no permission rule (mcp-guard) can protect the popup from it.
-Throwaway test: CLAUDE_CONFIG_DIR=/tmp/x CODEX_HOME=/tmp/y mcp-add.  Hooks: MCP_GATEWAY_CMD, MCP_CLAUDE_BIN, MCP_STATE_DIR.
+Registering telegram-send for Claude Code also runs `mcp-guard` (deny rules in Claude Code's settings.json for the key-injection and
+capture tools, backup first, idempotent), so the popup of the owner-confirmed sending is never offered without them.
+Throwaway test: CLAUDE_CONFIG_DIR=/tmp/x CODEX_HOME=/tmp/y mcp-add.  Hooks: MCP_GATEWAY_CMD, MCP_CLAUDE_BIN, MCP_GUARD_CMD, MCP_STATE_DIR.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ HOME = Path.home()
 BIN_DIR = Path(os.path.abspath(__file__)).parent  # not resolve(): keep the stowed ~/.local/bin path in client configs
 GATEWAY = os.environ.get("MCP_GATEWAY_CMD") or str(BIN_DIR / "mcp-gateway")
 HEADERS = str(BIN_DIR / "mcp-gateway-headers")
+GUARD = os.environ.get("MCP_GUARD_CMD") or str(BIN_DIR / "mcp-guard")
 RUN = str(BIN_DIR / "mcp-run")
 CONFIG_DIR = Path(os.environ.get("MCP_CONFIG_DIR") or Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "mcp")
 STATE_DIR = Path(os.environ.get("MCP_STATE_DIR") or Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local/state") / "mcp")
@@ -123,6 +126,13 @@ def do_claude(servers: dict[str, str], stdio: dict[str, dict], legacy: bool) -> 
             if rc != 0:
                 say(f"claude: add-json {n} failed: {out}")
                 ok = False
+    if "telegram-send" in wanted:
+        if DRY:
+            say("claude: would run mcp-guard (deny rules for key injection and screen capture)")
+        else:
+            rc, out = run([GUARD])
+            say("claude: mcp-guard: " + (out.splitlines()[-1] if out else "ok") if rc == 0 else f"claude: mcp-guard failed: {out}")
+            ok = ok and rc == 0
     return ok
 
 
