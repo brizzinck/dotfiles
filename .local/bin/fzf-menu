@@ -350,7 +350,7 @@ self_test() {
     shift 2
     tmux -L "$sock" kill-session -t t 2>/dev/null
     tmux -L "$sock" new-session -d -s t -x 100 -y 24 \
-      "bash -c 'out=\$($SELF --here -p test < <(seq 30)); echo \"RES[\$out]\"; sleep 3'"
+      "bash -c 'out=\$($SELF --here -p \"\${TEST_PROMPT:-test}\" < <(seq 30)); echo \"RES[\$out]\"; sleep 3'"
     sleep 0.7
     for k in "$@"; do
       if [[ $k == =* ]]; then tmux -L "$sock" send-keys -t t -l "${k#=}"; else tmux -L "$sock" send-keys -t t "$k"; fi
@@ -359,6 +359,26 @@ self_test() {
     sleep 0.5
     out=$(tmux -L "$sock" capture-pane -p -t t | grep -a 'RES\[' | head -1)
     if [[ $out == "RES[$want]" ]]; then printf 'ok    %s\n' "$name"; else printf 'FAIL  %s (got %s, want RES[%s])\n' "$name" "${out:-nothing}" "$want"; fails=$((fails + 1)); fi
+  }
+  prompt_case() { # prompt text with fzf action delimiters in it: the menu opens, shows it, keeps the [I]/[N] tag
+    local want=$1 shot ok=1 p='Pick: a (b), c [d] + e, f = g'
+    tmux -L "$sock" kill-session -t t 2>/dev/null
+    tmux -L "$sock" new-session -d -s t -x 100 -y 24 -e "TEST_PROMPT=$p" \
+      "bash -c 'out=\$($SELF --here -p \"\$TEST_PROMPT\" < <(seq 30)); echo \"RES[\$out]\"; sleep 3'"
+    sleep 0.7
+    shot=$(tmux -L "$sock" capture-pane -p -t t)
+    [[ $shot == *"[I] $p>"* ]] || ok=0
+    tmux -L "$sock" send-keys -t t Escape; sleep 0.3
+    shot=$(tmux -L "$sock" capture-pane -p -t t)
+    [[ $shot == *"[N] $p>"* ]] || ok=0
+    tmux -L "$sock" send-keys -t t -l i; sleep 0.3
+    shot=$(tmux -L "$sock" capture-pane -p -t t)
+    [[ $shot == *"[I] $p>"* ]] || ok=0
+    tmux -L "$sock" send-keys -t t -l 7; sleep 0.2
+    tmux -L "$sock" send-keys -t t Enter; sleep 0.5
+    shot=$(tmux -L "$sock" capture-pane -p -t t | grep -a 'RES\[' | head -1)
+    [[ $shot == "RES[$want]" ]] || ok=0
+    if ((ok)); then printf 'ok    %s\n' "prompt with ( ) [ ] , + = : keeps the modal"; else printf 'FAIL  %s\n' "prompt with ( ) [ ] , + = : keeps the modal"; fails=$((fails + 1)); fi
   }
   case_run "INSERT: type filters" 2 '=2' Enter
   case_run "INSERT: Ctrl+j moves down" 2 C-j Enter
@@ -373,6 +393,7 @@ self_test() {
   case_run "NORMAL: Esc quits" "" Escape Escape
   case_run "NORMAL: Cyrillic twins (о о, П)" 3 Escape '=о' '=о' Enter
   case_run "NORMAL: Cyrillic G twin" 30 Escape '=П' Enter
+  prompt_case 7
   tmux -L "$sock" kill-server 2>/dev/null
   name=${FUNCNAME[0]}
   ((fails == 0)) && { echo "$name: all cases passed"; return 0; }

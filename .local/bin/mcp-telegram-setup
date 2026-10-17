@@ -330,7 +330,7 @@ def cmd_send_chats(account: str) -> None:
     current = parse_ids(field(item, "send_allowlist")) & readable
     if not chats:
         die("none of the readable chats is in the chat list Telegram returned")
-    eprint(f"\nLogged in as {out['me']['name']}. {len(chats)} readable chats; {len(current)} may already be written to.")
+    eprint(f"\nLogged in as {out['me']['name']}. {len(chats)} readable chat{'' if len(chats) == 1 else 's'}; {len(current)} may already be written to.")
     ticked = pick_chats(chats, current, "send", "tick the chats the AI may ASK to WRITE to (you still confirm each message)")
     if not ticked:
         die("nothing ticked, the send list is unchanged", 0)

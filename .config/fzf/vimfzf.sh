@@ -74,6 +74,21 @@ _vf_prompt() {
   esac
 }
 
+# _vf_action VERB TEXT: the fzf action VERB<d>TEXT<d'> for caller-provided TEXT. fzf ends the argument at the first
+# closing delimiter, so the pair is the first of ( ) [ ] { } < > ~ ! @ # $ % ^ & * ; / | whose characters are not in
+# TEXT; only when every pair occurs in TEXT are the closing characters of the last pair removed from it.
+_vf_action() {
+  local verb=$1 text=$2 pair o c
+  for pair in '()' '[]' '{}' '<>' '~~' '!!' '@@' '##' '$$' '%%' '^^' '&&' '**' ';;' '//' '||'; do
+    o=${pair:0:1} c=${pair:1:1}
+    [[ $text == *"$o"* || $text == *"$c"* ]] && continue
+    printf '%s%s%s%s' "$verb" "$o" "$text" "$c"
+    return 0
+  done
+  text=${text//"$c"/}
+  printf '%s%s%s%s' "$verb" "$o" "$text" "$c"
+}
+
 # fills the array VF_ARGS with the fzf arguments for the modal behaviour
 _vf_build() {
   local k t spec key a
@@ -113,8 +128,8 @@ _vf_build() {
   done
 
   local to_insert to_normal
-  to_insert="change-prompt($(_vf_prompt I))+$(_vf_key_chain unbind "${chain_keys[@]}")"
-  to_normal="change-prompt($(_vf_prompt N))+$(_vf_key_chain rebind "${chain_keys[@]}")"
+  to_insert="$(_vf_action change-prompt "$(_vf_prompt I)")+$(_vf_key_chain unbind "${chain_keys[@]}")"
+  to_normal="$(_vf_action change-prompt "$(_vf_prompt N)")+$(_vf_key_chain rebind "${chain_keys[@]}")"
   export VF_ACT_NORMAL=$to_normal
 
   # the printable keys: bound to their NORMAL action (or ignore), then unbound at start so INSERT types
