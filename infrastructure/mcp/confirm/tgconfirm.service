@@ -27,10 +27,14 @@ StateDirectoryMode=0700
 WorkingDirectory=/var/lib/tgconfirm
 UMask=0077
 
-# sandbox. The service reaches exactly two things outside itself: the owner's Wayland socket (/run/user/UID/wayland-N, through the
-# ACL that `usr clipboard-acl` gives the managed user tgconfirm: socket rw, nothing else of the runtime directory) and
-# 127.0.0.1 (telegram-mcp). It has no access to any home directory, so ProtectHome= (which would also hide /run/user) is replaced
-# by InaccessiblePaths=.
+# sandbox. The service reaches two things outside itself: the owner's Wayland socket and 127.0.0.1 (telegram-mcp). It has no
+# access to any home directory, so ProtectHome= (which would also hide /run/user) is replaced by InaccessiblePaths=.
+# /run/user/UID is NOT sandboxed away: `usr clipboard-acl` (Hyprland autostart, user unit wayland-acl.path after a compositor
+# restart) gives the user tgconfirm `x` on it, rw on the Wayland socket and an explicit deny (empty ACL entry) on every other
+# socket, first-level directory and file, with a default ACL for new entries. The deny entries are defence in depth against a
+# compromised tgconfirm, not a boundary against the owner: the ACL sits on the owner's own files, so the owner (and so any agent)
+# can change or strip it, and the broker does not trust a wayland-N by name either: it verifies the compositor behind the socket (broker.py open_wayland) and hands that connection to
+# ghostty as WAYLAND_SOCKET. The ACL only decides whether the popup can connect at all (doctor mcp-send-route, mcp-wayland-acl).
 NoNewPrivileges=yes
 ProtectSystem=strict
 InaccessiblePaths=/home /root
