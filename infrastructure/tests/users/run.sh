@@ -143,6 +143,9 @@ chmod 700 "$T/rt"
 import socket, os
 for n in ("wayland-9", "pipewire-0", "bus"):
     s = socket.socket(socket.AF_UNIX); s.bind(n); os.chmod(n, 0o666)
+os.makedirs("systemd", mode=0o755); os.makedirs("hub", mode=0o755)
+s = socket.socket(socket.AF_UNIX); s.bind("systemd/io.systemd.Manager"); os.chmod("systemd/io.systemd.Manager", 0o666)
+open("hub/state.json", "w").write("{}"); os.chmod("hub/state.json", 0o644)
 ')
 export XDG_RUNTIME_DIR="$T/rt" WAYLAND_DISPLAY=wayland-9
 USR_MANAGED_TSV="$T/clip.tsv" "$USR" clipboard-acl >/dev/null 2>&1
@@ -150,13 +153,45 @@ expect "clipboard dir" "user:nobody:--x" "$(getfacl -p "$T/rt" 2>/dev/null | gre
 expect "clipboard wayland" "user:nobody:rw-" "$(getfacl -p "$T/rt/wayland-9" 2>/dev/null | grep '^user:nobody:')"
 expect "clipboard pipewire denied" "user:nobody:---" "$(getfacl -p "$T/rt/pipewire-0" 2>/dev/null | grep '^user:nobody:')"
 expect "clipboard bus denied" "user:nobody:---" "$(getfacl -p "$T/rt/bus" 2>/dev/null | grep '^user:nobody:')"
+expect "clipboard socket in a subdirectory denied" "user:nobody:---" "$(getfacl -p "$T/rt/systemd/io.systemd.Manager" 2>/dev/null | grep '^user:nobody:')"
+(cd "$T/rt" && python3 -I -c '
+import socket, os
+os.makedirs("later", mode=0o755)
+s = socket.socket(socket.AF_UNIX); s.bind("later-sock"); os.chmod("later-sock", 0o666)
+open("later-file", "w").write("x"); os.chmod("later-file", 0o644)
+')
+expect "clipboard: a directory created later inherits the deny (default ACL)" "user:nobody:---" "$(getfacl -p "$T/rt/later" 2>/dev/null | grep '^user:nobody:')"
+expect "clipboard: a socket created later inherits the deny" "user:nobody:---" "$(getfacl -p "$T/rt/later-sock" 2>/dev/null | grep '^user:nobody:')"
+expect "clipboard: the modes creators ask for are unchanged by the default ACL (dir 755, socket 666 after chmod, file 644)" "755 666 644" "$(stat -c %a "$T/rt/later" "$T/rt/later-sock" "$T/rt/later-file" | paste -sd' ')"
+expect "clipboard first-level subdirectory denied (no traversal)" "user:nobody:---" "$(getfacl -p "$T/rt/hub" 2>/dev/null | grep '^user:nobody:')"
 # a wayland-only user (the tgconfirm popup) gets exactly the same ACL
 printf 'nobody\t-\tservice,noacl,wayland\taqua\n' >"$T/wl.tsv"
-setfacl -b "$T/rt" "$T/rt/wayland-9" "$T/rt/pipewire-0" "$T/rt/bus" 2>/dev/null
+setfacl -bk "$T/rt" "$T/rt/wayland-9" "$T/rt/pipewire-0" "$T/rt/bus" 2>/dev/null
 USR_MANAGED_TSV="$T/wl.tsv" "$USR" clipboard-acl >/dev/null 2>&1
 expect "wayland dir" "user:nobody:--x" "$(getfacl -p "$T/rt" 2>/dev/null | grep '^user:nobody:')"
 expect "wayland socket" "user:nobody:rw-" "$(getfacl -p "$T/rt/wayland-9" 2>/dev/null | grep '^user:nobody:')"
 expect "wayland pipewire denied" "user:nobody:---" "$(getfacl -p "$T/rt/pipewire-0" 2>/dev/null | grep '^user:nobody:')"
+# acl-reach.py (doctor mcp-send-route): follows the OTHER bits, not only named ACL entries
+REACH="$REPO/infrastructure/users/acl-reach.py"
+NOBODY=$(id -u nobody 2>/dev/null || echo 65534)
+mkdir -p "$T/rt2/pub" && chmod 700 "$T/rt2" && chmod 755 "$T/rt2/pub"
+(cd "$T/rt2" && python3 -I -c '
+import socket, os
+for n in ("wayland-9", "bus", "pub/inner.sock"):
+    s = socket.socket(socket.AF_UNIX); s.bind(n); os.chmod(n, 0o666)
+open("pub/readable.txt", "w").write("x"); os.chmod("pub/readable.txt", 0o644)
+open("private.txt", "w").write("x"); os.chmod("private.txt", 0o600)
+')
+setfacl -m "u:nobody:--x" "$T/rt2"
+reach="$("$REACH" "$NOBODY" "$T/rt2" --allow wayland-9)"
+case "$reach" in *"$T/rt2/bus"*"readable.txt"* | *"readable.txt"*"$T/rt2/bus"*) ok ;; *) bad "acl-reach finds the 0666 socket and the 0644 file that only the other bits expose: $reach" ;; esac
+case "$reach" in *"inner.sock"*) ok ;; *) bad "acl-reach finds a 0666 socket in a 0755 subdirectory" ;; esac
+case "$reach" in *private.txt* | *wayland-9*) bad "acl-reach reported a 0600 file or the allowed Wayland socket: $reach" ;; *) ok ;; esac
+export XDG_RUNTIME_DIR="$T/rt2" WAYLAND_DISPLAY=wayland-9
+printf 'nobody\t-\tservice,noacl,wayland\taqua\n' >"$T/wl2.tsv"
+USR_MANAGED_TSV="$T/wl2.tsv" "$USR" clipboard-acl >/dev/null 2>&1
+reach="$("$REACH" "$NOBODY" "$T/rt2" --allow wayland-9)"
+expect "acl-reach after usr clipboard-acl: nothing but the Wayland socket is reachable" "" "$reach"
 unset XDG_RUNTIME_DIR WAYLAND_DISPLAY
 
 # ── the picker and the session command, with stub fzf-menu / ghostty / machinectl / sudo / su ───────────────────

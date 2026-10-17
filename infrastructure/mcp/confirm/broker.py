@@ -597,6 +597,17 @@ class Broker:
 
 
 def main() -> int:
+    if "--check-wayland" in sys.argv[1:]:
+        # read-only self test for doctor.sh (run as the owner): does the discovery accept the live session's compositor?
+        b = Broker({**os.environ, "TGCONFIRM_OWNER_UID": os.environ.get("TGCONFIRM_OWNER_UID", str(os.getuid()))})
+        sock, why = b.open_wayland()
+        if sock is None:
+            print(f"no verified compositor socket: {why}")
+            return 1
+        pid = struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))[0]
+        sock.close()
+        print(f"verified: the session compositor is pid {pid}")
+        return 0
     if "TGCONFIRM_OWNER_UID" not in os.environ:
         print("tgconfirm: TGCONFIRM_OWNER_UID is not set (the unit drop-in 10-owner.conf is rendered by apply-system.sh)", file=sys.stderr)
         return 78

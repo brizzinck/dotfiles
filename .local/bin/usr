@@ -88,11 +88,14 @@ cmd_list() {
 
 # ───────────────────────────── clipboard ACL ─────────────────────────────
 # td keeps writing into the owner's Wayland clipboard: traverse-only on the runtime dir (x, no listing), rw on the Wayland
-# socket, and an explicit deny (empty named-user entry beats `other`) on every other world-accessible socket there
-# (pipewire-0, pipewire-0-manager, bus, ...). Verified need: nothing a managed user runs uses PipeWire or the session bus.
+# socket, and an explicit deny (empty named-user entry beats `other`) on every other socket under the directory (pipewire-0,
+# pipewire-0-manager, bus, and those in subdirectories: systemd/io.systemd.Manager, pulse/native, ...) and on every first-level
+# subdirectory (so world-readable files in 0755 directories cannot be read). Verified need: nothing a managed user runs uses
+# PipeWire or the session bus. Things created later inherit the deny through a default ACL on the runtime dir (rwx for group / other / mask there, so the modes the
+# creators ask for stay as they are); the deny on what exists is applied by each run.
 
 cmd_clipboard_acl() {
-  local rt="${XDG_RUNTIME_DIR:-}" wl="${WAYLAND_DISPLAY:-}" u f n=0
+  local rt="${XDG_RUNTIME_DIR:-}" wl="${WAYLAND_DISPLAY:-}" u f n=0 d=0
   [ -n "$rt" ] && [ -n "$wl" ] || return 0
   [ "${wl#/}" = "$wl" ] || { rt=$(dirname "$wl"); wl=$(basename "$wl"); }
   [ -S "$rt/$wl" ] || return 0
@@ -100,12 +103,22 @@ cmd_clipboard_acl() {
   for u in $(managed_users wayland); do
     getent passwd "$u" >/dev/null || continue
     setfacl -m "u:$u:--x" "$rt" 2>/dev/null || continue
+    # default entry: whatever a daemon creates here later (a new socket, a 0755 directory) starts with `u:$u:---`. The default
+    # group / other / mask entries are rwx so the modes the creators ask for are unchanged (a default ACL replaces the umask).
+    setfacl -d -m "u::rwx,g::rwx,o::rwx,m::rwx,u:$u:---" "$rt" 2>/dev/null || true
     setfacl -m "u:$u:rw" "$rt/$wl"
+    # sockets: every one under the runtime dir (the first level, and those in subdirectories such as systemd/io.systemd.Manager or
+    # pulse/native, which are 0666 and would be reachable through the traverse-only x), except the Wayland socket
     while IFS= read -r -d '' f; do
       [ "$f" = "$rt/$wl" ] && continue
       setfacl -m "u:$u:---" "$f" 2>/dev/null && n=$((n + 1))
-    done < <(find "$rt" -mindepth 1 -maxdepth 1 -type s -print0 2>/dev/null)
-    note "clipboard ACL for $u: $rt x, $wl rw, $n other sockets closed"
+    done < <(find "$rt" -xdev -mindepth 1 -maxdepth 4 -type s -print0 2>/dev/null)
+    # first-level subdirectories and files: no traversal and no reading, so world-readable files in 0755 directories (hub/, pinned/,
+    # systemd/, ...) and loose ones (cliphist-mode, *.lock) stay out of reach.
+    while IFS= read -r -d '' f; do
+      setfacl -m "u:$u:---" "$f" 2>/dev/null && d=$((d + 1))
+    done < <(find "$rt" -xdev -mindepth 1 -maxdepth 1 \( -type d -o -type f \) -print0 2>/dev/null)
+    note "clipboard ACL for $u: $rt x, $wl rw, $n other sockets and $d subdirectories/files closed"
   done
 }
 

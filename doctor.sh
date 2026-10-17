@@ -397,16 +397,36 @@ if [ -x "$HOME/.local/bin/mcp-gateway" ]; then
     if [ -z "$snd_drift" ]; then ok mcp-send-files "tgconfirm broker, popup, unit and send.conf match the repo"; else bad mcp-send-files "installed files differ from the repo:$snd_drift (sudo ./apply-system.sh --only mcp)"; fi
     if getent passwd tgconfirm >/dev/null; then
       getfacl -p "$HOME" 2>/dev/null | grep -q 'tgconfirm' && snd_bad="$snd_bad; tgconfirm has an ACL entry on $HOME"
-      snd_acl="$(getfacl -p /run/user/"$(id -u)"/* 2>/dev/null | awk '/^# file:/ {f = $3} /^user:tgconfirm:/ && $0 !~ /:---$/ {print f}' | grep -vE '/wayland-[0-9]+$' | paste -sd' ')"
-      [ -n "$snd_acl" ] && snd_bad="$snd_bad; tgconfirm can reach in /run/user/$(id -u): $snd_acl (only the Wayland socket is allowed)"
+      # everything tgconfirm can reach in the runtime dir, by the kernel's rules (named ACL entry, else the OTHER bits): only the Wayland socket
+      snd_acl="$(python3 -I "$DOTFILES/infrastructure/users/acl-reach.py" "$(id -u tgconfirm)" "/run/user/$(id -u)" --allow "$(basename "${WAYLAND_DISPLAY:-wayland-1}")" 2>&1 | head -4 | paste -sd';')"
+      [ -n "$snd_acl" ] && snd_bad="$snd_bad; tgconfirm can reach in /run/user/$(id -u) (named ACL or other bits): $snd_acl (only the Wayland socket is allowed; run: usr clipboard-acl)"
       sudo -n -u tgconfirm true >/dev/null 2>&1 && snd_bad="$snd_bad; the owner can reach tgconfirm without a password"
     fi
-    snd_tok="$mcp_state/telegram.token"
-    if [ "$(systemctl is-active telegram-mcp.service 2>/dev/null)" = active ] && [ -r "$snd_tok" ]; then
-      snd_code="$(curl -s -o /dev/null -m 5 -w '%{http_code}' -X POST -H @<(printf 'Authorization: Bearer %s' "$(cat "$snd_tok")") -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:8765/x-send 2>/dev/null)"
-      case "$snd_code" in 401 | 503) ;; *) snd_bad="$snd_bad; POST /x-send with the MCP token answered ${snd_code:-nothing} (expected 401, or 503 while sending is not set up)" ;; esac
+    if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+      if snd_wl="$(python3 -I "$DOTFILES/infrastructure/mcp/confirm/broker.py" --check-wayland 2>&1)"; then ok mcp-send-wayland "the broker's socket check accepts the live session ($snd_wl)"
+      else bad mcp-send-wayland "the broker's compositor check refuses the live session: $snd_wl"; fi
     fi
-    if [ -z "$snd_bad" ]; then ok mcp-send-route "/x-send refuses the MCP token, telegram-send is Claude-only with an allow list of send_message + status, no send credential readable, tgconfirm has only the Wayland socket"
+    snd_tok="$mcp_state/telegram.token" snd_restart=""
+    snd_state="$(systemctl is-active telegram-mcp.service 2>/dev/null)"
+    if [ -r "$snd_tok" ] && [ "$snd_state" != inactive ] && [ "$snd_state" != failed ]; then
+      # a restart (send-chats, creds-install) makes the port answer 000 for a few seconds: retry over ~5 s before judging
+      snd_code=000 snd_try=0
+      while [ "$snd_try" -lt 6 ]; do
+        snd_code="$(curl -s -o /dev/null -m 3 -w '%{http_code}' -X POST -H @<(printf 'Authorization: Bearer %s' "$(cat "$snd_tok")") -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:8765/x-send 2>/dev/null)"
+        case "$snd_code" in 401 | 503) break ;; esac
+        snd_try=$((snd_try + 1))
+        sleep 1
+      done
+      case "$snd_code" in
+        401 | 503) ;;
+        000 | "") snd_state="$(systemctl is-active telegram-mcp.service 2>/dev/null)"
+          if [ "$snd_state" = activating ] || [ "$snd_state" = reloading ]; then snd_restart="telegram-mcp.service is restarting ($snd_state), the /x-send probe was skipped"
+          else snd_bad="$snd_bad; POST /x-send did not answer for 5 s (telegram-mcp.service is $snd_state)"; fi ;;
+        *) snd_bad="$snd_bad; POST /x-send with the MCP token answered $snd_code (expected 401, or 503 while sending is not set up)" ;;
+      esac
+    fi
+    if [ -z "$snd_bad" ] && [ -n "$snd_restart" ]; then info mcp-send-route "$snd_restart; the other route checks hold (run doctor again in a few seconds)"
+    elif [ -z "$snd_bad" ]; then ok mcp-send-route "/x-send refuses the MCP token, telegram-send is Claude-only with an allow list of send_message + status, no send credential readable, tgconfirm has only the Wayland socket"
     else bad mcp-send-route "${snd_bad#; }"; fi
   else
     info mcp-send-files "tgconfirm is not installed yet: sudo ./apply-system.sh --only users,mcp, then mcp-telegram-setup send-chats"
