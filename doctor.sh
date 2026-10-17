@@ -759,6 +759,7 @@ else
 fi
 if [ -e "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/idle-off" ]; then info hypridle-alive "idle is switched off on purpose (SUPER+CTRL+I)"; elif pgrep -x hypridle >/dev/null 2>&1; then ok hypridle-alive "hypridle runs"; else bad hypridle-alive "hypridle is not running (the hypridle-watch timer starts it within a minute, or SUPER+CTRL+I)"; fi
 if systemctl --user is-enabled hypridle-watch.timer >/dev/null 2>&1; then ok hypridle-watch "user timer hypridle-watch.timer restarts hypridle when it died"; else bad hypridle-watch "hypridle-watch.timer not enabled (stow ., systemctl --user enable --now hypridle-watch.timer)"; fi
+if systemctl --user is-active crash-watch.service >/dev/null 2>&1; then ok crash-watch "crash-watch.service follows the coredump journal (toast, details, ask Claude, mute)"; else bad crash-watch "crash-watch.service is not running (stow ., systemctl --user enable --now crash-watch.service)"; fi
 hub_groups="$("$DOTFILES/.config/hub/hub" groups 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"
 hub_missing=""
 for g in Setup Update Learn Fix; do case " $hub_groups " in *" $g "*) ;; *) hub_missing="$hub_missing $g" ;; esac; done

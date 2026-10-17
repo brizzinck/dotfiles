@@ -1,0 +1,11 @@
+[Unit]
+Description=Toast when one of my programs dumps core (systemd-coredump)
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.config/hypr/scripts/crash-watch.sh follow
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

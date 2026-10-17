@@ -279,5 +279,31 @@ expect "hypridle uses dim.sh for dim and resume" bash -c "grep -q 'dim.sh dim' '
 expect "a key press restores through the hyprland.lua event" grep -q 'input.keyboard.key' "$REPO/.config/hypr/hyprland.lua"
 expect "watchdog leaves hypridle alone after idle off" bash -c "touch '$T/run/idle-off'; : >'$T/log'; PATH='$T/bin:'\"\$PATH\" '$DIM' watchdog; ! grep -q hypridle '$T/log'"
 
+# ── D2 crash watcher ──
+CW="$SC/crash-watch.sh"
+export CRASH_WATCH_SYNC=1
+rec() { printf '{"COREDUMP_COMM":"%s","COREDUMP_PID":"4242","COREDUMP_EXE":"/usr/bin/%s","COREDUMP_SIGNAL_NAME":"SIGSEGV"}' "$1" "$1"; }
+reset; rm -rf "$T/run/crash-watch-last"; mkdir -p "$T/run/crash-watch-last"
+"$CW" --event "$(rec foo)"
+expect "crash toast names the program, signal and pid" bash -c "grep -q 'foo crashed (SIGSEGV)' '$T/log' && grep -q 'pid 4242' '$T/log'"
+expect "crash toast offers details, ask Claude and mute" bash -c "grep 'notify' '$T/log' | grep -q 'default=Details' && grep 'notify' '$T/log' | grep -q 'claude=Ask Claude' && grep 'notify' '$T/log' | grep -q 'mute=Mute foo'"
+reset; "$CW" --event "$(rec foo)"
+expect "at most one toast per program per 60 s" bash -c "! grep -q 'foo crashed' '$T/log'"
+reset; "$CW" --event "$(rec bar)"
+expect "another program still gets its toast" grep -q 'bar crashed' "$T/log"
+reset; "$CW" --event "$(rec waybar)"
+expect "waybar is skipped (its watchdog reports it)" bash -c "! grep -q 'waybar crashed' '$T/log'"
+reset; FAKE_ACTION=default "$CW" --event "$(rec baz)"
+expect "details click: coredumpctl info in a floating terminal" grep -q 'ghostty --class=float.tui --title=crash: baz -e bash -c coredumpctl info' "$T/log"
+reset; FAKE_ACTION=claude "$CW" --event "$(rec qux)"
+expect "ask Claude: a normal claude session, no auto-approve flag" bash -c "grep -q 'ghostty --title=crash: qux -e claude A program of mine crashed: qux' '$T/log' && ! grep -q -e '--dangerously' -e 'permission-mode' -e 'auto' '$T/log'"
+reset; FAKE_ACTION=mute "$CW" --event "$(rec noisy)"
+expect "mute action adds the program to the mute list" grep -qx noisy "$HOME/.local/state/crash-watch/muted"
+rm -f "$T/run/crash-watch-last"/*; reset; "$CW" --event "$(rec noisy)"
+expect "a muted program never raises a toast" bash -c "! grep -q 'noisy crashed' '$T/log'"
+"$CW" unmute noisy; rm -f "$T/run/crash-watch-last"/*; reset; "$CW" --event "$(rec noisy)"
+expect "unmute brings it back" grep -q 'noisy crashed' "$T/log"
+unset CRASH_WATCH_SYNC
+
 echo "o1 tests: $fails failure(s)"
 exit $((fails > 0))

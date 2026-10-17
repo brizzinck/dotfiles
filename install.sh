@@ -275,8 +275,8 @@ log "Obsidian (vault .obsidian -> apps/obsidian/vault-config, pinned plugins fro
 
 log "User timers: cache aging (user tmpfiles), Codex release pruning and the sysalert health check and the background update check (sysup-check)"
 systemctl --user daemon-reload 2>/dev/null || true
-systemctl --user enable --now systemd-tmpfiles-clean.timer codex-prune-releases.timer sysalert.timer sysup-check.timer hypridle-watch.timer 2>/dev/null \
-  || later "enable the user timers once logged in: systemctl --user enable --now systemd-tmpfiles-clean.timer codex-prune-releases.timer sysalert.timer sysup-check.timer hypridle-watch.timer"
+systemctl --user enable --now systemd-tmpfiles-clean.timer codex-prune-releases.timer sysalert.timer sysup-check.timer hypridle-watch.timer crash-watch.service 2>/dev/null \
+  || later "enable the user timers once logged in: systemctl --user enable --now systemd-tmpfiles-clean.timer codex-prune-releases.timer sysalert.timer sysup-check.timer hypridle-watch.timer crash-watch.service"
 
 # ───────────────────────────── 8. identity ────────────────────────────────────
 log "Git identity (~/.gitconfig.local)"

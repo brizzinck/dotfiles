@@ -17,7 +17,7 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Desktop | [System, power, bar](#system-power-bar) | 12 |
 | Desktop | [Pointer from the keyboard](#pointer-from-the-keyboard) | 21 |
 | Desktop | [Other Hyprland binds](#other-hyprland-binds) | 9 |
-| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 126 |
+| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 129 |
 | Terminal | [tmux: this setup](#tmux-this-setup) | 55 |
 | Terminal | [tmux: stock prefix keys](#tmux-stock-prefix-keys) | 80 |
 | Terminal | [zsh line editor](#zsh-line-editor) | 34 |
@@ -433,6 +433,9 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; i t` | Setup: Theme init |
 | `Super+; i w` | Setup: Browser settings |
 | `Super+; f a` | Fix: Restart audio |
+| `Super+; f c` | Fix: Crash toasts |
+| `Super+; f l` | Fix: Recent crashes |
+| `Super+; f m` | Fix: Crash mute list |
 | `Super+; f n` | Fix: Restart dunst |
 | `Super+; f t` | Fix: Restart trackpad |
 | `Super+; f w` | Fix: Restart Wi-Fi |
