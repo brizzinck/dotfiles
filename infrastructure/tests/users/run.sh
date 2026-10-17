@@ -25,18 +25,20 @@ cat >"$T/m.tsv" <<TSV
 td	cli	interactive,clipboard	orange	agents
 yc	cli	interactive	blue
 aimcp	-	service,noacl,nobecome,create	purple	Telegram MCP
+tgconfirm	-	service,noacl,nobecome,create,wayland	aqua	Telegram send confirmation
 TSV
 export USR_MANAGED_TSV="$T/m.tsv"
 # shellcheck source=../../users/lib.sh
 source "$REPO/infrastructure/users/lib.sh"
-expect "managed_users" "td yc aimcp" "$(managed_users | paste -sd' ' -)"
+expect "managed_users" "td yc aimcp tgconfirm" "$(managed_users | paste -sd' ' -)"
 expect "interactive" "td yc" "$(managed_users interactive | paste -sd' ' -)"
 expect "become" "td yc" "$(managed_users become | paste -sd' ' -)"
 expect "acl" "td yc" "$(managed_users acl | paste -sd' ' -)"
 expect "profile" "td yc" "$(managed_users profile | paste -sd' ' -)"
 expect "clipboard" "td" "$(managed_users clipboard | paste -sd' ' -)"
-expect "create" "aimcp" "$(managed_users create | paste -sd' ' -)"
-expect "service" "aimcp" "$(managed_users service | paste -sd' ' -)"
+expect "create" "aimcp tgconfirm" "$(managed_users create | paste -sd' ' -)"
+expect "service" "aimcp tgconfirm" "$(managed_users service | paste -sd' ' -)"
+expect "wayland (a clipboard user reaches the socket too)" "td tgconfirm" "$(managed_users wayland | paste -sd' ' -)"
 expect "accent" "purple" "$(managed_field aimcp accent)"
 expect "valid fixture" "" "$(managed_validate "$ME")"
 printf 'root\t-\t-\tred\n%s\t-\t-\tred\nx\tcli\tservice\tred\ny\t-\tbogus\tred\nz\tnoprofile\t-\tred\n' "$ME" >"$T/bad.tsv"
@@ -148,6 +150,13 @@ expect "clipboard dir" "user:nobody:--x" "$(getfacl -p "$T/rt" 2>/dev/null | gre
 expect "clipboard wayland" "user:nobody:rw-" "$(getfacl -p "$T/rt/wayland-9" 2>/dev/null | grep '^user:nobody:')"
 expect "clipboard pipewire denied" "user:nobody:---" "$(getfacl -p "$T/rt/pipewire-0" 2>/dev/null | grep '^user:nobody:')"
 expect "clipboard bus denied" "user:nobody:---" "$(getfacl -p "$T/rt/bus" 2>/dev/null | grep '^user:nobody:')"
+# a wayland-only user (the tgconfirm popup) gets exactly the same ACL
+printf 'nobody\t-\tservice,noacl,wayland\taqua\n' >"$T/wl.tsv"
+setfacl -b "$T/rt" "$T/rt/wayland-9" "$T/rt/pipewire-0" "$T/rt/bus" 2>/dev/null
+USR_MANAGED_TSV="$T/wl.tsv" "$USR" clipboard-acl >/dev/null 2>&1
+expect "wayland dir" "user:nobody:--x" "$(getfacl -p "$T/rt" 2>/dev/null | grep '^user:nobody:')"
+expect "wayland socket" "user:nobody:rw-" "$(getfacl -p "$T/rt/wayland-9" 2>/dev/null | grep '^user:nobody:')"
+expect "wayland pipewire denied" "user:nobody:---" "$(getfacl -p "$T/rt/pipewire-0" 2>/dev/null | grep '^user:nobody:')"
 unset XDG_RUNTIME_DIR WAYLAND_DISPLAY
 
 # ── the picker and the session command, with stub fzf-menu / ghostty / machinectl / sudo / su ───────────────────

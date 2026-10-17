@@ -793,7 +793,7 @@ if [ -r "$users_lib" ]; then
   fi
   # the clipboard: traverse-only on the runtime dir, rw on the Wayland socket, the other sockets closed
   users_clip=""
-  for u in $(managed_users clipboard); do
+  for u in $(managed_users wayland); do
     getent passwd "$u" >/dev/null || continue
     [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -n "${WAYLAND_DISPLAY:-}" ] || continue
     [ "$(getfacl -p "$XDG_RUNTIME_DIR" 2>/dev/null | grep "^user:$u:")" = "user:$u:--x" ] || users_clip="$users_clip $u(dir)"

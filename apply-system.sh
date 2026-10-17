@@ -1248,6 +1248,57 @@ mcp_telegram_source() {
   return 0
 }
 
+# tgconfirm: the owner-confirmation broker of Telegram sending (infrastructure/mcp/confirm). The user comes from the users section
+# (managed.tsv row: service, noacl, nobecome, create, wayland = the Wayland socket ACL of `usr clipboard-acl`). Files go to
+# /usr/local/lib/tgconfirm: broker.py, popup.py, keymap.tsv (twins of the code keys, from .config/layout), ghostty.conf (the
+# palette of themes/generated/black + the popup config); the unit gets a rendered drop-in with the owner's uid. The service only
+# starts once `mcp-telegram-setup send-chats` stored tgconfirm.send_token.
+CONFIRM_DIR="$INFRA/mcp/confirm"
+TGC_LIB=/usr/local/lib/tgconfirm
+mcp_tgconfirm() {
+  local f tmp tmp2 uid wl dropin=/etc/systemd/system/tgconfirm.service.d/10-owner.conf
+  uid="$(id -u "$OWNER")"
+  if ! getent passwd tgconfirm >/dev/null; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+      log "[dry-run] tgconfirm does not exist yet: the users section creates it (service, noacl, nobecome, wayland)"
+    else
+      warn "mcp: the service user tgconfirm does not exist; run: sudo $0 --only users,mcp (owner-confirmed Telegram sending was not set up)"
+      return 0
+    fi
+  fi
+  for f in broker.py popup.py; do
+    install_file "$CONFIRM_DIR/$f" "$TGC_LIB/$f" 755
+  done
+  install_file "$REPO/.config/layout/keymap.tsv" "$TGC_LIB/keymap.tsv" 644
+  tmp="$(mktemp)"
+  cat "$REPO/themes/generated/black/ghostty.conf" "$CONFIRM_DIR/ghostty-popup.conf" >"$tmp"
+  install_file "$tmp" "$TGC_LIB/ghostty.conf" 644
+  tmp2="$(mktemp)"
+  printf '# rendered by apply-system.sh --only mcp: the only uid that may ask the broker for a popup\n[Service]\nEnvironment=TGCONFIRM_OWNER_UID=%s\n' "$uid" >"$tmp2"
+  install_file "$tmp2" "$dropin" 644
+  rm -f "$tmp" "$tmp2"
+  install_file "$CONFIRM_DIR/tgconfirm.service" /etc/systemd/system/tgconfirm.service
+  run systemctl daemon-reload
+  if [ "$DRY_RUN" -eq 0 ] && command -v systemd-analyze >/dev/null; then
+    systemd-analyze verify /etc/systemd/system/tgconfirm.service >/dev/null 2>&1 || warn "mcp: systemd-analyze verify reports a problem in tgconfirm.service"
+  fi
+  try systemctl enable tgconfirm.service
+  if [ "$DRY_RUN" -eq 0 ] && [ -e "$CREDSTORE/tgconfirm.send_token" ]; then
+    try systemctl restart tgconfirm.service
+    changed "tgconfirm.service (re)started (send token present)"
+  else
+    log "tgconfirm.service enabled but not started: its send token is stored by mcp-telegram-setup send-chats"
+  fi
+  # the Wayland socket ACL for tgconfirm in the running session (Hyprland's autostart repeats it at every login)
+  wl="$(ls "/run/user/$uid" 2>/dev/null | grep -m1 -E '^wayland-[0-9]+$' || true)"
+  if { [ -n "$wl" ] && getent passwd tgconfirm >/dev/null; } || [ "$DRY_RUN" -eq 1 ]; then
+    run_as_owner env "XDG_RUNTIME_DIR=/run/user/$uid" "WAYLAND_DISPLAY=${wl:-wayland-1}" "$REPO/.local/bin/usr" clipboard-acl
+  fi
+  changed "tgconfirm broker, popup, ghostty config and unit installed"
+  followup "mcp-telegram-setup send-chats    # one time: tick the chats the AI may SEND to (Bitwarden master password if locked, sudo password)"
+  followup "mcp-telegram-send on             # when you want agents to be able to ask: you confirm in a popup, auto-off after 60 minutes"
+}
+
 section_mcp() {
   header "mcp"
   local p pkgs=(chromium whisper-cpp) f unit all_creds=1 k
@@ -1309,6 +1360,7 @@ section_mcp() {
   followup "mcp-telegram-setup    # one time, in a terminal: QR login, tick the chats, sudo password; stores the session in Bitwarden + the TPM2 credstore and starts the service"
   followup "mcp-add               # once: registers the gateway servers (desktop-ro, chrome-devtools, telegram, ...) in Claude Code and Codex"
   followup "systemctl status telegram-mcp telegram-whisper-proxy.socket; mcp-gateway status"
+  mcp_tgconfirm
 }
 
 # --- disk --------------------------------------------------------------------

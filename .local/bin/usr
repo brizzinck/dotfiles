@@ -14,7 +14,7 @@
 #   usr sync [--quiet] [--worktree] [--dry-run]   publish the committed ~/dotfiles to /srv/dotfiles (no secrets), relink on
 #                                  profile changes; the git hooks in .githooks call it after every commit/merge/rewrite
 #   usr nvim-sync [--background] [--force]   install nvim plugins + Mason into /srv/nvim-shared (read by the managed users)
-#   usr clipboard-acl              give the users flagged `clipboard` write access to the Wayland socket and nothing else of
+#   usr clipboard-acl              give the users flagged `clipboard` or `wayland` access to the Wayland socket and nothing else of
 #                                  $XDG_RUNTIME_DIR (Hyprland autostart runs it)
 #
 # No password anywhere: the sudoers drop-in and the polkit rule come from `sudo ./apply-system.sh --only users`. Terminals are
@@ -97,7 +97,7 @@ cmd_clipboard_acl() {
   [ "${wl#/}" = "$wl" ] || { rt=$(dirname "$wl"); wl=$(basename "$wl"); }
   [ -S "$rt/$wl" ] || return 0
   have setfacl || die "setfacl is missing (acl package)"
-  for u in $(managed_users clipboard); do
+  for u in $(managed_users wayland); do
     getent passwd "$u" >/dev/null || continue
     setfacl -m "u:$u:--x" "$rt" 2>/dev/null || continue
     setfacl -m "u:$u:rw" "$rt/$wl"

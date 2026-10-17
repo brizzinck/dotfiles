@@ -1,0 +1,56 @@
+[Unit]
+Description=tgconfirm: owner confirmation broker for Telegram sending (per-message popup, send token, rate limit, audit)
+Documentation=file:///usr/local/lib/tgconfirm/broker.py
+After=telegram-mcp.service
+# started only once mcp-telegram-setup send-chats stored the send token (otherwise skipped, not failed)
+ConditionPathExists=/etc/credstore.encrypted/tgconfirm.send_token
+
+[Service]
+Type=simple
+User=tgconfirm
+Group=tgconfirm
+# the send token of POST /x-send: sealed with the TPM2 + host key, decrypted by systemd into a private tmpfs; no other user has it
+LoadCredentialEncrypted=send_token:/etc/credstore.encrypted/tgconfirm.send_token
+# TGCONFIRM_OWNER_UID (the only uid that may ask) comes from the drop-in 10-owner.conf that apply-system.sh renders
+ExecStart=/usr/bin/python3 /usr/local/lib/tgconfirm/broker.py
+Environment=TGCONFIRM_ACCOUNTS=main=8765
+Environment=PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=10
+# 78 = refused to start (no owner uid): do not loop on it
+RestartPreventExitStatus=78
+# /run/tgconfirm: req.sock and state.json (0755, readable), rt/ (0700: popup runtime dir, request and result files)
+RuntimeDirectory=tgconfirm
+RuntimeDirectoryMode=0755
+StateDirectory=tgconfirm
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/tgconfirm
+UMask=0077
+
+# sandbox. The service reaches exactly two things outside itself: the owner's Wayland socket (/run/user/UID/wayland-N, through the
+# ACL that `usr clipboard-acl` gives the managed user tgconfirm: socket rw, nothing else of the runtime directory) and
+# 127.0.0.1 (telegram-mcp). It has no access to any home directory, so ProtectHome= (which would also hide /run/user) is replaced
+# by InaccessiblePaths=.
+NoNewPrivileges=yes
+ProtectSystem=strict
+InaccessiblePaths=/home /root
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET
+IPAddressDeny=any
+IPAddressAllow=127.0.0.0/8
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

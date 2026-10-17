@@ -280,6 +280,20 @@ hl.window_rule({
     size = { "monitor_w*0.6", "monitor_h*0.65" },
 })
 
+-- Telegram send confirmation (infrastructure/mcp/confirm: the tgconfirm broker runs ghostty as ITS OWN user with this class and a
+-- curses popup inside). Centered, pinned and focus-locked while it is open; no_screen_share makes grim / screencopy / the
+-- portal see a black box, so the per-message code cannot be read from a screenshot by an agent.
+hl.window_rule({
+    name = "float-confirm",
+    match = { class = "^(float\\.confirm)$" },
+    float = true,
+    center = true,
+    pin = true,
+    stay_focused = true,
+    no_screen_share = true,
+    size = { "monitor_w*0.5", "monitor_h*0.6" },
+})
+
 -- Edit anywhere (SUPER+CTRL+E, scripts/edit-anywhere.sh): a small floating nvim next to the pointer for text fields without vim.
 -- The script places it with exec rules (a monitor-relative move clamped to the work area); this rule is the float + size fallback.
 hl.window_rule({

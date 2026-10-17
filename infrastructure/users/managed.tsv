@@ -9,6 +9,8 @@
 #              noacl       the owner gets NO ACL on this home (default: u:OWNER:rwx + default ACL)
 #              nobecome    no passwordless `sudo -u` and no passwordless `machinectl shell` for the owner (default: both)
 #              clipboard   the user may write into the owner's Wayland clipboard (ACL on the Wayland socket only)
+#              wayland     the user may open windows on the owner's Wayland socket (the same ACL: x on the runtime directory,
+#                          rw on the socket, every other socket closed); a service user shows a popup that way (tgconfirm)
 #              create      apply-system.sh creates the account when it does not exist (shell /usr/bin/nologin, password
 #                          locked, home 0700); existing accounts (td, yc) are never created, re-shelled or re-grouped
 #              interactive accepted for readability, it is the default for every non-service user
@@ -22,3 +24,4 @@
 td	cli	interactive,clipboard	orange	AI agents; terminals only by hand (SUPER+SHIFT+T), the window owns its processes
 yc	cli	interactive	blue	work account, dormant since 2026-04-19
 aimcp	-	service,noacl,nobecome,create	purple	Telegram MCP service (127.0.0.1:8765), read-only; the owner reaches it only with a sudo password
+tgconfirm	-	service,noacl,nobecome,create,wayland	aqua	Telegram send confirmation broker: shows the per-message popup on the owner's Wayland socket and holds the send token; the owner reaches it only with a sudo password
