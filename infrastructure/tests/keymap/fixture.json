@@ -1,0 +1,620 @@
+{
+ "version": 4,
+ "generated": "2026-01-01T00:00:00+0000",
+ "stamp": "fixture",
+ "hypr_binds": 0,
+ "groups": [
+  {
+   "id": "Desktop"
+  },
+  {
+   "id": "Terminal"
+  },
+  {
+   "id": "Editor"
+  },
+  {
+   "id": "Menus and bar"
+  },
+  {
+   "id": "Apps and login"
+  }
+ ],
+ "blocks": [
+  {
+   "id": "apps",
+   "group": "Desktop",
+   "title": "Apps and launchers",
+   "desc": "Hyprland. Apps.",
+   "scope": "global",
+   "rank": 0,
+   "count": 5
+  },
+  {
+   "id": "windows",
+   "group": "Desktop",
+   "title": "Windows",
+   "desc": "Hyprland. Windows.",
+   "scope": "global",
+   "rank": 0,
+   "count": 4
+  },
+  {
+   "id": "workspaces",
+   "group": "Desktop",
+   "title": "Workspaces and monitors",
+   "desc": "Hyprland. Workspaces.",
+   "scope": "global",
+   "rank": 0,
+   "count": 1
+  },
+  {
+   "id": "capture",
+   "group": "Desktop",
+   "title": "Screenshots and recording",
+   "desc": "Hyprland. Capture.",
+   "scope": "global",
+   "rank": 0,
+   "count": 6
+  },
+  {
+   "id": "clipboard",
+   "group": "Desktop",
+   "title": "Clipboard, text and secrets",
+   "desc": "Hyprland. Clipboard.",
+   "scope": "global",
+   "rank": 0,
+   "count": 2
+  },
+  {
+   "id": "audio",
+   "group": "Desktop",
+   "title": "Audio, media, brightness",
+   "desc": "Hyprland. Audio.",
+   "scope": "global",
+   "rank": 0,
+   "count": 3
+  },
+  {
+   "id": "system",
+   "group": "Desktop",
+   "title": "System, power, bar",
+   "desc": "Hyprland. System.",
+   "scope": "global",
+   "rank": 0,
+   "count": 1
+  },
+  {
+   "id": "leader",
+   "group": "Desktop",
+   "title": "Leader menu (SUPER+;)",
+   "desc": "Leader.",
+   "scope": "leader",
+   "rank": 1,
+   "count": 2
+  },
+  {
+   "id": "tmux-custom",
+   "group": "Terminal",
+   "title": "tmux: this setup",
+   "desc": "tmux.",
+   "scope": "tmux",
+   "rank": 4,
+   "count": 2
+  },
+  {
+   "id": "nvim-edit",
+   "group": "Editor",
+   "title": "Neovim: moving and editing",
+   "desc": "nvim.",
+   "scope": "nvim",
+   "rank": 6,
+   "count": 2
+  },
+  {
+   "id": "audit",
+   "group": "Apps and login",
+   "title": "Audit: surfaces without vim keys or ua/ru twins",
+   "desc": "Audit.",
+   "scope": "audit",
+   "rank": 9,
+   "count": 1
+  }
+ ],
+ "intro": [],
+ "pins": [
+  "Super+Space",
+  "Super+Enter",
+  "Super+W",
+  "Super+M",
+  "Super+/"
+ ],
+ "warnings": [],
+ "rows": [
+  {
+   "block": "apps",
+   "keys": "Super+Space",
+   "alts": [
+    [
+     [
+      "Super",
+      "Space"
+     ]
+    ]
+   ],
+   "desc": "App launcher",
+   "source": "hyprland",
+   "i": 0
+  },
+  {
+   "block": "apps",
+   "keys": "Super+Enter",
+   "alts": [
+    [
+     [
+      "Super",
+      "Enter"
+     ]
+    ]
+   ],
+   "desc": "Terminal (new tmux session)",
+   "source": "hyprland",
+   "i": 1,
+   "kw": "terminal console shell"
+  },
+  {
+   "block": "apps",
+   "keys": "Super+M",
+   "alts": [
+    [
+     [
+      "Super",
+      "M"
+     ]
+    ]
+   ],
+   "desc": "Utility hub",
+   "source": "hyprland",
+   "i": 2
+  },
+  {
+   "block": "apps",
+   "keys": "Super+/",
+   "alts": [
+    [
+     [
+      "Super",
+      "/"
+     ]
+    ]
+   ],
+   "desc": "Shortcut search (every key of every tool)",
+   "source": "hyprland",
+   "i": 3
+  },
+  {
+   "block": "apps",
+   "keys": "Super+Shift+/",
+   "alts": [
+    [
+     [
+      "Super",
+      "Shift",
+      "/"
+     ]
+    ]
+   ],
+   "desc": "Shortcut reading page",
+   "source": "hyprland",
+   "i": 4
+  },
+  {
+   "block": "windows",
+   "keys": "Super+W",
+   "alts": [
+    [
+     [
+      "Super",
+      "W"
+     ]
+    ]
+   ],
+   "desc": "Close window (twice for browsers and terminals)",
+   "source": "hyprland",
+   "i": 5,
+   "kw": "close kill quit terminal console shell"
+  },
+  {
+   "block": "windows",
+   "keys": "Super+H",
+   "alts": [
+    [
+     [
+      "Super",
+      "H"
+     ]
+    ]
+   ],
+   "desc": "Focus left",
+   "source": "hyprland",
+   "i": 6
+  },
+  {
+   "block": "windows",
+   "keys": "Super+Shift+H",
+   "alts": [
+    [
+     [
+      "Super",
+      "Shift",
+      "H"
+     ]
+    ]
+   ],
+   "desc": "Move window left",
+   "source": "hyprland",
+   "i": 7
+  },
+  {
+   "block": "windows",
+   "keys": "Super+Shift+W",
+   "alts": [
+    [
+     [
+      "Super",
+      "Shift",
+      "W"
+     ]
+    ]
+   ],
+   "desc": "Window action menu",
+   "source": "hyprland",
+   "i": 8
+  },
+  {
+   "block": "workspaces",
+   "keys": "Super+1..0",
+   "alts": [
+    [
+     [
+      "Super",
+      "1..0"
+     ]
+    ]
+   ],
+   "desc": "Workspace 1-10",
+   "source": "hyprland",
+   "i": 9
+  },
+  {
+   "block": "capture",
+   "keys": "Print",
+   "alts": [
+    [
+     [
+      "Print"
+     ]
+    ]
+   ],
+   "desc": "Screenshot region",
+   "source": "hyprland",
+   "i": 10,
+   "kw": "screenshot screen shot print capture image snip record recording video screencast"
+  },
+  {
+   "block": "capture",
+   "keys": "Shift+Print",
+   "alts": [
+    [
+     [
+      "Shift",
+      "Print"
+     ]
+    ]
+   ],
+   "desc": "Screenshot active monitor",
+   "source": "hyprland",
+   "i": 11,
+   "kw": "screenshot screen shot print capture image snip record recording video screencast"
+  },
+  {
+   "block": "capture",
+   "keys": "Super+Print",
+   "alts": [
+    [
+     [
+      "Super",
+      "Print"
+     ]
+    ]
+   ],
+   "desc": "Screenshot active window",
+   "source": "hyprland",
+   "i": 12,
+   "kw": "screenshot screen shot print capture image snip record recording video screencast"
+  },
+  {
+   "block": "capture",
+   "keys": "Alt+S",
+   "alts": [
+    [
+     [
+      "Alt",
+      "S"
+     ]
+    ]
+   ],
+   "desc": "Screenshot region (clipboard + file)",
+   "source": "hyprland",
+   "i": 13,
+   "kw": "screenshot screen shot print capture image snip record recording video screencast clipboard copy paste yank history"
+  },
+  {
+   "block": "capture",
+   "keys": "Super+R",
+   "alts": [
+    [
+     [
+      "Super",
+      "R"
+     ]
+    ]
+   ],
+   "desc": "Record screen (toggle)",
+   "source": "hyprland",
+   "i": 14,
+   "kw": "screenshot screen shot print capture image snip record recording video screencast"
+  },
+  {
+   "block": "capture",
+   "keys": "Super+Shift+R",
+   "alts": [
+    [
+     [
+      "Super",
+      "Shift",
+      "R"
+     ]
+    ]
+   ],
+   "desc": "Record region (toggle)",
+   "source": "hyprland",
+   "run": "SUPER+SHIFT+R",
+   "i": 15,
+   "kw": "screenshot screen shot print capture image snip record recording video screencast"
+  },
+  {
+   "block": "clipboard",
+   "keys": "Super+C",
+   "alts": [
+    [
+     [
+      "Super",
+      "C"
+     ]
+    ]
+   ],
+   "desc": "Clipboard history",
+   "source": "hyprland",
+   "i": 16,
+   "kw": "clipboard copy paste yank history password vault bitwarden secret login 2fa otp totp"
+  },
+  {
+   "block": "clipboard",
+   "keys": "Super+Ctrl+P",
+   "alts": [
+    [
+     [
+      "Super",
+      "Ctrl",
+      "P"
+     ]
+    ]
+   ],
+   "desc": "Passwords (Bitwarden via rbw and fzf)",
+   "source": "hyprland",
+   "i": 17,
+   "kw": "clipboard copy paste yank history password vault bitwarden secret login 2fa otp totp"
+  },
+  {
+   "block": "audio",
+   "keys": "Vol up",
+   "alts": [
+    [
+     [
+      "Vol"
+     ],
+     [
+      "up"
+     ]
+    ]
+   ],
+   "desc": "Volume up",
+   "source": "hyprland",
+   "i": 18,
+   "kw": "volume sound audio mute speaker microphone mic brightness backlight screen light dim"
+  },
+  {
+   "block": "audio",
+   "keys": "Vol down",
+   "alts": [
+    [
+     [
+      "Vol"
+     ],
+     [
+      "down"
+     ]
+    ]
+   ],
+   "desc": "Volume down",
+   "source": "hyprland",
+   "i": 19,
+   "kw": "volume sound audio mute speaker microphone mic brightness backlight screen light dim"
+  },
+  {
+   "block": "audio",
+   "keys": "Bright up",
+   "alts": [
+    [
+     [
+      "Bright"
+     ],
+     [
+      "up"
+     ]
+    ]
+   ],
+   "desc": "Brightness up (focused monitor)",
+   "source": "hyprland",
+   "i": 20,
+   "kw": "volume sound audio mute speaker microphone mic brightness backlight screen light dim"
+  },
+  {
+   "block": "system",
+   "keys": "Super+Esc",
+   "alts": [
+    [
+     [
+      "Super",
+      "Esc"
+     ]
+    ]
+   ],
+   "desc": "Lock screen (password; layout reset to us)",
+   "source": "hyprland",
+   "i": 21,
+   "kw": "password vault bitwarden secret login 2fa otp totp lock power reboot shutdown logout"
+  },
+  {
+   "block": "leader",
+   "keys": "Super+; c s",
+   "alts": [
+    [
+     [
+      "Super",
+      ";"
+     ],
+     [
+      "c"
+     ],
+     [
+      "s"
+     ]
+    ]
+   ],
+   "desc": "Capture: Screenshot region",
+   "source": "leader",
+   "i": 22,
+   "kw": "screenshot screen shot print capture image snip"
+  },
+  {
+   "block": "leader",
+   "keys": "Super+; w c",
+   "alts": [
+    [
+     [
+      "Super",
+      ";"
+     ],
+     [
+      "w"
+     ],
+     [
+      "c"
+     ]
+    ]
+   ],
+   "desc": "Windows: Close",
+   "source": "leader",
+   "i": 23
+  },
+  {
+   "block": "tmux-custom",
+   "keys": "Ctrl+Space l",
+   "alts": [
+    [
+     [
+      "Ctrl",
+      "Space"
+     ],
+     [
+      "l"
+     ]
+    ]
+   ],
+   "desc": "Redraw the screen and clear the history",
+   "source": "tmux",
+   "note": "a note that is long a note that is long a note that is long a note that is long a note that is long a note that is long a note that is long a note that is long a note that is long a note that is long a note that is long a note that is long a note that is long a note that is long a note that is long a note that is long a note that is long a note that is long a note that is long a note that is long ",
+   "i": 24
+  },
+  {
+   "block": "tmux-custom",
+   "keys": "Ctrl+Space [",
+   "alts": [
+    [
+     [
+      "Ctrl",
+      "Space"
+     ],
+     [
+      "["
+     ]
+    ]
+   ],
+   "desc": "Copy mode (select and yank text)",
+   "source": "tmux",
+   "i": 25,
+   "kw": "clipboard copy paste yank history"
+  },
+  {
+   "block": "nvim-edit",
+   "keys": "Ctrl+L",
+   "alts": [
+    [
+     [
+      "Ctrl",
+      "L"
+     ]
+    ]
+   ],
+   "desc": "Redraw screen",
+   "source": "nvim",
+   "i": 26
+  },
+  {
+   "block": "nvim-edit",
+   "keys": "Space w",
+   "alts": [
+    [
+     [
+      "Space"
+     ],
+     [
+      "w"
+     ]
+    ]
+   ],
+   "desc": "Write the buffer",
+   "source": "nvim",
+   "i": 27
+  },
+  {
+   "block": "audit",
+   "keys": "Hyprlock",
+   "alts": [
+    [
+     [
+      "Hyprlock"
+     ]
+    ]
+   ],
+   "desc": "Lock screen has no vim keys (screen text)",
+   "source": "committed table",
+   "raw": true,
+   "ctx": "login",
+   "i": 28,
+   "kw": "lock power reboot shutdown logout"
+  }
+ ]
+}

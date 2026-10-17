@@ -37,7 +37,7 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Editor | [Neovim: files and misc](#neovim-files-and-misc) | 17 |
 | Editor | [Neovim: moving and editing](#neovim-moving-and-editing) | 62 |
 | Menus and bar | [Menus: list grammar](#menus-list-grammar) | 19 |
-| Menus and bar | [Menus: keys of each menu](#menus-keys-of-each-menu) | 61 |
+| Menus and bar | [Menus: keys of each menu](#menus-keys-of-each-menu) | 63 |
 | Menus and bar | [TUIs and viewers](#tuis-and-viewers) | 3 |
 | Menus and bar | [Bar (waybar)](#bar-waybar) | 47 |
 | Apps and login | [Telegram](#telegram) | 6 |
@@ -1142,6 +1142,8 @@ Menu-specific keys keep the Alt+ form (works in both modes) and get a NORMAL let
 | `Alt+R` / `r` | Run the bind (global Hyprland rows) | Shortcut search (SUPER+/) |
 | `Tab` / `L` / `Shift+Tab` / `H` | Next / previous block (shown in the header) | Shortcut search (SUPER+/) |
 | `0` | All blocks | Shortcut search (SUPER+/) |
+| type words | Exact words over keys, description, block and keywords (every word must match; a word of one or two characters only as a whole key or word); global binds come first; an empty query shows the Start here keys | Shortcut search (SUPER+/) |
+| Audit | The Audit block is left out of the all view; reach it with Tab (it only documents what lacks vim keys or ua/ru twins) | Shortcut search (SUPER+/) |
 | `Enter` | Open | URL picker (tmux prefix u) |
 | `Ctrl+Y` / `y` | Copy | URL picker (tmux prefix u) |
 | `Tab` | Select several | Kill-session picker (tmux prefix X) |

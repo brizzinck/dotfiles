@@ -111,10 +111,29 @@ function renderKeys(r) {
   return r.alts.map(seq => seq.map(chord => chord.map(k => `<kbd>${esc(k)}</kbd>`).join('<span class="plus">+</span>'))
     .join('<span class="then">›</span>')).join('<span class="or">/</span>');
 }
+// search: the same rule as `keymap rows` (keymap.py search()): all words must match; a word matches a substring of the keys, the
+// description, the block title / scope tag or the keywords; a word of one or two characters only a whole key or a whole word
+function keyParts(r) {
+  const p = new Set();
+  for (const seq of r.alts || []) for (const chord of seq) for (const k of chord) {
+    const l = k.toLowerCase(); p.add(l); for (const x of l.split("..")) if (x) p.add(x);
+  }
+  if (r.raw) for (const w of r.keys.toLowerCase().split(/[\s+/]+/)) if (w) p.add(w);
+  return p;
+}
+const escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function matchWord(tok, f) {
+  const short = tok.length <= 2;
+  const word = new RegExp("\\b" + escRe(tok) + (short ? "\\b" : ""));
+  return f.parts.has(tok) || (!short && f.keys.includes(tok)) || word.test(f.desc) || (!short && f.desc.includes(tok))
+    || (short ? word.test(f.kw) : f.kw.includes(tok)) || (short ? word.test(f.blk) : f.blk.includes(tok));
+}
 function renderRow(r, blockTitle) {
   const el = document.createElement("div");
   el.className = "row";
-  el.dataset.text = [r.keys, r.desc, r.ctx || "", r.note || "", blockTitle, r.source].join(" ").toLowerCase();
+  const b = blockOf[r.block] || {};
+  el._f = { keys: r.keys.toLowerCase(), parts: keyParts(r), desc: r.desc.toLowerCase(), kw: (r.kw || "").toLowerCase(),
+            blk: (blockTitle + " " + (b.scope || "")).toLowerCase() };
   el.innerHTML = `<div class="keys">${renderKeys(r)}</div><div class="desc">${r.ctx ? `<span class="ctx">${esc(r.ctx)}</span>` : ""}${esc(r.desc)}${r.note ? `<span class="nt" title="${esc(r.note)}">${esc(r.note)}</span>` : ""}</div>`;
   return el;
 }
@@ -172,7 +191,7 @@ function apply() {
   for (const sec of sections) {
     let n = 0;
     for (const row of sec.querySelectorAll(".row")) {
-      const hit = words.every(w => row.dataset.text.includes(w));
+      const hit = words.every(w => matchWord(w, row._f));
       row.hidden = !hit; if (hit) n++;
     }
     sec.hidden = n === 0 || (words.length > 0 && sec.id === "start"); // "Start here" repeats rows: hide it while filtering

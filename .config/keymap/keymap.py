@@ -8,7 +8,7 @@
   keymap stats           rows per block and the Hyprland bind count against the live table
   keymap menu            SUPER+/: every shortcut in an fzf-menu (Tab / Shift+Tab or l / h cycle the block, 0 = all)
   keymap page [--print]  SUPER+SHIFT+/: render the reading page and show it (--print: only write it, print the path)
-  keymap rows|header|preview|cycle|run    helpers of the menu
+  keymap rows|header|preview|cycle|run    helpers of the menu (they read the cached database, no staleness check per key)
 
 Sources, all read live (cheap staleness check: mtimes of every source file + a hash of the live Hyprland bind table, so
 opening is fast and `keymap gen` is only needed to force a rebuild):
@@ -22,7 +22,14 @@ opening is fast and `keymap gen` is only needed to force a rebuild):
   telegram   apps/telegram/shortcuts-custom.json;  vimium  browsers/vimium-c.json (+ defaults table)
   obsidian   apps/obsidian/obsidian.vimrc (the nmap lines; ex commands are described in describe.tsv)
   committed  static.tsv: menu key lists, login screen, layout rules, zsh vi grammar (not reliably parseable)
-Tables next to this file: blocks.tsv (block order and text), rules.tsv (Hyprland -> block), describe.tsv, pins.tsv, intro.tsv.
+Tables next to this file: blocks.tsv (block order, text, menu scope tag and rank), rules.tsv (Hyprland -> block), keywords.tsv
+(search words), describe.tsv, pins.tsv, intro.tsv.
+
+Search (menu and page, one definition: search() here, apply() in page.html): the query is split into words that must ALL match a
+row; a word matches a substring of the keys, the description, the block title / scope tag or the keywords; a word of one or two
+characters must match a whole key (`w` finds Super+W, not "window") or a whole word. Equal matches are ordered global Hyprland
+binds first (blocks.tsv rank). No fuzzy matching. fzf's own matcher is off in the menu (`--disabled`): it cannot search the hidden
+keyword field, and it matched 160 rows for "screen shot".
 """
 import hashlib
 import html
@@ -38,6 +45,7 @@ import shutil
 import subprocess
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -47,10 +55,10 @@ CFG = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config"))
 STATE = Path(os.environ.get("XDG_STATE_HOME", HOME / ".local/state"))
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache")) / "keymap"
 RUN = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "keymap"
-DB_FILE = CACHE / "keymap.json"
+DB_FILE = Path(os.environ["KEYMAP_DB"]) if os.environ.get("KEYMAP_DB") else CACHE / "keymap.json"   # KEYMAP_DB: fixture DB of the tests
 PAGE_FILE = CACHE / "keymap.html"
 DOC_FILE = REPO / "docs" / "keymap.md"
-DB_VERSION = 3
+DB_VERSION = 4          # v4: rows gain `kw` (keywords.tsv), blocks gain `scope` and `rank` (blocks.tsv)
 
 GROUPS = ["Desktop", "Terminal", "Editor", "Menus and bar", "Apps and login"]
 
@@ -870,9 +878,11 @@ def build(binds, old=None, quiet=False):
         warn.append(f"vimium: {type(exc).__name__}: {exc}")
     collect_static(db)
     blocks = []
-    for cols in read_tsv(HERE / "blocks.tsv", 4):
+    for cols in read_tsv(HERE / "blocks.tsv", 6):
         bid, group, title, desc = cols[:4]
-        blocks.append({"id": bid, "group": group, "title": title, "desc": desc})
+        rank = cols[5].strip()
+        blocks.append({"id": bid, "group": group, "title": title, "desc": desc, "scope": cols[4].strip(),
+                       "rank": int(rank) if rank.isdigit() else 5})
     ids = {b["id"] for b in blocks}
     for row in db.rows:
         if row["block"] not in ids:
@@ -880,6 +890,7 @@ def build(binds, old=None, quiet=False):
             row["block"] = "hypr-other"
     order = {b["id"]: i for i, b in enumerate(blocks)}
     db.rows.sort(key=lambda r: order[r["block"]])  # stable: source order inside a block
+    apply_keywords(db.rows, blocks)
     for i, row in enumerate(db.rows):
         row["i"] = i
     counts = {}
@@ -906,6 +917,32 @@ def build(binds, old=None, quiet=False):
     return out
 
 
+def keyword_rules():
+    """[(regex source, compiled, words)] of keywords.tsv; a regex that does not compile is kept with None (keymap check reports it)"""
+    rules = []
+    for cols in read_tsv(HERE / "keywords.tsv", 2):
+        try:
+            rx = re.compile(cols[0], re.I)
+        except re.error:
+            rx = None
+        rules.append((cols[0], rx, cols[1].split()))
+    return rules
+
+
+def apply_keywords(rows, blocks):
+    """row["kw"] = the words of every keywords.tsv rule that matches description + block title (deduplicated, rule order)"""
+    title = {b["id"]: b["title"] for b in blocks}
+    rules = keyword_rules()
+    for row in rows:
+        text = f"{row['desc']} {title.get(row['block'], '')}"
+        words = []
+        for _src, rx, ws in rules:
+            if rx is not None and rx.search(text):
+                words += [w for w in ws if w not in words]
+        if words:
+            row["kw"] = " ".join(words)
+
+
 def write_db(data):
     CACHE.mkdir(parents=True, exist_ok=True)
     tmp = DB_FILE.with_suffix(".tmp")
@@ -913,7 +950,19 @@ def write_db(data):
     tmp.replace(DB_FILE)
 
 
+def fast_db():
+    """The cached database without any staleness check (rows / header / preview / cycle run on every key press)."""
+    data = load_db()
+    if data and data.get("version") == DB_VERSION:
+        return data
+    return ensure_db()
+
+
 def ensure_db(force=False):
+    if os.environ.get("KEYMAP_DB"):          # test fixture: only ever loaded, never rebuilt
+        data = load_db()
+        if data:
+            return data
     binds = hypr_binds()
     old = load_db()
     if not force and old and old.get("version") == DB_VERSION and binds is not None and old.get("stamp") == stamp(binds):
@@ -990,6 +1039,13 @@ def problems(data):
     for b in data["blocks"]:
         if not b["count"] and b["id"] not in ("hypr-other",):
             errs.append(f"block {b['id']} is empty (its source returned nothing)")
+    title = {b["id"]: b["title"] for b in data["blocks"]}
+    texts_kw = [f"{r['desc']} {title.get(r['block'], '')}" for r in data["rows"]]
+    for src, rx, _words in keyword_rules():
+        if rx is None:
+            errs.append(f"keywords.tsv: the regex {src!r} does not compile")
+        elif not any(rx.search(t) for t in texts_kw):
+            errs.append(f"keywords.tsv: the regex {src!r} matches no row (stale rule)")
     hypr = sum(r.get("n", 1) for r in data["rows"] if r["source"] == "hyprland")
     if data.get("hypr_binds") and hypr != data["hypr_binds"]:
         errs.append(f"Hyprland rows cover {hypr} binds, the live table has {data['hypr_binds']} described ones")
@@ -1026,27 +1082,141 @@ def menu_blocks(data):
     return [b for b in data["blocks"] if b["count"]]
 
 
-def cmd_rows(data):
-    only = current_block()
+MENU_HIDDEN = {"audit"}     # blocks left out of the "all" view of the menu (Tab reaches them; the page shows everything)
+KEYS_W = 24                 # width of the keys column in the menu, in terminal cells
+START_SCOPE = "start"
+
+
+def cell_width(text):
+    return sum(0 if unicodedata.combining(c) else 2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
+
+
+def fit_cells(text, width):
+    """text padded with spaces to `width` cells; longer text is cut to width-1 cells plus an ellipsis"""
+    if cell_width(text) <= width:
+        return text + " " * (width - cell_width(text))
+    out, used = "", 0
+    for c in text:
+        w = cell_width(c)
+        if used + w > width - 1:
+            break
+        out, used = out + c, used + w
+    return out + "…" + " " * (width - used - 1)
+
+
+def key_parts(row):
+    """whole keys of a row, lower case: the elements of its chords, their `..` ranges and, for plain text, its words"""
+    parts = set()
+    for seq in row.get("alts") or []:
+        for chord in seq:
+            for k in chord:
+                k = k.lower()
+                parts.add(k)
+                parts.update(p for p in k.split("..") if p)
+    if row.get("raw"):
+        parts.update(w for w in re.split(r"[\s+/]+", row["keys"].lower()) if w)
+    return parts
+
+
+def row_fields(row, blocks):
+    b = blocks[row["block"]]
+    return {"keys": row["keys"].lower(), "parts": key_parts(row), "desc": row["desc"].lower(),
+            "blk": f"{b['title']} {b.get('scope', '')}".lower(), "kw": row.get("kw", "").lower()}
+
+
+def token_weight(tok, f):
+    """0 = no match; 5 whole key, 4 key substring, 3 description word start, 2 description substring or keyword, 1 block / scope"""
+    short = len(tok) <= 2
+    word = re.compile(r"\b" + re.escape(tok) + (r"\b" if short else ""))
+    best = 0
+    if tok in f["parts"]:
+        best = 5
+    elif not short and tok in f["keys"]:
+        best = 4
+    if best < 3 and word.search(f["desc"]):
+        best = 3
+    if best < 2 and (tok in f["desc"] if not short else False):
+        best = 2
+    if best < 2 and (word.search(f["kw"]) if short else tok in f["kw"]):
+        best = 2
+    if best < 1 and (word.search(f["blk"]) if short else tok in f["blk"]):
+        best = 1
+    return best
+
+
+def search(data, query, block=""):
+    """rows to show: [(row, is_pin)]. Empty query in the all view: the pins first, then every row by (block rank, index) without
+    MENU_HIDDEN blocks; a selected block shows its rows in source order; with a query: all words must match, best first."""
     blocks = {b["id"]: b for b in data["blocks"]}
-    width_b = max(len(b["title"]) for b in data["blocks"] if b["count"])
-    rows = [r for r in data["rows"] if not only or r["block"] == only]
-    width_k = min(38, max((len(r["keys"]) + (len(r["ctx"]) + 3 if r.get("ctx") else 0)) for r in rows) if rows else 10)
-    lines = []
+    toks = query.lower().split()
+    rows = [r for r in data["rows"] if (r["block"] == block if block else r["block"] not in MENU_HIDDEN)]
+    if not toks:
+        if block:
+            return [(r, False) for r in rows]
+        pinned, seen = [], set()
+        for pin in data.get("pins", []):
+            hit = next((r for r in rows if r["keys"].lower() == pin.lower()), None)
+            if hit is not None and hit["i"] not in seen:
+                seen.add(hit["i"])
+                pinned.append((hit, True))
+        rest = sorted((r for r in rows if r["i"] not in seen), key=lambda r: (blocks[r["block"]].get("rank", 5), r["i"]))
+        return pinned + [(r, False) for r in rest]
+    scored = []
     for r in rows:
-        keys = r["keys"] + (f" ({r['ctx']})" if r.get("ctx") else "")
-        lines.append(f"{r['i']}\t\033[90m{blocks[r['block']]['title']:<{width_b}}\033[0m │ \033[32m{keys:<{width_k}}\033[0m │ {r['desc']}")
-    sys.stdout.write("\n".join(lines) + "\n")
+        f = row_fields(r, blocks)
+        ws = [token_weight(t, f) for t in toks]
+        if all(ws):
+            scored.append((-sum(ws), blocks[r["block"]].get("rank", 5), r["i"], r))
+    scored.sort(key=lambda x: x[:3])
+    return [(x[3], False) for x in scored]
+
+
+def highlight(desc, toks):
+    """desc with the matched words bold + underlined (same rule as the match: short words only as whole words)"""
+    spans = []
+    low = desc.lower()
+    for t in toks:
+        rx = re.compile(r"\b" + re.escape(t) + r"\b") if len(t) <= 2 else re.compile(re.escape(t))
+        spans += [m.span() for m in rx.finditer(low)]
+    if not spans:
+        return desc
+    spans.sort()
+    merged = [list(spans[0])]
+    for a, b in spans[1:]:
+        if a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    out, pos = "", 0
+    for a, b in merged:
+        out += desc[pos:a] + "\033[1;4m" + desc[a:b] + "\033[22;24m"
+        pos = b
+    return out + desc[pos:]
+
+
+def row_line(r, blocks, toks, pin):
+    """index, keys (green, fixed width), description (+ dim context), scope tag: tab separated, --tabstop=1 shows a tab as one space"""
+    ctx = f"  \033[90m({r['ctx']})\033[0m" if r.get("ctx") else ""
+    scope = START_SCOPE if pin else blocks[r["block"]].get("scope", "")
+    return f"{r['i']}\t\033[32m{fit_cells(r['keys'], KEYS_W)}\033[0m\t{highlight(r['desc'], toks)}{ctx}\t \033[90m{scope}\033[0m"
+
+
+def cmd_rows(data):
+    blocks = {b["id"]: b for b in data["blocks"]}
+    query = os.environ.get("FZF_QUERY", "")
+    toks = query.lower().split()
+    lines = [row_line(r, blocks, toks, pin) for r, pin in search(data, query, current_block())]
+    sys.stdout.write("\n".join(lines) + ("\n" if lines else ""))
 
 
 def cmd_header(data):
     only = current_block()
-    keys = "Enter: copy keys   Alt+R / r: run   Tab / l: next block   Shift+Tab / h: previous   0: all   Esc: normal mode"
     if only:
         b = next((b for b in data["blocks"] if b["id"] == only), None)
-        print(f"Block: {b['title']} ({b['count']})\n{keys}" if b else keys)
+        print(f"Block: {b['title']} ({b['count']})" if b else "All shortcuts")
     else:
-        print(f"Block: all ({len(data['rows'])} shortcuts)\n{keys}")
+        n = sum(1 for r in data["rows"] if r["block"] not in MENU_HIDDEN)
+        print(f"All shortcuts · {n} · Audit: Tab to it")
 
 
 def cmd_cycle(data, how):
@@ -1061,7 +1231,16 @@ def cmd_cycle(data, how):
         i = 0
     menu_state().write_text(ids[i])
     me = shlex.quote(str(Path(sys.argv[0]).resolve()))
-    print(f"reload({me} rows)+transform-header({me} header)+first")
+    print(f"reload-sync({me} rows)+first+change-header:{header_text(data)}")
+
+
+def header_text(data):
+    import io
+    from contextlib import redirect_stdout
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        cmd_header(data)
+    return buf.getvalue().strip()
 
 
 def cmd_preview(data, idx):
@@ -1070,18 +1249,15 @@ def cmd_preview(data, idx):
     except (ValueError, IndexError):
         return
     b = next(b for b in data["blocks"] if b["id"] == row["block"])
-    print(f"{row['keys']}   {row['desc']}")
-    print()
-    if row.get("ctx"):
-        print(f"Context   {row['ctx']}")
-    print(f"Block     {b['title']}  ({b['group']}, {b['count']} shortcuts)")
-    print(f"Source    {row['source']}")
+    print(f"Keys    {row['keys']}")
+    print(f"What    {row['desc']}")
+    print(f"Where   {b.get('scope', '')}" + (f" · {row['ctx']}" if row.get("ctx") else ""))
+    print(f"Block   {b['title']}")
     if row.get("note"):
-        print(f"Note      {row['note']}")
+        note = row["note"]
+        print(f"Note    {note if len(note) <= 300 else note[:299] + '…'}")
     if row.get("run"):
-        print(f"Run       Alt+R / r replays {row['run']} (hyprctl eval df_bind_run)")
-    print()
-    print(b["desc"] + (" " + b["note"] if b.get("note") else ""))
+        print("Run     Alt+R replays it")
 
 
 def notify(text, title="Shortcuts"):
@@ -1093,21 +1269,31 @@ def cmd_menu(data):
         print("keymap: fzf-menu is not installed", file=sys.stderr)
         return 1
     me = str(Path(sys.argv[0]).resolve())
+    qme = shlex.quote(me)
     menu_state().write_text("")
     req = RUN / "run-request"
     req.unlink(missing_ok=True)
     env = dict(os.environ)
+    env.pop("FZF_QUERY", None)
     env["FZF_MENU_NORMAL_BINDS"] = "\n".join([
         f"l:transform({me} cycle next)", f"h:transform({me} cycle prev)", f"0:transform({me} cycle reset)",
         f"r:execute-silent(printf %s {{1}} > {req})+accept",
         f"y:accept",
     ])
-    cmd = ["fzf-menu", "-p", "keys", "--ansi", "--delimiter=\t", "--with-nth=2..", "--accept-nth=1", "--no-sort",
-           "--header", subprocess.run([me, "header"], capture_output=True, text=True).stdout.rstrip("\n"),
-           "--bind", f"tab:transform({me} cycle next)", "--bind", f"btab:transform({me} cycle prev)",
+    # Not used on purpose: --no-hscroll (it disables --freeze-right: the scope tag would vanish on long lines), --track (with
+    # reload-sync it drops typed characters), --exact / --nth / --tiebreak / --scheme (the search is search() above: fzf cannot
+    # look into the hidden keyword field), --multi.
+    cmd = ["fzf-menu", "-p", "keys", "--size", "large",
+           "--ansi", "--disabled", "--delimiter=\t", "--with-nth=2..", "--accept-nth=1", "--tabstop=1",
+           "--freeze-right=1", "--ellipsis=…", "--no-sort",
+           "--header", header_text(data),
+           "--footer=Enter copy · Alt+R run · Tab / Shift+Tab block · 0 all",   # short: the footer is only as wide as the list
+           "--bind", f"change:reload-sync({qme} rows)+first",
+           "--bind", f"tab:transform({qme} cycle next)", "--bind", f"btab:transform({qme} cycle prev)",
            "--bind", f"alt-r:execute-silent(printf %s {{1}} > {req})+accept",
-           "--preview", f"{me} preview {{1}}", "--preview-window", "right,42%,wrap,border-left"]
-    rows = subprocess.run([me, "rows"], capture_output=True, text=True, env=env).stdout
+           "--preview", f"{qme} preview {{1}}", "--preview-window", "right,38%,wrap,border-left"]
+    blocks = {b["id"]: b for b in data["blocks"]}
+    rows = "\n".join(row_line(r, blocks, [], pin) for r, pin in search(data, "")) + "\n"
     res = subprocess.run(cmd, input=rows, stdout=subprocess.PIPE, text=True, env=env)
     choice = res.stdout.strip()
     if res.returncode != 0 or not choice:
@@ -1165,7 +1351,7 @@ def render_page(data):
     tpl = (HERE / "page.html").read_text(encoding="utf-8")
     payload = {"blocks": [b for b in data["blocks"] if b["count"]], "groups": [g["id"] for g in data["groups"]],
                "intro": data["intro"], "pins": data["pins"], "variant": tokens.get("variant", "black"),
-               "rows": [{k: r[k] for k in ("i", "block", "keys", "alts", "desc", "source", "ctx", "note", "raw") if k in r}
+               "rows": [{k: r[k] for k in ("i", "block", "keys", "alts", "desc", "source", "ctx", "note", "raw", "kw") if k in r}
                         for r in data["rows"]], "generated": data["generated"]}
     blob = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
     return (tpl.replace("/*TOKENS*/", css).replace("/*VARIANT*/", html.escape(tokens.get("variant", "black")))
@@ -1242,7 +1428,7 @@ def main(argv):
         for w in data["warnings"]:
             print("keymap: warning:", w, file=sys.stderr)
         return 0
-    data = ensure_db()
+    data = fast_db() if cmd in ("rows", "header", "preview", "cycle", "run") else ensure_db()
     if cmd == "json":
         json.dump(data, sys.stdout, ensure_ascii=False, indent=1)
         print()
