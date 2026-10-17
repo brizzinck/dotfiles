@@ -9,7 +9,8 @@ log = open(os.path.join(os.environ["FAKE_DIR"], "login.log"), "a")
 log.write(f"mode={mode} api_id={os.environ.get('TELEGRAM_API_ID')} has_session={'yes' if os.environ.get('TELEGRAM_SESSION_STRING') else 'no'}\n")
 if mode == "list" and os.environ.get("TELEGRAM_SESSION_STRING", "").startswith("1STALE"):
     sys.exit(3)
-chats = [{"id": -1001111, "title": "Work chat", "kind": "group", "unread": 3},
+chats = [{"id": 1, "title": "Test Owner", "kind": "user", "unread": 0},   # the owner's own chat = me.id: Saved Messages in the picker
+         {"id": -1001111, "title": "Work chat", "kind": "group", "unread": 3},
          {"id": 42, "title": "Ann", "kind": "user", "unread": 0},
          {"id": -1002222, "title": "News", "kind": "channel", "unread": 9},
          {"id": 777, "title": "Secret person", "kind": "user", "unread": 1}]
