@@ -305,5 +305,40 @@ expect "a muted program never raises a toast" bash -c "! grep -q 'noisy crashed'
 expect "unmute brings it back" grep -q 'noisy crashed' "$T/log"
 unset CRASH_WATCH_SYNC
 
+# ── D1 dictation (fake voxtype) ──
+DC="$SC/dictation.sh"
+export DICTATION_NO_DOWNLOAD=1 VOXTYPE_MODEL_DIR="$T/models"
+mkdir -p "$T/run/voxtype" "$T/models"
+reset; "$DC" toggle
+expect "without voxtype the key only says how to install it" bash -c "grep -q 'Dictation needs voxtype' '$T/log' && grep -q 'apply-system.sh --only install' '$T/log'"
+cat >"$T/bin/voxtype" <<'X'
+#!/bin/sh
+echo "voxtype $*" >>"$FAKE_LOG"
+X
+chmod +x "$T/bin/voxtype"
+reset; "$DC" toggle
+expect "model missing: no recording, a notification" bash -c "grep -q 'the model is missing' '$T/log' && ! grep -q '^voxtype record' '$T/log'"
+printf 'x' >"$T/models/ggml-small.bin"
+echo idle >"$T/run/voxtype/state"; reset; "$DC" toggle
+expect "toggle while idle starts recording" grep -q '^voxtype record start' "$T/log"
+echo recording >"$T/run/voxtype/state"; reset; "$DC" toggle
+expect "toggle while recording stops it" grep -q '^voxtype record stop' "$T/log"
+echo recording >"$T/run/voxtype/state"; reset; "$DC" start
+expect "F9 press while already recording does nothing" bash -c "! grep -q '^voxtype record' '$T/log'"
+echo idle >"$T/run/voxtype/state"; reset; "$DC" stop
+expect "F9 release while idle does nothing" bash -c "! grep -q '^voxtype record' '$T/log'"
+expect "status reads the daemon state file" bash -c "echo transcribing >'$T/run/voxtype/state'; [ \"\$('$DC' status)\" = transcribing ]"
+mkdir -p "$HOME/.config/voxtype"; cp "$REPO/.config/voxtype/config.toml" "$HOME/.config/voxtype/config.toml"
+"$DC" lang ru >/dev/null
+expect "the language choice is stored" test "$(cat "$HOME/.local/state/dictation/lang")" = ru
+"$DC" run --dry-run >/dev/null
+expect "the runtime config carries the language, the tracked file stays auto" bash -c "grep -q '^language = \"ru\"' '$T/run/voxtype/config.toml' && grep -q '^language = \"auto\"' '$HOME/.config/voxtype/config.toml'"
+expect "a bad language is refused" bash -c "! '$DC' lang klingon >/dev/null 2>&1"
+echo recording >"$T/run/voxtype/state"
+out=$(timeout 3 "$DC" --follow 2>/dev/null | head -n 1)
+expect "waybar follow: recording is critical with the hint line" bash -c "jq -e '.class == \"critical\" and (.tooltip | endswith(\"L: toggle · M: language · R: menu\"))' <<<'$out'"
+rm -f "$T/bin/voxtype" "$T/run/voxtype/state"
+unset DICTATION_NO_DOWNLOAD VOXTYPE_MODEL_DIR
+
 echo "o1 tests: $fails failure(s)"
 exit $((fails > 0))

@@ -760,6 +760,13 @@ fi
 if [ -e "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/idle-off" ]; then info hypridle-alive "idle is switched off on purpose (SUPER+CTRL+I)"; elif pgrep -x hypridle >/dev/null 2>&1; then ok hypridle-alive "hypridle runs"; else bad hypridle-alive "hypridle is not running (the hypridle-watch timer starts it within a minute, or SUPER+CTRL+I)"; fi
 if systemctl --user is-enabled hypridle-watch.timer >/dev/null 2>&1; then ok hypridle-watch "user timer hypridle-watch.timer restarts hypridle when it died"; else bad hypridle-watch "hypridle-watch.timer not enabled (stow ., systemctl --user enable --now hypridle-watch.timer)"; fi
 if systemctl --user is-active crash-watch.service >/dev/null 2>&1; then ok crash-watch "crash-watch.service follows the coredump journal (toast, details, ask Claude, mute)"; else bad crash-watch "crash-watch.service is not running (stow ., systemctl --user enable --now crash-watch.service)"; fi
+if command -v voxtype >/dev/null 2>&1; then
+  if [ -s "$HOME/.local/share/voxtype/models/ggml-small.bin" ]; then info dictation "voxtype installed, model small present"; else info dictation "voxtype installed, model missing (dictation.sh model)"; fi
+  if systemctl --user is-active voxtype.service >/dev/null 2>&1; then ok dictation-daemon "voxtype.service runs"; else info dictation-daemon "voxtype.service is not running (it starts on first use or at login)"; fi
+else
+  info dictation "voxtype is not installed: SUPER+ALT+D / F9 show how to install it (sudo ./apply-system.sh --only install)"
+fi
+if [ "$(systemctl --user is-enabled voxtype.service 2>/dev/null)" = enabled ] && [ -r "$HOME/.config/voxtype/config.toml" ]; then ok dictation-unit "voxtype.service enabled, config tracked"; else bad dictation-unit "voxtype.service not enabled or ~/.config/voxtype/config.toml missing (stow ., systemctl --user enable voxtype.service)"; fi
 hub_groups="$("$DOTFILES/.config/hub/hub" groups 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"
 hub_missing=""
 for g in Setup Update Learn Fix; do case " $hub_groups " in *" $g "*) ;; *) hub_missing="$hub_missing $g" ;; esac; done

@@ -497,6 +497,11 @@ hl.bind(mainMod .. " + C", hl.dsp.exec_cmd(scripts .. "/clipboard.sh"), { descri
 hl.bind(mainMod .. " + SHIFT + C", hl.dsp.exec_cmd("hyprpicker -a"), { description = "Color picker" })
 hl.bind(mainMod .. " + period", hl.dsp.exec_cmd(scripts .. "/emoji.sh"), { description = "Emoji picker" })
 hl.bind(mainMod .. " + SHIFT + period", hl.dsp.exec_cmd(scripts .. "/snippets.sh"), { description = "Snippets picker" })
+-- dictation (Voxtype): toggle, or hold F9 (the release bind has no description: it is the other half of the press bind and
+-- would be a second row for the same key; it comes first so the bind registry keeps the press bind)
+hl.bind("F9", hl.dsp.exec_cmd(scripts .. "/dictation.sh stop"), { release = true })
+hl.bind("F9", hl.dsp.exec_cmd(scripts .. "/dictation.sh start"), { description = "Dictation: hold F9 to dictate" })
+hl.bind(mainMod .. " + ALT + D", hl.dsp.exec_cmd(scripts .. "/dictation.sh toggle"), { description = "Dictation on or off (Voxtype)" })
 hl.bind(mainMod .. " + ALT + T", hl.dsp.exec_cmd(scripts .. "/reminder.sh set"), { description = "New reminder (25 tea or 14:30 standup)" })
 hl.bind(mainMod .. " + CTRL + ALT + T", hl.dsp.exec_cmd(scripts .. "/reminder.sh list"), { description = "Reminders: list and cancel" })
 hl.bind(mainMod .. " + CTRL + period", hl.dsp.exec_cmd(scripts .. "/transcode.sh"), { description = "Transcode a picture or video for sharing" })

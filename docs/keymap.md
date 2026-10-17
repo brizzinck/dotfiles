@@ -16,8 +16,8 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Desktop | [Notifications](#notifications) | 4 |
 | Desktop | [System, power, bar](#system-power-bar) | 12 |
 | Desktop | [Pointer from the keyboard](#pointer-from-the-keyboard) | 21 |
-| Desktop | [Other Hyprland binds](#other-hyprland-binds) | 9 |
-| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 129 |
+| Desktop | [Other Hyprland binds](#other-hyprland-binds) | 11 |
+| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 133 |
 | Terminal | [tmux: this setup](#tmux-this-setup) | 55 |
 | Terminal | [tmux: stock prefix keys](#tmux-stock-prefix-keys) | 80 |
 | Terminal | [zsh line editor](#zsh-line-editor) | 34 |
@@ -300,6 +300,8 @@ Hyprland binds that no classification rule claims yet (add a rule to rules.tsv).
 
 | Keys | Action |
 |---|---|
+| `F9` | Dictation: hold F9 to dictate |
+| `Super+Alt+D` | Dictation on or off (Voxtype) |
 | `Super+Alt+T` | New reminder (25 tea or 14:30 standup) |
 | `Super+Ctrl+Alt+T` | Reminders: list and cancel |
 | `Super+Ctrl+.` | Transcode a picture or video for sharing |
@@ -349,11 +351,13 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; c x` | Capture: Frozen annotate |
 | `Super+; c z` | Capture: Frozen region |
 | `Super+; a d` | Audio: App volume down |
+| `Super+; a l` | Audio: Dictation language |
 | `Super+; a m` | Audio: Mute mics |
 | `Super+; a n` | Audio: Media menu |
 | `Super+; a p` | Audio: Output picker |
 | `Super+; a s` | Audio: Mute speakers |
 | `Super+; a u` | Audio: App volume up |
+| `Super+; a v` | Audio: Dictation |
 | `Super+; a w` | Audio: Mixer |
 | `Super+; a x` | Audio: App mute |
 | `Super+; a y` | Audio: Play/pause |
@@ -428,6 +432,8 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; g u` | Update: Install updates |
 | `Super+; g w` | Update: Firmware update |
 | `Super+; i b` | Setup: Bitwarden setup |
+| `Super+; i c` | Setup: Dictation config |
+| `Super+; i d` | Setup: Dictation model |
 | `Super+; i g` | Setup: GitHub login |
 | `Super+; i s` | Setup: Stow |
 | `Super+; i t` | Setup: Theme init |

@@ -1,0 +1,13 @@
+[Unit]
+Description=Voxtype offline dictation daemon (local Whisper, typed with wtype)
+# the package (AUR voxtype-bin) is installed by sudo ./apply-system.sh --only install; until then the unit is skipped silently
+ConditionPathExists=/usr/bin/voxtype
+After=graphical-session.target pipewire.service
+
+[Service]
+ExecStart=%h/.config/hypr/scripts/dictation.sh run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

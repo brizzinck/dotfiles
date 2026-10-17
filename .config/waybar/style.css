@@ -33,7 +33,7 @@ tooltip { background: @surface; border: 1px solid @border; border-radius: 6px; }
 tooltip label { color: @fg; padding: 4px 6px; }
 
 /* every module: one padding, one pill geometry (20 px high on the 28 px bar) */
-#clock, #privacy, #custom-recording, #custom-media, #custom-reminder, #custom-health, #custom-updates, #custom-toggles, #custom-ai, #custom-vault,
+#clock, #privacy, #custom-recording, #custom-media, #custom-dictation, #custom-reminder, #custom-health, #custom-updates, #custom-toggles, #custom-ai, #custom-vault,
 #custom-mode, #custom-power, #custom-tray-leader, #custom-pin, #network, #bluetooth, #pulseaudio, #backlight, #battery,
 #cpu, #memory, #temperature, #language,
 #custom-sw-dnd, #custom-sw-caffeine, #custom-sw-awake, #custom-sw-lid, #custom-sw-night, #custom-sw-vpn {
@@ -49,7 +49,7 @@ tooltip label { color: @fg; padding: 4px 6px; }
 #custom-toggles.leader, #network, #pulseaudio, #memory, #custom-tray-leader { padding: 0 6px 0 8px; }
 
 /* hover: any clickable module */
-#clock:hover, #custom-recording:hover, #custom-media:hover, #custom-reminder:hover, #custom-health:hover, #custom-updates:hover, #custom-toggles:hover, #custom-ai:hover,
+#clock:hover, #custom-recording:hover, #custom-media:hover, #custom-dictation:hover, #custom-reminder:hover, #custom-health:hover, #custom-updates:hover, #custom-toggles:hover, #custom-ai:hover,
 #custom-vault:hover, #custom-pin:hover, #custom-mode:hover, #custom-power:hover, #network:hover, #bluetooth:hover, #pulseaudio:hover,
 #battery:hover, #cpu:hover, #memory:hover, #temperature:hover, #language:hover,
 #custom-sw-dnd:hover, #custom-sw-caffeine:hover, #custom-sw-awake:hover, #custom-sw-lid:hover, #custom-sw-night:hover,

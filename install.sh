@@ -275,8 +275,14 @@ log "Obsidian (vault .obsidian -> apps/obsidian/vault-config, pinned plugins fro
 
 log "User timers: cache aging (user tmpfiles), Codex release pruning and the sysalert health check and the background update check (sysup-check)"
 systemctl --user daemon-reload 2>/dev/null || true
-systemctl --user enable --now systemd-tmpfiles-clean.timer codex-prune-releases.timer sysalert.timer sysup-check.timer hypridle-watch.timer crash-watch.service 2>/dev/null \
-  || later "enable the user timers once logged in: systemctl --user enable --now systemd-tmpfiles-clean.timer codex-prune-releases.timer sysalert.timer sysup-check.timer hypridle-watch.timer crash-watch.service"
+systemctl --user enable --now systemd-tmpfiles-clean.timer codex-prune-releases.timer sysalert.timer sysup-check.timer hypridle-watch.timer crash-watch.service voxtype.service 2>/dev/null \
+  || later "enable the user timers once logged in: systemctl --user enable --now systemd-tmpfiles-clean.timer codex-prune-releases.timer sysalert.timer sysup-check.timer hypridle-watch.timer crash-watch.service voxtype.service"
+
+# Dictation (Voxtype, AUR voxtype-bin from the root script): the Whisper model is a user-level download (about 466 MB, resumable)
+if command -v voxtype >/dev/null 2>&1; then
+  log "Dictation: Whisper model for Voxtype"
+  "$DOTFILES/.config/hypr/scripts/dictation.sh" model || later "dictation model: ~/.config/hypr/scripts/dictation.sh model"
+fi
 
 # ───────────────────────────── 8. identity ────────────────────────────────────
 log "Git identity (~/.gitconfig.local)"

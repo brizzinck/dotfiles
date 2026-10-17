@@ -118,6 +118,17 @@
     "modules": [{ "type": "screenshare" }, { "type": "audio-in" }]
   },
 
+  // dictation (Voxtype): hidden while idle, red while recording, yellow while transcribing; signal 18 redraws it at once
+  "custom/dictation": {
+    "exec": "~/.config/hypr/scripts/dictation.sh --follow",
+    "return-type": "json",
+    "restart-interval": 5,
+    "signal": 18,
+    "on-click": "~/.config/hypr/scripts/dictation.sh toggle",
+    "on-click-middle": "~/.config/hypr/scripts/dictation.sh lang",
+    "on-click-right": "~/.config/hypr/scripts/dictation.sh menu"
+  },
+
   // pending reminders (transient systemd user timers, hypr/scripts/reminder.sh); hidden while none; signal 17 redraws it
   "custom/reminder": {
     "exec": "~/.config/hypr/scripts/reminder.sh waybar",
