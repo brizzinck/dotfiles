@@ -373,7 +373,7 @@ cmd_link() {
 # ───────────────────────────── publish ─────────────────────────────
 
 cmd_sync() {
-  local quiet=0 worktree=0 dry=0 a stage rev nvim_sha sub path exclude log phash old_phash u
+  local quiet=0 worktree=0 dry=0 a stage rev nvim_sha sub path exclude log phash old_phash u relink_ok
   for a in "$@"; do
     case "$a" in
       --quiet) quiet=1 ;;
@@ -438,13 +438,15 @@ cmd_sync() {
   phash=$(cat "$SRV"/infrastructure/users/profiles/*.txt "$SRV/infrastructure/users/managed.tsv" 2>/dev/null | sha256sum | cut -d' ' -f1)
   old_phash=$(cat "$STATE/profiles.sha" 2>/dev/null || true)
   if [ "$phash" != "$old_phash" ]; then
+    relink_ok=1
     for u in $(managed_users profile); do
       getent passwd "$u" >/dev/null || continue
       # shellcheck disable=SC2024  # the log belongs to the owner, who runs this redirect
-      if sudo -n -u "$u" -H "$SRV/.local/bin/usr" _link >>"$log" 2>&1; then note "relinked the profile of $u"; else note "could not relink $u (sudoers drop-in missing? usr link $u)"; fi
+      if sudo -n -u "$u" -H "$SRV/.local/bin/usr" _link >>"$log" 2>&1; then note "relinked the profile of $u"; else relink_ok=0; note "could not relink $u (sudoers drop-in missing? usr link $u)"; fi
     done
-    echo "$phash" >"$STATE/profiles.sha"
+    if [ "$relink_ok" = 1 ]; then echo "$phash" >"$STATE/profiles.sha"; fi
   fi
+  return 0
 }
 
 # ───────────────────────────── shared nvim ─────────────────────────────
