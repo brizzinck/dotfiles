@@ -23,8 +23,10 @@ Where things go:
     file anywhere. The MCP tools are read-only (no send, edit, delete, mark-read) and the service fails closed without an allowlist; sending
     exists only as the separate owner-confirmed route (see send-chats).
   * ~/.local/state/mcp/telegram.token (0600): bearer token between the gateway and the service, also stored in the credstore.
-Sending (M1-send): `send-chats` stores the text field `send_allowlist` in the same Bitwarden item (chat ids, not secret) and seals it
-for the send route inside telegram-mcp; the root helper generates the send token ITSELF (--ensure-send-token) and seals it for
+Sending (M1-send): `send-chats` starts from the SEALED send list (read by the root helper), shows the final list with title, kind
+and id, asks for an explicit confirmation, then seals it for the send route inside telegram-mcp and records it in the text field
+`send_allowlist` of the same Bitwarden item (chat ids, not secret; a record only, never trusted as input). `chats` never sends a
+send list: the root helper narrows the sealed one to the new read list by itself; the root helper generates the send token ITSELF (--ensure-send-token) and seals it for
 telegram-mcp and for the tgconfirm broker only: it is never in Bitwarden, a file you can read or this script. The AI sends only
 after you confirm each message in a popup. Kill switch: Telegram > Settings > Devices > terminate
 "telegram-mcp (AI, read-only)".
@@ -170,12 +172,33 @@ def ensure_token() -> str:
     return tok
 
 
-def sudo_apply(payload: dict[str, str], args: tuple[str, ...] = ()) -> None:
+def ensure_sudo(why: str) -> None:
     if not Path(TG_CREDS).exists():
         die(f"{TG_CREDS} is missing: run  sudo ~/dotfiles/apply-system.sh --only users,mcp  first")
-    eprint("\nsudo is needed once to seal the credentials with the TPM2 (the password is asked by sudo, not by this script).")
+    eprint(f"\nsudo is needed {why} (the password is asked by sudo, not by this script).")
     if SUDO == "sudo" and subprocess.run(["sudo", "-v"]).returncode != 0:
         die("sudo authentication failed")
+
+
+def sealed_send_allowlist() -> set[int]:
+    """The SEALED send allowlist, read by the root helper (the only authoritative copy; Bitwarden's is a record an agent could edit)."""
+    p = subprocess.run([SUDO, TG_CREDS, "--print-send-allowlist"], capture_output=True, text=True)
+    if p.returncode != 0:
+        die("could not read the sealed send list from the root helper (sudo failed or creds-install is out of date: "
+            "sudo ~/dotfiles/apply-system.sh --only mcp)")
+    return parse_ids(p.stdout.strip())
+
+
+def confirm(question: str) -> bool:
+    eprint(f"{question} [y/N] ", )
+    try:
+        return input().strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
+def sudo_apply(payload: dict[str, str], args: tuple[str, ...] = ()) -> None:
+    ensure_sudo("once to seal the credentials with the TPM2")
     p = subprocess.run([SUDO, TG_CREDS, *args], input=json.dumps(payload), text=True)
     if p.returncode != 0:
         die("the root helper failed (nothing was started); fix the error above and run this again, the session is safe in Bitwarden")
@@ -272,28 +295,22 @@ def cmd_setup(chats_only: bool, new_login: bool) -> None:
     if not allowlist:
         die("no chat ticked: the service refuses to run without an allowlist (nothing was changed)")
     values: dict[str, tuple[str, int]] = {"allowlist": (",".join(map(str, allowlist)), 0)}
-    send_now = parse_ids(field(item, "send_allowlist"))
-    send_kept = send_now & set(allowlist)
-    if send_now and send_kept != send_now:   # the send list must stay a subset of the readable chats, or the send route refuses to start
-        if send_kept:
-            values["send_allowlist"] = (",".join(map(str, sorted(send_kept))), 0)
-            eprint("Chats that are no longer readable were also removed from the send list.")
-        else:
-            eprint("None of the send chats is readable any more: run  mcp-telegram-setup send-chats  again.")
     if fresh:
         values["session"] = (session, 1)
     set_fields(m, item, values)
     eprint("Bitwarden updated (the master copy).")
     token = ensure_token()
-    payload = {"allowlist": ",".join(map(str, allowlist))}
-    if "send_allowlist" in values:
-        payload["send_allowlist"] = values["send_allowlist"][0]
+    payload = {"allowlist": ",".join(map(str, allowlist))}   # the root helper narrows the sealed send list to this on its own
     if not chats_only or fresh:
         payload.update(api_id=api_id, api_hash=api_hash, session=session, token=token)
     else:
         payload["token"] = token
     sudo_apply(payload)
     payload.clear()
+    sealed = sealed_send_allowlist()
+    if sealed != parse_ids(field(item, "send_allowlist")):    # keep the Bitwarden record equal to what is really sealed
+        set_fields(m, item, {"send_allowlist": (",".join(map(str, sorted(sealed))), 0)})
+        eprint("The sealed send list is now: " + (", ".join(map(str, sorted(sealed))) if sealed else "empty (run send-chats to allow sending again)"))
     gateway("restart")
     eprint("Gateway restarted.")
     if Path(MCP_ADD).exists():
@@ -308,6 +325,15 @@ def cmd_setup(chats_only: bool, new_login: bool) -> None:
 
 def parse_ids(text: str) -> set[int]:
     return {int(x) for x in text.split(",") if x.strip().lstrip("-").isdigit()}
+
+
+def describe_chats(ids: list[int], names: dict[int, dict]) -> list[str]:
+    """One line per chat: title, kind and id (the title alone can be spoofed by a look-alike)."""
+    out = []
+    for i in ids:
+        c = names.get(i)
+        out.append(f"  {c['title'] if c else '(not in the chat list)'}  [{c['kind'] if c else '?'}]  id {i}")
+    return out
 
 
 def cmd_send_chats(account: str) -> None:
@@ -327,19 +353,39 @@ def cmd_send_chats(account: str) -> None:
     if out is None:
         die("the stored session is not valid: run mcp-telegram-setup --new-login")
     chats = [c for c in out["chats"] if c["id"] in readable]
-    current = parse_ids(field(item, "send_allowlist")) & readable
     if not chats:
         die("none of the readable chats is in the chat list Telegram returned")
-    eprint(f"\nLogged in as {out['me']['name']}. {len(chats)} readable chat{'' if len(chats) == 1 else 's'}; {len(current)} may already be written to.")
+    # the starting point is the SEALED send list (read by the root helper), never the Bitwarden copy: that one is a record an agent
+    # with the unlocked vault could have edited
+    ensure_sudo("to read the sealed send list and to seal the new one")
+    sealed = sealed_send_allowlist()
+    recorded = parse_ids(field(item, "send_allowlist"))
+    if recorded != sealed:
+        extra = sorted(recorded - sealed)
+        eprint("Note: the send_allowlist record in Bitwarden differs from the sealed list"
+               + (f" (it also had {len(extra)} chat(s) that are NOT sealed and are ignored)" if extra else "") + ". The sealed list is the one used.")
+    current = sealed & readable
+    names = {c["id"]: c for c in out["chats"]}
+    eprint(f"\nLogged in as {out['me']['name']}. {len(chats)} readable chat{'' if len(chats) == 1 else 's'}; {len(current)} may already be written to:")
+    eprint("\n".join(describe_chats(sorted(current), names)) if current else "  (none)")
     ticked = pick_chats(chats, current, "send", "tick the chats the AI may ASK to WRITE to (you still confirm each message)")
     if not ticked:
         die("nothing ticked, the send list is unchanged", 0)
     send = merge_allowlist(current, ticked)
     if not send:
         die("that would leave no chat to write to; the service needs at least one (nothing was changed)")
+    added, removed = sorted(set(send) - current), sorted(current - set(send))
+    eprint("\nThe AI will be allowed to ASK to write to exactly these chats:")
+    eprint("\n".join(describe_chats(send, names)))
+    if added:
+        eprint("\nNEW:\n" + "\n".join(describe_chats(added, names)))
+    if removed:
+        eprint("\nREMOVED:\n" + "\n".join(describe_chats(removed, names)))
+    if not confirm("\nSeal this send list?"):
+        die("not confirmed, nothing was changed", 0)
     value = ",".join(map(str, send))
     set_fields(m, item, {"send_allowlist": (value, 0)})
-    eprint("Bitwarden updated (send_allowlist; the send token is not stored there).")
+    eprint("Bitwarden updated (send_allowlist record; the send token is not stored there).")
     payload = {"send_allowlist": value}
     sudo_apply(payload, ("--ensure-send-token",))
     payload.clear()
@@ -348,8 +394,8 @@ def cmd_send_chats(account: str) -> None:
     if Path(MCP_ADD).exists():
         r = subprocess.run([MCP_ADD, "--claude"], capture_output=True, text=True)
         eprint("mcp-add: " + ("telegram-send registered in Claude Code (never in Codex)." if r.returncode == 0 else "failed, run it by hand: mcp-add"))
-    names = {c["id"]: c["title"] for c in out["chats"]}
-    eprint(f"\nThe AI may ask to write to ({len(send)}): " + ", ".join(names.get(i, str(i)) for i in send))
+    eprint(f"\nThe AI may ask to write to ({len(send)}):")
+    eprint("\n".join(describe_chats(send, names)))
     eprint("Sending is OFF until you switch it on: hub > Telegram: allow sending (SUPER+; x m). Every message then needs your confirmation\n"
            "in a popup. (mcp-add also applied mcp-guard: Claude Code may not use key-injection or capture tools in its Bash.)")
 
