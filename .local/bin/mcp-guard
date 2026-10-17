@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# mcp-guard - Claude Code deny rules that keep an agent from pressing the Telegram confirmation popup itself.
+#
+#   mcp-guard              add the rules to permissions.deny of ~/.claude/settings.json (timestamped backup, jq-validated, idempotent)
+#   mcp-guard --dry-run    show what would change, write nothing
+#   mcp-guard --remove     take exactly these rules out again
+#   mcp-guard --check      exit 0 when every rule is present (doctor: INFO until you ran it)
+#
+# Why: the popup of the owner-confirmed Telegram sending (tgconfirm) asks for a random two-key code. Any Wayland client can inject
+# keys, so an agent could in principle press that code itself; the popup window is hidden from screen capture and the code is
+# per message, and these rules stop the agents' own Bash tool from the obvious injectors and capture tools: wtype, wlrctl, ydotool,
+# dotool (virtual keyboard / pointer), hyprd, `hyprctl eval` and `hyprctl dispatch` (send_shortcut and any Lua dispatcher) and grim
+# (screenshots). Our own scripts keep calling them; only the agent's Bash tool is blocked. Claude Code only: Codex runs with its
+# sandbox and approvals bypassed and cannot be restricted, which is why telegram-send is never registered for Codex (mcp-add).
+# Rules are best effort (a determined agent can still wrap a command); see CLAUDE.md, "Telegram sending (M1-send)".
+# Settings file: $MCP_GUARD_SETTINGS, else $CLAUDE_CONFIG_DIR/settings.json, else ~/.claude/settings.json.
+set -u
+
+RULES=(
+  'Bash(wtype:*)' 'Bash(wlrctl:*)' 'Bash(ydotool:*)' 'Bash(dotool:*)'
+  'Bash(hyprd:*)' 'Bash(hyprctl eval:*)' 'Bash(hyprctl dispatch:*)'
+  'Bash(grim:*)'
+)
+SETTINGS=${MCP_GUARD_SETTINGS:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json}
+DRY=0 MODE=add
+
+die() { echo "mcp-guard: $*" >&2; exit 1; }
+rules_json() { printf '%s\n' "${RULES[@]}" | jq -R . | jq -sc .; }
+
+for a in "$@"; do
+  case $a in
+    --dry-run) DRY=1 ;;
+    --remove) MODE=remove ;;
+    --check) MODE=check ;;
+    -h | --help) sed -n '2,/^set -u/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0 ;;
+    *) echo "mcp-guard: unknown argument: $a" >&2; exit 2 ;;
+  esac
+done
+command -v jq >/dev/null || die "jq is required"
+
+if [[ -e $SETTINGS ]]; then
+  jq -e 'type == "object"' "$SETTINGS" >/dev/null 2>&1 || die "$SETTINGS is not a JSON object; left untouched"
+  current=$(<"$SETTINGS")
+else
+  [[ $MODE == add ]] || { [[ $MODE == check ]] && { echo "no settings file: rules missing"; exit 1; }; echo "nothing to remove ($SETTINGS does not exist)"; exit 0; }
+  current='{}'
+fi
+RJ=$(rules_json)
+
+if [[ $MODE == check ]]; then
+  missing=$(jq -r --argjson r "$RJ" '($r - (.permissions.deny // []))[]' <<<"$current")
+  if [[ -z $missing ]]; then echo "all ${#RULES[@]} deny rules are present in $SETTINGS"; exit 0; fi
+  echo "missing deny rules: $(paste -sd' ' <<<"$missing")"
+  exit 1
+fi
+
+if [[ $MODE == add ]]; then
+  new=$(jq --argjson r "$RJ" '.permissions.deny = ((.permissions.deny // []) as $d | $d + ($r - $d))' <<<"$current") || die "jq failed"
+else
+  new=$(jq --argjson r "$RJ" '
+      if .permissions.deny then .permissions.deny -= $r else . end
+      | if (.permissions.deny // [1]) == [] then del(.permissions.deny) else . end
+      | if .permissions == {} then del(.permissions) else . end' <<<"$current") || die "jq failed"
+fi
+jq -e 'type == "object"' <<<"$new" >/dev/null || die "the edited settings do not validate; nothing written"
+if [[ $(jq -S . <<<"$current") == "$(jq -S . <<<"$new")" ]]; then echo "already up to date ($SETTINGS)"; exit 0; fi
+
+echo "$([[ $MODE == add ]] && echo 'adding to' || echo 'removing from') permissions.deny in $SETTINGS:"
+printf '  %s\n' "${RULES[@]}"
+((DRY)) && { echo "(dry run, nothing written)"; exit 0; }
+
+mkdir -p "$(dirname "$SETTINGS")"
+if [[ -e $SETTINGS ]]; then
+  backup="$SETTINGS.bak-mcp-guard-$(date +%Y%m%d-%H%M%S)-$$"
+  cp -p -- "$SETTINGS" "$backup" && chmod 600 "$backup" || die "cannot write the backup; nothing changed"
+  echo "backup: $backup"
+  mode=$(stat -c %a "$SETTINGS")
+else
+  mode=600
+fi
+tmp=$(mktemp "$SETTINGS.XXXXXX") || die "cannot write next to $SETTINGS"
+printf '%s\n' "$new" >"$tmp"
+jq -e 'type == "object"' "$tmp" >/dev/null || { rm -f "$tmp"; die "validation of the written file failed; nothing changed"; }
+chmod "$mode" "$tmp"
+mv -f -- "$tmp" "$SETTINGS"
+echo "done."

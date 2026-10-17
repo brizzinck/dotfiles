@@ -4,6 +4,10 @@
   mcp-telegram-setup              first setup: log in by QR (or reuse the session stored in Bitwarden), tick the chats the AI
                                   may read, store everything, start the service, check it through the gateway
   mcp-telegram-setup chats        change the allowlist (extend or shrink it); Tab on an `[allowed]` chat removes it
+  mcp-telegram-setup send-chats [--account NAME]
+                                  choose the chats the AI may ASK to write to (a subset of the readable chats; Tab on a `[send]`
+                                  chat removes it). Sending stays off until you switch it on (hub: Telegram: allow sending) and
+                                  every message needs your confirmation in a popup. Run it once to set sending up at all.
   mcp-telegram-setup status       service, gateway and credential state
   mcp-telegram-setup --new-login  ignore the stored session and log in by QR again (a terminated or lost session)
 
@@ -18,7 +22,10 @@ Where things go:
     stdin). telegram-mcp.service (user aimcp, 127.0.0.1:8765) loads them with LoadCredentialEncrypted=: no plaintext session
     file anywhere. The service is read-only (no send, edit, delete, mark-read) and fails closed without an allowlist.
   * ~/.local/state/mcp/telegram.token (0600): bearer token between the gateway and the service, also stored in the credstore.
-The AI never sends: it drafts text and you press Enter in Telegram. Kill switch: Telegram > Settings > Devices > terminate
+Sending (M1-send): `send-chats` stores the text field `send_allowlist` in the same Bitwarden item (chat ids, not secret) and seals it
+for the send route inside telegram-mcp; the root helper generates the send token ITSELF (--ensure-send-token) and seals it for
+telegram-mcp and for the tgconfirm broker only: it is never in Bitwarden, a file you can read or this script. The AI sends only
+after you confirm each message in a popup. Kill switch: Telegram > Settings > Devices > terminate
 "telegram-mcp (AI, read-only)".
 Test hooks: MCP_TG_PYTHON, MCP_TG_LOGIN, MCP_TG_CREDS, MCP_TG_SUDO, MCP_TG_PICK, MCP_GATEWAY_CMD, MCP_ADD_CMD, MCP_STATE_DIR,
 MCP_TG_NO_VERIFY=1, VAULT_BW (path of vault-bw.py), BW_BIN.
@@ -118,10 +125,10 @@ def run_login(mode: str, api_id: str, api_hash: str, session: str = "") -> dict 
         die("the Telegram helper returned something that is not JSON")
 
 
-def pick_chats(chats: list[dict], allowed: set[int]) -> list[dict]:
+def pick_chats(chats: list[dict], allowed: set[int], word: str = "allowed", prompt: str = "tick the chats the AI may READ") -> list[dict]:
     rows = []
     for c in chats:
-        mark = "[allowed]" if c["id"] in allowed else "         "
+        mark = f"[{word}]" if c["id"] in allowed else " " * (len(word) + 2)
         unread = f"({c['unread']} unread)" if c["unread"] else ""
         rows.append(f"{c['id']}\t{mark} {c['kind']:7} {c['title']} {unread}".rstrip())
     text = "\n".join(rows) + "\n"
@@ -129,7 +136,7 @@ def pick_chats(chats: list[dict], allowed: set[int]) -> list[dict]:
     if cmd:
         argv = [cmd]
     elif shutil.which("fzf-menu"):
-        argv = ["fzf-menu", "--here", "-p", "Telegram: Tab = tick the chats the AI may READ, Enter = confirm", "-m",
+        argv = ["fzf-menu", "--here", "-p", f"Telegram: Tab = {prompt}, Enter = confirm", "-m",
                 "--delimiter", "\t", "--with-nth", "2"]
     else:
         argv = ["fzf", "-m", "--prompt", "Tab = tick, Enter = confirm > ", "--delimiter", "\t", "--with-nth", "2"]
@@ -162,13 +169,13 @@ def ensure_token() -> str:
     return tok
 
 
-def sudo_apply(payload: dict[str, str]) -> None:
+def sudo_apply(payload: dict[str, str], args: tuple[str, ...] = ()) -> None:
     if not Path(TG_CREDS).exists():
         die(f"{TG_CREDS} is missing: run  sudo ~/dotfiles/apply-system.sh --only users,mcp  first")
     eprint("\nsudo is needed once to seal the credentials with the TPM2 (the password is asked by sudo, not by this script).")
     if SUDO == "sudo" and subprocess.run(["sudo", "-v"]).returncode != 0:
         die("sudo authentication failed")
-    p = subprocess.run([SUDO, TG_CREDS], input=json.dumps(payload), text=True)
+    p = subprocess.run([SUDO, TG_CREDS, *args], input=json.dumps(payload), text=True)
     if p.returncode != 0:
         die("the root helper failed (nothing was started); fix the error above and run this again, the session is safe in Bitwarden")
 
@@ -264,12 +271,22 @@ def cmd_setup(chats_only: bool, new_login: bool) -> None:
     if not allowlist:
         die("no chat ticked: the service refuses to run without an allowlist (nothing was changed)")
     values: dict[str, tuple[str, int]] = {"allowlist": (",".join(map(str, allowlist)), 0)}
+    send_now = parse_ids(field(item, "send_allowlist"))
+    send_kept = send_now & set(allowlist)
+    if send_now and send_kept != send_now:   # the send list must stay a subset of the readable chats, or the send route refuses to start
+        if send_kept:
+            values["send_allowlist"] = (",".join(map(str, sorted(send_kept))), 0)
+            eprint("Chats that are no longer readable were also removed from the send list.")
+        else:
+            eprint("None of the send chats is readable any more: run  mcp-telegram-setup send-chats  again.")
     if fresh:
         values["session"] = (session, 1)
     set_fields(m, item, values)
     eprint("Bitwarden updated (the master copy).")
     token = ensure_token()
     payload = {"allowlist": ",".join(map(str, allowlist))}
+    if "send_allowlist" in values:
+        payload["send_allowlist"] = values["send_allowlist"][0]
     if not chats_only or fresh:
         payload.update(api_id=api_id, api_hash=api_hash, session=session, token=token)
     else:
@@ -288,6 +305,54 @@ def cmd_setup(chats_only: bool, new_login: bool) -> None:
            '"telegram-mcp (AI, read-only)".')
 
 
+def parse_ids(text: str) -> set[int]:
+    return {int(x) for x in text.split(",") if x.strip().lstrip("-").isdigit()}
+
+
+def cmd_send_chats(account: str) -> None:
+    if account != "main":
+        die(f"only the account 'main' exists yet (several accounts arrive with M1b, one credential set per account); got '{account}'")
+    for what, path in (("the venv", TG_PYTHON), ("login.py", TG_LOGIN)):
+        if not Path(path).exists():
+            die(f"{what} is missing ({path}): run  sudo ~/dotfiles/apply-system.sh --only users,mcp  first")
+    m = load_vault_bw()
+    m.ensure()
+    item = find_item(m)
+    api_id, api_hash, session = field(item, "api_id"), field(item, "api_hash"), field(item, "session")
+    readable = parse_ids(field(item, "allowlist"))
+    if not session or not readable:
+        die("the Telegram read setup is not done yet: run mcp-telegram-setup first (sending is a subset of the readable chats)")
+    out = run_login("list", api_id, api_hash, session)
+    if out is None:
+        die("the stored session is not valid: run mcp-telegram-setup --new-login")
+    chats = [c for c in out["chats"] if c["id"] in readable]
+    current = parse_ids(field(item, "send_allowlist")) & readable
+    if not chats:
+        die("none of the readable chats is in the chat list Telegram returned")
+    eprint(f"\nLogged in as {out['me']['name']}. {len(chats)} readable chats; {len(current)} may already be written to.")
+    ticked = pick_chats(chats, current, "send", "tick the chats the AI may ASK to WRITE to (you still confirm each message)")
+    if not ticked:
+        die("nothing ticked, the send list is unchanged", 0)
+    send = merge_allowlist(current, ticked)
+    if not send:
+        die("that would leave no chat to write to; the service needs at least one (nothing was changed)")
+    value = ",".join(map(str, send))
+    set_fields(m, item, {"send_allowlist": (value, 0)})
+    eprint("Bitwarden updated (send_allowlist; the send token is not stored there).")
+    payload = {"send_allowlist": value}
+    sudo_apply(payload, ("--ensure-send-token",))
+    payload.clear()
+    gateway("restart")
+    eprint("Gateway restarted.")
+    if Path(MCP_ADD).exists():
+        r = subprocess.run([MCP_ADD, "--claude"], capture_output=True, text=True)
+        eprint("mcp-add: " + ("telegram-send registered in Claude Code (never in Codex)." if r.returncode == 0 else "failed, run it by hand: mcp-add"))
+    names = {c["id"]: c["title"] for c in out["chats"]}
+    eprint(f"\nThe AI may ask to write to ({len(send)}): " + ", ".join(names.get(i, str(i)) for i in send))
+    eprint("Sending is OFF until you switch it on: hub > Telegram: allow sending (SUPER+; x m). Every message then needs your confirmation\n"
+           "in a popup. Also run  mcp-guard  once (deny rules for key-injection tools in Claude Code).")
+
+
 def cmd_status() -> int:
     rc = 0
 
@@ -304,6 +369,9 @@ def cmd_status() -> int:
         rc = 1
     if "telegram" not in served:
         rc = 1
+    sc_unit = sc("is-active", "tgconfirm.service")
+    sw = subprocess.run([str(BIN_DIR / "mcp-telegram-send"), "status"], capture_output=True, text=True).stdout.strip()
+    print(f"sending:  tgconfirm.service is {sc_unit or 'unknown'}; {sw or 'no state'}; telegram-send {'is' if 'telegram-send' in served else 'is NOT'} served")
     return rc
 
 
@@ -315,7 +383,17 @@ def main(argv: list[str]) -> int:
     words = [a for a in argv if not a.startswith("--")]
     if words == ["status"]:
         return cmd_status()
-    if words == ["chats"]:
+    if words and words[0] == "send-chats":
+        acct = "main"
+        if "--account" in argv:
+            i = argv.index("--account")
+            acct = argv[i + 1] if i + 1 < len(argv) else ""
+            words = [w for w in words if w != acct]
+        if words != ["send-chats"] or not acct:
+            print("usage: mcp-telegram-setup send-chats [--account NAME]", file=sys.stderr)
+            return 2
+        cmd_send_chats(acct)
+    elif words == ["chats"]:
         cmd_setup(True, new_login)
     elif not words:
         cmd_setup(False, new_login)

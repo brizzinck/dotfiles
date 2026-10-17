@@ -25,7 +25,7 @@ SAFEBIN="$SCRATCH/safebin"; mkdir -p "$SAFEBIN"
 for f in notify-send systemctl pkill; do ln -s "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bin/$f" "$SAFEBIN/$f"; done
 printf '#!/usr/bin/env bash\necho "systemd-run $*" >>"${FAKE_DIR:-/tmp}/argv.log"\n' >"$SAFEBIN/systemd-run"; chmod +x "$SAFEBIN/systemd-run"
 export PATH="$SAFEBIN:$PATH"
-export MCP_CHROME_NO_NOTIFY=1 MCP_CHROME_NO_RESTART=1 MCP_CHROME_NO_TIMER=1 AI_ASK_NO_NOTIFY=1
+export MCP_CHROME_NO_NOTIFY=1 MCP_CHROME_NO_RESTART=1 MCP_CHROME_NO_TIMER=1 MCP_TGSEND_NO_NOTIFY=1 MCP_TGSEND_NO_POKE=1 MCP_TGSEND_NO_TIMER=1 AI_ASK_NO_NOTIFY=1
 export MCP_GATEWAY_UNIT=mcp-gateway-test.service
 : >"$FAKE_DIR/argv.log"
 PASS=0 FAILS=0 SKIPS=0
@@ -350,6 +350,25 @@ check "send creds: the broker is enabled and restarted when a send token was sto
 check "send creds: a send token equal to the MCP token is refused" bash -c '! printf "{\"token\":\"%s\",\"send_token\":\"%s\"}" "$2" "$2" | "$1"' _ "$CI" "$SENDTOK"
 check "send creds: a bad send allowlist is refused" bash -c '! printf "{\"send_allowlist\":\"@x\"}" | "$1"' _ "$CI"
 check "send creds: --status lists the send credentials" bash -c '"$1" --status | grep -q "^send_token: present" && "$1" --status | grep -q "^tgconfirm send_token: present"' _ "$CI"
+# the root helper generates the send token itself: it is never given, never printed, sealed twice with the same value
+rm -rf "$CS" "$DROP"; : >"$FAKE_DIR/argv.log"
+printf '%s' "$PAYLOAD" | "$CI" >/dev/null 2>&1
+GEN_OUT=$(printf '{"send_allowlist":"-1001111"}' | "$CI" --ensure-send-token 2>&1)
+check "send token: generated when missing, sealed for the route AND the broker, the allowlist stored with it" bash -c '[ -s "$1/telegram-mcp.send_token" ] && [ -s "$1/tgconfirm.send_token" ] && [ -s "$1/telegram-mcp.send_allowlist" ] && [ -e "$2/send.conf" ]' _ "$CS" "$DROP"
+check "send token: both sealed copies hold the same value, which is not the MCP token" bash -c 'cmp -s "$1/telegram-mcp.send_token" "$1/tgconfirm.send_token" && ! cmp -s "$1/telegram-mcp.send_token" "$1/telegram-mcp.token"' _ "$CS"
+check "send token: the helper says it generated one but prints no value" bash -c 'grep -q "generated a new send token" <<<"$1" && ! grep -qE "[A-Za-z0-9_-]{32,}" <<<"$1"' _ "$GEN_OUT"
+check "send token: never on argv" bash -c '! grep -E "systemd-creds.*[A-Za-z0-9_-]{43}" "$1" | grep -qv -e "--name=" ' _ "$FAKE_DIR/argv.log"
+cp "$CS/tgconfirm.send_token" "$SCRATCH/send-token.before"
+printf '{"send_allowlist":"-1001111,42"}' | "$CI" --ensure-send-token >/dev/null 2>&1
+check "send token: --ensure keeps the existing token when both copies exist" cmp -s "$CS/tgconfirm.send_token" "$SCRATCH/send-token.before"
+printf '{"send_allowlist":"-1001111,42"}' | "$CI" --rotate-send-token >/dev/null 2>&1
+check "send token: --rotate replaces both copies with a new value" bash -c '! cmp -s "$1/tgconfirm.send_token" "$2" && cmp -s "$1/tgconfirm.send_token" "$1/telegram-mcp.send_token"' _ "$CS" "$SCRATCH/send-token.before"
+rm -f "$CS/tgconfirm.send_token"; printf '{"send_allowlist":"-1001111"}' | "$CI" --ensure-send-token >/dev/null 2>&1
+check "send token: --ensure repairs a missing broker copy" bash -c 'cmp -s "$1/tgconfirm.send_token" "$1/telegram-mcp.send_token"' _ "$CS"
+check "send token: a token on stdin together with a generate flag is refused" bash -c '! printf "{\"send_token\":\"%s\"}" "$2" | "$1" --ensure-send-token' _ "$CI" "$SENDTOK"
+check "send token: the flag alone works with an empty object (token only)" bash -c 'rm -rf "$2"; printf "{}" | "$1" --ensure-send-token >/dev/null && [ -s "$2/tgconfirm.send_token" ]' _ "$CI" "$CS"
+rm -rf "$CS"; : >"$FAKE_DIR/argv.log"; printf '%s' "$PAYLOAD" | "$CI" >/dev/null 2>&1
+printf '{"send_token":"%s","send_allowlist":"-1001111"}' "$SENDTOK" | "$CI" >/dev/null 2>&1
 rm -f "$CS/telegram-mcp.send_allowlist"; "$CI" --sync >/dev/null 2>&1
 check "send creds: --sync removes the drop-in when a send credential is gone" bash -c '[ ! -e "$1/send.conf" ]' _ "$DROP"
 unset DROPIN_DIR SEND_CONF_SRC UNIT_DIR
@@ -372,14 +391,14 @@ check "run: allowlist from the credential" grep -qx 'TELEGRAM_ALLOWED_CHAT_IDS=-
 check "run: session string, api id/hash and token reach the environment" bash -c 'grep -q "^TELEGRAM_SESSION_STRING=1AAAA" "$1" && grep -qx "TELEGRAM_API_ID=12345678" "$1" && grep -qx "TELEGRAM_MCP_TOKEN=bearer-token-value" "$1"' _ "$FAKE_DIR/run-env.txt"
 check "run: HTTP on loopback only, local whisper engine, no cloud key" bash -c 'grep -qx "MCP_HOST=127.0.0.1" "$1" && grep -qx "MCP_TRANSPORT=http" "$1" && grep -qx "TELEGRAM_TRANSCRIBE_ENGINE=openai" "$1" && grep -qx "TELEGRAM_TRANSCRIBE_OPENAI_URL=http://127.0.0.1:8766" "$1" && ! grep -q GROQ "$1"' _ "$FAKE_DIR/run-env.txt"
 check "run: secrets are not in the argument list" bash -c 'grep "^args:" "$1" | grep -qv -e AAAA -e bearer-token -e 0123456789abcdef' _ "$FAKE_DIR/run-env.txt"
-check "run: no send credentials, no send environment" bash -c '! grep -q "SEND" "$1"' _ "$FAKE_DIR/run-env.txt"
+check "run: no send credentials, no send environment" bash -c '! grep -q "TELEGRAM_SEND" "$1"' _ "$FAKE_DIR/run-env.txt"
 printf 'send-token-value-send-token-value-1' >"$CRED/send_token"; printf -- '-1001111\n' >"$CRED/send_allowlist"
 "${TG_RUN[@]}" >/dev/null 2>&1
 check "run: both send credentials reach the environment" bash -c 'grep -qx "TELEGRAM_SEND_TOKEN=send-token-value-send-token-value-1" "$1" && grep -qx "TELEGRAM_SEND_ALLOWLIST=-1001111" "$1"' _ "$FAKE_DIR/run-env.txt"
 check "run: the exposure stays read-only with the send credentials" grep -qx 'TELEGRAM_EXPOSED_TOOLS=read-only' "$FAKE_DIR/run-env.txt"
 rm -f "$CRED/send_allowlist"
 "${TG_RUN[@]}" >/dev/null 2>&1
-check "run: a send token without an allowlist is not exported" bash -c '! grep -q "SEND" "$1"' _ "$FAKE_DIR/run-env.txt"
+check "run: a send token without an allowlist is not exported" bash -c '! grep -q "TELEGRAM_SEND" "$1"' _ "$FAKE_DIR/run-env.txt"
 rm -f "$CRED/send_token"
 printf '\n' >"$CRED/allowlist"
 check "run: an empty allowlist refuses to start (78)" bash -c '"${@}" >/dev/null 2>&1; [ $? -eq 78 ]' _ "${TG_RUN[@]}"
@@ -423,6 +442,28 @@ check "chats: reuses the stored session (list mode, no QR)" bash -c 'grep -q "^m
 check "chats: ticking an allowed chat removes it, ticking a new one adds it" jq -e '(.fields[] | select(.name=="allowlist") | .value) == "-1001111,777"' "$FAKE_DIR/bw-item.json"
 check "chats: only the allowlist (and the token) go to the root helper" bash -c 'jq -e ".allowlist == \"-1001111,777\" and (has(\"session\") | not) and (has(\"api_hash\") | not)" "$1"' _ "$FAKE_DIR/creds-payload.json"
 check "chats: the picker marks the allowed chats" grep -q '\[allowed\].*Work chat' "$FAKE_DIR/pick-rows.txt"
+# send-chats: a subset of the readable chats; the send token is generated by the root helper and never touches Bitwarden
+: >"$FAKE_DIR/login.log"; rm -f "$FAKE_DIR/creds-payload.json" "$FAKE_DIR/creds-args.txt"
+FAKE_PICK_IDS="-1001111" setup_env "$SETUP" send-chats >"$SCRATCH/sendchats.out" 2>&1
+check "send-chats: uses the stored session (list mode, no QR)" bash -c 'grep -q "^mode=list .*has_session=yes" "$1" && ! grep -q "^mode=qr" "$1"' _ "$FAKE_DIR/login.log"
+check "send-chats: the picker offers only the readable chats" bash -c 'grep -q "Work chat" "$1" && grep -q "Secret person" "$1" && ! grep -q -e "Ann" -e "News" "$1" && [ "$(wc -l <"$1")" = 2 ]' _ "$FAKE_DIR/pick-rows.txt"
+check "send-chats: Bitwarden gets the text field send_allowlist and no send token anywhere" jq -e '(.fields[] | select(.name=="send_allowlist") | .type == 0 and .value == "-1001111") and ([.fields[].name] | map(test("send_token|token")) | any | not) and (.fields[] | select(.name=="allowlist") | .value) == "-1001111,777"' "$FAKE_DIR/bw-item.json"
+check "send-chats: the root helper gets only send_allowlist on stdin, asked to generate the token itself" bash -c 'jq -e "keys == [\"send_allowlist\"] and .send_allowlist == \"-1001111\"" "$1" && [ "$(cat "$2")" = "--ensure-send-token" ]' _ "$FAKE_DIR/creds-payload.json" "$FAKE_DIR/creds-args.txt"
+check "send-chats: no send token in the payload, on any argv or in the state directory" bash -c '! grep -rqi "send_token\|sendtoken" "$1" "$2" 2>/dev/null' _ "$FAKE_DIR/argv.log" "$SCRATCH/setup-state"
+check "send-chats: gateway restarted, Claude-only registration, sending stays OFF" bash -c 'grep -q "gateway restart" "$1" && grep -q "mcp-add called" "$1" && grep -q "OFF until you switch it on" "$2" && grep -q "Work chat" "$2"' _ "$FAKE_DIR/argv.log" "$SCRATCH/sendchats.out"
+FAKE_PICK_IDS="777" setup_env "$SETUP" send-chats >/dev/null 2>&1
+check "send-chats: ticking a new chat adds it" jq -e '(.fields[] | select(.name=="send_allowlist") | .value) == "-1001111,777"' "$FAKE_DIR/bw-item.json"
+FAKE_PICK_IDS="-1001111" setup_env "$SETUP" send-chats >/dev/null 2>&1
+check "send-chats: ticking a [send] chat removes it" jq -e '(.fields[] | select(.name=="send_allowlist") | .value) == "777"' "$FAKE_DIR/bw-item.json"
+rm -f "$FAKE_DIR/creds-payload.json"
+FAKE_PICK_IDS="777" setup_env "$SETUP" send-chats >/dev/null 2>&1
+check "send-chats: removing the last send chat is refused and nothing is sent to the root helper" bash -c '[ ! -e "$1" ] && jq -e "(.fields[] | select(.name==\"send_allowlist\") | .value) == \"777\"" "$2"' _ "$FAKE_DIR/creds-payload.json" "$FAKE_DIR/bw-item.json"
+check "send-chats: an account other than main is refused until M1b" bash -c '! FAKE_PICK_IDS=777 "${@:2}" "$1" send-chats --account work >/dev/null 2>&1' _ "$SETUP" env BW_BIN="$HERE/bin/bw" VAULT_BW="$REPO/.config/hypr/scripts/vault-bw.py" VAULT_RBW_CONF=/nonexistent PATH="$HERE/bin:$PATH" MCP_TG_PYTHON=/usr/bin/python3 MCP_TG_LOGIN="$HERE/fake_login.py" MCP_TG_CREDS="$HERE/fake_creds.sh" MCP_TG_SUDO=env MCP_TG_PICK="$HERE/fake_pick.sh" MCP_GATEWAY_CMD="$HERE/fake_gw_tg.sh" MCP_ADD_CMD="$HERE/fake_add.sh" MCP_TG_NO_VERIFY=1 MCP_STATE_DIR="$SCRATCH/setup-state"
+check "send-chats: bad usage is a usage error" bash -c '"${@:2}" "$1" send-chats extra >/dev/null 2>&1; [ $? -eq 2 ]' _ "$SETUP" env MCP_STATE_DIR="$SCRATCH/setup-state"
+# shrinking the readable chats also trims the send list (it must stay a subset)
+FAKE_PICK_IDS="-1001111" setup_env "$SETUP" send-chats >/dev/null 2>&1   # send list is -1001111,777 again
+FAKE_PICK_IDS="-1001111" setup_env "$SETUP" chats >/dev/null 2>&1   # removes -1001111 ([allowed]) from the read list
+check "chats: removing a readable chat also trims the send list, in Bitwarden and for the root helper" bash -c 'jq -e "(.fields[] | select(.name==\"allowlist\") | .value) == \"777\" and (.fields[] | select(.name==\"send_allowlist\") | .value) == \"777\"" "$1" && jq -e ".allowlist == \"777\" and .send_allowlist == \"777\"" "$2"' _ "$FAKE_DIR/bw-item.json" "$FAKE_DIR/creds-payload.json"
 # a stale stored session falls back to the QR login
 jq '(.fields[] | select(.name=="session") | .value) = "1STALE"' "$FAKE_DIR/bw-item.json" >"$FAKE_DIR/x.json" && mv "$FAKE_DIR/x.json" "$FAKE_DIR/bw-item.json"
 : >"$FAKE_DIR/login.log"
@@ -471,6 +512,28 @@ check "popup.py: the code comes from the system RNG and is never written or logg
 count_py python3 -I "$HERE/test_confirm.py" "$REPO"
 count_py python3 -I "$HERE/test_popup.py" "$REPO"
 
+# --- mcp-guard: deny rules in a throwaway settings.json -----------------------------------------------------------------------
+GUARD="$REPO/.local/bin/mcp-guard"
+GS="$SCRATCH/guard/settings.json"; mkdir -p "$SCRATCH/guard"
+printf '{\n  "permissions": {"allow": ["mcp__x"], "deny": ["Bash(rm -rf /:*)"], "defaultMode": "auto"},\n  "model": "opus"\n}\n' >"$GS"
+cp "$GS" "$SCRATCH/guard/before.json"
+check "guard --check fails before the rules exist" bash -c '! MCP_GUARD_SETTINGS="$2" "$1" --check' _ "$GUARD" "$GS"
+MCP_GUARD_SETTINGS="$GS" "$GUARD" --dry-run >/dev/null
+check "guard --dry-run writes nothing" cmp -s "$GS" "$SCRATCH/guard/before.json"
+MCP_GUARD_SETTINGS="$GS" "$GUARD" >/dev/null
+check "guard: the key-injection and capture tools are denied for the agents' Bash" bash -c 'for r in "Bash(wtype:*)" "Bash(wlrctl:*)" "Bash(hyprd:*)" "Bash(hyprctl eval:*)" "Bash(hyprctl dispatch:*)" "Bash(grim:*)"; do jq -e --arg r "$r" ".permissions.deny | index(\$r)" "$1" >/dev/null || exit 1; done' _ "$GS"
+check "guard: existing rules, allow list, model and mode are kept" jq -e '.permissions.deny[0] == "Bash(rm -rf /:*)" and .permissions.allow == ["mcp__x"] and .permissions.defaultMode == "auto" and .model == "opus"' "$GS"
+check "guard: a timestamped backup of the old file exists" bash -c 'ls "$1"/settings.json.bak-mcp-guard-* >/dev/null && cmp -s "$(ls "$1"/settings.json.bak-mcp-guard-* | head -1)" "$2"' _ "$SCRATCH/guard" "$SCRATCH/guard/before.json"
+cp "$GS" "$SCRATCH/guard/after1.json"
+MCP_GUARD_SETTINGS="$GS" "$GUARD" >/dev/null
+check "guard: a second run is idempotent" cmp -s "$GS" "$SCRATCH/guard/after1.json"
+check "guard --check passes afterwards" bash -c 'MCP_GUARD_SETTINGS="$2" "$1" --check' _ "$GUARD" "$GS"
+MCP_GUARD_SETTINGS="$GS" "$GUARD" --remove >/dev/null
+check "guard --remove restores the original content" bash -c 'diff <(jq -S . "$1") <(jq -S . "$2")' _ "$GS" "$SCRATCH/guard/before.json"
+printf '{ broken' >"$GS"
+check "guard: an unparsable settings file is left untouched" bash -c '! MCP_GUARD_SETTINGS="$2" "$1" >/dev/null 2>&1 && [ "$(cat "$2")" = "{ broken" ]' _ "$GUARD" "$GS"
+check "guard: a missing settings file is created with the rules (mode 600)" bash -c 'rm -f "$2"; MCP_GUARD_SETTINGS="$2" "$1" >/dev/null && [ "$(stat -c %a "$2")" = 600 ] && MCP_GUARD_SETTINGS="$2" "$1" --check' _ "$GUARD" "$GS"
+
 # --- AI hotkeys (ai-ask.sh) with fake hyprctl / grim / wl-paste / terminal / claude ---------------------------------------
 AA="$REPO/.config/hypr/scripts/ai-ask.sh"
 AADIR="$SCRATCH/ai-ask"
@@ -502,6 +565,8 @@ check "window: the desktop-ro tools are pre-allowed, the prompt is generic" bash
 check "window: context files are removed when the session ends" bash -c '[ ! -e "$1/context.md" ] && [ ! -e "$1/window.png" ]' _ "$AADIR"
 check "window: the context directory is private (700)" bash -c '[ "$(stat -c %a "$1")" = 700 ]' _ "$AADIR"
 
+check "window: a strict MCP config with desktop-ro only" bash -c 'a=$(grep "^argv:" "$1"); grep -q -- "--strict-mcp-config" <<<"$a" && grep -q -- "--mcp-config" <<<"$a" && jq -e ".mcpServers | keys == [\"desktop-ro\"]" <(sed -n "/^--- mcp.json/,\$p" "$1" | sed 1d | sed "/^done/d")' _ "$FAKE_DIR/claude-session.txt"
+
 reset_aa; aa "$AA" window --no-shot; wait_done
 check "window --no-shot: no grim call, text only" bash -c '! grep -q "^grim" "$1" && grep -q "text only" "$2"' _ "$FAKE_DIR/argv.log" "$FAKE_DIR/claude-session.txt"
 reset_aa; FAKE_ACTIVE='{"address":"0x1","class":"Bitwarden","title":"Vault","pid":5,"at":[0,0],"size":[500,500]}' aa "$AA" window; wait_done
@@ -511,6 +576,7 @@ check "window: a Telegram window gets the chat-title hint" grep -q 'window title
 
 reset_aa; FAKE_TERM_INPUT="What does this do?" aa "$AA" selection; wait_done
 check "selection: the primary selection is in context.md, not on argv" bash -c 'grep -q "PRIMARY-SELECTION" "$1" && ! grep "^argv:" "$1" | grep -q "PRIMARY-SELECTION"' _ "$FAKE_DIR/claude-session.txt"
+check "selection: a strict MCP config with desktop-ro only (no telegram, no telegram-send)" bash -c 'a=$(grep "^argv:" "$1"); grep -q -- "--strict-mcp-config" <<<"$a" && jq -e ".mcpServers | keys == [\"desktop-ro\"]" <(sed -n "/^--- mcp.json/,\$p" "$1" | sed 1d | sed "/^done/d")' _ "$FAKE_DIR/claude-session.txt"
 check "selection: the typed question reaches the prompt" bash -c 'grep "^argv:" "$1" | grep -q "Question: What does this do?"' _ "$FAKE_DIR/claude-session.txt"
 reset_aa; FAKE_TERM_INPUT="" aa "$AA" selection; wait_done
 check "selection: Enter alone asks to explain it" bash -c 'grep "^argv:" "$1" | grep -q "Explain what this is"' _ "$FAKE_DIR/claude-session.txt"
@@ -523,8 +589,13 @@ check "selection: empty everywhere launches nothing" test ! -e "$FAKE_DIR/claude
 
 reset_aa; aa "$AA" telegram; wait_done
 check "telegram: strict MCP config with only the telegram server" bash -c 'a=$(grep "^argv:" "$1"); grep -q -- "--strict-mcp-config" <<<"$a" && grep -q -- "--mcp-config" <<<"$a" && jq -e ".mcpServers | keys == [\"telegram\"]" <(sed -n "/^--- mcp.json/,\$p" "$1" | sed 1d | sed "/^done/d")' _ "$FAKE_DIR/claude-session.txt"
+check "telegram: without telegram-send on the gateway the session has the read server only and no send tool is pre-allowed beyond the names" bash -c 'jq -e ".mcpServers | has(\"telegram-send\") | not" <(sed -n "/^--- mcp.json/,\$p" "$1" | sed 1d | sed "/^done/d")' _ "$FAKE_DIR/claude-session.txt"
+reset_aa; FAKE_GW_SEND=1 aa "$AA" telegram; wait_done
+check "telegram: with the broker installed the session also gets telegram-send, nothing else" bash -c 'jq -e ".mcpServers | keys == [\"telegram\",\"telegram-send\"]" <(sed -n "/^--- mcp.json/,\$p" "$1" | sed 1d | sed "/^done/d")' _ "$FAKE_DIR/claude-session.txt"
+check "telegram: only send_message and status of telegram-send are pre-allowed, never the whole server" bash -c 'a=$(grep "^argv:" "$1"); grep -q "mcp__telegram-send__send_message" <<<"$a" && ! grep -qE "mcp__telegram-send([ ,]|$)" <<<"$a"' _ "$FAKE_DIR/claude-session.txt"
+reset_aa; aa "$AA" telegram; wait_done
 check "telegram: the MCP config uses the headers helper, never a token" bash -c 'grep -q "headersHelper" "$1" && ! grep -q -i -E "bearer|test-gateway-token" "$1"' _ "$FAKE_DIR/claude-session.txt"
-check "telegram: built-in tools limited to Bash, allowed only for wl-copy; no web tools" bash -c 'a=$(grep "^argv:" "$1"); grep -q -- "--tools Bash" <<<"$a" && grep -q -- "--allowedTools mcp__telegram,Bash(wl-copy:\*)" <<<"$a" && ! grep -q -i "web" <<<"$a"' _ "$FAKE_DIR/claude-session.txt"
+check "telegram: built-in tools limited to Bash, allowed only for wl-copy; no web tools" bash -c 'a=$(grep "^argv:" "$1"); grep -q -- "--tools Bash" <<<"$a" && grep -q -- "--allowedTools mcp__telegram,mcp__telegram-send__send_message,mcp__telegram-send__status,Bash(wl-copy:\*)" <<<"$a" && ! grep -q -i "web" <<<"$a"' _ "$FAKE_DIR/claude-session.txt"
 check "telegram: the prompt forbids sending and marking read" bash -c 'grep "^argv:" "$1" | grep -q "never send anything" && grep "^argv:" "$1" | grep -q "Do not mark anything as read"' _ "$FAKE_DIR/claude-session.txt"
 check "telegram: the session files are cleaned up" bash -c '[ ! -e "$1/mcp.json" ]' _ "$AADIR"
 reset_aa; AA_GW=/bin/false aa "$AA" telegram; sleep 0.3

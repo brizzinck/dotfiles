@@ -13,8 +13,10 @@
 #
 # Context goes to files in $XDG_RUNTIME_DIR/ai-ask (tmpfs, 0700) that Claude reads from its working directory; the arguments of
 # the claude process never hold a selection or a screenshot. The files are removed when the session ends.
-# The AI never sends anything: it drafts, you press Enter. The Telegram digest session gets only the telegram MCP server, no
-# web tools and a Bash allowance limited to `wl-copy` (to put a draft on the clipboard when you ask for it).
+# The AI never sends anything by itself: it drafts, you press Enter; the one exception is the Telegram digest session, which may
+# call telegram-send, and every message needs your confirmation in the tgconfirm popup. Every session runs with --strict-mcp-config:
+# window and selection get only desktop-ro; the Telegram digest gets telegram (read-only) and, when the gateway serves it,
+# telegram-send. No web tools, and Bash only for `wl-copy` (to put a draft on the clipboard when you ask for it) in the digest.
 # Test hooks: AI_ASK_DIR, AI_ASK_TERMINAL (command prefix replacing `ghostty --class=float.tui -e`), AI_ASK_CLAUDE,
 # AI_ASK_GATEWAY (mcp-gateway command), AI_ASK_HEADERS (headers helper path), AI_ASK_NO_NOTIFY=1.
 set -u
@@ -40,6 +42,17 @@ prepare_dir() {
   ((DRY)) && return 0
   (umask 077; mkdir -p "$DIR") && chmod 700 "$DIR"
   rm -f -- "$DIR/context.md" "$DIR/window.png" "$DIR/mcp.json"
+}
+
+# write_mcp_config NAME...: $DIR/mcp.json with the gateway endpoint of each named server that the gateway serves (headers helper,
+# never a token). Used with --strict-mcp-config, so a session sees exactly these servers and not the user's whole MCP list.
+write_mcp_config() {
+  local n url cfg='{"mcpServers":{}}'
+  for n in "$@"; do
+    url=$("$GATEWAY" url "$n" 2>/dev/null) || continue
+    cfg=$(jq -c --arg n "$n" --arg url "$url" --arg h "$HEADERS_HELPER" '.mcpServers[$n] = {type: "http", url: $url, headersHelper: $h}' <<<"$cfg")
+  done
+  printf '%s\n' "$cfg" >"$DIR/mcp.json"
 }
 
 # open the session in a floating terminal; the session wrapper (`_session`) runs claude and cleans up
@@ -80,15 +93,17 @@ cmd_window() {
     plan "context: class=$class title=$title pid=$pid geometry=$geom"
     ((shot)) && plan "screenshot of this window only: grim -g \"$geom\" $DIR/window.png"
     ((shot)) || plan "no screenshot"
+    plan "strict MCP config: desktop-ro only"
     launch window
     return 0
   fi
+  write_mcp_config desktop-ro
   if ((shot)) && grim -g "$geom" "$DIR/window.png" 2>/dev/null; then shotmsg="./window.png is a screenshot of this window only"; else rm -f "$DIR/window.png"; fi
   {
     printf '# Focused window\n\n'
     printf -- '- application class: %s\n- title: %s\n- pid: %s\n- geometry on screen: %s\n- screenshot: %s\n' "$class" "$title" "$pid" "$geom" "$shotmsg"
     if [[ $class == org.telegram.desktop ]]; then
-      printf -- '- hint: this is Telegram Desktop; the window title is the open chat. If the `telegram` MCP server is available use its read tools to fetch that chat'"'"'s recent messages instead of reading the screenshot.\n'
+      printf -- '- hint: this is Telegram Desktop; the window title is the open chat. For the contents of chats the owner uses the Telegram digest hotkey (SUPER+CTRL+T); this session only has the desktop-ro tools.\n'
     fi
   } >"$ctx"
   launch window
@@ -114,10 +129,12 @@ cmd_selection() {
   class=$(jq -r '.class // "?"' <<<"$info" 2>/dev/null); title=$(jq -r '.title // "?"' <<<"$info" 2>/dev/null)
   if ((DRY)); then
     plan "selection of ${#text} characters from window class=$class (not printed)"
+    plan "strict MCP config: desktop-ro only"
     launch selection
     return 0
   fi
   prepare_dir
+  write_mcp_config desktop-ro
   {
     printf '# Selected text\n\nCopied from the window "%s" (class %s).\n\n```text\n' "$title" "$class"
     printf '%s\n' "$text"
@@ -133,11 +150,10 @@ cmd_telegram() {
     say "Telegram digest" "the Telegram MCP server is not set up: run mcp-telegram-setup (hub: AI > Telegram MCP: set up)" critical
     return 1
   fi
-  if ((DRY)); then plan "mcp config with the gateway endpoint of telegram (headers helper, no token)"; launch telegram; return 0; fi
+  if ((DRY)); then plan "strict MCP config: telegram, plus telegram-send when the gateway serves it (headers helper, no token)"; launch telegram; return 0; fi
   prepare_dir
-  local url
-  url=$("$GATEWAY" url telegram) || { say "Telegram digest" "gateway has no telegram endpoint" critical; return 1; }
-  jq -n --arg url "$url" --arg h "$HEADERS_HELPER" '{mcpServers: {telegram: {type: "http", url: $url, headersHelper: $h}}}' >"$DIR/mcp.json"
+  "$GATEWAY" url telegram >/dev/null 2>&1 || { say "Telegram digest" "gateway has no telegram endpoint" critical; return 1; }
+  write_mcp_config telegram telegram-send   # telegram-send only exists once the tgconfirm broker is installed
   launch telegram
 }
 
@@ -155,17 +171,18 @@ cmd_session() {
   trap cleanup_session EXIT
   case $kind in
     window)
-      exec_claude "$PROMPT_WINDOW" --allowedTools "mcp__desktop-ro" ;;
+      exec_claude "$PROMPT_WINDOW" --strict-mcp-config --mcp-config "$DIR/mcp.json" --allowedTools "mcp__desktop-ro" ;;
     selection)
       printf 'Selection (%s characters). Question [Enter = explain it]: ' "$(wc -c <context.md | tr -d ' ')" >&2
       read -r question
       [[ -n $question ]] || question="Explain what this is, briefly."
       prompt="$PROMPT_SELECTION Question: $question"
-      exec_claude "$prompt" --allowedTools "mcp__desktop-ro" ;;
+      exec_claude "$prompt" --strict-mcp-config --mcp-config "$DIR/mcp.json" --allowedTools "mcp__desktop-ro" ;;
     telegram)
-      # only the telegram MCP server (strict), no web tools; Bash exists only for wl-copy (other commands still ask)
+      # only the telegram (+ telegram-send) MCP servers (strict), no web tools; Bash exists only for wl-copy (other commands still
+      # ask). send_message is pre-allowed because its own popup is the confirmation: nothing leaves until you press its key code.
       exec_claude "$PROMPT_TELEGRAM" --strict-mcp-config --mcp-config "$DIR/mcp.json" --tools "Bash" \
-        --allowedTools "mcp__telegram,Bash(wl-copy:*)" ;;
+        --allowedTools "mcp__telegram,mcp__telegram-send__send_message,mcp__telegram-send__status,Bash(wl-copy:*)" ;;
     *) echo "ai-ask: unknown session kind: $kind" >&2; exit 2 ;;
   esac
 }
