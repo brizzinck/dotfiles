@@ -1,0 +1,13 @@
+# Obsidian's .obsidian folder for every vault (apps/obsidian/apply.sh links <vault>/.obsidian here).
+# Settings are tracked; volatile, per-device and downloaded files are not.
+workspace.json
+workspace-mobile.json
+cache
+# plugin code is downloaded from the pinned release (apps/obsidian/plugins.tsv); only its settings are tracked
+plugins/*/*
+!plugins/*/data.json
+# downloaded community themes (the Everforest snippet replaces them)
+themes/
+# links and files written by apply.sh
+snippets/everforest.css
+*.vimrc

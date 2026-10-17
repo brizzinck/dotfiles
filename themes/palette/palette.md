@@ -157,14 +157,14 @@ Desktop layer (applied, stage T1b; section 5.3 of the design study has the full 
 | btop | `btop.theme` | gradients green -> yellow -> red, boxes `border`, dividers `line`, main_bg empty (terminal background) |
 | lazygit | `lazygit.yml` | active border `green`, inactive `line`, selected row `select`, options `blue`, search `yellow`; lazydocker keeps ANSI names (terminal palette) |
 | Vimium C | `vimium-c.css`, embedded in `browsers/vimium-c.json` | link hints `bg_oled` with a `green` frame and `yellow` typed prefix, hover highlight `green`, HUD / find bar `surface`, Vomnibar `bg` / `surface` with `select` for the chosen row; import by hand (`browsers/README.md`) |
-| Telegram, Obsidian | generated, applied by hand | see below |
+| Obsidian | `obsidian.css` (`--color-base-*`, backgrounds, text, accent, headings, code, graph) | CSS snippet linked into every vault by `apps/obsidian/apply.sh`; follows the variant live (theme hook `70-obsidian.sh`) |
+| Telegram | generated, applied by hand | see below |
 
-What follows a switch live: Hyprland (reload), waybar (SIGUSR2), dunst (reload), swayosd (restart), terminals, tmux, nvim. At the next start only: GTK and Qt apps (qt6ct is nudged by a touch of `qt6ct.conf`), btop, lazygit, rofi, wofi, hyprlock. Telegram, Obsidian and Claude Code need the manual steps below.
+What follows a switch live: Hyprland (reload), waybar (SIGUSR2), dunst (reload), swayosd (restart), terminals, tmux, nvim. At the next start only: GTK and Qt apps (qt6ct is nudged by a touch of `qt6ct.conf`), btop, lazygit, rofi, wofi, hyprlock. Telegram and Claude Code need the manual steps below. Obsidian follows a switch live: `apps/obsidian/apply.sh` links `snippets/everforest.css` to `current/obsidian.css` in the config folder every vault's `.obsidian` points to (`apps/obsidian/vault-config`), and `hooks.d/70-obsidian.sh` touches that link so a running Obsidian reloads it.
 
-## Telegram and Obsidian (owner steps)
+## Telegram (owner steps)
 
 - **Telegram Desktop**: `themes/generated/<variant>/everforest-<variant>.tdesktop-theme` is a complete theme (all 467 keys, derived from the stock Night theme, so nothing falls back to the light Day palette; the design study had asked for an export of Night, the copy shipped in tdesktop's `Telegram/Resources/night.tdesktop-theme` was used instead). Send the file to *Saved Messages* and open it ("Apply this theme"), or Settings > Chat Settings > Choose from file. Telegram has no auto-load: re-apply after a variant switch or a palette change. It was generated without a visual check; report keys that look wrong and fix them in `templates/telegram.colors.tmpl` (accents are `green` fills with `bg` text, the selected chat and own messages use `select`).
-- **Obsidian**: copy `themes/generated/<variant>/obsidian.css` to `<vault>/.obsidian/snippets/everforest.css` and enable it in Settings > Appearance > CSS snippets. Nothing writes into the vaults.
 - **GTK apps** already running keep the old colours until restarted.
 
 ## Claude Code and Codex (owner steps, agents may not write to `~/.claude` or `~/.codex`)

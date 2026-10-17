@@ -1,0 +1,11 @@
+{
+  "cssTheme": "",
+  "enabledCssSnippets": [
+    "everforest"
+  ],
+  "baseFontSize": 18,
+  "theme": "obsidian",
+  "showViewHeader": true,
+  "showRibbon": true,
+  "textFontFamily": "Inter"
+}

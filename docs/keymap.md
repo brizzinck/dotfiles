@@ -1159,7 +1159,7 @@ Vimium C defaults stay; the ua/ru layouts get the same keys through mapKey. Impo
 
 ### Obsidian (Vim mode)
 
-Obsidian's Vim key bindings plus the community plugin Vimrc Support reading apps/obsidian/obsidian.vimrc (Space is the leader, habits of the nvim config). The ua/ru layouts get explicit nmap/vmap twins (layout.py gen obsidian). The plugin is installed by hand once (Settings > Community plugins > Browse > Vimrc Support); apps/obsidian/apply.sh sets vimMode and copies the vimrc into the vault; restart Obsidian.
+Obsidian's Vim key bindings plus the community plugin Vimrc Support reading apps/obsidian/obsidian.vimrc (Space is the leader, habits of the nvim config). The ua/ru layouts get explicit nmap/vmap twins (layout.py gen obsidian). apps/obsidian/apply.sh installs the pinned plugin (plugins.tsv), enables it and links the vimrc into the vault; restart Obsidian.
 
 | Keys | Action | Context |
 |---|---|---|

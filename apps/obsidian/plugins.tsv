@@ -1,0 +1,6 @@
+# Community plugins installed by apps/obsidian/plugins.sh (and apps/obsidian/apply.sh) from the GitHub release assets.
+# id <TAB> GitHub repo <TAB> release tag <TAB> sha256 main.js <TAB> sha256 manifest.json <TAB> sha256 styles.css (- = the release has none)
+# Update a pin: apps/obsidian/plugins.sh pin ID TAG   (downloads that release and rewrites the row), then commit.
+obsidian-relative-line-numbers	nadavspi/obsidian-relative-line-numbers	3.0.0	6720944fc29f1b0fb81ab931865addc15212cbbf7aca906af1c22f431c89901a	e99869b00ba48994f5ec1fa8628b0bb3fd74f9eb8f7ab926cf5a4810cbca1c6b	705bdc8f58c2e8696ec2d99c436938da154f42f557908aae54b5cce0f0e35c02
+pdf-plus	RyotaUshio/obsidian-pdf-plus	0.40.28	6a04220de18655b29f65c27e49a9549a5c0f9c028549ea77721d3117f53116e5	03b11a51aacb311de06aa8da293399438cbf4ab7b5f61b49482d6292eb740aa8	3d7eed7d800a495ca0c6bfead32711a6abe0fb2e861cf77e194500ec34e1cad4
+obsidian-vimrc-support	esm7/obsidian-vimrc-support	0.10.2	6863734e19eef2505e054250ca821bc532f6d6271e6f50172b1e8a04734e6ce2	b2de5a4be391b88ebd9289e381562d1491a587979fd08bbda6a7ff51be27d056	-

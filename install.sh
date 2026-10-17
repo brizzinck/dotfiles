@@ -268,7 +268,7 @@ fc-cache -f 2>/dev/null || true
 log "Browser settings (Zen user.js memory prefs, Chrome disk-cache flag; copied into the flatpak sandboxes)"
 "$DOTFILES/browsers/apply.sh" || warn "browsers/apply.sh failed"
 
-log "Obsidian vim keys (vault app.json vimMode + .obsidian.vimrc for the Vimrc Support plugin; the plugin is installed by hand)"
+log "Obsidian (vault .obsidian -> apps/obsidian/vault-config, pinned plugins from GitHub, Everforest snippet, vimrc)"
 "$DOTFILES/apps/obsidian/apply.sh" || warn "apps/obsidian/apply.sh failed"
 
 log "User timers: cache aging (user tmpfiles), Codex release pruning and the sysalert health check"

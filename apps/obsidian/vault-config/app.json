@@ -1,0 +1,19 @@
+{
+  "attachmentFolderPath": "Chached",
+  "pdfExportSettings": {
+    "includeName": false,
+    "pageSize": "A4",
+    "landscape": false,
+    "margin": "0",
+    "downscalePercent": 77
+  },
+  "vimMode": true,
+  "promptDelete": false,
+  "showLineNumber": true,
+  "readableLineLength": false,
+  "alwaysUpdateLinks": true,
+  "showInlineTitle": true,
+  "autoPairMarkdown": true,
+  "autoPairBrackets": true,
+  "livePreview": true
+}

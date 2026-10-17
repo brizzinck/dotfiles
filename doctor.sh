@@ -264,14 +264,31 @@ if [ -r "$DOTFILES/.config/hypr/scripts/vault-browse.py" ]; then
 else
   bad vault-browse ".config/hypr/scripts/vault-browse.py missing"
 fi
-# V1c: generated layout twins are current (tmux/rofi depend on running tools and are skipped by `layout.py check`), and the
-# Obsidian vault carries the vimrc + vimMode (apps/obsidian/apply.sh); the Vimrc Support plugin itself is the owner's install
+# V1c: generated layout twins are current (tmux/rofi depend on running tools and are skipped by `layout.py check`)
 if lay_out="$(PYTHONPYCACHEPREFIX=/tmp/pycache python3 "$DOTFILES/.config/layout/layout.py" check 2>&1)"; then ok layout-gen "generated ua/ru twins are current (layout.py check)"; else bad layout-gen "stale: $(printf '%s' "$lay_out" | head -1) (layout.py gen)"; fi
+# OB1: Obsidian config lives in apps/obsidian/vault-config (every vault's .obsidian links there), plugins are pinned + hash-verified,
+# the Everforest snippet follows the theme link, the vimrc is linked (apps/obsidian/apply.sh)
 if [ -x "$DOTFILES/apps/obsidian/apply.sh" ]; then
+  obs_cfg="$DOTFILES/apps/obsidian/vault-config"
   obs_dry="$("$DOTFILES/apps/obsidian/apply.sh" --dry-run 2>&1)"
-  if printf '%s' "$obs_dry" | grep -q 'no vault found'; then info obsidian-vim "no Obsidian vault registered yet"
-  elif printf '%s' "$obs_dry" | grep -q 'would'; then bad obsidian-vim "vault vimrc/app.json out of date (apps/obsidian/apply.sh)"
-  else ok obsidian-vim "vault has vimMode and the current .obsidian.vimrc"; fi
+  if printf '%s' "$obs_dry" | grep -q 'no vault found'; then info obsidian "no Obsidian vault registered yet (apps/obsidian/apply.sh --vault DIR)"
+  else
+    if printf '%s' "$obs_dry" | grep -q 'would: move the real\|would: link .obsidian\|would: re-point'; then
+      bad obsidian "a vault's .obsidian does not link to $obs_cfg (apps/obsidian/apply.sh, Obsidian closed)"
+    else ok obsidian "every vault's .obsidian links to apps/obsidian/vault-config"; fi
+    if obs_pl="$("$DOTFILES/apps/obsidian/plugins.sh" check "$obs_cfg" 2>&1)"; then ok obsidian-plugins "pinned plugins present, sha256 match plugins.tsv"
+    else bad obsidian-plugins "$(printf '%s' "$obs_pl" | head -1 | sed 's/^ *//') (apps/obsidian/plugins.sh install)"; fi
+    if [ -s "$obs_cfg/snippets/everforest.css" ] && grep -q 'Everforest' "$obs_cfg/snippets/everforest.css" \
+       && [ "$(readlink -f "$obs_cfg/snippets/everforest.css")" = "$(readlink -f "$HOME/.local/state/theme/current/obsidian.css")" ]; then
+      ok obsidian-snippet "snippet everforest.css resolves to the active variant ($(basename "$(readlink -f "$HOME/.local/state/theme/current")"))"
+    else bad obsidian-snippet "snippets/everforest.css missing or not the active theme's obsidian.css (apps/obsidian/apply.sh)"; fi
+    if jq -e 'index("everforest")' <(jq '.enabledCssSnippets' "$obs_cfg/appearance.json") >/dev/null 2>&1 \
+       && jq -e 'index("obsidian-vimrc-support")' "$obs_cfg/community-plugins.json" >/dev/null 2>&1 \
+       && jq -e . "$obs_cfg"/*.json >/dev/null 2>&1; then ok obsidian-config "vault-config JSON valid, snippet and Vimrc Support enabled"
+    else bad obsidian-config "vault-config/*.json invalid or everforest / obsidian-vimrc-support not enabled"; fi
+    if printf '%s' "$obs_dry" | grep -q 'would: link .obsidian.vimrc\|would: write vault-config/obsidian.vimrc'; then bad obsidian-vimrc "vimrc link missing or stale (apps/obsidian/apply.sh)"
+    else ok obsidian-vimrc "vault .obsidian.vimrc links to the current generated vimrc"; fi
+  fi
 fi
 # V1c: OBS control (obs-ctl over obs-cmd): hub rows, leader group o and the offline test with a fake obs-cmd
 if [ -x "$HOME/.local/bin/obs-ctl" ]; then
