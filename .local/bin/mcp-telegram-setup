@@ -10,6 +10,7 @@
                                   every message needs your confirmation in a popup. Run it once to set sending up at all.
   mcp-telegram-setup status       service, gateway and credential state
   mcp-telegram-setup --new-login  ignore the stored session and log in by QR again (a terminated or lost session)
+  mcp-telegram-setup --resume     finish a setup whose fresh session could not be written to Bitwarden (see below)
 
 What you do: scan a QR code with your phone, tick chats, type the sudo password (and the Bitwarden master password when the vault
 is locked). Nothing else.
@@ -23,6 +24,10 @@ Where things go:
     file anywhere. The MCP tools are read-only (no send, edit, delete, mark-read) and the service fails closed without an allowlist; sending
     exists only as the separate owner-confirmed route (see send-chats).
   * ~/.local/state/mcp/telegram.token (0600): bearer token between the gateway and the service, also stored in the credstore.
+A fresh QR login is never lost: the full Bitwarden item is read BEFORE the QR is shown (a broken bw stops you before you scan),
+rbw is synced before its copy is read, a failed write to Bitwarden is retried once, and when it still fails the new session is
+kept in a 0600 file under $XDG_RUNTIME_DIR/mcp-telegram-setup/ (tmpfs: it survives the terminal, not a reboot) and the command
+tells you to run `mcp-telegram-setup --resume` after fixing bw (unlock, network). Until then a new setup refuses to start.
 Sending (M1-send): `send-chats` starts from the SEALED send list (read by the root helper), shows the final list with title, kind
 and id, asks for an explicit confirmation, then seals it for the send route inside telegram-mcp and records it in the text field
 `send_allowlist` of the same Bitwarden item (chat ids, not secret; a record only, never trusted as input). `chats` never sends a
@@ -31,7 +36,7 @@ telegram-mcp and for the tgconfirm broker only: it is never in Bitwarden, a file
 after you confirm each message in a popup. Kill switch: Telegram > Settings > Devices > terminate
 "telegram-mcp (AI, read-only)".
 Test hooks: MCP_TG_PYTHON, MCP_TG_LOGIN, MCP_TG_CREDS, MCP_TG_SUDO, MCP_TG_PICK, MCP_GATEWAY_CMD, MCP_ADD_CMD, MCP_STATE_DIR,
-MCP_TG_NO_VERIFY=1, VAULT_BW (path of vault-bw.py), BW_BIN.
+MCP_TG_NO_VERIFY=1, MCP_TG_RETRY_DELAY (seconds between the two write attempts), VAULT_BW (path of vault-bw.py), BW_BIN.
 """
 from __future__ import annotations
 
@@ -60,6 +65,11 @@ STATE_DIR = Path(os.environ.get("MCP_STATE_DIR") or Path(os.environ.get("XDG_STA
 TOKEN_FILE = STATE_DIR / "telegram.token"
 VAULT_BW = Path(os.environ.get("VAULT_BW") or HOME / ".config/hypr/scripts/vault-bw.py")
 FOLDER, ITEM = "MCP", "telegram-mcp"
+RECOVERY = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "mcp-telegram-setup" / "recovery.json"
+
+
+class BwWriteError(Exception):
+    pass
 
 
 def eprint(*a: object) -> None:
@@ -86,6 +96,8 @@ def rbw_record(m) -> dict | None:
     cannot give a complete record (not set up, locked and cancelled, item or custom fields missing): bw then answers."""
     if not m.rbw_ready():
         return None
+    # rbw reads its local copy: sync first, or an allowlist / session written from another device (or by the last run) is stale
+    subprocess.run([m.RBW, "sync"], capture_output=True)
     p = subprocess.run([m.RBW, "get", "--raw", "--folder", FOLDER, ITEM], capture_output=True, text=True)
     if p.returncode != 0:
         return None
@@ -95,7 +107,7 @@ def rbw_record(m) -> dict | None:
         return None
     if not rec.get("id") or not field(rec, "api_id") or not field(rec, "api_hash"):
         return None
-    rec["_src"] = "rbw"   # set_fields reads the full bw item before it edits (rbw cannot write custom fields)
+    rec["_src"] = "rbw"   # with_full_item / set_fields read the full bw item before any edit (rbw cannot write custom fields)
     return rec
 
 
@@ -120,18 +132,83 @@ def field(item: dict, name: str) -> str:
     return ""
 
 
+def with_full_item(m, item: dict) -> dict:
+    """rbw cannot write custom fields, so every write needs bw's full item. Read it NOW, before the QR login: a bw that cannot
+    answer must stop the setup before the owner scans anything, not after the one-time session exists."""
+    if item.get("_src") != "rbw":
+        return item
+    p = m.bw("get", "item", item["id"])
+    try:
+        item["_bw"] = json.loads(p.stdout) if p.returncode == 0 else None
+    except ValueError:
+        item["_bw"] = None
+    if not item["_bw"]:
+        die(f"bw cannot read the Bitwarden item ({m.first_line(p.stderr or p.stdout)}): fix that first (unlock, network), "
+            "nothing was changed and no QR was shown")
+    return item
+
+
 def set_fields(m, item: dict, values: dict[str, tuple[str, int]]) -> None:
-    """Set custom fields (name -> (value, type)); type 0 = text, 1 = hidden. Written with `bw edit item` (stdin)."""
-    target = m.bw_json("get", "item", item["id"]) if item.get("_src") == "rbw" else item
+    """Set custom fields (name -> (value, type)); type 0 = text, 1 = hidden. Written with `bw edit item` (stdin). Raises
+    BwWriteError when bw cannot do it. The base is a fresh `bw get item` (the QR step can take minutes), else the copy read before."""
+    target = item
+    if item.get("_src") == "rbw":
+        p = m.bw("get", "item", item["id"])
+        try:
+            target = json.loads(p.stdout) if p.returncode == 0 else None
+        except ValueError:
+            target = None
+        target = target or item.get("_bw")
+        if not target:
+            raise BwWriteError("bw cannot read the item")
     fields = [f for f in target.get("fields") or [] if f.get("name") not in values]
     for name, (value, ftype) in values.items():
         fields.append({"name": name, "value": value, "type": ftype})
-    target["fields"] = fields
+    target = dict(target, fields=fields)
     p = m.bw("edit", "item", item["id"], stdin=base64.b64encode(json.dumps(target).encode()).decode())
     if p.returncode != 0:
-        die(f"could not update the Bitwarden item: {m.first_line(p.stderr or p.stdout)}")
+        raise BwWriteError(m.first_line(p.stderr or p.stdout))
     item["fields"] = fields
     m.refresh_rbw()
+
+
+def store_fields(m, item: dict, values: dict[str, tuple[str, int]], recovery: dict | None = None) -> None:
+    """set_fields with one retry. When it still fails: with `recovery` (a fresh session that exists nowhere else) the values are
+    written to the 0600 recovery file and the owner is told how to finish; without it the run just stops."""
+    err = ""
+    for attempt in (1, 2):
+        try:
+            set_fields(m, item, values)
+            return
+        except BwWriteError as e:
+            err = str(e)
+            if attempt == 1:
+                eprint(f"Bitwarden write failed ({err}); trying once more ...")
+                time.sleep(float(os.environ.get("MCP_TG_RETRY_DELAY", "2")))
+    if recovery is None:
+        die(f"could not update the Bitwarden item: {err}")
+    save_recovery(recovery)
+    die("could not write the new session to Bitwarden "
+        f"({err}).\nIt is NOT lost: it is kept in {RECOVERY} (mode 600, tmpfs: gone at reboot).\n"
+        "Fix bw (unlock the vault, check the network), then run:  mcp-telegram-setup --resume")
+
+
+def save_recovery(rec: dict) -> None:
+    RECOVERY.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(RECOVERY.parent, 0o700)
+    tmp = RECOVERY.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(rec, f)
+    os.replace(tmp, RECOVERY)
+
+
+def load_recovery() -> dict | None:
+    try:
+        rec = json.loads(RECOVERY.read_text())
+    except (OSError, ValueError):
+        return None
+    return rec if isinstance(rec, dict) and rec.get("session") else None
 
 
 # --- Telegram (login.py in the pinned venv) ------------------------------------------------------------------------------------
@@ -288,9 +365,12 @@ def cmd_setup(chats_only: bool, new_login: bool) -> None:
     for what, path in (("the venv", TG_PYTHON), ("login.py", TG_LOGIN)):
         if not Path(path).exists():
             die(f"{what} is missing ({path}): run  sudo ~/dotfiles/apply-system.sh --only users,mcp  first")
+    if load_recovery() is not None:
+        die(f"an earlier login is waiting in {RECOVERY} (its session could not be written to Bitwarden): run  "
+            "mcp-telegram-setup --resume  first (or delete that file to throw it away)")
     m = load_vault_bw()
     m.ensure()   # pinentry unlock of the bw session when the vault is locked
-    item = find_item(m)
+    item = with_full_item(m, find_item(m))   # before any QR: a broken bw must stop us while nothing exists yet
     api_id, api_hash = field(item, "api_id"), field(item, "api_hash")
     if not api_id or not api_hash:
         die(f"the Bitwarden item {FOLDER}/{ITEM} needs the custom fields api_id and api_hash (https://my.telegram.org/apps)")
@@ -316,15 +396,49 @@ def cmd_setup(chats_only: bool, new_login: bool) -> None:
     if chats_only and not ticked:
         die("nothing ticked, the allowlist is unchanged", 0)
     if not allowlist:
+        if fresh:   # the QR login happened: the session must not vanish just because nothing was ticked
+            store_fields(m, item, {"session": (session, 1)}, recovery={"session": session, "allowlist": ""})
+            die("no chat ticked: the service refuses to run without an allowlist. The new session is stored in Bitwarden: "
+            "run  mcp-telegram-setup chats  to choose the chats (nothing was sealed or started)")
         die("no chat ticked: the service refuses to run without an allowlist (nothing was changed)")
     values: dict[str, tuple[str, int]] = {"allowlist": (",".join(map(str, allowlist)), 0)}
     if fresh:
         values["session"] = (session, 1)
-    set_fields(m, item, values)
+    store_fields(m, item, values, recovery={"session": session, "allowlist": ",".join(map(str, allowlist))} if fresh else None)
     eprint("Bitwarden updated (the master copy).")
+    apply_setup(m, item, allowlist, session, api_id, api_hash, full=(not chats_only or fresh),
+                names={c["id"]: c["title"] for c in out["chats"]})
+
+
+def cmd_resume() -> None:
+    """Finish a setup whose fresh session only reached the recovery file: write it to Bitwarden, then seal and start."""
+    rec = load_recovery()
+    if rec is None:
+        die("nothing to resume (no recovery file with a session)")
+    m = load_vault_bw()
+    m.ensure()
+    item = with_full_item(m, find_item(m))
+    api_id, api_hash = field(item, "api_id"), field(item, "api_hash")
+    if not api_id or not api_hash:
+        die(f"the Bitwarden item {FOLDER}/{ITEM} needs the custom fields api_id and api_hash (https://my.telegram.org/apps)")
+    values = {"session": (rec["session"], 1)}
+    if rec["allowlist"].strip():
+        values["allowlist"] = (rec["allowlist"], 0)
+    store_fields(m, item, values, recovery=rec)
+    eprint("Bitwarden updated (the master copy).")
+    if not rec["allowlist"].strip():
+        RECOVERY.unlink(missing_ok=True)
+        die("the session is stored in Bitwarden; no chats were chosen yet: run  mcp-telegram-setup chats", 0)
+    session, allowlist = rec["session"], sorted(int(x) for x in rec["allowlist"].split(",") if x.strip().lstrip("-").isdigit())
+    RECOVERY.unlink(missing_ok=True)   # the session is safe in Bitwarden now
+    apply_setup(m, item, allowlist, session, api_id, api_hash, full=True, names={})
+
+
+def apply_setup(m, item: dict, allowlist: list[int], session: str, api_id: str, api_hash: str, full: bool, names: dict) -> None:
+    """After Bitwarden holds the values: seal them with the root helper, restart the gateway, register, verify."""
     token = ensure_token()
     payload = {"allowlist": ",".join(map(str, allowlist))}   # the root helper narrows the sealed send list to this on its own
-    if not chats_only or fresh:
+    if full:
         payload.update(api_id=api_id, api_hash=api_hash, session=session, token=token)
     else:
         payload["token"] = token
@@ -332,7 +446,7 @@ def cmd_setup(chats_only: bool, new_login: bool) -> None:
     payload.clear()
     sealed = sealed_send_allowlist()
     if sealed != parse_ids(field(item, "send_allowlist")):    # keep the Bitwarden record equal to what is really sealed
-        set_fields(m, item, {"send_allowlist": (",".join(map(str, sorted(sealed))), 0)})
+        store_fields(m, item, {"send_allowlist": (",".join(map(str, sorted(sealed))), 0)})
         eprint("The sealed send list is now: " + (", ".join(map(str, sorted(sealed))) if sealed else "empty (run send-chats to allow sending again)"))
     gateway("restart")
     eprint("Gateway restarted.")
@@ -340,7 +454,6 @@ def cmd_setup(chats_only: bool, new_login: bool) -> None:
         r = subprocess.run([MCP_ADD], capture_output=True, text=True)
         eprint("mcp-add: " + ("registered the gateway servers in Claude Code and Codex." if r.returncode == 0 else "failed, run it by hand: mcp-add"))
     verify()
-    names = {c["id"]: c["title"] for c in out["chats"]}
     eprint(f"\nAllowed chats ({len(allowlist)}): " + ", ".join(names.get(i, str(i)) for i in allowlist))
     eprint("Change them later: mcp-telegram-setup chats. Kill switch: Telegram > Settings > Devices > terminate "
            '"telegram-mcp (AI, read-only)".')
@@ -367,7 +480,7 @@ def cmd_send_chats(account: str) -> None:
             die(f"{what} is missing ({path}): run  sudo ~/dotfiles/apply-system.sh --only users,mcp  first")
     m = load_vault_bw()
     m.ensure()
-    item = find_item(m)
+    item = with_full_item(m, find_item(m))
     api_id, api_hash, session = field(item, "api_id"), field(item, "api_hash"), field(item, "session")
     readable = parse_ids(field(item, "allowlist"))
     if not session or not readable:
@@ -407,7 +520,7 @@ def cmd_send_chats(account: str) -> None:
     if not confirm("\nSeal this send list?"):
         die("not confirmed, nothing was changed", 0)
     value = ",".join(map(str, send))
-    set_fields(m, item, {"send_allowlist": (value, 0)})
+    store_fields(m, item, {"send_allowlist": (value, 0)})
     eprint("Bitwarden updated (send_allowlist record; the send token is not stored there).")
     payload = {"send_allowlist": value}
     sudo_apply(payload, ("--ensure-send-token",))
@@ -451,6 +564,12 @@ def main(argv: list[str]) -> int:
         return 0
     new_login = "--new-login" in argv
     words = [a for a in argv if not a.startswith("--")]
+    if "--resume" in argv:
+        if words:
+            print("usage: mcp-telegram-setup --resume", file=sys.stderr)
+            return 2
+        cmd_resume()
+        return 0
     if words == ["status"]:
         return cmd_status()
     if words and words[0] == "send-chats":

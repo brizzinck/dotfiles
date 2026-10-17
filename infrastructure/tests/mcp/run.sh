@@ -557,6 +557,43 @@ check "rbw-first: the session is on no argv" bash -c '! grep -q FRESHSESSION "$1
 FAKE_RBW_FAIL=1 FAKE_PICK_IDS="42" setup_env VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" chats >/dev/null 2>&1
 check "rbw-first: when rbw cannot give the record, bw answers (list folders / items / get item)" bash -c 'grep -qx "bw list folders" "$1" && grep -q "^bw list items" "$1" && grep -qx "bw get item I1" "$1"' _ "$FAKE_DIR/argv.log"
 
+# BW1-fix 7: a fresh QR session is never lost; bw is checked before the QR; rbw is synced before it is read
+reset_tg_item() {
+  cat >"$FAKE_DIR/bw-item.json" <<'EOF'
+{"id":"I1","name":"telegram-mcp","folderId":"F1","type":1,"login":{"username":null,"password":null},
+ "fields":[{"name":"api_id","value":"12345678","type":0},{"name":"api_hash","value":"0123456789abcdef0123456789abcdef","type":0}]}
+EOF
+  rm -rf "$SCRATCH/setup-state" "$XDG_RUNTIME_DIR/mcp-telegram-setup" "$FAKE_DIR/bw-edit-fails" "$FAKE_DIR/creds-payload.json" "$FAKE_DIR/sealed-send.txt"
+  : >"$FAKE_DIR/argv.log"; : >"$FAKE_DIR/login.log"
+}
+REC="$XDG_RUNTIME_DIR/mcp-telegram-setup/recovery.json"
+reset_tg_item
+FAKE_BW_GET_FAIL=1 FAKE_PICK_IDS="42" setup_env VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" >"$SCRATCH/s7a.out" 2>&1
+check "bw1-fix7: a bw that cannot read the item stops the setup BEFORE the QR login" bash -c '! grep -q "^mode=" "$1" && grep -q "no QR was shown" "$2"' _ "$FAKE_DIR/login.log" "$SCRATCH/s7a.out"
+check "bw1-fix7: rbw is synced before its copy is read" bash -c 'a=$(grep -n "^rbw sync" "$1" | head -1 | cut -d: -f1); b=$(grep -n "^rbw get --raw" "$1" | head -1 | cut -d: -f1); [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]' _ "$FAKE_DIR/argv.log"
+reset_tg_item
+echo 1 >"$FAKE_DIR/bw-edit-fails"
+FAKE_PICK_IDS="42" MCP_TG_RETRY_DELAY=0 setup_env VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" >"$SCRATCH/s7b.out" 2>&1
+check "bw1-fix7: one failed Bitwarden write is retried and the setup goes on (session stored, sealed)" bash -c 'jq -e "(.fields[] | select(.name==\"session\") | .type == 1)" "$1" && [ -s "$2" ] && [ ! -e "$3" ] && grep -q "trying once more" "$4"' _ "$FAKE_DIR/bw-item.json" "$FAKE_DIR/creds-payload.json" "$REC" "$SCRATCH/s7b.out"
+reset_tg_item
+echo 99 >"$FAKE_DIR/bw-edit-fails"
+FAKE_PICK_IDS="42" MCP_TG_RETRY_DELAY=0 setup_env VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" >"$SCRATCH/s7c.out" 2>&1; rc7=$?
+check "bw1-fix7: bw writes keep failing: non-zero exit, nothing sealed or started" bash -c '[ "$1" != 0 ] && [ ! -e "$2" ] && ! grep -q "gateway restart" "$3"' _ "$rc7" "$FAKE_DIR/creds-payload.json" "$FAKE_DIR/argv.log"
+check "bw1-fix7: the fresh session is in a 0600 recovery file in a 0700 tmpfs directory" bash -c '[ "$(stat -c %a "$1")" = 600 ] && [ "$(stat -c %a "$(dirname "$1")")" = 700 ] && jq -e ".session | startswith(\"1FRESH\")" "$1" && jq -e ".allowlist == \"42\"" "$1"' _ "$REC"
+check "bw1-fix7: the message says where it is and how to finish (--resume), and the session is not printed or on argv" bash -c 'grep -q "mcp-telegram-setup --resume" "$1" && grep -q "NOT lost" "$1" && ! grep -q FRESHSESSION "$1" "$2"' _ "$SCRATCH/s7c.out" "$FAKE_DIR/argv.log"
+: >"$FAKE_DIR/login.log"
+FAKE_PICK_IDS="42" setup_env VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" >"$SCRATCH/s7d.out" 2>&1; rc7=$?
+check "bw1-fix7: a new setup refuses to overwrite a pending recovery (no second QR)" bash -c '[ "$1" != 0 ] && grep -q -- "--resume" "$2" && ! grep -q "^mode=qr" "$3"' _ "$rc7" "$SCRATCH/s7d.out" "$FAKE_DIR/login.log"
+: >"$FAKE_DIR/argv.log"; echo 0 >"$FAKE_DIR/bw-edit-fails"
+setup_env VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" --resume >"$SCRATCH/s7e.out" 2>&1
+check "bw1-fix7: --resume writes the saved session and allowlist to Bitwarden, seals and starts, then drops the file" bash -c 'jq -e "(.fields[] | select(.name==\"session\") | .type == 1 and (.value | startswith(\"1FRESH\"))) and (.fields[] | select(.name==\"allowlist\") | .value == \"42\")" "$1" && jq -e ".allowlist == \"42\" and (.session | startswith(\"1FRESH\")) and .api_id == \"12345678\"" "$2" && grep -q "gateway restart" "$3" && [ ! -e "$4" ]' _ "$FAKE_DIR/bw-item.json" "$FAKE_DIR/creds-payload.json" "$FAKE_DIR/argv.log" "$REC"
+check "bw1-fix7: --resume with nothing saved fails" bash -c '! "${@:2}" "$1" --resume >/dev/null 2>&1' _ "$SETUP" env XDG_RUNTIME_DIR="$SCRATCH/xdg-run" MCP_STATE_DIR="$SCRATCH/setup-state"
+# nothing ticked after a fresh QR: the session is stored, not dropped
+reset_tg_item
+FAKE_PICK_IDS="" setup_env VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" >"$SCRATCH/s7f.out" 2>&1
+check "bw1-fix7: nothing ticked after a fresh QR keeps the session in Bitwarden (no allowlist, nothing sealed)" bash -c 'jq -e "(.fields[] | select(.name==\"session\") | .value | startswith(\"1FRESH\")) and ([.fields[].name] | index(\"allowlist\") == null)" "$1" && [ ! -e "$2" ] && grep -q "mcp-telegram-setup chats" "$3"' _ "$FAKE_DIR/bw-item.json" "$FAKE_DIR/creds-payload.json" "$SCRATCH/s7f.out"
+reset_tg_item
+
 # the agents' send-request server (telegram-send.py) against a fake broker socket
 if [[ -x $VENV_PY ]]; then
   count_py "$VENV_PY" "$HERE/test_telegram_send.py" "$REPO/.config/mcp/telegram-send.py"

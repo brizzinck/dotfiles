@@ -6,7 +6,11 @@ case "$1 $2" in
   "status "*) echo '{"status":"unlocked"}' ;;
   "list folders") [[ ${FAKE_BW_NOFOLDER:-0} == 1 ]] && echo '[]' || echo '[{"id":"F1","name":"MCP"}]' ;;
   "list items") echo '[{"id":"I1","name":"telegram-mcp","folderId":"F1"}]' ;;
-  "get item") cat "$item" ;;
-  "edit item") base64 -d >"$item.new" && mv "$item.new" "$item"; echo '{}' ;;
+  "get item") [[ ${FAKE_BW_GET_FAIL:-0} == 1 ]] && { echo "Not found." >&2; exit 1; }; cat "$item" ;;
+  "edit item")
+    # $FAKE_DIR/bw-edit-fails holds how many more edits must fail (the fake counts them down)
+    n=$(cat "$FAKE_DIR/bw-edit-fails" 2>/dev/null || echo 0)
+    if ((n > 0)); then echo $((n - 1)) >"$FAKE_DIR/bw-edit-fails"; echo "network error" >&2; exit 1; fi
+    base64 -d >"$item.new" && mv "$item.new" "$item"; echo '{}' ;;
   *) echo "fake bw: unexpected $*" >&2; exit 1 ;;
 esac
