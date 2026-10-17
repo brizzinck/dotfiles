@@ -172,10 +172,8 @@ if ! have rtk; then curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs
 export PATH="$HOME/.local/bin:$PATH"
 if have rtk; then rtk init -g || warn "rtk init failed — run manually: rtk init -g"; fi
 
-log "Agent cockpit backends: mcp-hub, ACP adapters, workmux"
-npm install -g mcp-hub@latest @agentclientprotocol/claude-agent-acp @zed-industries/codex-acp
-# MCP servers as pinned global binaries (no `npx …@latest` wrapper process / registry round-trip on every agent start)
-npm install -g chrome-devtools-mcp@1.11.0 mcp-remote@0.14.3
+log "Agent cockpit backends: ACP adapters, workmux (the MCP stack is installed by mcp-install below)"
+npm install -g @agentclientprotocol/claude-agent-acp @zed-industries/codex-acp
 have workmux || cargo install workmux
 
 # ───────────────────────────── 5. shell ───────────────────────────────────────
@@ -315,18 +313,14 @@ log "tmux plugins (TPM)"
 log "Neovim: plugins, Mason tools, treesitter parsers, agent hooks (headless, a few minutes)"
 nvim --headless -c "luafile $HOME/.config/nvim/scripts/bootstrap.lua" 2>&1 | grep -v '^$' || warn "nvim bootstrap reported errors — open nvim and run :Lazy restore, :MasonInstallAll, :AgentDashInstallHooks"
 
-# ───────────────────────────── 11. agents ↔ MCP hub / worktrees ──────────────
-log "Registering the MCP hub with Claude Code and Codex"
-if have claude && ! claude mcp get mcphub &>/dev/null; then
-  claude mcp add -s user --transport http mcphub http://localhost:37373/mcp || warn "claude mcp add failed"
-fi
-if have claude && ! claude mcp get chrome-devtools &>/dev/null; then
-  claude mcp add -s user chrome-devtools -- "$HOME/.npm-global/bin/chrome-devtools-mcp" --autoConnect \
-    --userDataDir "$HOME/.var/app/com.google.Chrome/config/google-chrome" --no-usage-statistics || warn "claude mcp add chrome-devtools failed"
-fi
-if have codex && ! grep -q 'mcp_servers.mcphub' "$HOME/.codex/config.toml" 2>/dev/null; then
-  codex mcp add mcphub --url http://localhost:37373/mcp || warn "codex mcp add failed"
-fi
+# ───────────────────────────── 11. agents ↔ MCP gateway / worktrees ──────────
+log "MCP gateway: pinned mcp-proxy + desktop-ro venv + chrome-devtools-mcp (hash-checked, no root), user service"
+"$HOME/.local/bin/mcp-install" || warn "mcp-install failed (rerun: mcp-install)"
+systemctl --user daemon-reload 2>/dev/null || true
+systemctl --user enable --now mcp-gateway.service 2>/dev/null || later "start the MCP gateway once logged in: systemctl --user enable --now mcp-gateway.service"
+# registering the gateway servers in Claude Code / Codex edits the CLIs' own config files: the bootstrap (B1) runs it, on the
+# owner's machine it is run by hand once. Root parts (Telegram service, Chromium, whisper): sudo ./apply-system.sh --only mcp
+later "register the MCP gateway servers with Claude Code and Codex (also removes the old mcphub entry): mcp-add"
 
 log "workmux agent status hooks"
 if [ "$IS_TTY" = 1 ]; then
