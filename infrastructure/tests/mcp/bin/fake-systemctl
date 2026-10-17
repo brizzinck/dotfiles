@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+echo "systemctl $*" >>"${FAKE_DIR:-/tmp}/argv.log"

@@ -268,5 +268,116 @@ else
   skip "real gateway test (--quick or no pinned venv/mcp-proxy)"
 fi
 
+# --- Telegram: units, credential helper, run wrapper, serve.py, setup helper --------------------------------------------
+TGD="$REPO/infrastructure/mcp/telegram"
+UNIT="$TGD/telegram-mcp.service"
+check "unit: runs as aimcp, not root" bash -c 'grep -q "^User=aimcp" "$1" && ! grep -q "^User=root" "$1"' _ "$UNIT"
+check "unit: five encrypted credentials" bash -c '[ "$(grep -c "^LoadCredentialEncrypted=" "$1")" = 5 ]' _ "$UNIT"
+check "unit: no secret in Environment=/ExecStart" bash -c '! grep -E "^(Environment|ExecStart)=.*(API_HASH|SESSION|TOKEN|password)" "$1"' _ "$UNIT"
+check "unit: sandboxed (no home, strict system, no caps, IP+unix sockets only)" bash -c 'grep -q "^ProtectHome=yes" "$1" && grep -q "^ProtectSystem=strict" "$1" && grep -q "^NoNewPrivileges=yes" "$1" && grep -q "^CapabilityBoundingSet=$" "$1" && grep -q "^RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX" "$1"' _ "$UNIT"
+check "unit: only starts once all credentials exist" bash -c '[ "$(grep -c "^ConditionPathExists=/etc/credstore.encrypted/telegram-mcp\." "$1")" = 5 ]' _ "$UNIT"
+check "unit: a refusal to start (78) is not retried in a loop" grep -q '^RestartPreventExitStatus=78' "$UNIT"
+check "whisper: bound to loopback (socket and server)" bash -c 'grep -q "^ListenStream=127.0.0.1:8766" "$1/telegram-whisper-proxy.socket" && grep -q -- "--host 127.0.0.1" "$1/telegram-whisper.service" && grep -q "127.0.0.1:8767" "$1/telegram-whisper-proxy.service"' _ "$TGD"
+check "whisper: on demand and stopped when idle" bash -c 'grep -q "^StopWhenUnneeded=yes" "$1/telegram-whisper.service" && grep -q -- "--exit-idle-time" "$1/telegram-whisper-proxy.service"' _ "$TGD"
+check "whisper: model from /srv/models (shared path), cloud engines unreachable" bash -c 'grep -q "/srv/models/ggml-small.bin" "$1/telegram-whisper.service" && ! grep -rqiE "export .*groq|GROQ_API_KEY=" "$1/run" "$1/telegram-mcp.service" "$1/telegram-whisper.service"' _ "$TGD"
+check "pins: commit is a full sha, model sha256 is pinned" bash -c '. "$1/pins.env"; [[ $TELEGRAM_MCP_COMMIT =~ ^[0-9a-f]{40}$ ]] && [[ $WHISPER_MODEL_SHA256 =~ ^[0-9a-f]{64}$ ]]' _ "$TGD"
+check "telegram requirements are hash-pinned" bash -c 'grep -q -- "--hash=sha256:" "$1/requirements.txt" && grep -q "^telethon==" "$1/requirements.txt"' _ "$TGD"
+check "units pass systemd-analyze (paths aside)" bash -c 'systemd-analyze verify --man=no "$1/telegram-mcp.service" "$1/telegram-whisper-proxy.socket" 2>&1 | grep -v -E "not executable|marked executable|No such file" | grep -q -E "Unknown|Invalid|Failed to parse|bad setting" && exit 1; exit 0' _ "$TGD"
+
+# creds-install with a fake systemd-creds / systemctl
+CS="$SCRATCH/credstore"
+SESS="1$(printf 'A%.0s' $(seq 1 130))"
+PAYLOAD=$(jq -cn --arg s "$SESS" '{api_id:"12345678", api_hash:"0123456789abcdef0123456789abcdef", session:$s, allowlist:"-1001111,42", token:"tttttttttttttttttttttttttttttttttttttttttt"}')
+export CREDSTORE_DIR="$CS" SYSTEMD_CREDS_BIN="$HERE/bin/systemd-creds" SYSTEMCTL_BIN="$HERE/bin/fake-systemctl" CREDS_INSTALL_ALLOW_NONROOT=1
+CI="$TGD/creds-install"
+: >"$FAKE_DIR/argv.log"
+printf '%s' "$PAYLOAD" | "$CI" >/dev/null 2>&1
+check "creds-install: five sealed credentials" bash -c 'for k in api_id api_hash session allowlist token; do [ -s "$1/telegram-mcp.$k" ] || exit 1; done' _ "$CS"
+check "creds-install: credstore dir 700, files 600" bash -c '[ "$(stat -c %a "$1")" = 700 ] && [ "$(stat -c %a "$1/telegram-mcp.session")" = 600 ]' _ "$CS"
+check "creds-install: sealed with tpm2+host and the credential name" bash -c 'grep -q -- "--with-key=tpm2+host --name=session - " "$1"' _ "$FAKE_DIR/argv.log"
+check "creds-install: no plaintext in the sealed files" bash -c '! grep -q -F -e "$2" -e 0123456789abcdef "$1"/telegram-mcp.*' _ "$CS" "$SESS"
+check "creds-install: secrets never on argv" bash -c '! grep -q -F -e "$2" -e 0123456789abcdef -e tttttttttt "$1"' _ "$FAKE_DIR/argv.log" "$SESS"
+check "creds-install: enables the whisper socket and restarts the service" bash -c 'grep -q "systemctl enable --now telegram-whisper-proxy.socket" "$1" && grep -q "systemctl restart telegram-mcp.service" "$1"' _ "$FAKE_DIR/argv.log"
+: >"$FAKE_DIR/argv.log"; cp "$CS/telegram-mcp.session" "$SCRATCH/session.before"
+printf '{"allowlist":"42"}' | "$CI" >/dev/null 2>&1
+check "creds-install: a partial update touches only that credential" bash -c 'cmp -s "$1/telegram-mcp.session" "$2" && ! cmp -s "$1/telegram-mcp.allowlist" /dev/null' _ "$CS" "$SCRATCH/session.before"
+check "creds-install: rejects an empty allowlist" bash -c '! printf "{\"allowlist\":\"\"}" | "$1"' _ "$CI"
+check "creds-install: rejects a non-numeric allowlist" bash -c '! printf "{\"allowlist\":\"abc,1\"}" | "$1"' _ "$CI"
+check "creds-install: rejects an unknown key" bash -c '! printf "{\"evil\":\"x\"}" | "$1"' _ "$CI"
+check "creds-install: rejects bad JSON and an empty object" bash -c '! printf "nope" | "$1" && ! printf "{}" | "$1"' _ "$CI"
+check "creds-install: refuses to run as a normal user without the test hook" bash -c '! env -u CREDS_INSTALL_ALLOW_NONROOT "$1" --status' _ "$CI"
+rm -rf "$CS"; : >"$FAKE_DIR/argv.log"
+printf '{"allowlist":"1"}' | "$CI" >/dev/null 2>&1
+check "creds-install: the service is not started while credentials are missing" bash -c '! grep -q "restart telegram-mcp.service" "$1" && grep -q "enable telegram-mcp.service" "$1"' _ "$FAKE_DIR/argv.log"
+unset CREDSTORE_DIR SYSTEMD_CREDS_BIN SYSTEMCTL_BIN CREDS_INSTALL_ALLOW_NONROOT
+
+# run wrapper: credentials directory -> environment, fail closed
+CRED="$SCRATCH/cred"; mkdir -p "$CRED"
+printf '12345678' >"$CRED/api_id"; printf '0123456789abcdef0123456789abcdef' >"$CRED/api_hash"; printf '%s' "$SESS" >"$CRED/session"
+printf -- '-1001111,42\n' >"$CRED/allowlist"; printf 'bearer-token-value' >"$CRED/token"
+cat >"$SCRATCH/fake-envpy" <<'EOF'
+#!/usr/bin/env bash
+env | grep -E '^(TELEGRAM_|MCP_|GROQ)' | sort >"$FAKE_DIR/run-env.txt"
+echo "args: $*" >>"$FAKE_DIR/run-env.txt"
+EOF
+chmod +x "$SCRATCH/fake-envpy"
+TG_RUN=(env CREDENTIALS_DIRECTORY="$CRED" TELEGRAM_MCP_PYTHON="$SCRATCH/fake-envpy" TELEGRAM_MCP_SERVE=/x/serve.py STATE_DIRECTORY="$SCRATCH/state-dir" "$TGD/run")
+"${TG_RUN[@]}" >/dev/null 2>&1
+check "run: read-only exposure" grep -qx 'TELEGRAM_EXPOSED_TOOLS=read-only' "$FAKE_DIR/run-env.txt"
+check "run: allowlist from the credential" grep -qx 'TELEGRAM_ALLOWED_CHAT_IDS=-1001111,42' "$FAKE_DIR/run-env.txt"
+check "run: session string, api id/hash and token reach the environment" bash -c 'grep -q "^TELEGRAM_SESSION_STRING=1AAAA" "$1" && grep -qx "TELEGRAM_API_ID=12345678" "$1" && grep -qx "TELEGRAM_MCP_TOKEN=bearer-token-value" "$1"' _ "$FAKE_DIR/run-env.txt"
+check "run: HTTP on loopback only, local whisper engine, no cloud key" bash -c 'grep -qx "MCP_HOST=127.0.0.1" "$1" && grep -qx "MCP_TRANSPORT=http" "$1" && grep -qx "TELEGRAM_TRANSCRIBE_ENGINE=openai" "$1" && grep -qx "TELEGRAM_TRANSCRIBE_OPENAI_URL=http://127.0.0.1:8766" "$1" && ! grep -q GROQ "$1"' _ "$FAKE_DIR/run-env.txt"
+check "run: secrets are not in the argument list" bash -c 'grep "^args:" "$1" | grep -qv -e AAAA -e bearer-token -e 0123456789abcdef' _ "$FAKE_DIR/run-env.txt"
+printf '\n' >"$CRED/allowlist"
+check "run: an empty allowlist refuses to start (78)" bash -c '"${@}" >/dev/null 2>&1; [ $? -eq 78 ]' _ "${TG_RUN[@]}"
+printf -- '-1001111\n' >"$CRED/allowlist"; rm -f "$CRED/session"
+check "run: a missing credential refuses to start (78)" bash -c '"${@}" >/dev/null 2>&1; [ $? -eq 78 ]' _ "${TG_RUN[@]}"
+
+# serve.py: env check, bearer middleware, and the real server surface when the telegram-mcp venv exists
+TG_PY="${TELEGRAM_MCP_PY:-/opt/telegram-mcp/venv/bin/python}"
+if [[ -x $TG_PY && -d ${TELEGRAM_MCP_SRC:-/opt/telegram-mcp/src} ]]; then
+  count_py env TELEGRAM_MCP_PY="$TG_PY" TELEGRAM_MCP_SRC="${TELEGRAM_MCP_SRC:-/opt/telegram-mcp/src}" python3 -I "$HERE/test_telegram_serve.py" "$REPO"
+else
+  count_py python3 -I "$HERE/test_telegram_serve.py" "$REPO"
+  skip "real telegram-mcp tool surface and gateway allowlist names (no /opt/telegram-mcp yet; set TELEGRAM_MCP_PY/TELEGRAM_MCP_SRC)"
+fi
+
+# mcp-telegram-setup against fake bw / login / creds helper / picker / gateway
+SETUP="$REPO/.local/bin/mcp-telegram-setup"
+cat >"$FAKE_DIR/bw-item.json" <<'EOF'
+{"id":"I1","name":"telegram-mcp","folderId":"F1","type":1,"login":{"username":null,"password":null},
+ "fields":[{"name":"api_id","value":"12345678","type":0},{"name":"api_hash","value":"0123456789abcdef0123456789abcdef","type":0}]}
+EOF
+setup_env() {
+  env BW_BIN="$HERE/bin/bw" VAULT_BW="$REPO/.config/hypr/scripts/vault-bw.py" VAULT_RBW_CONF=/nonexistent PATH="$HERE/bin:$PATH" \
+    MCP_TG_PYTHON=/usr/bin/python3 MCP_TG_LOGIN="$HERE/fake_login.py" MCP_TG_CREDS="$HERE/fake_creds.sh" MCP_TG_SUDO=env \
+    MCP_TG_PICK="$HERE/fake_pick.sh" MCP_GATEWAY_CMD="$HERE/fake_gw_tg.sh" MCP_ADD_CMD="$HERE/fake_add.sh" MCP_TG_NO_VERIFY=1 \
+    MCP_STATE_DIR="$SCRATCH/setup-state" "$@"
+}
+rm -rf "$SCRATCH/setup-state"; : >"$FAKE_DIR/argv.log"; : >"$FAKE_DIR/login.log"
+FAKE_PICK_IDS="-1001111 42" setup_env "$SETUP" >"$SCRATCH/setup.out" 2>&1
+check "setup: first run does a QR login" grep -q '^mode=qr api_id=12345678 has_session=no' "$FAKE_DIR/login.log"
+check "setup: the picker shows every chat" bash -c '[ "$(wc -l <"$1")" -ge 4 ]' _ "$FAKE_DIR/pick-rows.txt"
+check "setup: Bitwarden gets a hidden session field and a text allowlist field" jq -e '(.fields[] | select(.name=="session") | .type == 1 and (.value | startswith("1FRESH"))) and (.fields[] | select(.name=="allowlist") | .type == 0 and .value == "-1001111,42") and ([.fields[].name] | index("api_hash") != null)' "$FAKE_DIR/bw-item.json"
+check "setup: the root helper gets all five values on stdin" jq -e '.api_id == "12345678" and (.session | startswith("1FRESH")) and .allowlist == "-1001111,42" and (.token | length >= 32) and .api_hash != null' "$FAKE_DIR/creds-payload.json"
+check "setup: the session never appears on any argv" bash -c '! grep -q FRESHSESSION "$1"' _ "$FAKE_DIR/argv.log"
+check "setup: telegram.token is a 0600 file equal to the stored token" bash -c '[ "$(stat -c %a "$1/telegram.token")" = 600 ] && [ "$(cat "$1/telegram.token")" = "$(jq -r .token "$2")" ]' _ "$SCRATCH/setup-state" "$FAKE_DIR/creds-payload.json"
+check "setup: gateway restarted and mcp-add run" bash -c 'grep -q "gateway restart" "$1" && grep -q "mcp-add called" "$1"' _ "$FAKE_DIR/argv.log"
+check "setup: output names the allowed chats and the kill switch" bash -c 'grep -q "Work chat" "$1" && grep -q "Ann" "$1" && ! grep -q "Secret person" "$1" && grep -q "Devices" "$1"' _ "$SCRATCH/setup.out"
+: >"$FAKE_DIR/login.log"; rm -f "$FAKE_DIR/creds-payload.json"
+FAKE_PICK_IDS="42 777" setup_env "$SETUP" chats >"$SCRATCH/chats.out" 2>&1
+check "chats: reuses the stored session (list mode, no QR)" bash -c 'grep -q "^mode=list .*has_session=yes" "$1" && ! grep -q "^mode=qr" "$1"' _ "$FAKE_DIR/login.log"
+check "chats: ticking an allowed chat removes it, ticking a new one adds it" jq -e '(.fields[] | select(.name=="allowlist") | .value) == "-1001111,777"' "$FAKE_DIR/bw-item.json"
+check "chats: only the allowlist (and the token) go to the root helper" bash -c 'jq -e ".allowlist == \"-1001111,777\" and (has(\"session\") | not) and (has(\"api_hash\") | not)" "$1"' _ "$FAKE_DIR/creds-payload.json"
+check "chats: the picker marks the allowed chats" grep -q '\[allowed\].*Work chat' "$FAKE_DIR/pick-rows.txt"
+# a stale stored session falls back to the QR login
+jq '(.fields[] | select(.name=="session") | .value) = "1STALE"' "$FAKE_DIR/bw-item.json" >"$FAKE_DIR/x.json" && mv "$FAKE_DIR/x.json" "$FAKE_DIR/bw-item.json"
+: >"$FAKE_DIR/login.log"
+FAKE_PICK_IDS="42" setup_env "$SETUP" >/dev/null 2>&1
+check "setup: a stale stored session falls back to a QR login" bash -c 'grep -q "^mode=list" "$1" && grep -q "^mode=qr" "$1"' _ "$FAKE_DIR/login.log"
+check "setup: --new-login skips the stored session" bash -c ': >"$2"; FAKE_PICK_IDS=42 "${@:3}" "$1" --new-login >/dev/null 2>&1; ! grep -q "^mode=list" "$2" && grep -q "^mode=qr" "$2"' _ "$SETUP" "$FAKE_DIR/login.log" env BW_BIN="$HERE/bin/bw" VAULT_BW="$REPO/.config/hypr/scripts/vault-bw.py" VAULT_RBW_CONF=/nonexistent PATH="$HERE/bin:$PATH" MCP_TG_PYTHON=/usr/bin/python3 MCP_TG_LOGIN="$HERE/fake_login.py" MCP_TG_CREDS="$HERE/fake_creds.sh" MCP_TG_SUDO=env MCP_TG_PICK="$HERE/fake_pick.sh" MCP_GATEWAY_CMD="$HERE/fake_gw_tg.sh" MCP_ADD_CMD="$HERE/fake_add.sh" MCP_TG_NO_VERIFY=1 MCP_STATE_DIR="$SCRATCH/setup-state"
+check "setup: nothing ticked and no allowlist -> refuses, nothing sent to the root helper" bash -c 'rm -f "$3"; jq "del(.fields[] | select(.name==\"allowlist\" or .name==\"session\"))" "$2" >"$2.x" && mv "$2.x" "$2"; FAKE_PICK_IDS="" "${@:4}" "$1" >/dev/null 2>&1; rc=$?; [ $rc -ne 0 ] && [ ! -e "$3" ]' _ "$SETUP" "$FAKE_DIR/bw-item.json" "$FAKE_DIR/creds-payload.json" env BW_BIN="$HERE/bin/bw" VAULT_BW="$REPO/.config/hypr/scripts/vault-bw.py" VAULT_RBW_CONF=/nonexistent PATH="$HERE/bin:$PATH" MCP_TG_PYTHON=/usr/bin/python3 MCP_TG_LOGIN="$HERE/fake_login.py" MCP_TG_CREDS="$HERE/fake_creds.sh" MCP_TG_SUDO=env MCP_TG_PICK="$HERE/fake_pick.sh" MCP_GATEWAY_CMD="$HERE/fake_gw_tg.sh" MCP_ADD_CMD="$HERE/fake_add.sh" MCP_TG_NO_VERIFY=1 MCP_STATE_DIR="$SCRATCH/setup-state"
+check "setup: a missing Bitwarden folder gives instructions" bash -c 'out=$(FAKE_BW_NOFOLDER=1 "${@:2}" "$1" 2>&1); grep -q "no folder MCP" <<<"$out"' _ "$SETUP" env BW_BIN="$HERE/bin/bw" VAULT_BW="$REPO/.config/hypr/scripts/vault-bw.py" VAULT_RBW_CONF=/nonexistent PATH="$HERE/bin:$PATH" MCP_TG_PYTHON=/usr/bin/python3 MCP_TG_LOGIN="$HERE/fake_login.py" MCP_TG_CREDS="$HERE/fake_creds.sh" MCP_TG_SUDO=env MCP_TG_PICK="$HERE/fake_pick.sh" MCP_GATEWAY_CMD="$HERE/fake_gw_tg.sh" MCP_ADD_CMD="$HERE/fake_add.sh" MCP_TG_NO_VERIFY=1 MCP_STATE_DIR="$SCRATCH/setup-state"
+
 echo "mcp tests: $PASS passed, $FAILS failed, $SKIPS skipped"
 [[ $FAILS -eq 0 ]]

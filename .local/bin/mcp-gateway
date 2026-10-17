@@ -34,7 +34,7 @@ proxy_bin() {
 }
 addr() { jq -r '.mcpProxy.addr' "$SRC_CONFIG"; }
 
-new_token() { head -c 32 /dev/urandom | base64 | tr -d '=+/\n'; }
+new_token() { head -c 48 /dev/urandom | base64 -w0 | tr '+/' '-_' | tr -d '='; }   # 64 URL-safe characters
 
 # ensure_token FILE: create FILE (0600, directory 0700) with a random token when it does not exist
 ensure_token() {

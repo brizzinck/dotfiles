@@ -1,0 +1,329 @@
+#!/usr/bin/env python3
+"""mcp-telegram-setup - one-time setup (and later upkeep) of the read-only Telegram MCP service. Run it in a terminal.
+
+  mcp-telegram-setup              first setup: log in by QR (or reuse the session stored in Bitwarden), tick the chats the AI
+                                  may read, store everything, start the service, check it through the gateway
+  mcp-telegram-setup chats        change the allowlist (extend or shrink it); Tab on an `[allowed]` chat removes it
+  mcp-telegram-setup status       service, gateway and credential state
+  mcp-telegram-setup --new-login  ignore the stored session and log in by QR again (a terminated or lost session)
+
+What you do: scan a QR code with your phone, tick chats, type the sudo password (and the Bitwarden master password when the vault
+is locked). Nothing else.
+
+Where things go:
+  * Bitwarden folder MCP, item telegram-mcp (master copy): fields api_id and api_hash (you made them), `session` (hidden, written
+    here with `bw edit`, never typed) and `allowlist` (text, chat ids).
+  * /etc/credstore.encrypted/telegram-mcp.* : the same values as systemd credentials sealed to the TPM2 + host key, written by
+    the root helper /usr/local/lib/telegram-mcp/creds-install through `sudo` (password required; it receives the values on
+    stdin). telegram-mcp.service (user aimcp, 127.0.0.1:8765) loads them with LoadCredentialEncrypted=: no plaintext session
+    file anywhere. The service is read-only (no send, edit, delete, mark-read) and fails closed without an allowlist.
+  * ~/.local/state/mcp/telegram.token (0600): bearer token between the gateway and the service, also stored in the credstore.
+The AI never sends: it drafts text and you press Enter in Telegram. Kill switch: Telegram > Settings > Devices > terminate
+"telegram-mcp (AI, read-only)".
+Test hooks: MCP_TG_PYTHON, MCP_TG_LOGIN, MCP_TG_CREDS, MCP_TG_SUDO, MCP_TG_PICK, MCP_GATEWAY_CMD, MCP_ADD_CMD, MCP_STATE_DIR,
+MCP_TG_NO_VERIFY=1, VAULT_BW (path of vault-bw.py), BW_BIN.
+"""
+from __future__ import annotations
+
+import base64
+import importlib.util
+import json
+import os
+import secrets
+import shutil
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+HOME = Path.home()
+BIN_DIR = Path(os.path.abspath(__file__)).parent
+TG_PYTHON = os.environ.get("MCP_TG_PYTHON", "/opt/telegram-mcp/venv/bin/python")
+TG_LOGIN = os.environ.get("MCP_TG_LOGIN", "/usr/local/lib/telegram-mcp/login.py")
+TG_CREDS = os.environ.get("MCP_TG_CREDS", "/usr/local/lib/telegram-mcp/creds-install")
+SUDO = os.environ.get("MCP_TG_SUDO", "sudo")
+GATEWAY = os.environ.get("MCP_GATEWAY_CMD", str(BIN_DIR / "mcp-gateway"))
+MCP_ADD = os.environ.get("MCP_ADD_CMD", str(BIN_DIR / "mcp-add"))
+STATE_DIR = Path(os.environ.get("MCP_STATE_DIR") or Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local/state") / "mcp")
+TOKEN_FILE = STATE_DIR / "telegram.token"
+VAULT_BW = Path(os.environ.get("VAULT_BW") or HOME / ".config/hypr/scripts/vault-bw.py")
+FOLDER, ITEM = "MCP", "telegram-mcp"
+
+
+def eprint(*a: object) -> None:
+    print(*a, file=sys.stderr, flush=True)
+
+
+def die(msg: str, code: int = 1) -> None:
+    eprint(f"mcp-telegram-setup: {msg}")
+    sys.exit(code)
+
+
+# --- Bitwarden through vault-bw.py (the same bw session, pinentry unlock and helpers as the vault browser) -----------------
+def load_vault_bw():
+    if not VAULT_BW.exists():
+        die(f"{VAULT_BW} is missing (stow the dotfiles)")
+    spec = importlib.util.spec_from_file_location("vault_bw", VAULT_BW)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def find_item(m) -> dict:
+    fid = m.folder_id(FOLDER, create=False)
+    if not fid:
+        die(f"Bitwarden has no folder {FOLDER}. Create the login item {ITEM} in it with the custom fields api_id and api_hash "
+            "(from https://my.telegram.org/apps), then run this again.")
+    items = [i for i in m.bw_json("list", "items", "--folderid", fid, "--search", ITEM) if i.get("name") == ITEM]
+    if not items:
+        die(f"Bitwarden folder {FOLDER} has no item named {ITEM} (needs the custom fields api_id and api_hash).")
+    return m.bw_json("get", "item", items[0]["id"])
+
+
+def field(item: dict, name: str) -> str:
+    for f in item.get("fields") or []:
+        if f.get("name") == name and f.get("value"):
+            return str(f["value"]).strip()   # text and hidden fields alike
+    return ""
+
+
+def set_fields(m, item: dict, values: dict[str, tuple[str, int]]) -> None:
+    """Set custom fields (name -> (value, type)); type 0 = text, 1 = hidden. Written with `bw edit item` (stdin)."""
+    fields = [f for f in item.get("fields") or [] if f.get("name") not in values]
+    for name, (value, ftype) in values.items():
+        fields.append({"name": name, "value": value, "type": ftype})
+    item["fields"] = fields
+    p = m.bw("edit", "item", item["id"], stdin=base64.b64encode(json.dumps(item).encode()).decode())
+    if p.returncode != 0:
+        die(f"could not update the Bitwarden item: {m.first_line(p.stderr or p.stdout)}")
+    m.refresh_rbw()
+
+
+# --- Telegram (login.py in the pinned venv) ------------------------------------------------------------------------------------
+def run_login(mode: str, api_id: str, api_hash: str, session: str = "") -> dict | None:
+    env = dict(os.environ, TELEGRAM_API_ID=api_id, TELEGRAM_API_HASH=api_hash)
+    env.pop("TELEGRAM_SESSION_STRING", None)
+    if session:
+        env["TELEGRAM_SESSION_STRING"] = session
+    p = subprocess.run([TG_PYTHON, TG_LOGIN, mode], env=env, stdout=subprocess.PIPE, text=True)   # stderr: QR + prompts stay on the terminal
+    if p.returncode == 3:
+        return None
+    if p.returncode != 0:
+        die(f"Telegram login/listing failed (exit {p.returncode})")
+    try:
+        return json.loads(p.stdout)
+    except ValueError:
+        die("the Telegram helper returned something that is not JSON")
+
+
+def pick_chats(chats: list[dict], allowed: set[int]) -> list[dict]:
+    rows = []
+    for c in chats:
+        mark = "[allowed]" if c["id"] in allowed else "         "
+        unread = f"({c['unread']} unread)" if c["unread"] else ""
+        rows.append(f"{c['id']}\t{mark} {c['kind']:7} {c['title']} {unread}".rstrip())
+    text = "\n".join(rows) + "\n"
+    cmd = os.environ.get("MCP_TG_PICK")
+    if cmd:
+        argv = [cmd]
+    elif shutil.which("fzf-menu"):
+        argv = ["fzf-menu", "--here", "-p", "Telegram: Tab = tick the chats the AI may READ, Enter = confirm", "-m",
+                "--delimiter", "\t", "--with-nth", "2"]
+    else:
+        argv = ["fzf", "-m", "--prompt", "Tab = tick, Enter = confirm > ", "--delimiter", "\t", "--with-nth", "2"]
+    p = subprocess.run(argv, input=text, stdout=subprocess.PIPE, text=True)
+    chosen = {line.split("\t")[0] for line in p.stdout.splitlines() if line.strip()}
+    return [c for c in chats if str(c["id"]) in chosen]
+
+
+def merge_allowlist(allowed: set[int], ticked: list[dict]) -> list[int]:
+    """Ticking a new chat adds it, ticking an `[allowed]` chat removes it."""
+    result = set(allowed)
+    for c in ticked:
+        if c["id"] in allowed:
+            result.discard(c["id"])
+        else:
+            result.add(c["id"])
+    return sorted(result)
+
+
+# --- gateway / root helper ---------------------------------------------------------------------------------------------------
+def ensure_token() -> str:
+    if TOKEN_FILE.exists() and TOKEN_FILE.read_text().strip():
+        return TOKEN_FILE.read_text().strip()
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(STATE_DIR, 0o700)
+    tok = secrets.token_urlsafe(32)
+    fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(tok)
+    return tok
+
+
+def sudo_apply(payload: dict[str, str]) -> None:
+    if not Path(TG_CREDS).exists():
+        die(f"{TG_CREDS} is missing: run  sudo ~/dotfiles/apply-system.sh --only users,mcp  first")
+    eprint("\nsudo is needed once to seal the credentials with the TPM2 (the password is asked by sudo, not by this script).")
+    if SUDO == "sudo" and subprocess.run(["sudo", "-v"]).returncode != 0:
+        die("sudo authentication failed")
+    p = subprocess.run([SUDO, TG_CREDS], input=json.dumps(payload), text=True)
+    if p.returncode != 0:
+        die("the root helper failed (nothing was started); fix the error above and run this again, the session is safe in Bitwarden")
+
+
+def gateway(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run([GATEWAY, *args], capture_output=True, text=True)
+
+
+def mcp_post(url: str, token: str, body: dict, session: str = "") -> tuple[dict | None, str]:
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+    if session:
+        headers["mcp-session-id"] = session
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=20) as r:
+        text = r.read().decode()
+        sid = r.headers.get("mcp-session-id", session)
+    for line in text.splitlines():
+        if line.startswith("data:"):
+            text = line[5:].strip()
+            break
+    try:
+        return (json.loads(text) if text.strip() else None), sid
+    except ValueError:
+        return None, sid
+
+
+def gateway_tool_count(token: str) -> int:
+    url = gateway("url", "telegram").stdout.strip()
+    if not url:
+        return 0
+    init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "mcp-telegram-setup", "version": "1"}}}
+    _, sid = mcp_post(url, token, init)
+    mcp_post(url, token, {"jsonrpc": "2.0", "method": "notifications/initialized"}, sid)
+    res, _ = mcp_post(url, token, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, sid)
+    return len(((res or {}).get("result") or {}).get("tools") or [])
+
+
+def verify() -> None:
+    if os.environ.get("MCP_TG_NO_VERIFY") == "1":
+        return
+    gtoken = gateway("headers")
+    try:
+        token = json.loads(gtoken.stdout)["Authorization"].removeprefix("Bearer ")
+    except (ValueError, KeyError):
+        eprint("could not read the gateway token; skipped the final check")
+        return
+    eprint("Waiting for the service to log in to Telegram ...")
+    for _ in range(30):
+        try:
+            n = gateway_tool_count(token)
+            if n:
+                eprint(f"OK: the gateway serves {n} read-only Telegram tools.")
+                return
+        except (urllib.error.URLError, OSError, ValueError):
+            pass
+        time.sleep(2)
+    eprint("The service did not answer in time. Look at: systemctl status telegram-mcp; journalctl -u telegram-mcp -n 40")
+
+
+# --- commands ------------------------------------------------------------------------------------------------------------------
+def cmd_setup(chats_only: bool, new_login: bool) -> None:
+    for what, path in (("the venv", TG_PYTHON), ("login.py", TG_LOGIN)):
+        if not Path(path).exists():
+            die(f"{what} is missing ({path}): run  sudo ~/dotfiles/apply-system.sh --only users,mcp  first")
+    m = load_vault_bw()
+    m.ensure()   # pinentry unlock of the bw session when the vault is locked
+    item = find_item(m)
+    api_id, api_hash = field(item, "api_id"), field(item, "api_hash")
+    if not api_id or not api_hash:
+        die(f"the Bitwarden item {FOLDER}/{ITEM} needs the custom fields api_id and api_hash (https://my.telegram.org/apps)")
+    stored_session = field(item, "session")
+    if chats_only and not stored_session:
+        die("no session in Bitwarden yet: run mcp-telegram-setup without arguments first")
+    out = None
+    if stored_session and not new_login:
+        eprint("Using the session stored in Bitwarden (use --new-login for a fresh QR login) ...")
+        out = run_login("list", api_id, api_hash, stored_session)
+        if out is None:
+            eprint("That session is no longer valid, switching to a QR login.")
+    fresh = out is None
+    if fresh:
+        if chats_only:
+            die("the stored session is not valid: run mcp-telegram-setup --new-login")
+        out = run_login("qr", api_id, api_hash)
+    session = out.get("session") or stored_session
+    allowed = {int(x) for x in field(item, "allowlist").split(",") if x.strip().lstrip("-").isdigit()}
+    eprint(f"\nLogged in as {out['me']['name']}. {len(out['chats'])} chats found.")
+    ticked = pick_chats(out["chats"], allowed)
+    allowlist = merge_allowlist(allowed, ticked) if (ticked or allowed) else []
+    if chats_only and not ticked:
+        die("nothing ticked, the allowlist is unchanged", 0)
+    if not allowlist:
+        die("no chat ticked: the service refuses to run without an allowlist (nothing was changed)")
+    values: dict[str, tuple[str, int]] = {"allowlist": (",".join(map(str, allowlist)), 0)}
+    if fresh:
+        values["session"] = (session, 1)
+    set_fields(m, item, values)
+    eprint("Bitwarden updated (the master copy).")
+    token = ensure_token()
+    payload = {"allowlist": ",".join(map(str, allowlist))}
+    if not chats_only or fresh:
+        payload.update(api_id=api_id, api_hash=api_hash, session=session, token=token)
+    else:
+        payload["token"] = token
+    sudo_apply(payload)
+    payload.clear()
+    gateway("restart")
+    eprint("Gateway restarted.")
+    if Path(MCP_ADD).exists():
+        r = subprocess.run([MCP_ADD], capture_output=True, text=True)
+        eprint("mcp-add: " + ("registered the gateway servers in Claude Code and Codex." if r.returncode == 0 else "failed, run it by hand: mcp-add"))
+    verify()
+    names = {c["id"]: c["title"] for c in out["chats"]}
+    eprint(f"\nAllowed chats ({len(allowlist)}): " + ", ".join(names.get(i, str(i)) for i in allowlist))
+    eprint("Change them later: mcp-telegram-setup chats. Kill switch: Telegram > Settings > Devices > terminate "
+           '"telegram-mcp (AI, read-only)".')
+
+
+def cmd_status() -> int:
+    rc = 0
+
+    def sc(*a: str) -> str:
+        return subprocess.run(["systemctl", *a], capture_output=True, text=True).stdout.strip()
+
+    active = sc("is-active", "telegram-mcp.service")
+    print(f"service:  telegram-mcp.service is {active or 'unknown'} (enabled: {sc('is-enabled', 'telegram-mcp.service') or 'no'})")
+    print(f"whisper:  telegram-whisper-proxy.socket is {sc('is-active', 'telegram-whisper-proxy.socket') or 'unknown'} "
+          f"(whisper-server runs on demand: {sc('is-active', 'telegram-whisper.service')})")
+    served = gateway("servers").stdout.split()
+    print(f"gateway:  telegram {'is' if 'telegram' in served else 'is NOT'} served ({'token file present' if TOKEN_FILE.exists() else 'no token file'})")
+    if active != "active":
+        rc = 1
+    if "telegram" not in served:
+        rc = 1
+    return rc
+
+
+def main(argv: list[str]) -> int:
+    if any(a in ("-h", "--help") for a in argv):
+        print((__doc__ or "").strip())
+        return 0
+    new_login = "--new-login" in argv
+    words = [a for a in argv if not a.startswith("--")]
+    if words == ["status"]:
+        return cmd_status()
+    if words == ["chats"]:
+        cmd_setup(True, new_login)
+    elif not words:
+        cmd_setup(False, new_login)
+    else:
+        print(f"mcp-telegram-setup: unknown command {' '.join(words)} (try --help)", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

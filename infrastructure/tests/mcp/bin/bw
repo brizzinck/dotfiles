@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# fake bw for mcp-telegram-setup: one folder MCP with one item telegram-mcp whose JSON lives in $FAKE_DIR/bw-item.json
+echo "bw $*" >>"${FAKE_DIR:-/tmp}/argv.log"
+item="$FAKE_DIR/bw-item.json"
+case "$1 $2" in
+  "status "*) echo '{"status":"unlocked"}' ;;
+  "list folders") [[ ${FAKE_BW_NOFOLDER:-0} == 1 ]] && echo '[]' || echo '[{"id":"F1","name":"MCP"}]' ;;
+  "list items") echo '[{"id":"I1","name":"telegram-mcp","folderId":"F1"}]' ;;
+  "get item") cat "$item" ;;
+  "edit item") base64 -d >"$item.new" && mv "$item.new" "$item"; echo '{}' ;;
+  *) echo "fake bw: unexpected $*" >&2; exit 1 ;;
+esac
