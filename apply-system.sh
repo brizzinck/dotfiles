@@ -254,7 +254,9 @@ REPO_PACKAGES=(
 # package needs opencv4 and Arch ships opencv 5, so it is a local PKGBUILD without opencv (install_local_kbptr).
 # tmux-fingers: prefix f hints in tmux (Crystal, built from the pinned source tarball; makedepends crystal + shards come from extra);
 # obs-cmd: OBS by keyboard over obs-websocket (leader o, hub rows; Rust, makedepends rust + git). OBS itself is never started.
-AUR_PACKAGES=(bibata-cursor-theme-bin shellcheck-bin ccusage wayscrollshot-bin pacseek bitwarden-cli-bin wlrctl wlr-which-key tmux-fingers obs-cmd)
+# voxtype-bin: offline dictation (SUPER+ALT+D, hold F9; dictation.sh, user unit voxtype.service); downgrade: pacman cache
+# rollback (hub row Update > Downgrade a package). Both guarded in the dotfiles: without them the keys say how to install.
+AUR_PACKAGES=(bibata-cursor-theme-bin shellcheck-bin ccusage wayscrollshot-bin pacseek bitwarden-cli-bin wlrctl wlr-which-key tmux-fingers obs-cmd voxtype-bin downgrade)
 
 cpu_ucode_package() {
   if grep -qi 'AuthenticAMD' /proc/cpuinfo 2>/dev/null; then
@@ -676,6 +678,11 @@ docker_config_stale() {
 
 section_services() {
   header "services"
+  # O1 UPD1: background download of pending pacman updates. Same method as `checkupdates -d` (private database copy, so no
+  # partial-upgrade state); it NEVER installs. The install is `sysup`, started by the owner. AC power only (unit condition).
+  install_file "$INFRA/pacman/dotfiles-predownload" /usr/local/bin/dotfiles-predownload 755
+  install_file "$INFRA/systemd/dotfiles-predownload.service" /etc/systemd/system/dotfiles-predownload.service
+  install_file "$INFRA/systemd/dotfiles-predownload.timer" /etc/systemd/system/dotfiles-predownload.timer
   run systemctl daemon-reload
   local u
   # tlp-pd.service (TLP Profiles Daemon) is D-Bus activated and sits next to tlp.service: it only runs "tlp <profile>"
@@ -685,6 +692,8 @@ section_services() {
     try systemctl enable --now "$u"
   done
   changed "enabled fstrim.timer paccache.timer reflector.timer earlyoom.service tlp-pd.service (per unit, failures are warnings)"
+  try systemctl enable --now dotfiles-predownload.timer
+  changed "enabled dotfiles-predownload.timer (downloads pending pacman updates into the cache, installs nothing)"
   if pkg_installed_exact power-profiles-daemon; then
     warn "power-profiles-daemon is installed and owns the same D-Bus names as tlp-pd (the packages conflict); remove it"
   fi
@@ -712,7 +721,8 @@ section_services() {
   fi
   followup "systemctl --failed    # expect no failed units"
   followup "journalctl -u earlyoom -b --no-pager | tail    # earlyoom started with the new arguments"
-  followup "systemctl list-timers fstrim.timer paccache.timer reflector.timer"
+  followup "systemctl list-timers fstrim.timer paccache.timer reflector.timer dotfiles-predownload.timer"
+  followup "cat /var/lib/dotfiles-predownload/state    # epoch, package count, ok (after the first background download); sysup status"
   followup "tlpctl list; tlpctl get    # TLP Profiles Daemon (powerprofilesctl-compatible D-Bus API, no powerprofilesctl binary); busctl introspect org.freedesktop.UPower.PowerProfiles /org/freedesktop/UPower/PowerProfiles"
 }
 
