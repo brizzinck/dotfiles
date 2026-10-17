@@ -326,6 +326,12 @@ if [ -x "$DOTFILES/.local/bin/keymap" ]; then
 else
   bad keymap-doc ".local/bin/keymap missing or not executable"
 fi
+# MENU-UX: exact search / keywords / global first (fixture + live database, no tmux in the quick variant)
+if [ -x "$DOTFILES/infrastructure/tests/keymap/run.sh" ]; then
+  if km_out="$("$DOTFILES/infrastructure/tests/keymap/run.sh" --quick 2>&1)"; then ok keymap-tests "shortcut search: $(printf '%s' "$km_out" | tail -1)"; else bad keymap-tests "$(printf '%s' "$km_out" | grep -m1 '^FAIL') (infrastructure/tests/keymap/run.sh --quick)"; fi
+else
+  bad keymap-tests "infrastructure/tests/keymap/run.sh missing"
+fi
 # U8: SUPER+CTRL+U types the Linux password of the user the focused window asks for (vault.sh user-pass + vault-who.py)
 if [ -x "$DOTFILES/.config/hypr/scripts/vault.sh" ] && [ -r "$DOTFILES/.config/hypr/scripts/vault-who.py" ]; then
   if python3 -I "$DOTFILES/.config/hypr/scripts/vault-who.py" --pid "$$" --class doctor | jq -e '.kind == "other" and (.user | length > 0)' >/dev/null 2>&1; then
@@ -575,7 +581,17 @@ fi
 # ── V1b: the shared modal fzf (vim keys in every menu) ──────────────────────────────────────────────────────────
 if [ -x "$HOME/.local/bin/fzf-menu" ] && [ -r "$HOME/.config/fzf/vimfzf.sh" ]; then
   if out="$("$HOME/.local/bin/fzf-menu" --self-test 2>&1)"; then ok fzf-menu "modal self-test passed ($(printf '%s\n' "$out" | grep -c '^ok') cases)"; else bad fzf-menu "$(printf '%s\n' "$out" | grep -m1 'FAIL\|self-test')"; fi
-  if [ -p "${XDG_RUNTIME_DIR:-/tmp}/fzf-menu/server.fifo" ] && kill -0 "$(cat "${XDG_RUNTIME_DIR:-/tmp}/fzf-menu/server.pid" 2>/dev/null)" 2>/dev/null; then info fzf-menu-server "hidden menu terminal running (menus open in ~40 ms)"; else info fzf-menu-server "not running: menus start a cold ghostty (~0.4 s); fzf-menu --server-start"; fi
+  if [ -x "$DOTFILES/infrastructure/tests/fzf-menu/run.sh" ]; then
+    if fm_out="$("$DOTFILES/infrastructure/tests/fzf-menu/run.sh" --quick 2>&1)"; then ok fzf-menu-tests "one-shot server terminals: $(printf '%s' "$fm_out" | tail -1)"; else bad fzf-menu-tests "$(printf '%s' "$fm_out" | grep -m1 '^FAIL') (infrastructure/tests/fzf-menu/run.sh --quick)"; fi
+  else
+    bad fzf-menu-tests "infrastructure/tests/fzf-menu/run.sh missing"
+  fi
+  if [ -p "${XDG_RUNTIME_DIR:-/tmp}/fzf-menu/server.fifo" ] && kill -0 "$(cat "${XDG_RUNTIME_DIR:-/tmp}/fzf-menu/server.pid" 2>/dev/null)" 2>/dev/null; then
+    slot="$(cat "${XDG_RUNTIME_DIR:-/tmp}/fzf-menu/server.slot" 2>/dev/null)"
+    if [ -n "$slot" ]; then info fzf-menu-server "one-shot menu terminal running, active slot $slot (menus open in ~40 ms)"; else info fzf-menu-server "hidden menu terminal running (old single server: restart it from hub > Fix > fzf-server for the one-shot terminals)"; fi
+  else
+    info fzf-menu-server "not running: menus start a cold ghostty (~0.4 s); fzf-menu --server-start"
+  fi
 else
   bad fzf-menu "fzf-menu or the fzf library (.local/bin, .config/fzf) is missing (run stow in ~/dotfiles)"
 fi
