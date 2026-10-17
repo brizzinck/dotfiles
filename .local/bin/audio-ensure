@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# audio-ensure: make sure the sound cards came up with their saved profiles; restart WirePlumber once when they did not.
+#   audio-ensure              check and, when a card is stuck on profile "off" although WirePlumber saved a profile for it,
+#                             restart wireplumber once and re-check (logs to the journal: journalctl -t audio-ensure)
+#   audio-ensure --check      read-only: print one line per problem, exit 1 when there is any (doctor runs this)
+#   audio-ensure --boot       what the Hyprland autostart runs: wait for PipeWire and the cards (up to ~10 s), then as above
+#
+# Why: the user manager of a lingering account (loginctl enable-linger) starts pipewire + wireplumber at boot, long before
+# greetd hands seat0 to the owner, so /dev/snd has no uaccess ACL for the owner yet and the ALSA probe fails ("Failed to
+# get the verb HiFi", "api.alsa.acp.device could not be loaded"). logind sets the ACL later without a udev event and
+# WirePlumber never probes a failed card again, so both cards stay on profile "off": no hardware sink or source, the
+# default source falls back to easyeffects_sink.monitor, and only apps that already hold a stream (Telegram) work.
+# WirePlumber's logind module only gates the bluez monitors; the ALSA monitor has no seat handling. One restart after
+# the ACL exists restores the saved profiles (default-profile state file), so the autostart does exactly that, only when needed.
+set -u
+
+MODE=fix
+case "${1:-}" in
+  "") ;;
+  --check) MODE=check ;;
+  --boot) MODE=boot ;;
+  -h | --help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  *) echo "usage: audio-ensure [--check|--boot]" >&2; exit 2 ;;
+esac
+
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/wireplumber/default-profile"
+log() { logger -t audio-ensure -- "$*" 2>/dev/null; printf '%s\n' "$*" >&2; }
+
+# problems: cards on "off" with a usable saved profile (class A, a restart helps), no hardware sink/source (class A when a card
+# exists), default source that is a monitor (class B, only reported). Prints "A|B<TAB>text".
+problems() {
+  local cards sinks sources defsrc name prof saved
+  cards="$(pactl --format=json list cards 2>/dev/null)" || { printf 'A\tPipeWire does not answer (pactl list cards failed)\n'; return; }
+  sinks="$(pactl --format=json list sinks 2>/dev/null)"
+  sources="$(pactl --format=json list sources 2>/dev/null)"
+  # a card on "off" is only a problem when its saved profile is usable: an HDMI card whose ports are all "not available"
+  # (no audio-capable display attached) legitimately stays off, because WirePlumber never activates an unavailable profile
+  while IFS=$'\t' read -r name prof; do
+    [ -n "$name" ] || continue
+    saved="$(awk -F= -v k="$name" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' "$STATE" 2>/dev/null)"
+    [ "$prof" = off ] && [ -n "$saved" ] && [ "$saved" != off ] || continue
+    if jq -e --arg n "$name" --arg p "$saved" '.[] | select(.name == $n) | .profiles[$p].available == true' <<<"$cards" >/dev/null 2>&1; then
+      printf 'A\tcard %s is on profile off, its saved profile "%s" is available\n' "$name" "$saved"
+    fi
+  done < <(jq -r '.[] | "\(.name)\t\(.active_profile)"' <<<"$cards")
+  if [ "$(jq 'length' <<<"$cards")" -gt 0 ]; then
+    jq -e 'map(select(.name | startswith("easyeffects") | not)) | length > 0' <<<"$sinks" >/dev/null 2>&1 \
+      || printf 'A\tno hardware sink (only easyeffects_sink)\n'
+    jq -e 'map(select((.name | endswith(".monitor") | not) and (.name | startswith("easyeffects") | not))) | length > 0' <<<"$sources" >/dev/null 2>&1 \
+      || printf 'A\tno hardware source (no microphone)\n'
+  fi
+  defsrc="$(pactl get-default-source 2>/dev/null)"
+  case "$defsrc" in
+    *.monitor) printf 'B\tdefault source is a monitor (%s), not a microphone\n' "$defsrc" ;;
+  esac
+}
+
+if [ "$MODE" = check ]; then
+  out="$(problems)"
+  [ -z "$out" ] && exit 0
+  printf '%s\n' "$out" | cut -f2
+  exit 1
+fi
+
+if [ "$MODE" = boot ]; then
+  # the autostart fires before PipeWire / WirePlumber have settled: wait for the server, then for the first card
+  for _ in $(seq 1 20); do pactl info >/dev/null 2>&1 && break; sleep 0.5; done
+  for _ in $(seq 1 20); do [ "$(pactl --format=json list cards 2>/dev/null | jq 'length' 2>/dev/null)" -gt 0 ] 2>/dev/null && break; sleep 0.5; done
+  sleep 2 # let WirePlumber finish applying profiles and default nodes before judging
+fi
+
+out="$(problems)"
+if ! grep -q '^A' <<<"$out"; then
+  [ -n "$out" ] && log "audio ok but: $(grep '^B' <<<"$out" | cut -f2)" || log "audio ok: cards on their saved profiles"
+  exit 0
+fi
+
+log "restarting wireplumber: $(grep '^A' <<<"$out" | cut -f2 | paste -sd';' | sed 's/;/; /g')"
+systemctl --user restart wireplumber.service
+for _ in $(seq 1 20); do
+  sleep 0.5
+  out="$(problems)"
+  grep -q '^A' <<<"$out" || break
+done
+if grep -q '^A' <<<"$out"; then
+  log "still broken after the restart: $(grep '^A' <<<"$out" | cut -f2 | paste -sd';' | sed 's/;/; /g')"
+  # only the login autostart notifies, and only when the restart did not help; manual runs just log
+  [ "$MODE" = boot ] && notify-send -a audio -u normal "Audio" "sound cards did not come up (journalctl -t audio-ensure)" 2>/dev/null
+  exit 1
+fi
+log "restored: cards on their saved profiles, hardware sink and source present"
+exit 0

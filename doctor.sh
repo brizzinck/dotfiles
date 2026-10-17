@@ -350,6 +350,16 @@ fi
 if grep -q 'cursor-apply --boot' "$DOTFILES/.config/hypr/hyprland.lua" && ! grep -q 'exec_cmd("hyprctl setcursor' "$DOTFILES/.config/hypr/hyprland.lua"; then ok cursor-boot "autostart runs cursor-apply --boot (waits for hyprctl, retries, logs to the journal)"; else bad cursor-boot "hyprland.lua must run cursor-apply --boot, not a bare hyprctl setcursor"; fi
 if grep -q 'Everforest-Cursor' "$DOTFILES/.config/hypr/hyprland.lua"; then ok cursor-env "hyprland.lua selects Everforest-Cursor when installed, Bibata otherwise"; else bad cursor-env "hyprland.lua has no Everforest-Cursor selection"; fi
 
+# ── audio: the lingering user manager starts pipewire + wireplumber before the owner owns seat0 (no /dev/snd ACL): cards can
+# stay on profile off. audio-ensure --check = no card off with a usable saved profile, hardware sink + source, default source no monitor
+if command -v pactl >/dev/null 2>&1 && pactl info >/dev/null 2>&1; then
+  audio_err="$("$DOTFILES/.local/bin/audio-ensure" --check 2>&1)" && ok audio "cards on their saved profiles, hardware sink and source present, default source is a microphone" \
+    || bad audio "$(printf '%s' "$audio_err" | paste -sd';' | sed 's/;/; /g') (fix: ~/.local/bin/audio-ensure)"
+else
+  info audio "PipeWire not reachable from this shell, skipped"
+fi
+if grep -q 'audio-ensure --boot' "$DOTFILES/.config/hypr/hyprland.lua"; then ok audio-boot "autostart runs audio-ensure --boot (restarts wireplumber once when a card came up on profile off)"; else bad audio-boot "hyprland.lua must run audio-ensure --boot"; fi
+
 # ── palette variant (black | night): link present, generated fragments in sync with the token source ───────────
 theme_link="${XDG_STATE_HOME:-$HOME/.local/state}/theme/current"
 if [ -f "$theme_link/tokens.json" ] && [ "$(dirname "$(readlink -f "$theme_link")")" = "$DOTFILES/themes/generated" ]; then
