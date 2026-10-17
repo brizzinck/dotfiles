@@ -1,0 +1,3 @@
+# K2: the automatic shortcut reference (keymap, ~/.config/keymap/keymap.py)
+keymap-page	Docs	Shortcut reference page (browser window)	SUPER+SHIFT+slash	run	~/.local/bin/keymap page	-	keymap	A local HTML page of every shortcut in blocks with search and vim keys, opened as a floating Zen window (offline, Everforest colours of the active variant).	k;Shortcut page
+keymap-gen	Docs	Rebuild the shortcut database and docs/keymap.md	-	tui	+pause keymap gen && keymap md --write	-	keymap	Forces a rebuild of ~/.cache/keymap/keymap.json from every live source and rewrites docs/keymap.md (doctor fails when the file is stale).	-

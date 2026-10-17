@@ -451,7 +451,8 @@ hl.bind(mainMod .. " + CTRL + P", hl.dsp.exec_cmd(scripts .. "/vault.sh password
 hl.bind(mainMod .. " + CTRL + O", hl.dsp.exec_cmd(scripts .. "/vault.sh totp"), { description = "2FA codes (copy the current code)" })
 hl.bind(mainMod .. " + CTRL + U", function() exec_when_keys_up(scripts .. "/vault.sh user-pass", { "u" }) end, { description = "Type the Linux password of the current user (terminal or polkit)" })
 hl.bind(mainMod .. " + equal", hl.dsp.exec_cmd(scripts .. "/calc.sh"), { description = "Calculator (qalc)" })
-hl.bind(mainMod .. " + slash", hl.dsp.exec_cmd(scripts .. "/keybinds.sh"), { description = "Keybind cheatsheet" })
+hl.bind(mainMod .. " + slash", hl.dsp.exec_cmd("~/.local/bin/keymap menu"), { description = "Shortcut search (every key of every tool)" })
+hl.bind(mainMod .. " + SHIFT + slash", hl.dsp.exec_cmd("~/.local/bin/keymap page"), { description = "Shortcut reference page (browser window)" })
 hl.bind(mainMod .. " + M", hl.dsp.exec_cmd("~/.config/hub/hub open"), { description = "Utility hub (fzf)" })
 hl.bind(mainMod .. " + semicolon", hl.dsp.exec_cmd("~/.config/hub/leader"), { description = "Leader menu (which-key)" })
 
