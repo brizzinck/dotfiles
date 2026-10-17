@@ -612,6 +612,113 @@ if [ "$greeter_on" = 1 ]; then
   fi
 fi
 
+# ── U7: managed users (td, yc, later service users), infrastructure/users/managed.tsv ──────────────────────────
+# The repo side is always checked (FAIL). The root side (ACL removal, sudoers, polkit, /srv) is INFO until the owner ran
+# `sudo ./apply-system.sh --only users` (/srv/dotfiles exists then), after that every missing piece FAILs.
+users_lib="$DOTFILES/infrastructure/users/lib.sh"
+if [ -r "$users_lib" ]; then
+  # shellcheck source=infrastructure/users/lib.sh
+  source "$users_lib"
+  users_problems="$(managed_validate "$USER")"
+  if [ -z "$users_problems" ]; then ok users-registry "managed.tsv is valid: $(managed_users | paste -sd' ' -)"; else bad users-registry "managed.tsv: $(echo "$users_problems" | head -2 | paste -sd';' -)"; fi
+  users_on=0
+  [ -d /srv/dotfiles ] && users_on=1
+  users_report() { # users_report <name> <detail>: INFO before the owner ran the users section, FAIL after it
+    if [ "$users_on" = 1 ]; then bad "$1" "$2"; else info "$1" "$2"; fi
+  }
+  if [ -x "$DOTFILES/.local/bin/usr" ] && [ -x "$HOME/.local/bin/usr" ]; then ok users-usr "usr helper stowed ($("$HOME/.local/bin/usr" list 2>/dev/null | awk 'NR>1{print $1}' | paste -sd' ' -))"; else bad users-usr "\$HOME/.local/bin/usr missing (cd ~/dotfiles && stow .)"; fi
+  if [ "$(git -C "$DOTFILES" config core.hooksPath 2>/dev/null)" = .githooks ] && [ -x "$DOTFILES/.githooks/publish" ]; then ok users-hook "git hooks publish the committed state (core.hooksPath = .githooks)"; else bad users-hook "core.hooksPath is not .githooks (git -C ~/dotfiles config core.hooksPath .githooks)"; fi
+  if hyprctl binds -j 2>/dev/null | jq -e '.[] | select(.key == "T" and .modmask == 65 and (.description | test("managed user")))' >/dev/null 2>&1; then ok users-bind "SUPER+SHIFT+T opens the user picker (usr menu)"; else bad users-bind "SUPER+SHIFT+T is not the user picker in the live bind table (hyprctl reload)"; fi
+  if "$DOTFILES/.config/hub/hub" --list --all 2>/dev/null | grep -q 'usr-menu'; then ok users-hub "hub rows usr-* exist"; else bad users-hub "hub row usr-menu missing (.config/hub/actions.d/u7.tsv)"; fi
+  users_log="$(mktemp)"
+  if "$DOTFILES/infrastructure/tests/users/run.sh" --quick >"$users_log" 2>&1; then ok users-tests "offline tests: $(tail -1 "$users_log")"; else bad users-tests "$(grep -m1 FAIL "$users_log") (infrastructure/tests/users/run.sh)"; fi
+  rm -f "$users_log"
+  # no linger, no user services of the interactive users: their windows own their processes
+  users_linger=""
+  for u in $(managed_users interactive); do [ -e "/var/lib/systemd/linger/$u" ] && users_linger="$users_linger $u"; done
+  if [ -z "$users_linger" ]; then ok users-no-linger "no managed interactive user lingers"; else users_report users-no-linger "linger is on for:$users_linger (sudo ./apply-system.sh --only users)"; fi
+  # the managed users have no ACL entry on the owner's home (top two levels; the section removes the whole tree)
+  users_acl=""
+  for u in $(managed_users); do
+    getent passwd "$u" >/dev/null || continue
+    n=$(find "$HOME" -xdev -maxdepth 2 ! -type l -print0 2>/dev/null | xargs -0 -r getfacl -p -s 2>/dev/null | grep -c "^\(default:\)\?user:$u:")
+    [ "$n" -gt 0 ] && users_acl="$users_acl $u($n)"
+  done
+  if [ -z "$users_acl" ]; then ok users-acl-home "no managed user has an ACL entry on $HOME"; else users_report users-acl-home "ACL entries on $HOME remain for:$users_acl (sudo ./apply-system.sh --only users)"; fi
+  # the owner reaches the managed homes
+  users_noacl=""
+  for u in $(managed_users acl); do
+    h=$(getent passwd "$u" | cut -d: -f6)
+    [ -n "$h" ] && [ -d "$h" ] || continue
+    getfacl -p "$h" 2>/dev/null | grep -q "^user:$USER:rwx" || users_noacl="$users_noacl $u"
+  done
+  if [ -z "$users_noacl" ]; then ok users-acl-managed "the owner has u:$USER:rwx on the managed homes"; else users_report users-acl-managed "no owner ACL on the home of:$users_noacl (sudo ./apply-system.sh --only users)"; fi
+  # passwordless become (sudoers) and terminals (polkit); never root
+  users_nosudo=""
+  for u in $(managed_users become); do
+    getent passwd "$u" >/dev/null || continue
+    sudo -n -u "$u" true >/dev/null 2>&1 || users_nosudo="$users_nosudo $u"
+  done
+  if [ -z "$users_nosudo" ]; then
+    if sudo -n -v >/dev/null 2>&1; then ok users-sudoers "sudo -n -u <managed> works (the root check is skipped: a sudo timestamp is valid)"
+    elif sudo -n -u root true >/dev/null 2>&1; then bad users-sudoers "sudo -n -u root works without a password: the drop-in is too wide"
+    else ok users-sudoers "sudo -n -u <managed> works, root still needs the password"; fi
+  else
+    users_report users-sudoers "no passwordless sudo -u for:$users_nosudo (sudo ./apply-system.sh --only users)"
+  fi
+  users_nopk=""
+  for u in $(managed_users become); do
+    getent passwd "$u" >/dev/null && managed_has "$u" interactive || continue
+    machinectl --no-ask-password --quiet shell "$u@" /usr/bin/true >/dev/null 2>&1 || users_nopk="$users_nopk $u"
+  done
+  if [ -z "$users_nopk" ]; then
+    if machinectl --no-ask-password --quiet shell root@ /usr/bin/true >/dev/null 2>&1; then bad users-polkit "machinectl shell root@ needs no authentication: the polkit rule is too wide"
+    else ok users-polkit "machinectl shell <managed>@ needs no password, root@ is still refused"; fi
+  else
+    users_report users-polkit "machinectl shell is not authorised for:$users_nopk (sudo ./apply-system.sh --only users)"
+  fi
+  # published dotfiles: owned by the owner, current, no secrets
+  if [ -d /srv/dotfiles ]; then
+    users_srv_bad=""
+    [ "$(stat -c %U /srv/dotfiles)" = "$USER" ] || users_srv_bad="$users_srv_bad owner"
+    [ -e /srv/dotfiles/private ] && users_srv_bad="$users_srv_bad private/"
+    [ -e /srv/dotfiles/env.secret.sh ] && users_srv_bad="$users_srv_bad env.secret.sh"
+    [ "$(sed -n 's/^rev=//p' /srv/dotfiles/.published 2>/dev/null)" = "$(git -C "$DOTFILES" rev-parse HEAD)" ] || users_srv_bad="$users_srv_bad stale(usr sync)"
+    if [ -z "$users_srv_bad" ]; then ok users-srv-dotfiles "/srv/dotfiles = ~/dotfiles HEAD, owned by $USER, no private/ or env.secret.sh"; else bad users-srv-dotfiles "/srv/dotfiles:$users_srv_bad"; fi
+  else
+    info users-srv-dotfiles "/srv/dotfiles does not exist yet (sudo ./apply-system.sh --only users)"
+  fi
+  # profile links of the managed users point at /srv/dotfiles
+  users_nolink=""
+  for u in $(managed_users profile); do
+    h=$(getent passwd "$u" | cut -d: -f6)
+    [ -n "$h" ] && [ -d "$h" ] || continue
+    [ "$(readlink "$h/.zshrc" 2>/dev/null)" = /srv/dotfiles/.zshrc ] || users_nolink="$users_nolink $u"
+  done
+  if [ -z "$users_nolink" ]; then ok users-links "profile links of the managed users point into /srv/dotfiles"; else users_report users-links "profile not linked for:$users_nolink (usr link USER)"; fi
+  # shared nvim: ready and current (the install runs in the background; INFO while it has not finished)
+  if [ -r /srv/nvim-shared/.ready ]; then
+    users_nvim_want="$(cat /srv/dotfiles/.config/nvim/lazy-lock.json /srv/dotfiles/.config/nvim/lua/plugins/mason.lua 2>/dev/null | sha256sum | cut -d' ' -f1)"
+    if [ "$(sed -n 's/^stamp=//p' /srv/nvim-shared/.ready)" = "$users_nvim_want" ] && [ -r /srv/nvim-shared/mason/bin ] && [ -r /srv/nvim-shared/lazy/lazy.nvim/lua ]; then
+      ok users-nvim-shared "/srv/nvim-shared is current ($(du -sh /srv/nvim-shared 2>/dev/null | cut -f1)), readable by everyone"
+    else
+      info users-nvim-shared "/srv/nvim-shared is older than the nvim pins (usr nvim-sync)"
+    fi
+  else
+    info users-nvim-shared "/srv/nvim-shared is not ready (usr nvim-sync; the users section starts it in the background)"
+  fi
+  # the clipboard: traverse-only on the runtime dir, rw on the Wayland socket, the other sockets closed
+  users_clip=""
+  for u in $(managed_users clipboard); do
+    getent passwd "$u" >/dev/null || continue
+    [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -n "${WAYLAND_DISPLAY:-}" ] || continue
+    [ "$(getfacl -p "$XDG_RUNTIME_DIR" 2>/dev/null | grep "^user:$u:")" = "user:$u:--x" ] || users_clip="$users_clip $u(dir)"
+    [ "$(getfacl -p "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" 2>/dev/null | grep "^user:$u:")" = "user:$u:rw-" ] || users_clip="$users_clip $u(socket)"
+    if [ -S "$XDG_RUNTIME_DIR/pipewire-0" ] && [ "$(getfacl -p "$XDG_RUNTIME_DIR/pipewire-0" 2>/dev/null | grep "^user:$u:")" != "user:$u:---" ]; then users_clip="$users_clip $u(pipewire)"; fi
+  done
+  if [ -z "$users_clip" ]; then ok users-clipboard "clipboard users reach the Wayland socket only (dir x, socket rw, pipewire closed)"; else bad users-clipboard "ACL of the runtime dir is off:$users_clip (usr clipboard-acl)"; fi
+fi
+
 # ── stow symlinks: every tracked config file must resolve to the repo copy ──────
 broken=""
 n_links=0

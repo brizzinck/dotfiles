@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# Offline tests of the managed-user stage (U7): registry parser, rendered sudoers/polkit, the usr helper in scratch directories
+# (sync, profile links, clipboard ACL), vault-who's machinectl rule and nvim's shared-root choice. No sudo, no real user is
+# touched (the scratch tree lives in $TMPDIR). Run: infrastructure/tests/users/run.sh [--quick]   (doctor runs --quick)
+#   --quick   skips the nvim cases
+set -u
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/../../.." && pwd)"
+USR="$REPO/.local/bin/usr"
+QUICK=0
+[ "${1:-}" = --quick ] && QUICK=1
+T="$(mktemp -d)"
+trap 'chmod -R u+w "$T" 2>/dev/null; rm -rf "$T"' EXIT
+PASS=0 FAIL=0
+ok() { PASS=$((PASS + 1)); }
+bad() { FAIL=$((FAIL + 1)); printf 'FAIL  %s\n' "$*"; }
+expect() { # expect NAME WANT GOT
+  if [ "$2" = "$3" ]; then ok; else bad "$1: want [$2] got [$3]"; fi
+}
+ME="$(command id -un)"
+
+# ── registry parser with a fixture that has a service user ─────────────────────
+cat >"$T/m.tsv" <<TSV
+# fixture
+td	cli	interactive,clipboard	orange	agents
+yc	cli	interactive	blue
+aimcp	-	service,noacl,nobecome,create	purple	Telegram MCP
+TSV
+export USR_MANAGED_TSV="$T/m.tsv"
+# shellcheck source=../../users/lib.sh
+source "$REPO/infrastructure/users/lib.sh"
+expect "managed_users" "td yc aimcp" "$(managed_users | paste -sd' ' -)"
+expect "interactive" "td yc" "$(managed_users interactive | paste -sd' ' -)"
+expect "become" "td yc" "$(managed_users become | paste -sd' ' -)"
+expect "acl" "td yc" "$(managed_users acl | paste -sd' ' -)"
+expect "profile" "td yc" "$(managed_users profile | paste -sd' ' -)"
+expect "clipboard" "td" "$(managed_users clipboard | paste -sd' ' -)"
+expect "create" "aimcp" "$(managed_users create | paste -sd' ' -)"
+expect "service" "aimcp" "$(managed_users service | paste -sd' ' -)"
+expect "accent" "purple" "$(managed_field aimcp accent)"
+expect "valid fixture" "" "$(managed_validate "$ME")"
+printf 'root\t-\t-\tred\n%s\t-\t-\tred\nx\tcli\tservice\tred\ny\t-\tbogus\tred\nz\tnoprofile\t-\tred\n' "$ME" >"$T/bad.tsv"
+bad_out="$(USR_MANAGED_TSV="$T/bad.tsv" managed_validate "$ME")"
+for needle in "root must never be managed" "must not be listed as managed" "service user cannot have" "unknown flag bogus" "profile noprofile"; do
+  case "$bad_out" in *"$needle"*) ok ;; *) bad "validate did not report: $needle" ;; esac
+done
+# the real registry is valid and never lists root or the owner
+unset USR_MANAGED_TSV
+expect "real registry valid" "" "$(managed_validate "$ME")"
+export USR_MANAGED_TSV="$T/m.tsv"
+
+# ── apply-system.sh --only users (dry run, fixture): rendered sudoers + polkit, service user creation ────────────────
+dry="$("$REPO/apply-system.sh" --dry-run --only users 2>&1)"
+case "$dry" in *"Runas_Alias USR_MANAGED = td, yc"*) ok ;; *) bad "sudoers Runas list is not td, yc" ;; esac
+case "$dry" in *"var managed = [\"td\", \"yc\"];"*) ok ;; *) bad "polkit list is not td, yc" ;; esac
+sudoers_rules="$(printf '%s\n' "$dry" | sed -n '/rendered .*50-usr-managed (mode/,/install -Dm440/p' | grep -E '\| (Runas_Alias|[a-z]+ ALL =)')"
+case "$sudoers_rules" in *aimcp* | *root*) bad "sudoers rules name aimcp or root (nobecome / never root)" ;; *) ok ;; esac
+polkit_rules="$(printf '%s\n' "$dry" | grep 'var managed =')"
+case "$polkit_rules" in *aimcp* | *root*) bad "polkit list names aimcp or root" ;; *) ok ;; esac
+case "$dry" in *"useradd -m -U -s /usr/bin/nologin -K HOME_MODE=0700 aimcp"*) ok ;; *) bad "dry run does not create the service user aimcp" ;; esac
+case "$dry" in *"passwd -l aimcp"*) ok ;; *) bad "dry run does not lock aimcp's password" ;; esac
+if printf '%s\n' "$dry" | grep -E '^\[dry-run\] useradd .* (td|yc)$' >/dev/null; then bad "dry run would create td or yc"; else ok; fi
+# render the real templates for the owner and check them with the real parsers
+sed -e "s|@OWNER@|$ME|g" -e 's|@MANAGED@|td, yc|' "$REPO/infrastructure/users/sudoers/50-usr-managed.in" >"$T/sudoers"
+if visudo -c -f "$T/sudoers" >/dev/null 2>&1; then ok; else bad "visudo rejects the rendered sudoers drop-in"; fi
+sed -e "s|@OWNER@|$ME|g" -e 's|@MANAGED_JS@|"td", "yc"|' "$REPO/infrastructure/users/polkit/50-usr-managed.rules.in" >"$T/rules.js"
+if command -v node >/dev/null 2>&1; then
+  if node --check "$T/rules.js" 2>/dev/null; then ok; else bad "node --check rejects the rendered polkit rule"; fi
+  if out="$(node "$HERE/polkit-rule-test.js" "$T/rules.js" "$ME" 2>&1)"; then ok; else bad "polkit rule logic: $out"; fi
+fi
+
+# ── vault-who: a window of `usr term` is the managed user ───────────────────────
+out="$(python3 -I - "$REPO/.config/hypr/scripts/vault-who.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("vw", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+cases = [
+    (["machinectl", "--quiet", "shell", "-E", "TERM=xterm", "-E", "WAYLAND_DISPLAY=/run/user/1000/wayland-1", "td@", "/usr/bin/zsh", "-lc", "x"], "td"),
+    (["machinectl", "shell", "--uid=yc"], "yc"),
+    (["machinectl", "shell"], "root"),
+    (["machinectl", "list"], None),
+]
+print("\n".join(f"{m.machinectl_target(a)!s}|{w!s}" for a, w in cases))
+PY
+)"
+expect "vault-who machinectl rule" "td|td
+yc|yc
+root|root
+None|None" "$out"
+
+# ── usr: scratch publish, profile links, clipboard ACL ──────────────────────────
+export USR_SRV_DOTFILES="$T/srv"
+mkdir -p "$T/srv" "$T/home"
+export HOME="$T/home"
+export XDG_STATE_HOME="$T/home/.local/state"
+"$USR" sync --worktree --quiet >/dev/null 2>&1 || bad "usr sync --worktree failed"
+[ -f "$T/srv/.zshrc" ] && ok || bad "sync: .zshrc not published"
+[ -e "$T/srv/private" ] && bad "sync: private/ was published" || ok
+[ -e "$T/srv/env.secret.sh" ] && bad "sync: env.secret.sh was published" || ok
+[ -x "$T/srv/.local/bin/usr" ] && ok || bad "sync: usr itself is not published"
+[ -f "$T/srv/.published" ] && ok || bad "sync: .published missing"
+mkdir -p "$T/h/td/.config"
+ln -s ../dotfiles/.config/tmux "$T/h/td/.config/tmux"
+echo old >"$T/h/td/.gitconfig"
+run_link() { USR_TARGET_USER=td USR_TARGET_HOME="$T/h/td" "$USR" _link "$@" 2>&1; }
+dry_out="$(run_link --dry-run)"
+case "$dry_out" in *"move   ~/.config/tmux (link -> ../dotfiles/.config/tmux)"*"link   ~/.config/tmux -> $T/srv/.config/tmux"*) ok ;; *) bad "link --dry-run does not list the tmux move + link" ;; esac
+[ -L "$T/h/td/.zshrc" ] && bad "link --dry-run wrote a link" || ok
+run_link >/dev/null
+expect ".zshrc link" "$T/srv/.zshrc" "$(readlink "$T/h/td/.zshrc")"
+expect "tmux link replaced" "$T/srv/.config/tmux" "$(readlink "$T/h/td/.config/tmux")"
+expect "old gitconfig backed up" "old" "$(cat "$T"/h/td/.local/state/usr/backup-*/.gitconfig 2>/dev/null)"
+case "$(cat "$T/h/td/.zshrc.local" 2>/dev/null)" in *'PROMPT="%F{#ea9e77}td%f ${PROMPT}"'*) ok ;; *) bad "zshrc.local accent block missing" ;; esac
+case "$(cat "$T/h/td/.tmux.local.conf" 2>/dev/null)" in *'#ea9e77'*) ok ;; *) bad "tmux.local.conf accent block missing" ;; esac
+case "$(run_link)" in *"0 linked, 12 already linked"*) ok ;; *) bad "second link run is not a no-op" ;; esac
+run_link --restore >/dev/null
+expect "restore gitconfig" "old" "$(cat "$T/h/td/.gitconfig" 2>/dev/null)"
+expect "restore tmux link" "../dotfiles/.config/tmux" "$(readlink "$T/h/td/.config/tmux")"
+[ -L "$T/h/td/.zshrc" ] && bad "restore left the new .zshrc link" || ok
+# a service user gets no profile and no terminal
+printf 'svc\t-\tservice,noacl,nobecome\tred\n' >"$T/svc.tsv"
+if USR_MANAGED_TSV="$T/svc.tsv" USR_TARGET_USER=svc USR_TARGET_HOME="$T/h/svc" "$USR" _link 2>&1 | grep -q 'nothing to link'; then ok; else bad "service user: _link did not say nothing to link"; fi
+if USR_MANAGED_TSV="$T/svc.tsv" "$USR" term svc --dry-run >/dev/null 2>&1; then bad "usr term works for a service user"; else ok; fi
+case "$("$USR" term td --dry-run 2>&1)" in *"_session td tmux"*) ok ;; *) bad "usr term td --dry-run prints no session command" ;; esac
+
+# clipboard ACL on a fake runtime dir (sockets): the clipboard user gets x on the dir, rw on the Wayland socket, deny on the rest
+printf 'nobody\t-\tinteractive,clipboard\torange\n' >"$T/clip.tsv"
+mkdir -p "$T/rt"
+chmod 700 "$T/rt"
+(cd "$T/rt" && python3 -I -c '
+import socket, os
+for n in ("wayland-9", "pipewire-0", "bus"):
+    s = socket.socket(socket.AF_UNIX); s.bind(n); os.chmod(n, 0o666)
+')
+export XDG_RUNTIME_DIR="$T/rt" WAYLAND_DISPLAY=wayland-9
+USR_MANAGED_TSV="$T/clip.tsv" "$USR" clipboard-acl >/dev/null 2>&1
+expect "clipboard dir" "user:nobody:--x" "$(getfacl -p "$T/rt" 2>/dev/null | grep '^user:nobody:')"
+expect "clipboard wayland" "user:nobody:rw-" "$(getfacl -p "$T/rt/wayland-9" 2>/dev/null | grep '^user:nobody:')"
+expect "clipboard pipewire denied" "user:nobody:---" "$(getfacl -p "$T/rt/pipewire-0" 2>/dev/null | grep '^user:nobody:')"
+expect "clipboard bus denied" "user:nobody:---" "$(getfacl -p "$T/rt/bus" 2>/dev/null | grep '^user:nobody:')"
+unset XDG_RUNTIME_DIR WAYLAND_DISPLAY
+
+# ── nvim: which plugin/Mason root is chosen ─────────────────────────────────────
+if [ "$QUICK" = 0 ] && command -v nvim >/dev/null 2>&1; then
+  mkdir -p "$T/shared/lazy"
+  : >"$T/shared/.ready"
+  probe() { env "$@" XDG_DATA_HOME="$T/d" XDG_STATE_HOME="$T/s" XDG_CACHE_HOME="$T/c" timeout 30 nvim --headless -u NONE --cmd "set rtp+=$REPO/.config/nvim" \
+    -c 'lua io.stdout:write(tostring(require("shared").root) .. "\n")' -c 'qa!' 2>&1 </dev/null | tail -1; }
+  chmod a-w "$T/shared"
+  expect "nvim: ready + read-only = shared" "$T/shared" "$(probe NVIM_SHARED_DEFAULT="$T/shared")"
+  chmod u+w "$T/shared"
+  expect "nvim: writable (owner) = own dirs" "nil" "$(probe NVIM_SHARED_DEFAULT="$T/shared")"
+  chmod a-w "$T/shared"
+  expect "nvim: NVIM_SHARED=0" "nil" "$(probe NVIM_SHARED_DEFAULT="$T/shared" NVIM_SHARED=0)"
+  expect "nvim: NVIM_SHARED forced" "/x/y" "$(probe NVIM_SHARED=/x/y)"
+  rm -f "$T/shared/.ready" 2>/dev/null
+  chmod u+w "$T/shared"
+  rm -f "$T/shared/.ready"
+  chmod a-w "$T/shared"
+  expect "nvim: no .ready = own dirs" "nil" "$(probe NVIM_SHARED_DEFAULT="$T/shared")"
+fi
+
+printf 'users tests: %s passed, %s failed\n' "$PASS" "$FAIL"
+[ "$FAIL" = 0 ]
