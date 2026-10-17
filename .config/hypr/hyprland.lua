@@ -280,6 +280,15 @@ hl.window_rule({
     size = { "monitor_w*0.6", "monitor_h*0.65" },
 })
 
+-- Edit anywhere (SUPER+CTRL+E, scripts/edit-anywhere.sh): a small floating nvim next to the pointer for text fields without vim.
+-- The script places it with exec rules (a monitor-relative move clamped to the work area); this rule is the float + size fallback.
+hl.window_rule({
+    name = "float-edit",
+    match = { class = "^(float\\.edit)$" },
+    float = true,
+    size = { 900, 360 },
+})
+
 -- Hidden menu terminal of fzf-menu (~/.local/bin/fzf-menu --server): parked on the special workspace "menu", which
 -- the server shows for the length of one menu (about 40 ms instead of a 0.4 s ghostty start).
 hl.window_rule({
@@ -518,6 +527,7 @@ hl.bind(mainMod .. " + ALT + A", hl.dsp.exec_cmd(scripts .. "/ai-ask.sh selectio
 hl.bind(mainMod .. " + CTRL + T", hl.dsp.exec_cmd(scripts .. "/ai-ask.sh telegram"), { description = "AI: Telegram digest (unread allowlisted chats)" })
 hl.bind(mainMod .. " + slash", hl.dsp.exec_cmd("~/.local/bin/keymap menu"), { description = "Shortcut search (every key of every tool)" })
 hl.bind(mainMod .. " + SHIFT + slash", hl.dsp.exec_cmd("~/.local/bin/keymap page"), { description = "Shortcut reference page (browser window)" })
+hl.bind(mainMod .. " + CTRL + E", hl.dsp.exec_cmd(scripts .. "/edit-anywhere.sh open"), { description = "Edit anywhere: nvim at the pointer then paste (Ctrl+S)" })
 hl.bind(mainMod .. " + M", hl.dsp.exec_cmd("~/.config/hub/hub open"), { description = "Utility hub (fzf)" })
 hl.bind(mainMod .. " + ALT + SHIFT + D", hl.dsp.exec_cmd(scripts .. "/dictation.sh cycle"), { description = "Dictation: next language (ru uk en)" })
 hl.bind(mainMod .. " + semicolon", hl.dsp.exec_cmd("~/.config/hub/leader"), { description = "Leader menu (which-key)" })

@@ -807,6 +807,7 @@ else
   bad tmux-destroy "infrastructure/tests/tmux-destroy/run.sh or tmux missing"
 fi
 if o1_out="$("$DOTFILES/infrastructure/tests/o1/run.sh" 2>&1)"; then ok o1-tests "desktop helpers (displays, zoom, brightness, restart, lock, media, transcode): $(printf '%s' "$o1_out" | tail -1)"; else bad o1-tests "$(printf '%s' "$o1_out" | grep -m1 '^FAIL') (infrastructure/tests/o1/run.sh)"; fi
+if edit_out="$("$DOTFILES/infrastructure/tests/edit/run.sh" 2>&1)"; then ok edit-tests "edit anywhere (SUPER+CTRL+E): $(printf '%s' "$edit_out" | tail -1)"; else bad edit-tests "$(printf '%s' "$edit_out" | grep -m1 '^FAIL') (infrastructure/tests/edit/run.sh)"; fi
 if [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && command -v hyprctl >/dev/null 2>&1; then
   o1_rate="$(hyprctl getoption input:repeat_rate -j 2>/dev/null | jq -r '.int // empty')"
   o1_delay="$(hyprctl getoption input:repeat_delay -j 2>/dev/null | jq -r '.int // empty')"
@@ -838,7 +839,6 @@ else
   info dictation "voxtype is not installed: SUPER+ALT+D / F9 show how to install it (sudo ./apply-system.sh --only install)"
 fi
 if [ "$(systemctl --user is-enabled voxtype.service 2>/dev/null)" = enabled ] && [ -r "$HOME/.config/voxtype/config.toml" ]; then ok dictation-unit "voxtype.service enabled, config tracked"; else bad dictation-unit "voxtype.service not enabled or ~/.config/voxtype/config.toml missing (stow ., systemctl --user enable voxtype.service)"; fi
-hub_groups="$("$DOTFILES/.config/hub/hub" groups 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"
 # D1b: the daemon runs the variant dictation.sh picks (Vulkan when a real GPU works, else the best CPU build), started directly:
 # a leftover runtime drop-in or ~/.local/share/voxtype/bin link from the manual Vulkan setup must be gone
 if command -v voxtype >/dev/null 2>&1; then
@@ -854,6 +854,7 @@ if command -v voxtype >/dev/null 2>&1; then
     if [ "$(readlink "/proc/$dict_pid/exe" 2>/dev/null)" = "$dict_want" ]; then ok dictation-backend "voxtype.service runs $(basename "$dict_want"): $dict_label"; else bad dictation-backend "voxtype.service runs $(readlink "/proc/$dict_pid/exe" 2>/dev/null) but dictation.sh picks $dict_want (systemctl --user restart voxtype)"; fi
   else info dictation-backend "voxtype.service is not running; it would start $(basename "$dict_want"): $dict_label"; fi
 fi
+hub_groups="$("$DOTFILES/.config/hub/hub" groups 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"
 hub_missing=""
 for g in Setup Update Learn Fix; do case " $hub_groups " in *" $g "*) ;; *) hub_missing="$hub_missing $g" ;; esac; done
 if [ -z "$hub_missing" ]; then ok hub-groups "groups Setup/Update/Learn/Fix exist (hub groups)"; else bad hub-groups "hub groups lacks:$hub_missing"; fi

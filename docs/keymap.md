@@ -16,8 +16,8 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Desktop | [Notifications](#notifications) | 4 |
 | Desktop | [System, power, bar](#system-power-bar) | 12 |
 | Desktop | [Pointer from the keyboard](#pointer-from-the-keyboard) | 21 |
-| Desktop | [Other Hyprland binds](#other-hyprland-binds) | 15 |
-| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 149 |
+| Desktop | [Other Hyprland binds](#other-hyprland-binds) | 16 |
+| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 150 |
 | Terminal | [tmux: this setup](#tmux-this-setup) | 55 |
 | Terminal | [tmux: stock prefix keys](#tmux-stock-prefix-keys) | 80 |
 | Terminal | [zsh line editor](#zsh-line-editor) | 34 |
@@ -303,6 +303,7 @@ Hyprland binds that no classification rule claims yet (add a rule to rules.tsv).
 | `F9` | Dictation: hold F9 to dictate |
 | `Super+Alt+D` | Dictation on or off (Voxtype) |
 | `Super+Alt+Shift+D` | Dictation: next language (ru uk en) |
+| `Super+Ctrl+E` | Edit anywhere: nvim at the pointer then paste (Ctrl+S) |
 | `Super+Alt+T` | New reminder (25 tea or 14:30 standup) |
 | `Super+Ctrl+Alt+T` | Reminders: list and cancel |
 | `Super+Ctrl+A` | AI: ask about the focused window |
@@ -324,6 +325,7 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 |---|---|
 | `Super+; Space` | Apps |
 | `Super+; /` | Shortcut search |
+| `Super+; e` | Edit anywhere |
 | `Super+; k` | Shortcut page |
 | `Super+; h` | Hub |
 | `Super+; w b` | Windows: Previous tab |
