@@ -17,7 +17,7 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Desktop | [System, power, bar](#system-power-bar) | 12 |
 | Desktop | [Pointer from the keyboard](#pointer-from-the-keyboard) | 21 |
 | Desktop | [Other Hyprland binds](#other-hyprland-binds) | 16 |
-| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 150 |
+| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 151 |
 | Terminal | [tmux: this setup](#tmux-this-setup) | 55 |
 | Terminal | [tmux: stock prefix keys](#tmux-stock-prefix-keys) | 80 |
 | Terminal | [Terminal: ghostty](#terminal-ghostty) | 13 |
@@ -39,7 +39,7 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Menus and bar | [Menus: list grammar](#menus-list-grammar) | 19 |
 | Menus and bar | [Menus: keys of each menu](#menus-keys-of-each-menu) | 61 |
 | Menus and bar | [TUIs and viewers](#tuis-and-viewers) | 3 |
-| Menus and bar | [Bar (waybar)](#bar-waybar) | 46 |
+| Menus and bar | [Bar (waybar)](#bar-waybar) | 47 |
 | Apps and login | [Telegram](#telegram) | 6 |
 | Apps and login | [Browser (Vimium C)](#browser-vimium-c) | 32 |
 | Apps and login | [Obsidian (Vim mode)](#obsidian-vim-mode) | 23 |
@@ -467,6 +467,7 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; x g` | AI and MCP: Telegram chats |
 | `Super+; x i` | AI and MCP: Install pinned servers |
 | `Super+; x l` | AI and MCP: Gateway logs |
+| `Super+; x m` | AI and MCP: Telegram: allow sending |
 | `Super+; x n` | AI and MCP: Window, text only |
 | `Super+; x q` | AI and MCP: Question about the selection |
 | `Super+; x r` | AI and MCP: Restart gateway |
@@ -1200,6 +1201,7 @@ Two bars per monitor: compact and full (SUPER+B switches, SUPER+CTRL+B hides). C
 | `L` | toggle | Switch: Keep working with the lid closed |
 | `L` | toggle | Switch: Night light |
 | `L` | VPN picker | Switch: VPN |
+| `L` | toggle (needs the popup) | Switch: Telegram sending |
 | `L` | next profile | Switch: Power profile |
 | `R` | choose | Switch: Power profile |
 | `L` | install everything | Updates |

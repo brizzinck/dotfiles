@@ -237,7 +237,7 @@
   "group/toggles": {
     "orientation": "inherit",
     "drawer": { "transition-duration": 220, "transition-left-to-right": false, "children-class": "drawer-child" },
-    "modules": ["custom/toggles#leader", "custom/sw-dnd", "custom/sw-caffeine", "custom/sw-awake", "custom/sw-lid", "custom/sw-night", "custom/power"]
+    "modules": ["custom/toggles#leader", "custom/sw-dnd", "custom/sw-caffeine", "custom/sw-awake", "custom/sw-lid", "custom/sw-night", "custom/sw-tgsend", "custom/power"]
   },
   "custom/toggles#leader": {
     "exec": "~/.config/waybar/scripts/toggles.sh summary",
@@ -283,6 +283,14 @@
     "interval": 30,
     "signal": 8,
     "on-click": "~/.config/waybar/scripts/toggles.sh toggle night"
+  },
+  // Telegram sending (broker tgconfirm): hidden without the broker; L: asks for the confirmation popup, then ON for 60 min
+  "custom/sw-tgsend": {
+    "exec": "~/.config/waybar/scripts/toggles.sh switch tgsend",
+    "return-type": "json",
+    "interval": 30,
+    "signal": 8,
+    "on-click": "~/.config/waybar/scripts/toggles.sh toggle tgsend"
   },
   // power profile: non-balanced counts as enabled (class enabled), balanced is normal
   "custom/power": {

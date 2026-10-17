@@ -433,6 +433,22 @@ else
   skip "telegram-send protocol test (no venv: run mcp-install)"
 fi
 
+# the real broker + fake popup + fake /x-send, driven by the on/off switch and by the agents' MCP server
+if [[ -x $VENV_PY ]]; then
+  count_py "$VENV_PY" "$HERE/test_send_e2e.py" "$REPO"
+else
+  skip "send end-to-end test (no venv: run mcp-install)"
+fi
+# hub row, leader key and the waybar switch of the Telegram sending toggle
+check "hub: toggle row tg-send with live state and leader x m" bash -c 'grep -P "^tg-send\tAI\tTelegram: allow sending\t-\ttoggle\tmcp-telegram-send toggle\tmcp-telegram-send status\t" "$1" | grep -q "x m;Telegram: allow sending$"' _ "$REPO/.config/hub/actions.d/m1.tsv"
+TS="$REPO/.config/waybar/scripts/toggles.sh"
+echo '{"enabled":true,"until":4102444800}' >"$SCRATCH/tg-state.json"
+check "waybar: the tgsend switch is ON (class enabled) while the broker state says enabled" bash -c 'MCP_TGSEND_STATE="$2" "$1" switch tgsend | jq -e ".class == \"enabled\"" && MCP_TGSEND_STATE="$2" "$1" state tgsend' _ "$TS" "$SCRATCH/tg-state.json"
+echo '{"enabled":true,"until":1000}' >"$SCRATCH/tg-state.json"
+check "waybar: an expired state file counts as off (class dim)" bash -c 'MCP_TGSEND_STATE="$2" "$1" switch tgsend | jq -e ".class == \"dim\"" && ! MCP_TGSEND_STATE="$2" "$1" state tgsend' _ "$TS" "$SCRATCH/tg-state.json"
+check "waybar: without the broker's state file the switch is hidden (empty text) and not in the summary" bash -c 'MCP_TGSEND_STATE=/nonexistent "$1" switch tgsend | jq -e ".text == \"\"" && ! MCP_TGSEND_STATE=/nonexistent "$1" summary | jq -r .tooltip | grep -q Telegram' _ "$TS"
+check "waybar: the drawer has the tgsend module and the css styles it" bash -c 'grep -q "custom/sw-tgsend\", \"custom/power" "$1" && grep -q "\"custom/sw-tgsend\": {" "$1" && grep -q "#custom-sw-tgsend" "$2"' _ "$REPO/.config/waybar/modules.jsonc" "$REPO/.config/waybar/style.css"
+
 # --- tgconfirm: the owner-confirmation broker, its popup, unit and window rule ---------------------------------------------
 CFD="$REPO/infrastructure/mcp/confirm"
 TGU="$CFD/tgconfirm.service"

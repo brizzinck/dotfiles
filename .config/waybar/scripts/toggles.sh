@@ -5,13 +5,13 @@
 #   toggles.sh switch NAME         JSON for one child: on = glyph + class enabled, off = glyph + class dim
 #   toggles.sh toggle NAME         flip it, then refresh the bar (signal 8)
 #   toggles.sh state NAME          exit 0 when NAME is on (used by the hub)
-#   NAME is one of: dnd caffeine awake lid night vpn
+#   NAME is one of: dnd caffeine awake lid night vpn tgsend (tgsend only exists while the tgconfirm broker runs: Telegram sending)
 # (the power profile child is hypr/scripts/power-profile.sh waybar; a profile other than balanced counts as enabled)
 # Colour classes: normal | dim | enabled | warning | critical (waybar/style.css maps them to palette tokens).
 set -u
 
 SCRIPTS="$HOME/.config/hypr/scripts"
-NAMES=(dnd caffeine awake lid night vpn power)
+NAMES=(dnd caffeine awake lid night vpn tgsend power)
 G_OFF='󰨙'
 G_DND_ON='󰂛' G_DND_OFF='󰂜'
 G_CAF_ON='󰅶' G_CAF_OFF='󰛊'
@@ -19,6 +19,7 @@ G_AWK_ON='󰒳' G_AWK_OFF='󰒲'
 G_LID_ON='󰌢' G_LID_OFF='󰛧'
 G_NIT_ON='󰖔' G_NIT_OFF='󰖔'
 G_VPN_ON='󰦝' G_VPN_OFF='󰦜'
+G_TGS_ON='󰒊' G_TGS_OFF='󰒊'
 G_SAVER='󰌪' G_PERF='󰓅'
 
 poke_bar() { pkill -o -u "$UID" -RTMIN+8 -x waybar 2>/dev/null || true; }
@@ -68,6 +69,15 @@ probe() {
       [[ -n $d ]] && { ON=1; DETAIL=$d; }
       TEXT_ON=$GLYPH_ON
       HINT="L: VPN picker" ;;
+    tgsend)
+      # Telegram sending (mcp-telegram-send): the broker's world-readable state file; no state file = no broker = switch hidden
+      GLYPH_ON=$G_TGS_ON GLYPH_OFF=$G_TGS_OFF LABEL="Telegram sending (AI may ask)"
+      local st=${MCP_TGSEND_STATE:-/run/tgconfirm/state.json} left
+      [[ -r $st ]] || return 1
+      left=$(jq -r 'if .enabled and (.until > now) then ((.until - now + 59) / 60 | floor) else empty end' "$st" 2>/dev/null)
+      if [[ -n $left ]]; then ON=1 DETAIL="${left} min left, every message needs the popup"; fi
+      TEXT_ON="$GLYPH_ON${left:+ ${left}m}"
+      HINT="L: toggle (needs the popup)" ;;
     power)
       d=$("$SCRIPTS/power-profile.sh" get 2>/dev/null) || d=balanced
       LABEL="Power profile" DETAIL=$d
@@ -111,7 +121,12 @@ summary() {
 }
 
 switch() {
-  probe "${1:-}" || return 2
+  probe "${1:-}"
+  case $? in
+    0) ;;
+    1) echo '{"text":""}'; return 0 ;;   # a switch that does not exist on this machine (tgsend without the broker)
+    *) return 2 ;;
+  esac
   if ((ON)); then
     json "$GLYPH_ON" enabled "$(state_line)"$'\n\n'"$HINT"
   else
@@ -127,7 +142,8 @@ toggle() {
     lid) "$SCRIPTS/lid.sh" toggle ;;
     night) if pgrep -x hyprsunset >/dev/null; then pkill -x hyprsunset; else setsid -f hyprsunset -t 4500 >/dev/null 2>&1; fi ;;
     vpn) ghostty --class=float.tui -e zsh -ic vpn ;;
-    *) echo "toggles.sh: unknown switch '${1:-}' (dnd caffeine awake lid night vpn)" >&2; return 2 ;;
+    tgsend) setsid -f "$HOME/.local/bin/mcp-telegram-send" toggle >/dev/null 2>&1 </dev/null ;;   # it pokes the bar itself when the popup is answered
+    *) echo "toggles.sh: unknown switch '${1:-}' (dnd caffeine awake lid night vpn tgsend)" >&2; return 2 ;;
   esac
   poke_bar
 }
