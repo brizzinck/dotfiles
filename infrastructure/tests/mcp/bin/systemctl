@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+echo "systemctl $*" >>"${FAKE_DIR:-/tmp}/argv.log"
+echo "telegram-fake.service loaded failed failed Fake"

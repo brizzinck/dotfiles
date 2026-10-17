@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+echo "playerctl $*" >>"${FAKE_DIR:-/tmp}/argv.log"
+if [[ ${FAKE_NO_PLAYER:-0} == 1 ]]; then echo "No players found" >&2; exit 1; fi
+printf 'spotify\tPlaying\tSome Artist\tSome Title\tSome Album\n'

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# fake rbw: `rbw get --folder F --field FLD ITEM`; values in $FAKE_DIR/vault/<F>__<ITEM>__<FLD>; the call is logged
+echo "rbw $*" >>"${FAKE_DIR:-/tmp}/argv.log"
+[[ $1 == get ]] || exit 2
+shift; folder=""; field=""
+while (($#)); do case $1 in --folder) folder=$2; shift ;; --field) field=$2; shift ;; *) item=$1 ;; esac; shift; done
+f="$FAKE_DIR/vault/${folder}__${item}__${field}"
+[[ -r $f ]] || { echo "rbw: no entry found" >&2; exit 1; }
+cat "$f"

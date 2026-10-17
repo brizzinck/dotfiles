@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+echo "journalctl $*" >>"${FAKE_DIR:-/tmp}/argv.log"
+cat <<'J'
+2026-10-17T10:00:00+03:00 host mcp-gateway[1]: started
+2026-10-17T10:00:01+03:00 host mcp-gateway[1]: connect with token=SuperSecretValue123 ok
+2026-10-17T10:00:02+03:00 host mcp-gateway[1]: header Authorization: Bearer abc.def.ghi-long-value
+2026-10-17T10:00:03+03:00 host mcp-gateway[1]: key sk-abcdefghijklmnop1234
+J

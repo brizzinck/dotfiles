@@ -1,0 +1,239 @@
+#!/usr/bin/env python3
+"""mcp-add - register the local MCP gateway servers in Claude Code and Codex, and retire the legacy entries.
+
+  mcp-add                  Claude Code (user scope) + Codex: every server the gateway serves, plus the stdio entries of
+                           ~/.config/mcp/stdio.json (as `mcp-run NAME`); removes the old `mcphub` entry and a direct
+                           `chrome-devtools` stdio entry (the gateway serves `chrome-devtools` under the same name, so
+                           existing permission rules such as mcp__chrome-devtools keep working)
+  mcp-add --dry-run        print every step, change nothing
+  mcp-add --claude | --codex      only one client
+  mcp-add --no-legacy      keep mcphub / the direct chrome-devtools entry
+
+What a client config contains: the endpoint http://127.0.0.1:PORT/NAME/mcp and a headers helper (`mcp-gateway-headers`,
+Claude Code `headersHelper`, Codex `http_headers_helper`) that prints the bearer token from ~/.local/state/mcp/gateway.token
+at connect time. The token itself is never written into ~/.claude.json or ~/.codex/config.toml.
+
+Claude Code is driven through its own CLI (`claude mcp add-json/remove -s user`). Codex has no flag for the headers helper, so
+~/.codex/config.toml is edited as text: only the [mcp_servers.NAME] tables named here are replaced, a timestamped backup is
+written first and the result is parsed back (tomllib) and compared with the old file before it is saved.
+Throwaway test: CLAUDE_CONFIG_DIR=/tmp/x CODEX_HOME=/tmp/y mcp-add.  Hooks: MCP_GATEWAY_CMD, MCP_CLAUDE_BIN, MCP_STATE_DIR.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+import tomllib
+from pathlib import Path
+
+HOME = Path.home()
+BIN_DIR = Path(os.path.abspath(__file__)).parent  # not resolve(): keep the stowed ~/.local/bin path in client configs
+GATEWAY = os.environ.get("MCP_GATEWAY_CMD") or str(BIN_DIR / "mcp-gateway")
+HEADERS = str(BIN_DIR / "mcp-gateway-headers")
+RUN = str(BIN_DIR / "mcp-run")
+CONFIG_DIR = Path(os.environ.get("MCP_CONFIG_DIR") or Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "mcp")
+STATE_DIR = Path(os.environ.get("MCP_STATE_DIR") or Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local/state") / "mcp")
+CLAUDE = os.environ.get("MCP_CLAUDE_BIN", "claude")
+CODEX_CONFIG = Path(os.environ.get("CODEX_HOME") or HOME / ".codex") / "config.toml"
+DRY = False
+
+
+def say(msg: str) -> None:
+    print(msg)
+
+
+def run(argv: list[str]) -> tuple[int, str]:
+    cp = subprocess.run(argv, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+    return cp.returncode, (cp.stdout + cp.stderr).strip()
+
+
+def gateway_servers() -> dict[str, str]:
+    """name -> endpoint of every server the gateway serves."""
+    rc, out = run([GATEWAY, "servers"])
+    if rc != 0:
+        sys.exit(f"mcp-add: `mcp-gateway servers` failed: {out}")
+    servers = {}
+    for name in out.split():
+        rc, url = run([GATEWAY, "url", name])
+        if rc != 0:
+            sys.exit(f"mcp-add: `mcp-gateway url {name}` failed: {url}")
+        servers[name] = url
+    return servers
+
+
+def stdio_servers() -> dict[str, dict]:
+    try:
+        return json.loads((CONFIG_DIR / "stdio.json").read_text()).get("servers") or {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+# --- Claude Code ---------------------------------------------------------------------------------------------------
+def claude_config_path() -> Path:
+    d = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(d) / ".claude.json" if d else HOME / ".claude.json"
+
+
+def claude_existing() -> dict[str, dict]:
+    try:
+        return json.loads(claude_config_path().read_text()).get("mcpServers") or {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def is_legacy_claude(name: str, spec: dict) -> bool:
+    if name == "mcphub":
+        return True
+    cmd = " ".join([spec.get("command", ""), *spec.get("args", [])])
+    return name == "chrome-devtools" and spec.get("type", "stdio") == "stdio" and "chrome-devtools-mcp" in cmd
+
+
+def do_claude(servers: dict[str, str], stdio: dict[str, dict], legacy: bool) -> bool:
+    if not (os.environ.get("MCP_CLAUDE_BIN") or any((Path(p) / CLAUDE).exists() for p in os.environ["PATH"].split(":"))):
+        say("claude: not installed, skipped")
+        return True
+    ok = True
+    existing = claude_existing()
+    say(f"claude: config {claude_config_path()} (user scope)")
+    wanted = {n: json.dumps({"type": "http", "url": u, "headersHelper": HEADERS}) for n, u in servers.items()}
+    wanted.update({n: json.dumps({"type": "stdio", "command": RUN, "args": [n]}) for n in stdio})
+    removals = [n for n, s in existing.items() if legacy and is_legacy_claude(n, s) and n not in wanted]
+    for n in removals:
+        say(f"claude: remove legacy entry {n}")
+        if not DRY and run([CLAUDE, "mcp", "remove", "-s", "user", n])[0] != 0:
+            say(f"claude: could not remove {n}")
+            ok = False
+    for n, js in wanted.items():
+        if n in existing:
+            say(f"claude: replace {n}")
+            if not DRY:
+                run([CLAUDE, "mcp", "remove", "-s", "user", n])
+        else:
+            say(f"claude: add {n}")
+        if not DRY:
+            rc, out = run([CLAUDE, "mcp", "add-json", "-s", "user", n, js])
+            if rc != 0:
+                say(f"claude: add-json {n} failed: {out}")
+                ok = False
+    return ok
+
+
+# --- Codex ---------------------------------------------------------------------------------------------------------
+_HEADER = re.compile(r"^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(#.*)?$")
+
+
+def _key(header: str) -> str:
+    return header.replace('"', "").replace("'", "").replace(" ", "")
+
+
+def toml_drop_tables(text: str, names: set[str]) -> str:
+    """Remove the [mcp_servers.NAME] tables (and their sub-tables) of NAMES, keep everything else byte for byte."""
+    out, skipping = [], False
+    for line in text.splitlines(keepends=True):
+        m = _HEADER.match(line)
+        if m:
+            k = _key(m.group(1))
+            skipping = any(k == f"mcp_servers.{n}" or k.startswith(f"mcp_servers.{n}.") for n in names)
+        if not skipping:
+            out.append(line)
+    return "".join(out)
+
+
+def toml_str(s: str) -> str:
+    return json.dumps(s)  # a JSON string is a valid TOML basic string for the characters used here
+
+
+def codex_tables(servers: dict[str, str], stdio: dict[str, dict]) -> str:
+    parts = []
+    for n, u in servers.items():
+        parts.append(f"[mcp_servers.{n}]\nurl = {toml_str(u)}\nhttp_headers_helper = {toml_str(HEADERS)}\n")
+    for n in stdio:
+        parts.append(f"[mcp_servers.{n}]\ncommand = {toml_str(RUN)}\nargs = [{toml_str(n)}]\n")
+    return "\n".join(parts)
+
+
+def do_codex(servers: dict[str, str], stdio: dict[str, dict], legacy: bool) -> bool:
+    cfg = CODEX_CONFIG
+    old = cfg.read_text() if cfg.exists() else ""
+    try:
+        old_data = tomllib.loads(old)
+    except tomllib.TOMLDecodeError as e:
+        say(f"codex: {cfg} does not parse ({e}); left untouched")
+        return False
+    names = set(servers) | set(stdio)
+    if legacy and "mcphub" in (old_data.get("mcp_servers") or {}):
+        names.add("mcphub")
+        say("codex: remove legacy entry mcphub")
+    base = toml_drop_tables(old, names).rstrip()
+    new = (base + "\n\n" if base else "") + codex_tables(servers, stdio)
+    try:
+        new_data = tomllib.loads(new)
+    except tomllib.TOMLDecodeError as e:
+        say(f"codex: the edited config would not parse ({e}); left untouched")
+        return False
+    # nothing outside the touched tables may differ
+    for key in set(old_data) | set(new_data):
+        if key == "mcp_servers":
+            continue
+        if old_data.get(key) != new_data.get(key):
+            say(f"codex: refusing to save, top-level key {key} would change")
+            return False
+    for n, v in (old_data.get("mcp_servers") or {}).items():
+        if n not in names and (new_data.get("mcp_servers") or {}).get(n) != v:
+            say(f"codex: refusing to save, [mcp_servers.{n}] would change")
+            return False
+    say(f"codex: config {cfg}: set {', '.join(sorted(servers) + sorted(stdio))}")
+    if new == old:
+        say("codex: already up to date")
+        return True
+    if DRY:
+        return True
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    if cfg.exists():
+        backup = cfg.with_name(f"{cfg.name}.bak-mcp-add-{time.strftime('%Y%m%d-%H%M%S')}")
+        backup.write_text(old)
+        os.chmod(backup, 0o600)
+        say(f"codex: backup {backup}")
+    fd, tmp = tempfile.mkstemp(dir=str(cfg.parent), prefix=".config.toml.")
+    with os.fdopen(fd, "w") as f:
+        f.write(new)
+    os.chmod(tmp, cfg.stat().st_mode & 0o777 if cfg.exists() else 0o600)
+    os.replace(tmp, cfg)
+    return True
+
+
+def main(argv: list[str]) -> int:
+    global DRY
+    if any(a in ("-h", "--help") for a in argv):
+        print((__doc__ or "").strip())
+        return 0
+    DRY = "--dry-run" in argv
+    only_claude, only_codex, legacy = "--claude" in argv, "--codex" in argv, "--no-legacy" not in argv
+    unknown = [a for a in argv if a not in ("--dry-run", "--claude", "--codex", "--no-legacy")]
+    if unknown:
+        print(f"mcp-add: unknown argument(s): {' '.join(unknown)}", file=sys.stderr)
+        return 2
+    servers, stdio = gateway_servers(), stdio_servers()
+    if not servers:
+        print("mcp-add: the gateway serves no server (run mcp-install, then systemctl --user start mcp-gateway)", file=sys.stderr)
+        return 1
+    say(("DRY RUN: " if DRY else "") + f"gateway servers: {', '.join(servers)}; stdio via mcp-run: {', '.join(stdio) or '-'}")
+    ok = True
+    if not only_codex:
+        ok &= do_claude(servers, stdio, legacy)
+    if not only_claude:
+        ok &= do_codex(servers, stdio, legacy)
+    if ok and not DRY:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        (STATE_DIR / "mcp-added").write_text(time.strftime("%Y-%m-%dT%H:%M:%S%z") + "\n")
+    say("done." if ok else "finished with errors (see above).")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# fake wl-paste: FAKE_CLIP_TYPES (newline list), FAKE_CLIP_TEXT
+echo "wl-paste $*" >>"${FAKE_DIR:-/tmp}/argv.log"
+if [[ $* == *--list-types* ]]; then
+  [[ -n ${FAKE_CLIP_TYPES:-} ]] || { echo "Nothing is copied" >&2; exit 1; }
+  printf '%b\n' "$FAKE_CLIP_TYPES"; exit 0
+fi
+printf '%s' "${FAKE_CLIP_TEXT:-}"
