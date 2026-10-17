@@ -266,6 +266,21 @@ else
 fi
 # V1c: generated layout twins are current (tmux/rofi depend on running tools and are skipped by `layout.py check`)
 if lay_out="$(PYTHONPYCACHEPREFIX=/tmp/pycache python3 "$DOTFILES/.config/layout/layout.py" check 2>&1)"; then ok layout-gen "generated ua/ru twins are current (layout.py check)"; else bad layout-gen "stale: $(printf '%s' "$lay_out" | head -1) (layout.py gen)"; fi
+# K4: offline test of the ghostty twin generator (fixture defaults and config, no ghostty needed)
+if [ -x "$DOTFILES/infrastructure/tests/layout/run.sh" ]; then
+  if lt_out="$("$DOTFILES/infrastructure/tests/layout/run.sh" 2>&1)"; then ok layout-tests "ghostty twin generator: $(printf '%s' "$lt_out" | tail -1)"; else bad layout-tests "$(printf '%s' "$lt_out" | grep -m1 '^FAIL') (infrastructure/tests/layout/run.sh)"; fi
+else
+  bad layout-tests "infrastructure/tests/layout/run.sh missing"
+fi
+# K4: ghostty matches Ctrl+Shift+<letter> by the produced character, so every such keybind needs a physical-key twin in the LIVE config
+if command -v ghostty >/dev/null 2>&1; then
+  gh_keys="$(ghostty +list-keybinds 2>/dev/null)"
+  gh_miss=""
+  for gh_k in ctrl+shift+key_a ctrl+shift+key_c ctrl+shift+key_v ctrl+shift+key_n ctrl+shift+key_t ctrl+shift+key_w ctrl+slash alt+key_b; do
+    printf '%s\n' "$gh_keys" | grep -q "^keybind = $gh_k=" || gh_miss="$gh_miss $gh_k"
+  done
+  if [ -z "$gh_miss" ]; then ok ghostty-twins "ghostty has the physical-key twins (Ctrl+Shift+C/V/N/T/W/A, Ctrl+/, Alt+letter) in its live keybinds"; else bad ghostty-twins "missing from ghostty +list-keybinds:$gh_miss (layout.py gen ghostty; is layout-keys.conf included by ghostty/config?)"; fi
+fi
 # OB1: Obsidian config lives in apps/obsidian/vault-config (every vault's .obsidian links there), plugins are pinned + hash-verified,
 # the Everforest snippet follows the theme link, the vimrc is linked (apps/obsidian/apply.sh)
 if [ -x "$DOTFILES/apps/obsidian/apply.sh" ]; then
@@ -522,10 +537,14 @@ else
     unzip -p "$cur_dir/hyprcursors/left_ptr_watch.hlc" '*.svg' 2>/dev/null | grep -qi "fill=\"$want_fill\"" || cur_err="busy cursor disk is not $want_fill (sudo ~/dotfiles/apply-system.sh --only install)"
   fi
   if [ -z "$cur_err" ]; then ok cursor "Everforest-Cursor installed (hyprcursor + XCursor), fill green $want_fill, up to date with the palette"; else bad cursor "$cur_err"; fi
-  if command -v gsettings >/dev/null 2>&1; then
-    cur_gs="$(gsettings get org.gnome.desktop.interface cursor-theme 2>/dev/null | tr -d "'")"
-    if [ "$cur_gs" = Everforest-Cursor ]; then ok cursor-gtk "gsettings cursor-theme is Everforest-Cursor"; else info cursor-gtk "gsettings cursor-theme is '$cur_gs' (log in again, or run cursor-apply)"; fi
-  fi
+fi
+# gsettings cursor-theme must be the expected theme (Hyprland writes it from XCURSOR_THEME at login; `hyprctl setcursor` writes it too,
+# so a test with another theme leaves it behind: only cursor-apply switches the pointer, `cursor-apply --revert` goes back to Bibata)
+if command -v gsettings >/dev/null 2>&1; then
+  cur_want=Everforest-Cursor
+  [ -r "$cur_dir/index.theme" ] || cur_want=Bibata-Modern-Ice
+  cur_gs="$(gsettings get org.gnome.desktop.interface cursor-theme 2>/dev/null | tr -d "'")"
+  if [ "$cur_gs" = "$cur_want" ]; then ok cursor-gtk "gsettings cursor-theme is $cur_want"; else bad cursor-gtk "gsettings cursor-theme is '$cur_gs', expected $cur_want (run cursor-apply; never switch the pointer with hyprctl setcursor, it writes gsettings)"; fi
 fi
 if grep -q 'cursor-apply --boot' "$DOTFILES/.config/hypr/hyprland.lua" && ! grep -q 'exec_cmd("hyprctl setcursor' "$DOTFILES/.config/hypr/hyprland.lua"; then ok cursor-boot "autostart runs cursor-apply --boot (waits for hyprctl, retries, logs to the journal)"; else bad cursor-boot "hyprland.lua must run cursor-apply --boot, not a bare hyprctl setcursor"; fi
 if grep -q 'Everforest-Cursor' "$DOTFILES/.config/hypr/hyprland.lua"; then ok cursor-env "hyprland.lua selects Everforest-Cursor when installed, Bibata otherwise"; else bad cursor-env "hyprland.lua has no Everforest-Cursor selection"; fi
@@ -876,6 +895,32 @@ if [ -z "$broken" ]; then
 else
   # shellcheck disable=SC2086
   bad stow-links "$(echo $broken | wc -w) broken, first: $(echo $broken | cut -d' ' -f1-3) (run: cd ~/dotfiles && stow --restow .)"
+fi
+# a new command in .local/bin (tracked or not yet committed) must be linked into ~/.local/bin: stow only runs by hand, and a
+# command that was never stowed (M1: mcp-telegram-setup) works from the repo path only
+unlinked=""
+n_cmds=0
+while IFS= read -r -d '' rel; do
+  case "$rel" in .local/bin/*/*) continue ;; .local/bin/*) ;; *) continue ;; esac
+  [ -x "$DOTFILES/$rel" ] && [ -f "$DOTFILES/$rel" ] || continue
+  n_cmds=$((n_cmds + 1))
+  [ "$(readlink -f "$HOME/$rel" 2>/dev/null)" = "$(readlink -f "$DOTFILES/$rel")" ] || unlinked="$unlinked ${rel#.local/bin/}"
+done < <(git -C "$DOTFILES" ls-files -z --cached --others --exclude-standard -- .local/bin)
+if [ -z "$unlinked" ]; then
+  ok stow-bin "all $n_cmds executables of .local/bin are linked into ~/.local/bin"
+else
+  bad stow-bin "not linked into ~/.local/bin:$unlinked (cd ~/dotfiles && stow .)"
+fi
+# nothing left for stow to do: a dry run lists every file it would still link (new files, dangling links)
+if command -v stow >/dev/null 2>&1; then
+  stow_out="$(cd "$DOTFILES" && stow -n -v . 2>&1 | grep -v '^WARNING: in simulation mode')"
+  if [ -z "$stow_out" ]; then
+    ok stow-clean "stow -n -v . has nothing to do"
+  else
+    bad stow-clean "stow would still change $(printf '%s\n' "$stow_out" | wc -l) path(s), first: $(printf '%s\n' "$stow_out" | head -1) (cd ~/dotfiles && stow .)"
+  fi
+else
+  info stow-clean "stow is not installed"
 fi
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
