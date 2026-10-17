@@ -4,7 +4,13 @@
 #
 #   home-acl.sh report [opts]   read-only: what `apply` would do (counts, kinds, examples, every path it would tighten)
 #   home-acl.sh apply  [opts]   do it (root when the home belongs to the owner): strip the unintended extended ACLs, tighten
-#                               the secret locations, keep the before-state, write the marker file
+#                               the secret locations, keep the before-state, write the marker file. Every change of a path in
+#                               the home is made AS THE OWNER (runuser when started as root; the home is the owner's, so no
+#                               root is needed and a symlink swapped in by a hostile process cannot send root anywhere);
+#                               root only writes the before-state below --state
+#   home-acl.sh restore [opts]  put back what `apply` changed (rollback.sh --home-acl-cleanup): every home-acl-before-*.txt.gz
+#                               and secret-modes-before-* of --state, oldest first, as the owner, only paths the owner owns
+#                               that are not symlinks, never an owner/group change; removes the marker
 #   home-acl.sh check  [opts]   read-only and bounded (doctor): key=value lines (acl_count, acl_examples, mode_count,
 #                               mode_examples, partial, marker)
 # Options (defaults in brackets; every one is a test hook):
@@ -15,6 +21,7 @@
 #   --secrets FILE  secret locations [secret-paths.txt next to this script]
 #   --repo DIR      what @REPO@ stands for in the secrets file [the dotfiles checkout]
 #   --marker FILE   written by `apply` [ROOT/.local/state/usr/home-acl-cleanup]
+#   --runas CMD     command prefix that replaces runuser (test hook: the tests log what runs "as the owner")
 #   --examples N    examples to print [8]            --depth N / --budget SECONDS   check only [5 / 10]
 #
 # What is an unintended extended ACL: any path of the tree that carries an ACL xattr without a named user/group entry that
@@ -28,10 +35,10 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODE="${1:-}"
 [ -n "$MODE" ] && shift
-case "$MODE" in report | apply | check) ;; -h | --help | "") sed -n '2,24p' "${BASH_SOURCE[0]}"; exit 0 ;; *) echo "usage: home-acl.sh report|apply|check [options]" >&2; exit 2 ;; esac
+case "$MODE" in report | apply | check | restore) ;; -h | --help | "") sed -n '2,32p' "${BASH_SOURCE[0]}"; exit 0 ;; *) echo "usage: home-acl.sh report|apply|check|restore [options]" >&2; exit 2 ;; esac
 
 ROOT="${HOME:-}" OWNER="$(id -un)" STATE=/var/lib/usr-managed MANAGED="" KEEP="$HERE/home-acl-keep.txt"
-SECRETS="$HERE/secret-paths.txt" REPO="$(cd "$HERE/../.." && pwd)" MARKER="" EXAMPLES=8 DEPTH=5 BUDGET=10
+SECRETS="$HERE/secret-paths.txt" REPO="$(cd "$HERE/../.." && pwd)" MARKER="" EXAMPLES=8 DEPTH=5 BUDGET=10 RUNAS=""
 managed_set=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -43,6 +50,7 @@ while [ $# -gt 0 ]; do
     --secrets) SECRETS="$2"; shift ;;
     --repo) REPO="$2"; shift ;;
     --marker) MARKER="$2"; shift ;;
+    --runas) RUNAS="$2"; shift ;;
     --examples) EXAMPLES="$2"; shift ;;
     --depth) DEPTH="$2"; shift ;;
     --budget) BUDGET="$2"; shift ;;
@@ -60,17 +68,27 @@ if [ "$managed_set" -eq 0 ] && [ -r "$HERE/lib.sh" ]; then
 fi
 W="$(mktemp -d)"
 trap 'rm -rf "$W"' EXIT
+OWNER_UID="$(id -u "$OWNER" 2>/dev/null || echo -1)"
+ROOT_REAL="$(realpath -m -- "$ROOT")" REPO_REAL="$(realpath -m -- "$REPO")"
 
-# ── classification: getfacl -p -s output on stdin -> TSV  class, top-level, kinds, group-fix, path ──────────────────────
-# class: STRIP | KEEP-named | KEEP-excluded | KEEP-foreign | SKIP-oddname; group-fix: the effective group permission to set
-# after `setfacl -b` (only when it differs from the mask that the mode bits show), else `-`.
+# as_owner CMD...: run CMD as the owner of the tree. Root drops to the owner (runuser, supplementary groups included), the
+# owner itself and the tests (--runas) run it directly. stdin and stdout pass through.
+as_owner() {
+  if [ -n "$RUNAS" ]; then
+    # shellcheck disable=SC2086
+    $RUNAS "$@"
+  elif [ "$EUID" -eq 0 ] && [ "$OWNER" != root ]; then
+    runuser -u "$OWNER" -- "$@"
+  else
+    "$@"
+  fi
+}
+
+# ── classification: getfacl -p -s output on stdin -> TSV  class, top-level, kinds, path ──────────────────────────────────
+# class: STRIP | KEEP-named | KEEP-excluded | KEEP-foreign | SKIP-oddname. (`setfacl -b` leaves the group bits at the
+# effective permission, the mode bits showed the mask, so nothing becomes wider and no second chmod pass is needed.)
 classify() {
   awk -v root="$ROOT" -v own="$OWNER" -v managed="$MANAGED" -v keepfile="$KEEP" '
-    function andperm(a, b,   i, r, ca, cb) {
-      r = ""
-      for (i = 1; i <= 3; i++) { ca = substr(a, i, 1); cb = substr(b, i, 1); r = r ((ca != "-" && cb != "-") ? ca : "-") }
-      return r
-    }
     function kept(rel,   p) {
       p = rel
       while (p != "") {
@@ -80,7 +98,7 @@ classify() {
       }
       return 0
     }
-    function flush(   cls, rel, top, fix, eff) {
+    function flush(   cls, rel, top) {
       if (path == "") return
       rel = (substr(path, 1, length(root) + 1) == root "/") ? substr(path, length(root) + 2) : path
       top = rel; sub(/\/.*/, "", top); if (path == root) top = "."
@@ -89,30 +107,27 @@ classify() {
       else if (kept(rel)) cls = "KEEP-excluded"
       else if (owner != own) cls = "KEEP-foreign"
       else cls = "STRIP"
-      fix = "-"
-      if (has_mask && grp != "") { eff = andperm(grp, mask); if (eff != mask) fix = eff }
-      printf "%s\t%s\t%s\t%s\t%s\n", cls, top, (sig == "" ? "-" : sig), fix, path
+      printf "%s\t%s\t%s\t%s\n", cls, top, (sig == "" ? "-" : sig), path
     }
     BEGIN {
       n = split(managed, m, " "); for (i = 1; i <= n; i++) mg[m[i]] = 1
       while ((getline l < keepfile) > 0) { sub(/#.*/, "", l); gsub(/^[ \t]+|[ \t]+$/, "", l); sub(/\/+$/, "", l); if (l != "") keep[l] = 1 }
     }
-    /^# file: / { flush(); path = substr($0, 9); owner = ""; named_other = 0; sig = ""; grp = ""; mask = ""; has_mask = 0; next }
+    /^# file: / { flush(); path = substr($0, 9); owner = ""; named_other = 0; sig = ""; next }
     /^# owner: / { owner = substr($0, 10); next }
     /^# group: / || /^$/ { next }
     {
       line = $0; sub(/[ \t]+#effective:[rwx-]+$/, "", line)
       nf = split(line, f, ":"); d = 0
       if (f[1] == "default") { d = 1; for (i = 1; i < nf; i++) f[i] = f[i + 1]; nf-- }
-      tag = f[1]; qual = f[2]; perm = f[3]
+      tag = f[1]; qual = f[2]
       if ((tag == "user" || tag == "group") && qual != "") {
         if (tag == "user" && (qual in mg)) tok = (d ? "def" : "acc") ":managed-user"
         else { named_other = 1; tok = (d ? "def" : "acc") ":named-" tag }
       } else if (tag == "mask") {
         tok = (d ? "def" : "acc") ":mask"
-        if (!d) { has_mask = 1; mask = perm }
       } else {
-        if (!d) { if (tag == "group") grp = perm; next }
+        if (!d) next
         tok = "def:" tag
       }
       if (index("+" sig "+", "+" tok "+") == 0) sig = (sig == "" ? tok : sig "+" tok)
@@ -122,7 +137,7 @@ classify() {
 
 # ── the walk ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 # secret locations: "KIND<TAB>ABSOLUTE-PATH" (KIND full = everything below must be owner-only, top = the top path only)
-secret_locations() {
+raw_locations() {
   local p kind abs
   [ -r "$SECRETS" ] || return 0
   while IFS= read -r p; do
@@ -142,6 +157,22 @@ secret_locations() {
     esac
     printf '%s\t%s\n' "$kind" "$abs"
   done <"$SECRETS"
+}
+# a location is only used when its real path (every parent resolved) stays under the home or the dotfiles checkout: a symlinked
+# parent (stow folding of .config/APP, a planted link) must not lead find, chmod or setfacl somewhere else
+loc_ok() {
+  local real
+  real="$(realpath -m -- "$1" 2>/dev/null)" || return 1
+  case "$real" in "$ROOT_REAL" | "$ROOT_REAL"/* | "$REPO_REAL" | "$REPO_REAL"/*) return 0 ;; esac
+  return 1
+}
+secret_locations() {
+  local kind abs
+  while IFS=$'\t' read -r kind abs; do loc_ok "$abs" && printf '%s\t%s\n' "$kind" "$abs"; done < <(raw_locations)
+}
+outside_locations() {
+  local kind abs
+  while IFS=$'\t' read -r kind abs; do loc_ok "$abs" || printf '%s\n' "$abs"; done < <(raw_locations)
 }
 
 # paths whose ACL is read: apply/report = the whole tree; check = the first DEPTH levels + the secret locations in full
@@ -169,8 +200,8 @@ scan() {
   classify <"$W/raw" >"$W/classes.tsv"
   return "$rc"
 }
-export -f emit_paths secret_locations
-export ROOT DEPTH SECRETS REPO MODE
+export -f emit_paths secret_locations raw_locations loc_ok
+export ROOT ROOT_REAL REPO_REAL DEPTH SECRETS REPO MODE
 
 # secret paths wider than owner-only: "mode<TAB>type<TAB>path". apply/report: everything below every location (the owner's
 # files only); check: `full` locations below, `top` locations only the path itself.
@@ -194,7 +225,7 @@ rel() { local p="$1"; case "$p" in "$ROOT"/*) printf '~/%s' "${p#"$ROOT"/}" ;; *
 
 count_class() { awk -F'\t' -v c="$1" '$1 == c { n++ } END { print n + 0 }' "$W/classes.tsv"; }
 examples_of() { # examples_of CLASS N: "path  (kinds)" lines
-  awk -F'\t' -v c="$1" -v n="$2" '$1 == c && k < n { k++; print "    " $5 "   [" $3 "]" }' "$W/classes.tsv"
+  awk -F'\t' -v c="$1" -v n="$2" '$1 == c && k < n { k++; print "    " $4 "   [" $3 "]" }' "$W/classes.tsv"
 }
 
 report_acl() {
@@ -237,28 +268,27 @@ report_modes() {
   while IFS=$'\t' read -r kind abs; do
     [ -e "$abs" ] || [ -L "$abs" ] || printf '  absent (nothing to do): %s\n' "$(rel "$abs")"
   done < <(secret_locations)
+  while IFS= read -r abs; do
+    printf '  skipped (the real path leaves the home and the dotfiles checkout, not touched): %s\n' "$abs"
+  done < <(outside_locations)
 }
 
 # ── actions ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+# Everything below that changes a path of the home runs through as_owner; the before-state under $STATE is written by this
+# process (root). The file lists reach the owner's command on stdin, so the owner needs no access to the work directory.
 apply_acl() {
-  local strip stamp f eff n_fix=0
+  local strip stamp
   strip="$(count_class STRIP)"
   [ "$strip" -gt 0 ] || { echo "unchanged: no unintended extended ACL under $ROOT"; return 0; }
   stamp="$(date +%Y%m%d-%H%M%S)"
+  awk -F'\t' '$1 == "STRIP" { p = $0; sub(/^([^\t]*\t){3}/, "", p); printf "%s%c", p, 0 }' "$W/classes.tsv" >"$W/strip.lst"
   install -d -m 700 "$STATE"
-  gzip -c "$W/raw" >"$STATE/home-acl-before-$stamp.txt.gz"
+  # the before-state holds only the paths that are stripped (never the kept ones: a restore must not touch those)
+  xargs -0 -r getfacl -p -s <"$W/strip.lst" 2>/dev/null | gzip -c >"$STATE/home-acl-before-$stamp.txt.gz"
   chmod 600 "$STATE/home-acl-before-$stamp.txt.gz"
-  echo "before-state (getfacl of every path that carried an ACL): $STATE/home-acl-before-$stamp.txt.gz"
-  awk -F'\t' '$1 == "STRIP" { p = $0; sub(/^([^\t]*\t){4}/, "", p); printf "%s%c", p, 0 }' "$W/classes.tsv" >"$W/strip.lst"
-  xargs -0 -r setfacl -b -- <"$W/strip.lst" 2>"$W/setfacl.err" || echo "warning: some paths could not be changed (setfacl -b): $(head -c 300 "$W/setfacl.err")" >&2
-  # the group bits showed the old mask: where the old group entry was narrower, set the effective permission (never wider)
-  for eff in $(awk -F'\t' '$1 == "STRIP" && $4 != "-" { print $4 }' "$W/classes.tsv" | sort -u); do
-    f="$W/fix.$eff"
-    awk -F'\t' -v e="$eff" '$1 == "STRIP" && $4 == e { p = $0; sub(/^([^\t]*\t){4}/, "", p); printf "%s%c", p, 0 }' "$W/classes.tsv" >"$f"
-    xargs -0 -r chmod "g=${eff//-/}" -- <"$f" 2>/dev/null || true
-    n_fix=$((n_fix + $(tr -cd '\0' <"$f" | wc -c)))
-  done
-  echo "stripped: $strip paths (setfacl -b); group bits set to the effective permission on $n_fix of them"
+  echo "before-state (getfacl of the $strip stripped paths): $STATE/home-acl-before-$stamp.txt.gz"
+  as_owner xargs -0 -r setfacl -b -- <"$W/strip.lst" 2>"$W/setfacl.err" || echo "warning: some paths could not be changed (setfacl -b): $(head -c 300 "$W/setfacl.err")" >&2
+  echo "stripped: $strip paths (setfacl -b; the group bits stay at the effective permission, never wider)"
 }
 
 apply_modes() {
@@ -271,24 +301,81 @@ apply_modes() {
   install -d -m 700 "$STATE"
   awk -F'\t' '{ print $1 "\t" $3 }' "$W/wide.tsv" >"$STATE/secret-modes-before-$stamp.txt"
   chmod 600 "$STATE/secret-modes-before-$stamp.txt"
-  awk -F'\t' '{ printf "%s%c", $3, 0 }' "$W/wide.tsv" | xargs -0 -r chmod go-rwx --
+  awk -F'\t' '{ printf "%s%c", $3, 0 }' "$W/wide.tsv" | as_owner xargs -0 -r chmod go-rwx --
   echo "tightened: $n secret paths (group and other bits removed); before-modes: $STATE/secret-modes-before-$stamp.txt"
 }
 
+# the marker is written by the owner and never through a symlink: every directory below the home is created or checked one
+# component at a time, a symlink there (or as the marker itself) is refused / replaced, the file is created with O_EXCL
 write_marker() {
-  install -d -m 755 "$(dirname "$MARKER")" 2>/dev/null || true
-  printf '%s\n' "home-acl cleanup ran $(date -Is)" >"$MARKER"
-  if [ "$EUID" -eq 0 ]; then chown "$OWNER:$(id -gn "$OWNER")" "$MARKER" "$(dirname "$MARKER")" 2>/dev/null || true; fi
+  as_owner bash -c '
+    marker=$1 root=$2
+    d=$(dirname "$marker") p=$root
+    case "$d" in "$root"/*) rest=${d#"$root"/} ;; *) rest="" p=$d ;; esac
+    IFS=/ read -r -a parts <<<"$rest"
+    for c in "${parts[@]}"; do
+      [ -n "$c" ] || continue
+      p="$p/$c"
+      [ -L "$p" ] && { echo "home-acl: $p is a symlink, marker not written" >&2; exit 3; }
+      [ -d "$p" ] || mkdir -- "$p" || exit 3
+    done
+    [ -L "$d" ] && { echo "home-acl: $d is a symlink, marker not written" >&2; exit 3; }
+    rm -f -- "$marker"
+    set -C
+    printf "%s\n" "home-acl cleanup ran $(date -Is)" >"$marker"
+  ' _ "$MARKER" "$ROOT" || echo "warning: the marker file was not written ($MARKER); doctor keeps reporting the cleanup as not run" >&2
+}
+
+# restore: undo `apply` (rollback.sh --home-acl-cleanup). All snapshots, oldest first (a later one holds what was wider again
+# after an earlier apply). Only paths the owner owns that are no symlink are touched, the `# owner:` / `# group:` lines are
+# dropped so nothing is chowned, and the changes run as the owner.
+owned_paths() { # stdin: NUL separated paths -> stdout: newline separated paths owned by the owner, not symlinks
+  xargs -0 -r stat --printf '%u\t%F\t%n\0' -- 2>/dev/null |
+    awk -v RS='\0' -F'\t' -v u="$OWNER_UID" '$1 == u && $2 !~ /symbolic/ { p = $0; sub(/^[^\t]*\t[^\t]*\t/, "", p); print p }'
+}
+restore_acl() {
+  local f n=0
+  for f in "$STATE"/home-acl-before-*.txt.gz; do
+    [ -e "$f" ] || continue
+    zcat "$f" >"$W/snap.txt" 2>/dev/null || { echo "warning: $f is unreadable"; continue; }
+    sed -n 's/^# file: //p' "$W/snap.txt" | tr '\n' '\0' | owned_paths >"$W/ok.lst"
+    awk -v okf="$W/ok.lst" '
+      BEGIN { while ((getline l < okf) > 0) ok[l] = 1 }
+      /^# file: / { keep = (substr($0, 9) in ok) }
+      /^# owner: / || /^# group: / { next }
+      keep { print }' "$W/snap.txt" >"$W/restore.txt"
+    n=$(grep -c '^# file: ' "$W/restore.txt" || true)
+    echo "restoring the extended ACLs of $n paths from $f ($(grep -c '^# file: ' "$W/snap.txt" || true) in the snapshot; paths of other users, symlinks and vanished paths are skipped)"
+    [ "$n" -gt 0 ] || continue
+    (cd / && as_owner setfacl --restore=- <"$W/restore.txt") || echo "warning: setfacl --restore reported errors"
+  done
+  [ -n "$(ls -1 "$STATE"/home-acl-before-*.txt.gz 2>/dev/null)" ] || echo "no home-acl-before-*.txt.gz in $STATE: no ACL to restore"
+}
+restore_modes() {
+  local f m any=0
+  for f in "$STATE"/secret-modes-before-*.txt; do
+    [ -e "$f" ] || continue
+    any=1
+    awk -F'\t' '{ printf "%s%c", $2, 0 }' "$f" | owned_paths >"$W/ok.lst"
+    echo "restoring the modes of the secret locations from $f ($(wc -l <"$W/ok.lst") of $(wc -l <"$f") paths are the owner's and no symlink)"
+    for m in $(awk -F'\t' '{ print $1 }' "$f" | sort -u); do
+      awk -F'\t' -v m="$m" 'NR == FNR { ok[$0] = 1; next } $1 == m && ($2 in ok) { printf "%s%c", $2, 0 }' "$W/ok.lst" "$f" |
+        as_owner xargs -0 -r chmod "$m" --
+    done
+  done
+  [ "$any" = 1 ] || echo "no secret-modes-before-*.txt in $STATE: no mode to restore"
 }
 
 case "$MODE" in
   report)
+    echo "scanning $ROOT (about 10 s per 2 million paths) ..." >&2
     scan
     report_acl
     report_modes
     printf 'RESULT strip=%s tighten=%s\n' "$(count_class STRIP)" "$(wc -l <"$W/wide.tsv")"
     ;;
   apply)
+    echo "scanning $ROOT (about 10 s per 2 million paths) ..." >&2
     scan
     report_acl
     apply_acl
@@ -296,12 +383,18 @@ case "$MODE" in
     write_marker
     printf 'RESULT strip=%s tighten=%s\n' "$(count_class STRIP)" "$(wc -l <"$W/wide.tsv" 2>/dev/null || echo 0)"
     ;;
+  restore)
+    restore_acl
+    restore_modes
+    as_owner rm -f -- "$MARKER"
+    echo "removed the marker file $MARKER"
+    ;;
   check)
     partial=0
     scan || partial=1
     widened >"$W/wide.tsv"
     printf 'acl_count=%s\n' "$(count_class STRIP)"
-    printf 'acl_examples=%s\n' "$(awk -F'\t' '$1 == "STRIP" && k < 3 { k++; p = $5; sub("^" ENVIRON["ROOT"] "/", "~/", p); printf "%s%s", (k > 1 ? ", " : ""), p }' "$W/classes.tsv")"
+    printf 'acl_examples=%s\n' "$(awk -F'\t' '$1 == "STRIP" && k < 3 { k++; p = $4; sub("^" ENVIRON["ROOT"] "/", "~/", p); printf "%s%s", (k > 1 ? ", " : ""), p }' "$W/classes.tsv")"
     printf 'mode_count=%s\n' "$(wc -l <"$W/wide.tsv")"
     printf 'mode_examples=%s\n' "$(awk -F'\t' 'k < 3 { k++; p = $3; sub("^" ENVIRON["ROOT"] "/", "~/", p); printf "%s%s %s", (k > 1 ? ", " : ""), p, $1 }' "$W/wide.tsv")"
     printf 'partial=%s\n' "$partial"

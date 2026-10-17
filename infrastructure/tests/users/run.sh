@@ -371,6 +371,148 @@ if mkdir -p "$T/aclprobe" && setfacl -d -m g::r-x "$T/aclprobe" 2>/dev/null && g
   getfacl -p "$H/skel" 2>/dev/null | grep -q '^default:group::r-x' && ok || bad "rollback: the before-state does not restore the skeleton"
   ha apply >/dev/null
   [ -z "$(getfacl -p -s "$H/skel" 2>/dev/null)" ] && ok || bad "re-apply after the restore did not clean again"
+
+  # ── FIX2: every change of the home runs as the owner, the marker never follows a symlink, restore, rollback ────────────
+  # A fake runas prefix (--runas) logs what the script runs "as the owner"; root itself only writes the before-state.
+  cat >"$T/fakebin/runas" <<'FAKE'
+#!/bin/sh
+printf '%s\n' "$*" | tr '\n' ' ' >>"$RUNAS_LOG"; printf '\n' >>"$RUNAS_LOG"
+exec "$@"
+FAKE
+  chmod +x "$T/fakebin/runas"
+  export RUNAS_LOG="$T/runas.log"
+  H2="$T/aclhome2" ST2="$T/aclstate2"
+  mkdir -p "$H2/skel" "$H2/oth" "$H2/sec" "$ST2"
+  setfacl -d -m g::r-x,o::r-x,m::r-x "$H2/skel"
+  setfacl -d -m u:daemon:rx "$H2/oth"                                      # somebody else's entry: kept and never in the before-state
+  printf 's\n' >"$H2/sec/f"; chmod 644 "$H2/sec/f"
+  printf 'sec full\n' >"$T/secrets2.txt"
+  ha2() { "$HA" "$1" --root "$H2" --owner "$ME" --state "$ST2" --managed nobody --keep "$T/keep.txt" --secrets "$T/secrets2.txt" --repo "$REPOFIX" --runas "$T/fakebin/runas" "${@:2}" 2>&1; }
+  : >"$RUNAS_LOG"
+  out="$(ha2 apply)"
+  grep -q 'xargs -0 -r setfacl -b' "$RUNAS_LOG" && ok || bad "FIX2 apply: setfacl -b does not run as the owner ($(paste -sd'|' "$RUNAS_LOG"))"
+  grep -q 'xargs -0 -r chmod go-rwx' "$RUNAS_LOG" && ok || bad "FIX2 apply: chmod of the secret paths does not run as the owner"
+  grep -q 'home-acl cleanup ran' "$RUNAS_LOG" && ok || bad "FIX2 apply: the marker is not written as the owner"
+  grep -q 'chmod g=' "$RUNAS_LOG" && bad "FIX2 apply: the redundant chmod g= pass is back" || ok
+  case "$out" in *"scanning $H2"*) ok ;; *) bad "FIX2 apply: no progress line before the scan" ;; esac
+  # the before-state holds only the stripped paths
+  zcat "$ST2"/home-acl-before-*.txt.gz | grep -q "^# file: $H2/skel\$" && ok || bad "FIX2 before-state: the stripped path is missing"
+  zcat "$ST2"/home-acl-before-*.txt.gz | grep -q "^# file: $H2/oth\$" && bad "FIX2 before-state: holds a KEPT path (a restore would touch it)" || ok
+
+  # a symlink planted where root used to chmod / chown / write: nothing outside is touched, marker refused or replaced
+  H3="$T/aclhome3" ST3="$T/aclstate3"; VIC="$T/victim"
+  mkdir -p "$H3/skel" "$H3/.local/state" "$VIC" "$ST3"; chmod 700 "$VIC"
+  setfacl -d -m g::r-x,o::r-x,m::r-x "$H3/skel"
+  ln -s "$VIC" "$H3/.local/state/usr"
+  out="$("$HA" apply --root "$H3" --owner "$ME" --state "$ST3" --managed nobody --keep "$T/keep.txt" --secrets /dev/null --repo "$REPOFIX" 2>&1)"
+  expect "FIX2 marker: the target of a symlinked state dir keeps its mode" "700" "$(stat -c %a "$VIC")"
+  [ -z "$(ls -A "$VIC")" ] && ok || bad "FIX2 marker: a file was written through the symlinked directory"
+  case "$out" in *"is a symlink, marker not written"*) ok ;; *) bad "FIX2 marker: no warning for the symlinked directory" ;; esac
+  rm -f "$H3/.local/state/usr"; mkdir -p "$H3/.local/state/usr"
+  printf 'precious\n' >"$T/precious"; ln -s "$T/precious" "$H3/.local/state/usr/home-acl-cleanup"
+  "$HA" apply --root "$H3" --owner "$ME" --state "$ST3" --managed nobody --keep "$T/keep.txt" --secrets /dev/null --repo "$REPOFIX" >/dev/null 2>&1
+  expect "FIX2 marker: a symlink as the marker file is replaced, not written through" "precious" "$(cat "$T/precious")"
+  [ -f "$H3/.local/state/usr/home-acl-cleanup" ] && [ ! -L "$H3/.local/state/usr/home-acl-cleanup" ] && ok || bad "FIX2 marker: the marker is not a regular file after the replace"
+
+  # a symlinked parent of a secret location leads nowhere: its real path leaves the home and the repo
+  H4="$T/aclhome4"; OUT4="$T/outside4"
+  mkdir -p "$H4/.config" "$OUT4/sub" "$ST3"; printf 'x\n' >"$OUT4/sub/f"; chmod 644 "$OUT4/sub/f"; chmod 755 "$OUT4/sub"
+  ln -s "$OUT4" "$H4/.config/APP"
+  printf '.config/APP/sub full\n' >"$T/secrets4.txt"
+  out="$("$HA" report --root "$H4" --owner "$ME" --state "$ST3" --managed nobody --keep "$T/keep.txt" --secrets "$T/secrets4.txt" --repo "$REPOFIX" 2>&1)"
+  case "$out" in *"tighten=0"*) ok ;; *) bad "FIX2 realpath: a symlinked parent of a secret location is followed ($(printf '%s\n' "$out" | tail -2 | paste -sd'|' -))" ;; esac
+  case "$out" in *"skipped (the real path leaves the home"*) ok ;; *) bad "FIX2 realpath: the skipped location is not reported" ;; esac
+  "$HA" apply --root "$H4" --owner "$ME" --state "$ST3" --managed nobody --keep "$T/keep.txt" --secrets "$T/secrets4.txt" --repo "$REPOFIX" >/dev/null 2>&1
+  expect "FIX2 realpath: nothing outside the home was changed" "755 644" "$(stat -c %a "$OUT4/sub") $(stat -c %a "$OUT4/sub/f")"
+  # a parent that is a symlink INTO the dotfiles checkout is fine (stow folding)
+  mkdir -p "$REPOFIX/.config/APP2/d"; printf 'k\n' >"$REPOFIX/.config/APP2/d/f"; chmod 644 "$REPOFIX/.config/APP2/d/f"
+  ln -s "$REPOFIX/.config/APP2" "$H4/.config/APP2"; printf '.config/APP2/d full\n' >"$T/secrets4b.txt"
+  out="$("$HA" report --root "$H4" --owner "$ME" --state "$ST3" --managed nobody --keep "$T/keep.txt" --secrets "$T/secrets4b.txt" --repo "$REPOFIX" 2>&1)"
+  case "$out" in *"tighten=2"*) ok ;; *) bad "FIX2 realpath: a location that resolves into the checkout is skipped" ;; esac
+
+  # fresh files written by our own scripts are owner-only, so the doctor does not fail after the marker
+  VS="$REPO/.config/hypr/scripts/vault.sh"
+  printf '#!/bin/sh\nexit 0\n' >"$T/fakebin/notify-send"; chmod +x "$T/fakebin/notify-send"
+  (umask 022; PATH="$T/fakebin:$PATH" XDG_STATE_HOME="$T/vstate" "$VS" ssh-agent on >/dev/null 2>&1)
+  expect "FIX2 vault.sh ssh-agent on: state dir 0700, flag 0600" "700 600" "$(stat -c %a "$T/vstate/vault" 2>/dev/null) $(stat -c %a "$T/vstate/vault/ssh-agent" 2>/dev/null)"
+  (umask 022; python3 -I - "$REPO/.local/bin/mcp-add" "$T/mstate" <<'PY'
+import importlib.machinery, importlib.util, os, sys
+os.environ["MCP_STATE_DIR"] = sys.argv[2]
+loader = importlib.machinery.SourceFileLoader("mcp_add", sys.argv[1]); spec = importlib.util.spec_from_loader("mcp_add", loader)
+m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+m.do_claude = lambda *a, **k: True; m.do_codex = lambda *a, **k: True
+m.gateway_servers = lambda *a, **k: ["x"]; m.stdio_servers = lambda *a, **k: []
+m.main(["--no-legacy"])
+PY
+  ) >/dev/null 2>&1
+  expect "FIX2 mcp-add: state dir 0700, mcp-added 0600" "700 600" "$(stat -c %a "$T/mstate" 2>/dev/null) $(stat -c %a "$T/mstate/mcp-added" 2>/dev/null)"
+  # the shipped list: .ssh and obs-cmd are `top`, everything the cleanup judges `full` is written by our own scripts
+  grep -E '^\.ssh( |$)' "$REPO/infrastructure/users/secret-paths.txt" | grep -q ' full' && bad "FIX2 secret-paths: .ssh is still full (ssh-keygen writes *.pub 0644)" || ok
+  grep -E '^\.config/obs-cmd( |$)' "$REPO/infrastructure/users/secret-paths.txt" | grep -q ' full' && bad "FIX2 secret-paths: obs-cmd is still full" || ok
+
+  # restore: oldest first, every snapshot, as the owner, owned paths only, symlinks never followed, no owner/group change
+  H5="$T/aclhome5" ST5="$T/aclstate5"; OUT5="$T/outside5"
+  mkdir -p "$H5/a" "$H5/b" "$H5/c" "$ST5" "$OUT5"
+  chmod 700 "$H5/a" "$H5/b" "$H5/c"
+  printf 'x\n' >"$H5/m1"; printf 'x\n' >"$H5/m2"; printf 'x\n' >"$H5/m3"; chmod 600 "$H5/m1" "$H5/m2" "$H5/m3"
+  for d in a b; do setfacl -d -m g::r-x,o::r-x,m::r-x "$H5/$d"; getfacl -p -s "$H5/$d" >"$T/snap-$d.txt"; setfacl -b "$H5/$d"; done
+  gzip -c "$T/snap-a.txt" >"$ST5/home-acl-before-20260101-000000.txt.gz"
+  gzip -c "$T/snap-b.txt" >"$ST5/home-acl-before-20260102-000000.txt.gz"
+  printf '755\t%s\n644\t%s\n644\t%s\n' "$H5/m1" "$H5/m3" "$H5/c" >"$ST5/secret-modes-before-20260101-000000.txt"
+  printf '640\t%s\n600\t%s\n' "$H5/m2" "$H5/m3" >"$ST5/secret-modes-before-20260102-000000.txt"
+  # a record of a path owned by root (/etc/hostname), one of a symlink to an outside file, one with a doctored owner line
+  ln -s "$OUT5" "$H5/lnk"
+  {
+    printf '# file: /etc/hostname\n# owner: root\n# group: root\nuser::rw-\nuser:daemon:r--\ngroup::r--\nmask::r--\nother::r--\n\n'
+    printf '# file: %s\n# owner: root\n# group: root\nuser::rwx\ngroup::r-x\nother::r-x\ndefault:user::rwx\ndefault:group::r-x\ndefault:other::r-x\n\n' "$H5/lnk"
+    printf '# file: %s\n# owner: root\n# group: root\nuser::rwx\ngroup::r-x\nother::r-x\ndefault:user::rwx\ndefault:group::r-x\ndefault:other::r-x\n\n' "$H5/c"
+  } | gzip -c >"$ST5/home-acl-before-20260103-000000.txt.gz"
+  getfacl -p /etc/hostname 2>/dev/null >"$T/hostname.acl"
+  mkdir -p "$H5/.local/state/usr"; : >"$H5/.local/state/usr/home-acl-cleanup"
+  : >"$RUNAS_LOG"
+  out="$("$HA" restore --root "$H5" --owner "$ME" --state "$ST5" --runas "$T/fakebin/runas" 2>&1)"
+  for d in a b; do getfacl -p "$H5/$d" | grep -q '^default:group::r-x' && ok || bad "FIX2 restore: the skeleton of $d (snapshot $d) is not back ($(printf '%s' "$out" | paste -sd'|' -))"; done
+  getfacl -p "$H5/c" | grep -q '^default:group::r-x' && ok || bad "FIX2 restore: a record with a doctored owner line was not applied"
+  expect "FIX2 restore: group of c is not chown'd" "$(stat -c %G "$H5/a")" "$(stat -c %G "$H5/c")"
+  [ -z "$(getfacl -p -s "$OUT5" 2>/dev/null)" ] && ok || bad "FIX2 restore: followed a symlink and changed its target"
+  getfacl -p /etc/hostname 2>/dev/null | cmp -s - "$T/hostname.acl" && ok || bad "FIX2 restore: touched a path of another user"
+  case "$out" in *"setfacl: "*) bad "FIX2 restore: setfacl complained ($(printf '%s' "$out" | grep 'setfacl:' | head -1))" ;; *) ok ;; esac
+  expect "FIX2 restore: modes of snapshot 1 (m1)" "755" "$(stat -c %a "$H5/m1")"
+  expect "FIX2 restore: modes of snapshot 2 (m2): every snapshot, not only the newest" "640" "$(stat -c %a "$H5/m2")"
+  expect "FIX2 restore: oldest first, a later snapshot wins (m3)" "600" "$(stat -c %a "$H5/m3")"
+  expect "FIX2 restore: mode of a dir (c)" "644" "$(stat -c %a "$H5/c")"
+  [ -e "$H5/.local/state/usr/home-acl-cleanup" ] && bad "FIX2 restore: the marker is not removed" || ok
+  grep -q 'setfacl --restore' "$RUNAS_LOG" && grep -q 'chmod' "$RUNAS_LOG" && ok || bad "FIX2 restore: setfacl/chmod do not run as the owner"
+
+  # rollback.sh --home-acl-cleanup runs alone: the sudoers rule and the managed users' ACL are not touched, no other option combines
+  mkdir -p "$T/rb/etc/sudoers.d" "$T/rb/etc/polkit-1/rules.d" "$T/rb/srv/dotfiles"
+  : >"$T/rb/etc/sudoers.d/50-usr-managed"; : >"$T/rb/etc/polkit-1/rules.d/50-usr-managed.rules"
+  rb() { PATH="$T/fakebin:$PATH" FAKE_PASSWD_OWNER="$ME" FAKE_PASSWD_HOME="$H5" ROLLBACK_TEST=1 ROLLBACK_OWNER="$ME" ROLLBACK_STATE="$ST5" ROLLBACK_ETC="$T/rb" ROLLBACK_SRV="$T/rb" "$REPO/infrastructure/users/rollback.sh" "$@" 2>&1; }
+  # the fake getent answers the owner with a home we choose (H5), every managed user as unknown
+  cat >"$T/fakebin/getent" <<'FAKE'
+#!/bin/sh
+if [ "${1:-}" = passwd ] && [ -n "${2:-}" ]; then
+  case "$2" in "$FAKE_PASSWD_OWNER") echo "$2:x:1000:1000::${FAKE_PASSWD_HOME:-/nonexistent}:/bin/sh"; exit 0 ;; root) exec /usr/bin/getent "$@" ;; *) exit 2 ;; esac
+fi
+exec /usr/bin/getent "$@"
+FAKE
+  mkdir -p "$H5/.local/state/usr"; : >"$H5/.local/state/usr/home-acl-cleanup"; setfacl -b "$H5/a"
+  out="$(rb --home-acl-cleanup --srv)"; rc=$?
+  expect "FIX2 rollback: --home-acl-cleanup combined with --srv is refused (exit 2)" "2" "$rc"
+  [ -e "$T/rb/etc/sudoers.d/50-usr-managed" ] && ok || bad "FIX2 rollback: a refused combination removed the sudoers drop-in"
+  out="$(rb --home-acl-cleanup)"; rc=$?
+  expect "FIX2 rollback: --home-acl-cleanup alone succeeds" "0" "$rc"
+  [ -e "$T/rb/etc/sudoers.d/50-usr-managed" ] && [ -e "$T/rb/etc/polkit-1/rules.d/50-usr-managed.rules" ] && ok || bad "FIX2 rollback: --home-acl-cleanup removed the sudoers/polkit files (it re-opens the home)"
+  case "$out" in *"restoring the ACL entries of"*) bad "FIX2 rollback: --home-acl-cleanup ran the base rollback" ;; *) ok ;; esac
+  getfacl -p "$H5/a" | grep -q '^default:group::r-x' && ok || bad "FIX2 rollback: --home-acl-cleanup did not restore the skeleton ($(printf '%s' "$out" | paste -sd'|' -))"
+  out="$(rb)"; rc=$?
+  expect "FIX2 rollback: the base rollback succeeds" "0" "$rc"
+  [ -e "$T/rb/etc/sudoers.d/50-usr-managed" ] && bad "FIX2 rollback: the base rollback left the sudoers drop-in" || ok
+
+  # UTF-8 names under the C locale are classified like any other (this getfacl prints them raw; the test pins that)
+  H6="$T/aclhome6"; mkdir -p "$H6/Тест dir"; setfacl -d -m g::r-x,o::r-x,m::r-x "$H6/Тест dir"
+  out="$(LC_ALL=C "$HA" report --root "$H6" --owner "$ME" --state "$ST3" --managed nobody --keep "$T/keep.txt" --secrets /dev/null --repo "$REPOFIX" 2>&1)"
+  case "$out" in *"RESULT strip=1 "*) ok ;; *) bad "FIX2 utf-8: a Cyrillic directory name is not classified under LC_ALL=C ($(printf '%s' "$out" | tail -2 | paste -sd'|' -))" ;; esac
 else
   printf 'skip  home ACL cleanup tests: no ACL support in %s\n' "${TMPDIR:-/tmp}"
 fi

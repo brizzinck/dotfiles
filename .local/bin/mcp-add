@@ -246,8 +246,14 @@ def main(argv: list[str]) -> int:
     if not only_claude:
         ok &= do_codex(servers, stdio, legacy)
     if ok and not DRY:
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        (STATE_DIR / "mcp-added").write_text(time.strftime("%Y-%m-%dT%H:%M:%S%z") + "\n")
+        STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        stamp = STATE_DIR / "mcp-added"
+        old_umask = os.umask(0o077)  # owner-only like the gateway tokens next to it (home-acl.sh judges this directory `full`)
+        try:
+            stamp.write_text(time.strftime("%Y-%m-%dT%H:%M:%S%z") + "\n")
+            stamp.chmod(0o600)
+        finally:
+            os.umask(old_umask)
     say("done." if ok else "finished with errors (see above).")
     return 0 if ok else 1
 

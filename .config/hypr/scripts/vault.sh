@@ -391,7 +391,7 @@ ssh_agent() {
   case ${1:-status} in
     on)
       if ((DRY)); then echo "touch $SSH_FLAG   # shells use $SSH_SOCK while it exists"; return 0; fi
-      mkdir -p "$STATE_DIR" && : >"$SSH_FLAG"
+      (umask 077 && mkdir -p "$STATE_DIR" && : >"$SSH_FLAG")   # 0700/0600: the cleanup of the home (secret-paths.txt) keeps this directory owner-only
       echo "SSH agent flag: on. New shells use $SSH_SOCK while the socket exists (otherwise the current agent)."
       echo "In the Bitwarden app: Settings > Enable SSH agent, and Settings > Start to tray (so login does not open the window)."
       echo "Add a key in the app: New > SSH key. Verify: SSH_AUTH_SOCK=$SSH_SOCK ssh-add -L"
