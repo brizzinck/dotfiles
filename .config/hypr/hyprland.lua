@@ -511,9 +511,11 @@ hl.bind(mainMod .. " + SHIFT + period", hl.dsp.exec_cmd(scripts .. "/snippets.sh
 hl.bind("F9", hl.dsp.exec_cmd(scripts .. "/dictation.sh stop"), { release = true })
 hl.bind("F9", hl.dsp.exec_cmd(scripts .. "/dictation.sh start"), { description = "Dictation: hold F9 to dictate" })
 hl.bind(mainMod .. " + ALT + D", hl.dsp.exec_cmd(scripts .. "/dictation.sh toggle"), { description = "Dictation on or off (Voxtype)" })
+hl.bind(mainMod .. " + ALT + SHIFT + D", hl.dsp.exec_cmd(scripts .. "/dictation.sh cycle"), { description = "Dictation: next language (ru uk en)" })
 hl.bind(mainMod .. " + ALT + T", hl.dsp.exec_cmd(scripts .. "/reminder.sh set"), { description = "New reminder (25 tea or 14:30 standup)" })
 hl.bind(mainMod .. " + CTRL + ALT + T", hl.dsp.exec_cmd(scripts .. "/reminder.sh list"), { description = "Reminders: list and cancel" })
 hl.bind(mainMod .. " + CTRL + period", hl.dsp.exec_cmd(scripts .. "/transcode.sh"), { description = "Transcode a picture or video for sharing" })
+hl.bind(mainMod .. " + CTRL + E", hl.dsp.exec_cmd(scripts .. "/edit-anywhere.sh open"), { description = "Edit anywhere: nvim at the pointer then paste (Ctrl+S)" })
 hl.bind(mainMod .. " + CTRL + V", hl.dsp.exec_cmd(scripts .. "/paste-plain.sh"), { description = "Paste clipboard as plain text" })
 hl.bind(mainMod .. " + ALT + V", hl.dsp.exec_cmd(scripts .. "/clipboard.sh --paste-last-image"), { description = "Paste last screenshot or image" })
 hl.bind(mainMod .. " + CTRL + P", hl.dsp.exec_cmd(scripts .. "/vault.sh passwords"), { description = "Passwords (Bitwarden via rbw and fzf)" })
@@ -527,9 +529,7 @@ hl.bind(mainMod .. " + ALT + A", hl.dsp.exec_cmd(scripts .. "/ai-ask.sh selectio
 hl.bind(mainMod .. " + CTRL + T", hl.dsp.exec_cmd(scripts .. "/ai-ask.sh telegram"), { description = "AI: Telegram digest (unread allowlisted chats)" })
 hl.bind(mainMod .. " + slash", hl.dsp.exec_cmd("~/.local/bin/keymap menu"), { description = "Shortcut search (every key of every tool)" })
 hl.bind(mainMod .. " + SHIFT + slash", hl.dsp.exec_cmd("~/.local/bin/keymap page"), { description = "Shortcut reference page (browser window)" })
-hl.bind(mainMod .. " + CTRL + E", hl.dsp.exec_cmd(scripts .. "/edit-anywhere.sh open"), { description = "Edit anywhere: nvim at the pointer then paste (Ctrl+S)" })
 hl.bind(mainMod .. " + M", hl.dsp.exec_cmd("~/.config/hub/hub open"), { description = "Utility hub (fzf)" })
-hl.bind(mainMod .. " + ALT + SHIFT + D", hl.dsp.exec_cmd(scripts .. "/dictation.sh cycle"), { description = "Dictation: next language (ru uk en)" })
 hl.bind(mainMod .. " + semicolon", hl.dsp.exec_cmd("~/.config/hub/leader"), { description = "Leader menu (which-key)" })
 
 -- --- capture ---
