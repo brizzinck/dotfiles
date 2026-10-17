@@ -851,7 +851,10 @@ net_firewall() {
     run ufw --force enable
     changed "ufw enabled: default deny incoming, loopback and established/related allowed, outgoing allowed"
   fi
-  try systemctl enable ufw.service
+  # `ufw enable` loads the rules but does not start ufw.service (a oneshot with RemainAfterExit that runs ufw-init at boot), so it
+  # would stay inactive until the next reboot: --now starts it. ufw-init start rebuilds the same rule chains from /etc/ufw (it does
+  # not append a second copy), so starting it after `ufw enable` is idempotent; running it again later is a no-op while active.
+  try systemctl enable --now ufw.service
   run touch "$NET_MARKER"
   followup "sudo ufw status verbose    # Status: active, Default: deny (incoming), allow (outgoing), deny (routed)"
   followup "docker run --rm busybox wget -qO- -T 5 https://example.com | head -c 60    # a container still reaches the internet through the firewall"

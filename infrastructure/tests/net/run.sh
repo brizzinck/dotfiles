@@ -77,9 +77,15 @@ if grep -qE 'rp_filter|ip_forward' <(grep -v '^#' "$NET/ufw-sysctl.conf"); then 
 
 # ── apply-system.sh --only net, dry run ─────────────────────────────────────────
 dry="$("$REPO/apply-system.sh" --dry-run --only net 2>&1)"
-for want in "10-no-llmnr.conf" "v2raya.service.d/10-loopback.conf" "/etc/ufw/dotfiles-sysctl.conf" "ufw --force enable" "systemctl enable ufw.service"; do
+for want in "10-no-llmnr.conf" "v2raya.service.d/10-loopback.conf" "/etc/ufw/dotfiles-sysctl.conf" "systemctl enable --now ufw.service"; do
   case "$dry" in *"$want"*) ok ;; *) bad "dry run does not mention: $want" ;; esac
 done
+# the enable step depends on the machine: not yet enabled -> `ufw --force enable` is planned, already active -> "unchanged"
+case "$dry" in *"ufw --force enable"* | *"unchanged: ufw is enabled and active"*) ok ;; *) bad "dry run neither plans ufw --force enable nor reports ufw as enabled and active" ;; esac
+# ufw enable only loads the rules; the unit must be started right after it (not just enabled for the next boot), and never plain `enable`
+net_src="$(sed -n '/^section_net_ufw\|ufw --force enable/,/NET_MARKER"/p' "$REPO/apply-system.sh")"
+case "$net_src" in *"run ufw --force enable"*"systemctl enable --now ufw.service"*) ok ;; *) bad "apply-system.sh does not start ufw.service (enable --now) after ufw --force enable" ;; esac
+grep -q 'systemctl enable ufw.service' "$REPO/apply-system.sh" && bad "apply-system.sh still enables ufw.service without --now" || ok
 if printf '%s\n' "$dry" | grep -E '^\[dry-run\] (rm|ufw (reset|delete)|systemctl (stop|disable|mask))' >/dev/null; then bad "dry run would remove or stop something"; else ok; fi
 if "$REPO/apply-system.sh" --dry-run --only net >/dev/null 2>&1; then ok; else bad "dry run exits non-zero"; fi
 bash -n "$REPO/apply-system.sh" && ok || bad "apply-system.sh has a syntax error"
