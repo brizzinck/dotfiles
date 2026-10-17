@@ -362,6 +362,28 @@ if [ -r "$DOTFILES/.config/hypr/scripts/vault-browse.py" ]; then
 else
   bad vault-browse ".config/hypr/scripts/vault-browse.py missing"
 fi
+# BW1: the per-session bw server of vault-bw.py (bw serve on a unix socket): never a TCP listener, socket 0600 in a 0700 directory
+# owned by the owner, unreachable for the other users of this machine (managed users, service users, greeter)
+bw_run="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/vault"
+bw_tcp="$(ss -ltnpH 2>/dev/null | grep -E '"bw"|[:.]8087[[:space:]]' | head -2 | paste -sd';' || true)"
+bw_bad=""
+[ -n "$bw_tcp" ] && bw_bad="TCP listener: $bw_tcp"
+if [ -S "$bw_run/bw.sock" ]; then
+  bw_mode="$(stat -c '%a %U' "$bw_run/bw.sock" 2>/dev/null)"
+  bw_dir="$(stat -c '%a %U' "$bw_run" 2>/dev/null)"
+  [ "$bw_mode" = "600 $(id -un)" ] || bw_bad="$bw_bad; socket is '$bw_mode', want '600 $(id -un)'"
+  [ "$bw_dir" = "700 $(id -un)" ] || bw_bad="$bw_bad; $bw_run is '$bw_dir', want '700 $(id -un)'"
+  for bw_u in $(awk -F'\t' '!/^[[:space:]]*#/ && NF {print $1}' "$DOTFILES/infrastructure/users/managed.tsv" 2>/dev/null) tgconfirm aimcp greeter; do
+    id -u "$bw_u" >/dev/null 2>&1 || continue
+    bw_reach="$(python3 -I "$DOTFILES/infrastructure/users/acl-reach.py" "$(id -u "$bw_u")" "$(dirname "$bw_run")" 2>/dev/null | grep 'vault/bw.sock' | head -1)"
+    [ -n "$bw_reach" ] && bw_bad="$bw_bad; $bw_u can reach it ($bw_reach)"
+  done
+  if [ -n "$bw_bad" ]; then bad vault-bw-serve "${bw_bad#; }"; else ok vault-bw-serve "bw serve on $bw_run/bw.sock: socket 600, dir 700, no TCP listener, no other user can reach it"; fi
+elif [ -n "$bw_bad" ]; then
+  bad vault-bw-serve "${bw_bad#; }"
+else
+  info vault-bw-serve "not running (starts on the first Trash / edit / new action after the bw unlock; no TCP listener)"
+fi
 # V1c: generated layout twins are current (tmux/rofi depend on running tools and are skipped by `layout.py check`)
 if lay_out="$(PYTHONPYCACHEPREFIX=/tmp/pycache python3 "$DOTFILES/.config/layout/layout.py" check 2>&1)"; then ok layout-gen "generated ua/ru twins are current (layout.py check)"; else bad layout-gen "stale: $(printf '%s' "$lay_out" | head -1) (layout.py gen)"; fi
 # K4: offline test of the ghostty twin generator (fixture defaults and config, no ghostty needed)
