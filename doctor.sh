@@ -706,6 +706,22 @@ else
 fi
 if grep -q 'audio-ensure --boot' "$DOTFILES/.config/hypr/hyprland.lua"; then ok audio-boot "autostart runs audio-ensure --boot (restarts wireplumber once when a card came up on profile off)"; else bad audio-boot "hyprland.lua must run audio-ensure --boot"; fi
 
+# audio-mic: the default source must deliver a varying signal (LENOVO 83HY: UCM named the unconnected ACP PDM "Mic1" and the source was a
+# constant rail; 51-hda-no-ucm.conf fixes it). 1.5 s are measured, only statistics are printed, no audio is kept.
+if command -v pactl >/dev/null 2>&1 && pactl info >/dev/null 2>&1; then
+  mic_out="$("$DOTFILES/.local/bin/audio-ensure" --mic 2>&1)"; mic_rc=$?
+  case "$mic_rc" in
+    0) ok audio-mic "$mic_out" ;;
+    1) bad audio-mic "$mic_out (fix: check ~/.config/wireplumber/wireplumber.conf.d/51-hda-no-ucm.conf is linked, systemctl --user restart wireplumber)" ;;
+    *) info audio-mic "$mic_out" ;;
+  esac
+else
+  info audio-mic "PipeWire not reachable from this shell, skipped"
+fi
+check audio-hda-ucm "wireplumber rule turns UCM off for the 83HY HDA card (the built-in mic is the codec's, not the ACP PDM)" \
+  "$HOME/.config/wireplumber/wireplumber.conf.d/51-hda-no-ucm.conf missing or not stowed (cd ~/dotfiles && stow .)" \
+  grep -q 'api.alsa.use-ucm = false' "$HOME/.config/wireplumber/wireplumber.conf.d/51-hda-no-ucm.conf"
+
 # ── palette variant (black | night): link present, generated fragments in sync with the token source ───────────
 theme_link="${XDG_STATE_HOME:-$HOME/.local/state}/theme/current"
 if [ -f "$theme_link/tokens.json" ] && [ "$(dirname "$(readlink -f "$theme_link")")" = "$DOTFILES/themes/generated" ]; then

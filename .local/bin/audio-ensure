@@ -3,6 +3,9 @@
 #   audio-ensure              check and, when a card is stuck on profile "off" although WirePlumber saved a profile for it,
 #                             restart wireplumber once and re-check (logs to the journal: journalctl -t audio-ensure)
 #   audio-ensure --check      read-only: print one line per problem, exit 1 when there is any (doctor runs this)
+#   audio-ensure --mic        read-only: record ~1.5 s from the default source, print only level statistics (never keep or play
+#                             audio) and tell a live microphone from a dead one: exit 0 live, 1 constant non-zero signal (dead
+#                             or railed input), 2 digital silence (cannot tell), 3 no microphone / no PipeWire (doctor audio-mic)
 #   audio-ensure --boot       what the Hyprland autostart runs: wait for PipeWire and the cards (up to ~10 s), then as above
 #
 # Why: the user manager of a lingering account (loginctl enable-linger) starts pipewire + wireplumber at boot, long before
@@ -12,15 +15,20 @@
 # default source falls back to easyeffects_sink.monitor, and only apps that already hold a stream (Telegram) work.
 # WirePlumber's logind module only gates the bluez monitors; the ALSA monitor has no seat handling. One restart after
 # the ACL exists restores the saved profiles (default-profile state file), so the autostart does exactly that, only when needed.
+#
+# Mic on the LENOVO 83HY: alsa-ucm-conf names the (unconnected) ACP PDM capture "Mic1" and hides the Conexant codec's real internal
+# digital mic, so the default source was a constant rail; ~/.config/wireplumber/wireplumber.conf.d/51-hda-no-ucm.conf turns UCM
+# off for that card (see the header there) and --mic proves a source delivers a varying signal.
 set -u
 
 MODE=fix
 case "${1:-}" in
   "") ;;
   --check) MODE=check ;;
+  --mic) MODE=mic ;;
   --boot) MODE=boot ;;
-  -h | --help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-  *) echo "usage: audio-ensure [--check|--boot]" >&2; exit 2 ;;
+  -h | --help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  *) echo "usage: audio-ensure [--check|--mic|--boot]" >&2; exit 2 ;;
 esac
 
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/wireplumber/default-profile"
@@ -54,6 +62,47 @@ problems() {
     *.monitor) printf 'B\tdefault source is a monitor (%s), not a microphone\n' "$defsrc" ;;
   esac
 }
+
+# mic_probe: exit codes as in the header. Audio goes to a file in a 0700 dir on tmpfs that is deleted at once; only numbers are printed.
+mic_probe() {
+  local src tmp rc=0 out
+  command -v pw-record >/dev/null 2>&1 && command -v pactl >/dev/null 2>&1 && pactl info >/dev/null 2>&1 \
+    || { echo "no PipeWire tools or server"; return 3; }
+  src="$(pactl get-default-source 2>/dev/null)"
+  case "$src" in
+    "") echo "no default source"; return 3 ;;
+    *.monitor | easyeffects_*) echo "default source $src is not a microphone"; return 3 ;;
+  esac
+  tmp="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/audio-mic.XXXXXX")" || { echo "no temp dir"; return 3; }
+  timeout -s INT 1.7 pw-record --target "$src" --rate 16000 --channels 1 --format s16 "$tmp/m.wav" >/dev/null 2>&1
+  out="$(python3 -I - "$tmp/m.wav" "$src" <<'PY'
+import array, sys
+data = open(sys.argv[1], "rb").read()
+a = array.array("h")
+body = data[44 + 6400:]  # drop the header and the first 0.2 s
+a.frombytes(body[: len(body) // 2 * 2])
+if len(a) < 4000:
+    print("no samples from %s" % sys.argv[2]); sys.exit(3)
+mean = sum(a) / len(a)
+lo, hi = min(a), max(a)
+d = len(set(a))
+st = "%s: mean %.0f, min %d, max %d, distinct %d" % (sys.argv[2], mean, lo, hi, d)
+if hi - lo >= 64 and d >= 16:
+    print("live signal (%s)" % st); sys.exit(0)
+if abs(mean) > 256:
+    print("constant signal, input is dead or railed (%s)" % st); sys.exit(1)
+print("digital silence, cannot tell (%s)" % st); sys.exit(2)
+PY
+)" || rc=$?
+  rm -rf "$tmp"
+  printf '%s\n' "$out"
+  return "$rc"
+}
+
+if [ "$MODE" = mic ]; then
+  mic_probe
+  exit $?
+fi
 
 if [ "$MODE" = check ]; then
   out="$(problems)"
