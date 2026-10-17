@@ -197,6 +197,10 @@ hl.config({
         force_default_wallpaper = 0,
         disable_hyprland_logo = true,
         disable_splash_rendering = true,
+        -- safety net: any key or pointer movement wakes a panel that hypridle switched off (dpms off at 1200 s), even when the
+        -- on-resume listener of hypridle did not run (a black panel with the screensaver still up)
+        key_press_enables_dpms = true,
+        mouse_move_enables_dpms = true,
     },
 
     cursor = {

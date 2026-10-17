@@ -742,6 +742,12 @@ if [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && command -v hyprctl >/dev/null 2>
   o1_delay="$(hyprctl getoption input:repeat_delay -j 2>/dev/null | jq -r '.int // empty')"
   o1_click="$(hyprctl getoption input:touchpad:clickfinger_behavior -j 2>/dev/null | jq -r '.bool // empty')"
   if [ "$o1_rate" = 40 ] && [ "$o1_delay" = 250 ] && [ "$o1_click" = true ]; then ok input-feel "key repeat 40/s after 250 ms, two-finger right click"; else bad input-feel "repeat $o1_rate/$o1_delay clickfinger $o1_click (expected 40/250/true; hyprctl reload)"; fi
+  o1_dk="$(hyprctl getoption misc:key_press_enables_dpms -j 2>/dev/null | jq -r '.int // .bool // empty')"
+  o1_dm="$(hyprctl getoption misc:mouse_move_enables_dpms -j 2>/dev/null | jq -r '.int // .bool // empty')"
+  case "$o1_dk:$o1_dm" in
+    1:1 | true:true) ok dpms-wake "key press and mouse move wake a panel that hypridle switched off" ;;
+    *) bad dpms-wake "misc:key_press_enables_dpms=$o1_dk mouse_move_enables_dpms=$o1_dm (both must be true; hyprctl reload)" ;;
+  esac
   o1_binds="$(hyprctl binds -j 2>/dev/null | jq -r '[.[] | select(.description | test("Laptop panel on or off|Mirror the laptop panel|Zoom the screen in|Switch to the next audio output|Brightness up 1 percent|Volume up 1 percent"))] | length')"
   if [ "${o1_binds:-0}" -ge 6 ]; then ok o1-binds "display, zoom and fine-step binds are live"; else bad o1-binds "only ${o1_binds:-0} of 6 O1 binds are live (hyprctl reload)"; fi
 fi
