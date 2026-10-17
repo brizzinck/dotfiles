@@ -303,6 +303,41 @@ if [ -x "$HOME/.local/bin/obs-ctl" ]; then
 else
   bad obs-ctl ".local/bin/obs-ctl missing"
 fi
+# ── M1: MCP gateway (mcp-proxy, user service), desktop-ro, chrome-devtools pair, Telegram (root part) ───────────────────────
+mcp_state="${XDG_STATE_HOME:-$HOME/.local/state}/mcp"
+if [ -x "$HOME/.local/bin/mcp-gateway" ]; then
+  if mcp_inst="$("$HOME/.local/bin/mcp-install" --check 2>&1)"; then ok mcp-install "pinned mcp-proxy, desktop-ro venv and chrome-devtools-mcp are installed and current"
+  else bad mcp-install "$(printf '%s' "$mcp_inst" | grep -m1 'NOT\|failed\|MISMATCH') (run: mcp-install)"; fi
+  if mcp_st="$("$HOME/.local/bin/mcp-gateway" status 2>&1)"; then ok mcp-gateway "$(printf '%s' "$mcp_st" | sed -n 's/^health: *//p'); served: $(printf '%s' "$mcp_st" | sed -n 's/^served: *//p')"
+  else bad mcp-gateway "gateway is down or unhealthy: $(printf '%s' "$mcp_st" | head -2 | tr '\n' ' ')(systemctl --user enable --now mcp-gateway; mcp-gateway logs)"; fi
+  if [ "$(stat -c %a "$mcp_state/gateway.token" 2>/dev/null)" = 600 ] && [ "$(stat -c %a "$mcp_state" 2>/dev/null)" = 700 ]; then ok mcp-token "gateway token is a 0600 file in a 0700 directory ($mcp_state)"
+  else bad mcp-token "gateway token missing or too open (mcp-gateway token ensure; chmod 600 $mcp_state/gateway.token)"; fi
+  mcp_addr="$(jq -r '.mcpProxy.addr' "$HOME/.config/mcp/gateway.json" 2>/dev/null)"
+  mcp_listen="$(ss -ltnH "sport = :${mcp_addr##*:}" 2>/dev/null | awk '{print $4}')"
+  if [ -n "$mcp_addr" ] && [ -n "$mcp_listen" ] && [ "$mcp_listen" = "$mcp_addr" ]; then ok mcp-bind "gateway listens on $mcp_addr only (loopback)"
+  else bad mcp-bind "gateway is not listening on a loopback-only address (config: ${mcp_addr:-none})"; fi
+  if jq -e '.mcpServers | to_entries | all(.value.options.toolFilter? == null or .value.options.toolFilter.mode == "allow")' "$HOME/.config/mcp/gateway.json" >/dev/null 2>&1 \
+    && ! jq -r '.mcpServers.telegram.options.toolFilter.list[]' "$HOME/.config/mcp/gateway.json" 2>/dev/null | grep -qE '^(send|reply|edit|delete|forward|mark|save|upload|download|press|join|leave|invite|ban|unban|pin|unpin|set_|create|update|promote|demote|add_|remove|block|unblock|mute|unmute|archive|unarchive|import|export|clear|toggle|vote|subscribe|enable|disable)'; then
+    ok mcp-toolfilter "telegram toolFilter is an allow list without send/edit/delete/mark tools"
+  else bad mcp-toolfilter "gateway.json: telegram toolFilter missing, not an allow list, or exposes a write tool"; fi
+  if [ ! -e "$DOTFILES/.config/mcphub" ] && ! grep -rqiE 'mcphub\.nvim|plugins\.ai\.mcphub' "$DOTFILES/.config/nvim/lua" 2>/dev/null \
+    && ! grep -qE 'mcp-hub@|37373' "$DOTFILES/install.sh" 2>/dev/null \
+    && ! ss -ltn 'sport = :37373' 2>/dev/null | grep -q LISTEN; then
+    ok mcp-hub-gone "mcphub is gone: no .config/mcphub, no mcphub.nvim, nothing on :37373"
+    [ -d /srv/mcphub ] && info mcp-hub-srv "/srv/mcphub still exists (removed by: sudo ./apply-system.sh --only mcp)"
+  else bad mcp-hub-gone "mcphub leftovers: .config/mcphub, mcphub.nvim, install.sh or a listener on :37373"; fi
+  mcp_claude="${CLAUDE_CONFIG_DIR:+$CLAUDE_CONFIG_DIR/}${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
+  [ -n "${CLAUDE_CONFIG_DIR:-}" ] && mcp_claude="$CLAUDE_CONFIG_DIR/.claude.json"
+  if [ -e "$mcp_state/mcp-added" ] && jq -e '.mcpServers["desktop-ro"].headersHelper and (.mcpServers.mcphub | not)' "$mcp_claude" >/dev/null 2>&1; then
+    ok mcp-add "mcp-add was run: desktop-ro is registered in Claude Code, mcphub is gone"
+  elif jq -e '.mcpServers.mcphub' "$mcp_claude" >/dev/null 2>&1 || [ ! -e "$mcp_state/mcp-added" ]; then
+    info mcp-add "run once (it edits Claude Code and Codex config): mcp-add"
+  else bad mcp-add "Claude Code has no desktop-ro entry although mcp-add ran (rerun: mcp-add)"; fi
+  if mcp_test="$("$DOTFILES/infrastructure/tests/mcp/run.sh" --quick 2>&1)"; then ok mcp-test "offline tests: $(printf '%s' "$mcp_test" | tail -1 | sed 's/^mcp tests: //')"
+  else bad mcp-test "offline test failed (infrastructure/tests/mcp/run.sh): $(printf '%s' "$mcp_test" | grep -m1 '^FAIL')"; fi
+else
+  bad mcp-gateway ".local/bin/mcp-gateway missing (cd ~/dotfiles && stow .)"
+fi
 # ── V1b: the shared modal fzf (vim keys in every menu) ──────────────────────────────────────────────────────────
 if [ -x "$HOME/.local/bin/fzf-menu" ] && [ -r "$HOME/.config/fzf/vimfzf.sh" ]; then
   if out="$("$HOME/.local/bin/fzf-menu" --self-test 2>&1)"; then ok fzf-menu "modal self-test passed ($(printf '%s\n' "$out" | grep -c '^ok') cases)"; else bad fzf-menu "$(printf '%s\n' "$out" | grep -m1 'FAIL\|self-test')"; fi
