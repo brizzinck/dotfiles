@@ -7,7 +7,10 @@
 #   Ctrl+V / V     visual / visual-line (char visual moved from v: v is readline's "edit in $EDITOR", and a two-key
 #                  `vv` cannot be typed within KEYTIMEOUT=1)
 #   INSERT keeps readline basics: Ctrl+A/E/B/F/K/U/W/H/P/N/L/R, Ctrl+Y accepts the autosuggestion (Ctrl+Space is
-#   the tmux prefix), Alt+s = sudo-command-line (the sudo plugin's Esc-Esc cannot work with a 10 ms KEYTIMEOUT)
+#   the tmux prefix)
+#   sudo-command-line: NORMAL `gs` (g-prefix like ga/gg/gu: Esc gs, then back with i/A) and Ctrl+X s in INSERT/emacs.
+#   Hyprland grabs Alt+S (screenshot), so the old Alt+s never reached the shell; S stays vi's substitute-line, and the
+#   sudo plugin's Esc-Esc cannot work with a 10 ms KEYTIMEOUT. Ctrl+X s has ua/ru twins (Ctrl+X ы / і), gs too.
 #   ua/ru layouts: every NORMAL/operator/visual key has a Cyrillic twin from the physical-key map (layout-keys.zsh)
 #   Ctrl+R / Ctrl+T / Alt+C: the same fzf widgets on the shared modal look (INSERT/NORMAL, [I]/[N] in the prompt)
 [[ -o zle && -o interactive ]] || return 0
@@ -24,11 +27,21 @@ bindkey -M vicmd -r vv
 bindkey -M vicmd 'v' edit-command-line
 bindkey -M vicmd '^V' visual-mode
 
-# sudo plugin: Esc-Esc is ambiguous with Esc -> NORMAL; Alt+s in every map instead
+# sudo plugin: Esc-Esc is ambiguous with Esc -> NORMAL; `gs` (NORMAL) and Ctrl+X s (INSERT, emacs) instead.
+# Not Alt+s: Hyprland's ALT+S (screenshot) grabs it before any terminal sees it. `gs` is a free vicmd g-key
+# (ga ge gE gg gu gU g~ are taken); the ua/ru twin of `gs` comes from _df_dup_pairs below, the one of Ctrl+X s here.
 bindkey -M emacs -r '\e\e'; bindkey -M viins -r '\e\e'; bindkey -M vicmd -r '\e\e'
-bindkey -M emacs '\es' sudo-command-line
-bindkey -M viins '\es' sudo-command-line
-bindkey -M vicmd '\es' sudo-command-line
+bindkey -M emacs '^Xs' sudo-command-line
+bindkey -M viins '^Xs' sudo-command-line
+bindkey -M vicmd 'gs' sudo-command-line
+if (( ${+LAYOUT_US_OF} )); then
+  for _df_c _df_u in "${(@kv)LAYOUT_US_OF}"; do
+    [[ $_df_u == s ]] || continue
+    bindkey -M emacs "^X$_df_c" sudo-command-line
+    bindkey -M viins "^X$_df_c" sudo-command-line
+  done
+  unset _df_c _df_u
+fi
 
 # ── mode indicator (RPROMPT) ─────────────────────────────────────────────────
 # zsh keeps $KEYMAP=vicmd while a visual selection is active, so [V] comes from REGION_ACTIVE; a line-pre-redraw hook
