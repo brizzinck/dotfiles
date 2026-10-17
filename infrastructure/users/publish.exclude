@@ -1,0 +1,8 @@
+# rsync exclude list of `usr sync` (what never reaches /srv/dotfiles). Secrets first; everything else is the committed repo.
+/private/
+/env.secret.sh
+*.secret*
+/.claude/
+/.git
+/.git/
+__pycache__/

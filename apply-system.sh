@@ -5,8 +5,9 @@
 #   sudo ./apply-system.sh --dry-run       print what each section would do, change nothing
 #   sudo ./apply-system.sh --only cleanup  run a single section
 #
-# Section order: cleanup -> upgrade -> install -> remove -> config -> services -> greeter -> disk -> boot -> flatpak -> summary
+# Section order: cleanup -> upgrade -> install -> remove -> config -> services -> greeter -> users -> disk -> boot -> flatpak -> summary
 #   (greeter = the login screen, see infrastructure/greetd; also runnable alone: sudo ./apply-system.sh --only greeter)
+#   (users = managed child users, see infrastructure/users; also runnable alone: sudo ./apply-system.sh --only users)
 # System config files live in infrastructure/<area>/ and are installed from there (see apply-memory.sh).
 set -euo pipefail
 
@@ -14,7 +15,7 @@ ORIG_ARGS=("$@")
 DRY_RUN=0
 ONLY=""
 STAMP="20261016"
-SECTIONS=(cleanup upgrade install remove config services greeter disk boot flatpak summary)
+SECTIONS=(cleanup upgrade install remove config services greeter users disk boot flatpak summary)
 
 usage() {
   cat <<EOF
@@ -834,6 +835,240 @@ section_greeter() {
   followup "emergency (no VT): GRUB entry, press e, append systemd.mask=greetd.service to the linux line, Ctrl+X"
   followup "optional test before the reboot, on VT3 (dry-run session; the Shell session is real; also try root under Other user...): sudo greetd --config /etc/greetd/config-test.toml (Ctrl+Alt+F1 returns, Ctrl+C stops it)"
   followup "after the reboot: ./doctor.sh --fails; loginctl show-session \$XDG_SESSION_ID -p Service -p Type    # Service=greetd, Type=wayland"
+}
+
+# --- users -------------------------------------------------------------------
+# Managed child users (stage U7): td, yc and later service users such as aimcp, all listed in infrastructure/users/managed.tsv
+# (the registry also read by the `usr` command and doctor.sh). What this section sets up, every step idempotent:
+#   * the managed users get NO access to the owner's home: their ACL entries on it (access + default) are removed;
+#   * the owner keeps full access to the managed homes (u:OWNER:rwx plus a default ACL);
+#   * passwordless "become" for the owner, only for the listed users and never root: a sudoers drop-in (sudo -u USER ...)
+#     and a polkit rule (machinectl shell USER@); users flagged nobecome (aimcp) get neither;
+#   * /srv/dotfiles (published copy of ~/dotfiles, no secrets) and /srv/nvim-shared (nvim plugins + Mason, read-only for the
+#     managed users), both owned by the owner so the commit hook can publish without a password;
+#   * the first publish, the profile links (run as each managed user) and the shared nvim install (background).
+# Passwords, shells and groups (wheel, docker) of existing users are never touched; no linger for interactive users.
+# Rollback: sudo infrastructure/users/rollback.sh (it also prints what it did).
+USERS_DIR="$INFRA/users"
+USERS_STATE=/var/lib/usr-managed
+USERS_SUDOERS=/etc/sudoers.d/50-usr-managed
+USERS_POLKIT=/etc/polkit-1/rules.d/50-usr-managed.rules
+USERS_SRV_DOTFILES=/srv/dotfiles
+USERS_SRV_NVIM=/srv/nvim-shared
+
+# stdout: the sudoers drop-in / polkit rule rendered from managed.tsv (users with the `become` capability)
+users_render_sudoers() {
+  local list
+  list="$(managed_users become | paste -sd, - | sed 's/,/, /g')"
+  sed -e "s|@OWNER@|$OWNER|g" -e "s|@MANAGED@|$list|" "$USERS_DIR/sudoers/50-usr-managed.in"
+}
+users_render_polkit() {
+  local list
+  list="$(managed_users become | sed 's/.*/"&"/' | paste -sd, - | sed 's/,/, /g')"
+  sed -e "s|@OWNER@|$OWNER|g" -e "s|@MANAGED_JS@|$list|" "$USERS_DIR/polkit/50-usr-managed.rules.in"
+}
+users_check_sudoers() { visudo -c -f "$1" >/dev/null 2>&1; }
+users_check_polkit() {
+  command -v node >/dev/null 2>&1 || return 0   # no node: the rule is plain ES5, install it unchecked
+  local t rc
+  t="$(mktemp --suffix=.js)"
+  cp -- "$1" "$t"
+  node --check "$t" >/dev/null 2>&1
+  rc=$?
+  rm -f -- "$t"
+  return "$rc"
+}
+# users_install_rendered RENDER_FN DEST MODE CHECK_FN: render, validate, then install (or report unchanged)
+users_install_rendered() {
+  local fn="$1" dest="$2" mode="$3" check="$4" tmp
+  tmp="$(mktemp)"
+  "$fn" >"$tmp"
+  if ! "$check" "$tmp"; then
+    warn "users: the rendered $(basename "$dest") failed its syntax check; NOT installed (the old file stays)"
+    rm -f -- "$tmp"
+    return 1
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "rendered $dest (mode $mode):"
+    sed 's/^/    | /' "$tmp"
+  fi
+  install_file "$tmp" "$dest" "$mode"
+  rm -f -- "$tmp"
+}
+
+# users_acl_remove USER: drop USER's access and default ACL entries from the owner's home tree (-xdev, no symlinks)
+users_acl_remove() {
+  local u="$1" n_entries n_total top stamp saved
+  [ -d "$OWNER_HOME" ] || return 0
+  # the top two levels are read back exactly (fast); reading every ACL of the whole tree takes minutes
+  top="$(find "$OWNER_HOME" -xdev -maxdepth 2 ! -type l -print0 2>/dev/null | xargs -0 -r getfacl -p -s 2>/dev/null |
+    awk -v u="$u" '/^# file: / { f = substr($0, 9); next } $0 ~ "^(default:)?user:" u ":" { sub(/\t.*/, ""); print f "\t" $0 }')"
+  n_entries="$(printf '%s' "$top" | grep -c . || true)"
+  if [ "$n_entries" -eq 0 ] && [ "$DRY_RUN" -eq 1 ]; then
+    log "unchanged: $u has no ACL entry in the top two levels of $OWNER_HOME"
+    return 0
+  fi
+  n_total="$(find "$OWNER_HOME" -xdev ! -type l 2>/dev/null | wc -l)"
+  log "ACL entries of $u on $OWNER_HOME that go (each of the $n_total files and directories below it is visited):"
+  if [ "$n_entries" -gt 0 ]; then
+    log "  top two levels: $n_entries entries, by kind:"
+    printf '%s\n' "$top" | cut -f2 | sort | uniq -c | sort -rn | sed 's/^ *\([0-9]*\) \(.*\)/    \1 x \2/'
+    log "  the home directory itself and its direct children (first 30):"
+    printf '%s\n' "$top" | awk -F'\t' -v h="$OWNER_HOME" '$1 == h || index($1, h "/") == 1 { rest = substr($1, length(h) + 2); if (rest !~ /\//) print "    " $1 "   " $2 }' | sed -n '1,30p'
+  fi
+  log "  removed: user:$u:*          (access entry, files and directories)"
+  log "  removed: default:user:$u:*  (default entry, directories: new files no longer inherit it)"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "[dry-run] getfacl of the top two levels is saved to $USERS_STATE/acl-before-$u-<time>.txt (rollback reference)"
+    log "[dry-run] find $OWNER_HOME -xdev ! -type l -type d -exec setfacl -x u:$u,d:u:$u {} +"
+    log "[dry-run] find $OWNER_HOME -xdev ! -type l ! -type d -exec setfacl -x u:$u {} +"
+    changed "would remove every ACL entry of $u from $OWNER_HOME"
+    return 0
+  fi
+  install -d -m 700 "$USERS_STATE"
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  saved="$USERS_STATE/acl-before-$u-$stamp.txt"
+  find "$OWNER_HOME" -xdev -maxdepth 2 ! -type l -print0 2>/dev/null | xargs -0 -r getfacl -p -s >"$saved" 2>/dev/null || true
+  find "$OWNER_HOME" -xdev ! -type l -type d -exec setfacl -x "u:$u,d:u:$u" {} + 2>/dev/null ||
+    warn "users: some directories under $OWNER_HOME could not be changed (setfacl -x u:$u)"
+  find "$OWNER_HOME" -xdev ! -type l ! -type d -exec setfacl -x "u:$u" {} + 2>/dev/null ||
+    warn "users: some files under $OWNER_HOME could not be changed (setfacl -x u:$u)"
+  changed "removed every ACL entry of $u from $OWNER_HOME (before-state of the top levels: $saved)"
+}
+
+# users_home_acl USER: the owner gets u:OWNER:rwx and a default ACL on the managed home (once; later files inherit it)
+users_home_acl() {
+  local u="$1" h
+  h="$(getent passwd "$u" | cut -d: -f6)"
+  [ -n "$h" ] && [ -d "$h" ] || { log "skip: $u has no home directory yet"; return 0; }
+  if getfacl -p "$h" 2>/dev/null | grep -q "^user:$OWNER:rwx" && getfacl -p "$h" 2>/dev/null | grep -q "^default:user:$OWNER:rwx"; then
+    log "unchanged: $h already carries u:$OWNER:rwx and the default ACL"
+    return 0
+  fi
+  # directories get mask rwx (the owner can traverse and write); 0600 files keep an empty mask: secrets stay owner-only on
+  # the browsing path and are reached with `usr exec` / `usr edit`. .ssh and .gnupg are never touched.
+  run setfacl -m "u:$OWNER:rwx" "$h"
+  run setfacl -d -m "u::rwx,u:$u:rwx,u:$OWNER:rwx,g::---,m::rwx,o::---" "$h"
+  run find "$h" -xdev '(' -path "$h/.ssh" -o -path "$h/.gnupg" ')' -prune -o -type d -exec setfacl -m "u:$OWNER:rwx,d:u:$OWNER:rwx,d:u:$u:rwx" '{}' +
+  run find "$h" -xdev '(' -path "$h/.ssh" -o -path "$h/.gnupg" ')' -prune -o ! -type d ! -type l -exec setfacl -n -m "u:$OWNER:rwX" '{}' +
+  run install -d -m 700 "$USERS_STATE"
+  run touch "$USERS_STATE/home-acl-added-$u"   # rollback.sh removes the owner's ACL again from homes that had none
+  changed "$h: ACL u:$OWNER:rwx + default ACL (existing tree normalised once, .ssh/.gnupg skipped)"
+}
+
+section_users() {
+  header "users"
+  local lib="$USERS_DIR/lib.sh" u problems usr_cmd grp nvim_mode has_profile_user
+  if [ ! -r "$lib" ]; then
+    warn "users: $lib is missing, nothing to do"
+    return 0
+  fi
+  # shellcheck source=infrastructure/users/lib.sh
+  source "$lib"
+  problems="$(managed_validate "$OWNER")"
+  if [ -n "$problems" ]; then
+    warn "users: infrastructure/users/managed.tsv is invalid, the section was NOT run:"
+    printf '  %s\n' "$problems" >&2
+    return 0
+  fi
+  usr_cmd="$REPO/.local/bin/usr"
+  grp="$(id -gn "$OWNER")"
+  log "owner: $OWNER; managed users: $(managed_users | paste -sd' ' -)"
+
+  # 1. service accounts that do not exist yet (td and yc are never created, re-shelled or re-grouped)
+  for u in $(managed_users create); do
+    if getent passwd "$u" >/dev/null; then
+      log "unchanged: account $u exists"
+    else
+      run useradd -m -U -s /usr/bin/nologin -K HOME_MODE=0700 "$u"
+      run passwd -l "$u"
+      changed "created the service account $u (shell /usr/bin/nologin, password locked, home 0700)"
+    fi
+  done
+
+  # 2. no managed user reaches the owner's home
+  for u in $(managed_users); do
+    getent passwd "$u" >/dev/null || { log "skip: account $u does not exist"; continue; }
+    users_acl_remove "$u"
+  done
+
+  # 3. the owner reaches every managed home (unless flagged noacl)
+  for u in $(managed_users acl); do
+    getent passwd "$u" >/dev/null || continue
+    users_home_acl "$u"
+  done
+
+  # 4. published directories, owned by the owner: the commit hook writes them without a password
+  for u in "$USERS_SRV_DOTFILES" "$USERS_SRV_NVIM"; do
+    if [ -d "$u" ] && [ "$(stat -c %U "$u")" = "$OWNER" ] && [ "$(stat -c %a "$u")" = 755 ]; then
+      log "unchanged: $u ($OWNER:$grp 755)"
+    else
+      run install -d -o "$OWNER" -g "$grp" -m 755 "$u"
+      changed "$u created/fixed ($OWNER:$grp 755, read-only for the managed users)"
+    fi
+  done
+
+  # 5. passwordless become for the owner: sudoers + polkit, validated before they are installed
+  if [ -n "$(managed_users become)" ]; then
+    users_install_rendered users_render_sudoers "$USERS_SUDOERS" 440 users_check_sudoers || true
+    users_install_rendered users_render_polkit "$USERS_POLKIT" 644 users_check_polkit || true
+  else
+    for u in "$USERS_SUDOERS" "$USERS_POLKIT"; do
+      if [ -e "$u" ]; then
+        run rm -f -- "$u"
+        changed "removed $u (no managed user allows a passwordless become)"
+      fi
+    done
+  fi
+
+  # 6. no linger and no user services for the interactive users: their terminal windows own their processes
+  for u in $(managed_users interactive); do
+    if [ -e "/var/lib/systemd/linger/$u" ]; then
+      run loginctl disable-linger "$u"
+      changed "linger disabled for $u (the terminal window owns its processes)"
+    fi
+  done
+
+  # 7. user layer, run as the owner / as each managed user: publish ~/dotfiles, link the profiles, install nvim once
+  has_profile_user=0
+  for u in $(managed_users profile); do
+    if getent passwd "$u" >/dev/null; then has_profile_user=1; fi
+  done
+  if [ "$has_profile_user" -eq 0 ]; then
+    log "skip: no existing managed user has a dotfiles profile (rerun this section after adding one)"
+  elif [ ! -x "$usr_cmd" ]; then
+    warn "users: $usr_cmd is missing; publish, profile links and the shared nvim install were skipped"
+  elif [ "$DRY_RUN" -eq 1 ]; then
+    log "[dry-run] sudo -u $OWNER -H $usr_cmd sync --quiet    # publish the committed ~/dotfiles to $USERS_SRV_DOTFILES"
+    for u in $(managed_users profile); do
+      log "[dry-run] profile links of $u (read-only preview, nothing is written):"
+      "$usr_cmd" link "$u" --dry-run 2>&1 | sed 's/^/    /' || true
+    done
+    log "[dry-run] sudo -u $OWNER -H $usr_cmd nvim-sync --background    # nvim plugins + Mason into $USERS_SRV_NVIM"
+  else
+    run_as_owner "$usr_cmd" sync --quiet || warn "users: usr sync failed (run it as $OWNER and read its output)"
+    changed "published ~/dotfiles (committed state, no secrets) to $USERS_SRV_DOTFILES"
+    for u in $(managed_users profile); do
+      getent passwd "$u" >/dev/null || continue
+      if sudo -u "$u" -H "$USERS_SRV_DOTFILES/.local/bin/usr" _link; then
+        changed "linked the profile $(managed_field "$u" profile) into /home/$u (replaced links/files are in ~/.local/state/usr/backup-*)"
+      else
+        warn "users: linking the profile of $u failed (run: usr link $u)"
+      fi
+    done
+    nvim_mode="${USERS_NVIM_SYNC:-background}"
+    case "$nvim_mode" in
+      skip) log "skip: shared nvim install (USERS_NVIM_SYNC=skip); run: usr nvim-sync" ;;
+      foreground) run_as_owner "$usr_cmd" nvim-sync || warn "users: usr nvim-sync failed" ;;
+      *)
+        run_as_owner "$usr_cmd" nvim-sync --background || warn "users: usr nvim-sync could not be started"
+        log "shared nvim install runs in the background: tail -f ~/.local/state/usr/nvim-sync.log"
+        ;;
+    esac
+  fi
+
+  followup "managed users: usr list | usr term td | SUPER+SHIFT+T (picker); checks: ./doctor.sh | grep users-"
+  followup "rollback of the users section: sudo $USERS_DIR/rollback.sh"
 }
 
 # --- disk --------------------------------------------------------------------

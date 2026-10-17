@@ -1,0 +1,8 @@
+# Installed by apply-system.sh --only users (rendered from infrastructure/users/managed.tsv). Do not edit by hand.
+# @OWNER@ runs any command as the managed (non-root) users without a password: usr exec, usr edit (sudoedit -u), usr link.
+# The Runas list names the managed users only: never root, never another account. Users flagged nobecome are not listed.
+Runas_Alias USR_MANAGED = @MANAGED@
+@OWNER@ ALL = (USR_MANAGED) NOPASSWD: ALL
+# usr edit: sudoedit refuses a file in a directory the invoking user can write (the owner can, through the ACL on the managed
+# homes), so the check is off when the target is a managed user. Symlinks stay refused (sudoedit_follow is off).
+Defaults>USR_MANAGED !sudoedit_checkdir

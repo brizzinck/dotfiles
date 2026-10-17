@@ -1,0 +1,17 @@
+# Profile cli: what `usr link` links from /srv/dotfiles into a managed user's home. One repo-relative path per line, `#` comments.
+# A path is linked as a whole (file or directory); an existing file, directory or foreign link at the target is moved to
+# ~/.local/state/usr/backup-<time>/ first (`usr link --restore` puts it back). Desktop configs (hypr, waybar, ghostty, rofi,
+# dunst, ...) are not linked: managed users have no desktop session. Secrets and identity stay per user: ~/.gitconfig.local,
+# ~/.config/secrets/env.sh, ~/.zshrc.local, ~/.tmux.local.conf, ~/.ssh, ~/.claude*.
+.zshrc
+.gitconfig
+.config/zsh
+.config/fzf
+.config/layout
+.config/tmux
+.config/nvim
+.config/git
+.config/lazygit
+.config/yazi
+.config/workmux
+.local/bin/theme

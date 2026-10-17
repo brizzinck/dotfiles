@@ -1,0 +1,16 @@
+// Installed by apply-system.sh --only users (rendered from infrastructure/users/managed.tsv). Do not edit by hand.
+// @OWNER@ may open a shell (machinectl shell USER@) as a managed user without a password. Never root, never another
+// account: the target user comes from the polkit details of the host-shell action (machined passes `user`), and only
+// the local active session of the owner matches. Everything else keeps the stock policy (admin authentication).
+polkit.addRule(function (action, subject) {
+    if (action.id !== "org.freedesktop.machine1.host-shell") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    var managed = [@MANAGED_JS@];
+    var target = action.lookup("user");
+    if (subject.user === "@OWNER@" && subject.local && subject.active &&
+        target && managed.indexOf(target) >= 0) {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

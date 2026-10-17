@@ -1,0 +1,26 @@
+# Managed users: the single registry read by apply-system.sh (section `users`), the `usr` command, the SUPER+SHIFT+T picker
+# and doctor.sh. Tab separated, `#` comments. Names, roles and colours only: never a secret, a password or an e-mail.
+# The main user (the owner who runs apply-system.sh) is never listed here; the owner has full access to every managed home.
+#
+#   user     account name; must not be root or the owner
+#   profile  dotfiles profile linked from /srv/dotfiles (profiles/<name>.txt), `-` = none
+#   flags    comma separated:
+#              service     background account: no terminal, not in the picker, no shared dotfiles (profile must be `-`)
+#              noacl       the owner gets NO ACL on this home (default: u:OWNER:rwx + default ACL)
+#              nobecome    no passwordless `sudo -u` and no passwordless `machinectl shell` for the owner (default: both)
+#              clipboard   the user may write into the owner's Wayland clipboard (ACL on the Wayland socket only)
+#              create      apply-system.sh creates the account when it does not exist (shell /usr/bin/nologin, password
+#                          locked, home 0700); existing accounts (td, yc) are never created, re-shelled or re-grouped
+#              interactive accepted for readability, it is the default for every non-service user
+#   accent   palette token of the user's colour (themes/palette/everforest.json `shared`): tmux status and zsh prompt marker
+#   note     free text
+#
+# Nothing else about a user is changed here: passwords, shells and groups (wheel, docker) of existing users stay as they are.
+# Every managed user, whatever the flags, has NO access to the owner's home (the owner's ACL entries for it are removed).
+#
+# user	profile	flags	accent	note
+td	cli	interactive,clipboard	orange	AI agents; terminals only by hand (SUPER+SHIFT+T), the window owns its processes
+yc	cli	interactive	blue	work account, dormant since 2026-04-19
+#
+# M1 adds the Telegram MCP service user the same way, with no new code (the owner reaches it only with a sudo password):
+# aimcp	-	service,noacl,nobecome,create	purple	Telegram MCP, 127.0.0.1 only

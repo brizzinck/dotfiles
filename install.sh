@@ -210,7 +210,7 @@ sudo "$DOTFILES/apply-memory.sh" || warn "memory safety net not applied"
 log "System layer (earlyoom, docker GC cap, pacman hooks, TLP, coredump limits, timers, GRUB)"
 # apply-system.sh is idempotent; here only the sections that are safe on a fresh machine run.
 # Not run here: upgrade/install/remove (handled above or by the owner), disk (tune2fs + fstab).
-for section in config services boot; do
+for section in config services users boot; do
   sudo "$DOTFILES/apply-system.sh" --only "$section" || warn "apply-system.sh --only $section failed"
 done
 later "optional: sudo $DOTFILES/apply-system.sh --only disk   (reserved blocks 1%, noatime,lazytime on /), --only remove (snap stack, unused toolchains, orphans)"
@@ -239,6 +239,8 @@ done < <(cd "$DOTFILES" && find . -mindepth 1 -maxdepth 2 \
               -o -path './browsers*' -o -path './docs*' -o -name 'doctor.sh' \) -prune -o -print \
          | sed 's|^\./||' | awk -F/ 'NF<=2')
 stow --restow .
+# commit hook: every commit/merge/rewrite publishes the committed state to /srv/dotfiles for the managed users (usr sync)
+git -C "$DOTFILES" config core.hooksPath .githooks
 # private submodule (secrets, machine-local configs) — stowed separately, skipped if not cloned
 if [ -d "$DOTFILES/private" ] && [ -n "$(ls -A "$DOTFILES/private" 2>/dev/null)" ]; then
   (cd "$DOTFILES/private" && stow --restow .)
