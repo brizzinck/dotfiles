@@ -29,7 +29,8 @@ What the file sets:
   us key of the same physical key; the `.` / `,` of the ru slash key are left alone, as everywhere in this setup).
   **The Cyrillic characters in that block are functional data, not text.**
 - **Exclusions**: `https://www.youtube.com/` passes `f m k j l c t i <space>` to the page (player keys); Gmail, Google Docs,
-  Outlook (live, office, office365) and Proton Mail have Vimium C switched off.
+  Outlook (live, office, office365) and Proton Mail have Vimium C switched off. So has the generated keymap page
+  (`file:///.../.cache/keymap/`, opened by `SUPER+SHIFT+/`; regex `^file:///[^?#]*/\.cache/keymap/`): it has its own vim keys.
 - **Look**: link hints, HUD, find bar and Vomnibar in the Everforest palette (`themes/palette/templates/vimium-c.css.tmpl`,
   black variant). For the night variant: `python3 browsers/vimium-c-build.py --variant night`, then import again.
 

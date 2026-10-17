@@ -32,6 +32,10 @@
 		{
 			"pattern": ":https://mail.proton.me/",
 			"passKeys": ""
+		},
+		{
+			"pattern": "^file:///[^?#]*/\\.cache/keymap/",
+			"passKeys": ""
 		}
 	],
 	"keyMappings": [

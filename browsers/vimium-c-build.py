@@ -26,7 +26,7 @@ KEY_MAPPINGS = [
     "# Ctrl+[ already acts as Esc in Vimium C. Below: the same keys on the ua and ru layouts (mapKey, generated).",
 ]
 
-# (pattern, passKeys): a ':' prefix is a URL prefix; empty passKeys = Vimium C is off on that site. passKeys are the keys
+# (pattern, passKeys): a ':' prefix is a URL prefix, a '^' prefix a regular expression; empty passKeys = Vimium C is off on that site. passKeys are the keys
 # the page keeps (YouTube player: f fullscreen, m mute, k/j/l pause and seek, c captions, t theatre, i miniplayer, space).
 EXCLUSIONS = [
     (":https://www.youtube.com/", "f m k j l c t i <space>"),
@@ -36,6 +36,8 @@ EXCLUSIONS = [
     (":https://outlook.office.com/", ""),
     (":https://outlook.office365.com/", ""),
     (":https://mail.proton.me/", ""),
+    # the generated keymap page (`keymap page`, SUPER+SHIFT+/ in ~/.cache/keymap/) has its own vim keys; regex = any home dir
+    (r"^file:///[^?#]*/\.cache/keymap/", ""),
 ]
 
 
