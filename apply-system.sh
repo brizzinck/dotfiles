@@ -5,7 +5,9 @@
 #   sudo ./apply-system.sh --dry-run       print what each section would do, change nothing
 #   sudo ./apply-system.sh --only cleanup  run a single section (several: --only users,mcp, always in the order below)
 #
-# Section order: cleanup -> upgrade -> install -> remove -> config -> services -> greeter -> users -> mcp -> disk -> boot -> flatpak -> summary
+# Section order: cleanup -> upgrade -> install -> remove -> config -> services -> net -> greeter -> users -> mcp -> disk -> boot -> flatpak -> summary
+#   (net = network exposure: firewall (ufw), LLMNR off, v2rayA web UI on loopback, see infrastructure/net;
+#    also runnable alone: sudo ./apply-system.sh --only net)
 #   (greeter = the login screen, see infrastructure/greetd; also runnable alone: sudo ./apply-system.sh --only greeter)
 #   (users = managed child users, see infrastructure/users; also runnable alone: sudo ./apply-system.sh --only users)
 #   (mcp = Telegram MCP service user setup, Chromium, whisper.cpp, see infrastructure/mcp; needs the users section for aimcp:
@@ -17,7 +19,7 @@ ORIG_ARGS=("$@")
 DRY_RUN=0
 ONLY=""
 STAMP="20261016"
-SECTIONS=(cleanup upgrade install remove config services greeter users mcp disk boot flatpak summary)
+SECTIONS=(cleanup upgrade install remove config services net greeter users mcp disk boot flatpak summary)
 
 usage() {
   cat <<EOF
@@ -765,6 +767,131 @@ section_services() {
   followup "systemctl list-timers fstrim.timer paccache.timer reflector.timer dotfiles-predownload.timer"
   followup "cat /var/lib/dotfiles-predownload/state    # epoch, package count, ok (after the first background download); sysup status"
   followup "tlpctl list; tlpctl get    # TLP Profiles Daemon (powerprofilesctl-compatible D-Bus API, no powerprofilesctl binary); busctl introspect org.freedesktop.UPower.PowerProfiles /org/freedesktop/UPower/PowerProfiles"
+}
+
+# --- net ---------------------------------------------------------------------
+# Network exposure (infrastructure/net): nothing listens on the LAN by intent, and a default-deny firewall covers what
+# does by accident. Three independent parts, all idempotent; a service is reloaded or restarted only when its drop-in changed.
+#   1. systemd-resolved: LLMNR off (/etc/systemd/resolved.conf.d/10-no-llmnr.conf)
+#   2. v2rayA: web UI on 127.0.0.1:2017 (drop-in with V2RAYA_ADDRESS), restarted only when it runs
+#   3. ufw: deny incoming, allow outgoing, IPv6 on, logging low, the rules of infrastructure/net/ufw-rules.conf
+# ufw (not nftables directly): it is installed, the rules live in /etc/ufw and are managed with one CLI, and with
+# MANAGE_BUILTINS=no it only adds its own chains next to Docker's iptables-nft rules. An /etc/nftables.conf that starts
+# with "flush ruleset" would delete Docker's NAT and forward tables every time nftables.service restarts.
+NET_SRC="$INFRA/net"
+NET_MARKER=/etc/ufw/.dotfiles-net
+
+# etc_default_set FILE KEY VALUE: make "KEY=VALUE" the line of KEY (append when missing); no-op when already so.
+etc_default_set() {
+  local f="$1" k="$2" v="$3"
+  if grep -qxF -- "$k=$v" "$f" 2>/dev/null; then
+    log "unchanged: $f $k=$v"
+  elif grep -q "^$k=" "$f" 2>/dev/null; then
+    sed_edit "$f" "s|^$k=.*|$k=$v|"
+    changed "$f: $k=$v"
+  else
+    backup_file "$f"
+    run sh -c "printf '%s\n' '$k=$v' >> '$f'"
+    changed "$f: $k=$v (appended)"
+  fi
+}
+
+net_firewall() {
+  local line out
+  if ! command -v ufw >/dev/null 2>&1; then
+    warn "net: ufw is not installed (pacman -S ufw), the firewall part was skipped"
+    return 0
+  fi
+  # a. sysctl file ufw applies at every start (stock file minus the strict rp_filter lines, see the file header)
+  install_file "$NET_SRC/ufw-sysctl.conf" /etc/ufw/dotfiles-sysctl.conf
+  etc_default_set /etc/default/ufw IPT_SYSCTL /etc/ufw/dotfiles-sysctl.conf
+  etc_default_set /etc/default/ufw IPV6 yes
+  # b. policy: deny incoming, allow outgoing, deny routed (Docker's own FORWARD rules sit next to it and keep container traffic working)
+  if grep -qx 'DEFAULT_INPUT_POLICY="DROP"' /etc/default/ufw 2>/dev/null; then
+    log "unchanged: ufw default incoming = deny"
+  else
+    run ufw default deny incoming
+    changed "ufw default deny incoming"
+  fi
+  if grep -qx 'DEFAULT_OUTPUT_POLICY="ACCEPT"' /etc/default/ufw 2>/dev/null; then
+    log "unchanged: ufw default outgoing = allow"
+  else
+    run ufw default allow outgoing
+    changed "ufw default allow outgoing"
+  fi
+  if grep -qx 'DEFAULT_FORWARD_POLICY="DROP"' /etc/default/ufw 2>/dev/null; then
+    log "unchanged: ufw default routed = deny"
+  else
+    run ufw default deny routed
+    changed "ufw default deny routed"
+  fi
+  if grep -qx 'LOGLEVEL=low' /etc/ufw/ufw.conf 2>/dev/null; then
+    log "unchanged: ufw logging low"
+  else
+    run ufw logging low
+    changed "ufw logging low"
+  fi
+  # c. the rules of the repo list (ufw skips a rule that already exists)
+  while IFS= read -r line; do
+    case "$line" in '' | '#'*) continue ;; esac
+    # shellcheck disable=SC2086 # the line is ufw's argument list by design
+    run ufw $line
+    changed "ufw $line"
+  done <"$NET_SRC/ufw-rules.conf"
+  # d. rules somebody added by hand: never silently kept or removed
+  out="$("$NET_SRC/exposure-check.sh" stale-rules 2>/dev/null)"
+  if [ -n "$out" ]; then
+    warn "net: ufw has allow rules that infrastructure/net/ufw-rules.conf does not list; they open ports as soon as something listens there: $(printf '%s' "$out" | sed 's/ -j ACCEPT$//; s/^[^:]*: -A ufw6\?-user-[a-z]* //' | sort -u | paste -sd';' -)"
+    followup "stale ufw rules (decide, then: sudo ufw status numbered; sudo ufw delete N  -- or add the line to infrastructure/net/ufw-rules.conf): see the warning above"
+  fi
+  # e. switch it on (the rules above are in place first, so there is no open window)
+  if grep -qx 'ENABLED=yes' /etc/ufw/ufw.conf 2>/dev/null && systemctl is-active --quiet ufw.service; then
+    log "unchanged: ufw is enabled and active"
+  else
+    run ufw --force enable
+    changed "ufw enabled: default deny incoming, loopback and established/related allowed, outgoing allowed"
+  fi
+  try systemctl enable ufw.service
+  run touch "$NET_MARKER"
+  followup "sudo ufw status verbose    # Status: active, Default: deny (incoming), allow (outgoing), deny (routed)"
+  followup "docker run --rm busybox wget -qO- -T 5 https://example.com | head -c 60    # a container still reaches the internet through the firewall"
+}
+
+section_net() {
+  header "net"
+  local resolved_changed=0 v2_changed=0
+  # 1. LLMNR off. mDNS stays as it is.
+  cmp -s -- "$NET_SRC/10-no-llmnr.conf" /etc/systemd/resolved.conf.d/10-no-llmnr.conf 2>/dev/null || resolved_changed=1
+  install_file "$NET_SRC/10-no-llmnr.conf" /etc/systemd/resolved.conf.d/10-no-llmnr.conf
+  if [ "$resolved_changed" -eq 1 ]; then
+    try systemctl try-reload-or-restart systemd-resolved.service
+    changed "systemd-resolved reloaded or restarted (LLMNR=no)"
+  else
+    log "systemd-resolved: LLMNR drop-in unchanged, no reload"
+  fi
+  # 2. v2rayA web UI on loopback
+  if [ -e /usr/lib/systemd/system/v2raya.service ] || [ -e /etc/systemd/system/v2raya.service ]; then
+    cmp -s -- "$NET_SRC/v2raya-loopback.conf" /etc/systemd/system/v2raya.service.d/10-loopback.conf 2>/dev/null || v2_changed=1
+    install_file "$NET_SRC/v2raya-loopback.conf" /etc/systemd/system/v2raya.service.d/10-loopback.conf
+    if [ "$v2_changed" -eq 1 ]; then
+      run systemctl daemon-reload
+      if systemctl is-active --quiet v2raya.service; then
+        # a restart drops the running proxy for a moment; v2rayA restores its core itself
+        try systemctl restart v2raya.service
+        changed "v2raya restarted (web UI now on 127.0.0.1:2017)"
+      else
+        log "v2raya is not running: no restart needed, it starts with the new address"
+      fi
+    else
+      log "v2raya: loopback drop-in unchanged, no restart"
+    fi
+  else
+    log "v2raya is not installed: nothing to bind"
+  fi
+  # 3. firewall
+  net_firewall
+  followup "ss -ltnH | awk '{print \$4}' | grep -v '^127\\.'   # nothing but your allowlisted ports (doctor net-exposure lists them)"
+  followup "systemctl --user restart camoufox-gateway    # applies the 127.0.0.1 bind of ~/job/youtube/.../camoufox_gateway.py (interrupts running Flow jobs)"
 }
 
 # --- greeter -----------------------------------------------------------------

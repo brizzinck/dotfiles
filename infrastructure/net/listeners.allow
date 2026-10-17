@@ -1,0 +1,5 @@
+# Non-loopback listeners that doctor net-exposure accepts: PROTO PORT  reason. Every other TCP listener and every UDP
+# socket below the ephemeral port range (ip_local_port_range, client sockets above it are ignored) that is bound to a
+# non-loopback address fails the check. Keep this list short; fix the service (bind it to 127.0.0.1) instead.
+tcp 3488  ch-ui (container td-clickhouse-ui, docker --network host: it needs the host's localhost:8124 ClickHouse, so it cannot be published on 127.0.0.1 only; the firewall blocks it from the LAN)
+udp 5353  systemd-resolved mDNS (kept on purpose for .local lookups; the firewall lets only the multicast group 224.0.0.251 through)

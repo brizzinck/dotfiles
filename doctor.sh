@@ -2,7 +2,7 @@
 # dotfiles doctor: asserts that the approved workstation state stays in place. Read-only, no sudo.
 #   ./doctor.sh              print PASS/FAIL lines and a summary (exit 1 when anything failed)
 #   ./doctor.sh --fails      print only the failures
-# Repo-only (listed in .stow-local-ignore). Declined items (ufw, restic, keyring, ...) are intentionally not checked.
+# Repo-only (listed in .stow-local-ignore). Declined items (restic, keyring, ...) are intentionally not checked.
 set -u
 
 DOTFILES="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -215,6 +215,39 @@ else
     fi
   fi
 fi
+
+# ── network exposure (apply-system.sh --only net: ufw default deny, LLMNR off, v2rayA on loopback) ─
+# INFO until the section ran (marker /etc/ufw/.dotfiles-net), then FAIL on: firewall not enabled / not default-deny incoming /
+# IPv6 off, a drop-in that differs from infrastructure/net, a non-loopback listener that infrastructure/net/listeners.allow does
+# not list (`ss -lntu` as the owner), an ufw allow rule that ufw-rules.conf does not account for. The rule set itself is only
+# readable by root: `sudo ufw status verbose` shows the live state.
+net_dir="$DOTFILES/infrastructure/net"
+net_unlisted="$("$net_dir/exposure-check.sh" listeners 2>/dev/null | paste -sd' ' -)"
+if [ ! -e /etc/ufw/.dotfiles-net ]; then
+  info net-exposure "firewall section not applied yet (sudo ~/dotfiles/apply-system.sh --only net); unlisted non-loopback listeners now: ${net_unlisted:-none}"
+else
+  net_bad=""
+  grep -qx 'ENABLED=yes' /etc/ufw/ufw.conf 2>/dev/null || net_bad="$net_bad; ufw.conf ENABLED is not yes"
+  systemctl is-active --quiet ufw.service || net_bad="$net_bad; ufw.service is not active"
+  systemctl is-enabled --quiet ufw.service || net_bad="$net_bad; ufw.service is not enabled (no firewall after a reboot)"
+  grep -qx 'DEFAULT_INPUT_POLICY="DROP"' /etc/default/ufw 2>/dev/null || net_bad="$net_bad; incoming is not default deny"
+  grep -qx 'DEFAULT_OUTPUT_POLICY="ACCEPT"' /etc/default/ufw 2>/dev/null || net_bad="$net_bad; outgoing is not default allow"
+  grep -qx 'IPV6=yes' /etc/default/ufw 2>/dev/null || net_bad="$net_bad; IPv6 rules are off"
+  cmp -s "$net_dir/10-no-llmnr.conf" /etc/systemd/resolved.conf.d/10-no-llmnr.conf 2>/dev/null || net_bad="$net_bad; LLMNR drop-in missing or differs"
+  if [ -e /usr/lib/systemd/system/v2raya.service ] && ! cmp -s "$net_dir/v2raya-loopback.conf" /etc/systemd/system/v2raya.service.d/10-loopback.conf 2>/dev/null; then
+    net_bad="$net_bad; v2raya loopback drop-in missing or differs"
+  fi
+  [ -z "$net_unlisted" ] || net_bad="$net_bad; unlisted listeners: $net_unlisted"
+  net_stale="$("$net_dir/exposure-check.sh" stale-rules 2>/dev/null | sed 's/^[^:]*: -A ufw6\?-user-[a-z]* //; s/ -j ACCEPT$//' | sort -u | paste -sd',' -)"
+  [ -z "$net_stale" ] || net_bad="$net_bad; ufw allow rules outside ufw-rules.conf: $net_stale (sudo ufw status numbered; sudo ufw delete N)"
+  if [ -z "$net_bad" ]; then
+    ok net-exposure "ufw active, deny incoming, IPv6 on; no unlisted non-loopback listener; LLMNR off"
+  else
+    bad net-exposure "${net_bad#; }"
+  fi
+fi
+
+if net_t="$("$DOTFILES/infrastructure/tests/net/run.sh" 2>&1)"; then ok net-tests "offline tests: $(printf '%s' "$net_t" | tail -1)"; else bad net-tests "$(printf '%s' "$net_t" | grep -m1 '^FAIL') (infrastructure/tests/net/run.sh)"; fi
 
 # ── Hyprland / waybar ───────────────────────────────────────────────────────────
 # The config is Lua: hyprland.lua is the only entry point, a leftover hyprland.conf must not exist (the .conf format is
