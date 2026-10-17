@@ -22,8 +22,8 @@ rows() {
     | @tsv'
 }
 
-# the fzf-menu server's own window is not a window to switch to
-hide_menu() { grep -v $'\tfloat.tui\tfzf-menu-server$\|\tfloat.tui\tmenu: ' || true; }
+# the fzf-menu terminals (hidden servers fzf-menu-server-a / -b, an open menu) are not windows to switch to
+hide_menu() { grep -Ev $'\tfloat.tui\tfzf-menu-server(-[ab])?$|\tfloat.tui\tmenu: ' || true; }
 
 preview() { # ADDR: details, then the icon
   local addr=$1 json class icon lines
