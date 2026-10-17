@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# shellcheck source=_common.sh
+. "$(dirname "$0")/_common.sh"
+case ${1:-} in
+  --list-types) echo text/plain; [[ $(cat "$FAKE_DIR/clip.args" 2>/dev/null) == *--sensitive* ]] && echo x-kde-passwordManagerHint; exit 0 ;;
+  *) cat "$FAKE_DIR/clip.txt" 2>/dev/null ;;
+esac

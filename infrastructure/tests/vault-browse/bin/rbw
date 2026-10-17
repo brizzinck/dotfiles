@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# fake rbw: reads the vault as it was at the last `rbw sync` (rbw-view.json), like the real client's local copy
+# shellcheck source=_common.sh
+. "$(dirname "$0")/_common.sh"
+log_argv rbw "$@"
+VIEW="$FAKE_DIR/rbw-view.json"
+[[ -f $VIEW ]] || cp "$FAKE_DIR/vault.json" "$VIEW"
+locked() { [[ -f $FAKE_DIR/rbw-locked ]]; }
+case ${1:-} in
+  unlocked) locked && exit 1; exit 0 ;;
+  lock) touch "$FAKE_DIR/rbw-locked"; exit 0 ;;
+  stop-agent) exit 0 ;;
+  sync) locked && exit 1; cp "$FAKE_DIR/vault.json" "$VIEW"; exit 0 ;;
+esac
+locked && { echo "rbw: vault is locked" >&2; exit 1; }
+# shellcheck disable=SC2016  # a jq program
+JQ_DEFS='
+def rtype: if .type==1 then "Login" elif .type==2 then "SecureNote" elif .type==3 then "Card" elif .type==4 then "Identity" else "SshKey" end;
+def fname($d): (.folderId as $f | ($d.folders[] | select(.id==$f) | .name) // null);
+def data:
+  if .type==1 then {username: .login.username, password: .login.password, totp: .login.totp, uris: [.login.uris[]? | {uri: .uri, match_type: null}]}
+  elif .type==3 then {cardholder_name: .card.cardholderName, number: .card.number, brand: .card.brand, exp_month: .card.expMonth, exp_year: .card.expYear, code: .card.code}
+  elif .type==4 then {title: .identity.title, first_name: .identity.firstName, middle_name: .identity.middleName, last_name: .identity.lastName, email: .identity.email, phone: .identity.phone, address1: .identity.address1, city: .identity.city, country: .identity.country, ssn: .identity.ssn, passport_number: .identity.passportNumber, license_number: .identity.licenseNumber}
+  elif .type==5 then {private_key: .sshKey.privateKey, public_key: .sshKey.publicKey, fingerprint: .sshKey.keyFingerprint}
+  else null end;
+'
+case ${1:-} in
+  list)
+    jq -c "$JQ_DEFS"'. as $d | [.items[] | select(.deletedDate == null) | {id, name, user: (.login.username // null), folder: fname($d), uris: [.login.uris[]?.uri], type: rtype}]' "$VIEW" ;;
+  get)
+    shift
+    raw=0
+    if [[ ${1:-} == --raw ]]; then raw=1; shift; fi
+    id=${1:-}
+    if ((raw)); then
+      jq -c --arg id "$id" "$JQ_DEFS"'. as $d | .items[] | select(.id==$id and .deletedDate==null) | {id, folder: fname($d), name, data: data, fields: [.fields[]? | {name, value, type: (if .type==1 then "hidden" else "text" end)}], notes, history: [.passwordHistory[]? | {last_used_date: .lastUsedDate, password}]}' "$VIEW" | { read -r l && printf '%s\n' "$l" || exit 1; }
+    else
+      jq -r --arg id "$id" '.items[] | select(.id==$id) | .login.password // empty' "$VIEW"
+    fi ;;
+  code)
+    id=${2:-}
+    jq -e --arg id "$id" '.items[] | select(.id==$id and .login.totp != null)' "$VIEW" >/dev/null || { echo "rbw: entry has no totp" >&2; exit 1; }
+    printf '%06d\n' $(( ($(date +%s) / 30) % 1000000 )) ;;
+  history)
+    id=${2:-}
+    jq -r --arg id "$id" '.items[] | select(.id==$id) | .passwordHistory[]? | "\(.lastUsedDate): \(.password)"' "$VIEW" ;;
+  *) echo "fake rbw: unsupported: $*" >&2; exit 2 ;;
+esac

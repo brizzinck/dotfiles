@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# fake bw (official CLI): a session key is required for everything but status / unlock / generate / templates
+# shellcheck source=_common.sh
+. "$(dirname "$0")/_common.sh"
+log_argv bw "$@"
+KEY=SESSION-KEY-abc
+unlocked() { [[ -f $FAKE_DIR/bw-unlocked && ${BW_SESSION:-} == "$KEY" ]]; }
+need() { unlocked || { echo "Vault is locked." >&2; exit 1; }; }
+decode() { base64 -d; }
+next_id() { local n; n=$(cat "$FAKE_DIR/seq" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" >"$FAKE_DIR/seq"; echo "$1-$n"; }
+cmd=${1:-}
+case $cmd in
+  status)
+    if unlocked; then echo '{"status":"unlocked"}'; else echo '{"status":"locked"}'; fi ;;
+  unlock)
+    var=""
+    for ((i = 1; i <= $#; i++)); do [[ ${!i} == --passwordenv ]] && { j=$((i + 1)); var=${!j}; }; done
+    [[ -n $var && ${!var:-} == master-pw ]] || { echo "Invalid master password." >&2; exit 1; }
+    touch "$FAKE_DIR/bw-unlocked"; printf '%s' "$KEY" ;;
+  lock) rm -f "$FAKE_DIR/bw-unlocked"; echo '{"success":true}' ;;
+  sync) need; echo "Syncing complete." ;;
+  generate) echo "GEN-erated-Pw-0001" ;;
+  encode) base64 -w0 ;;
+  list)
+    need
+    case $2 in
+      items)
+        if [[ ${3:-} == --trash ]]; then jq -c '[.items[] | select(.deletedDate != null)]' "$FAKE_DIR/vault.json"
+        else jq -c '[.items[] | select(.deletedDate == null)]' "$FAKE_DIR/vault.json"; fi ;;
+      folders) jq -c '.folders' "$FAKE_DIR/vault.json" ;;
+    esac ;;
+  get)
+    case $2 in
+      item) need; jq -c --arg id "$3" '.items[] | select(.id==$id)' "$FAKE_DIR/vault.json" ;;
+      totp) need; printf '%06d\n' $(( ($(date +%s) / 30) % 1000000 )) ;;
+      template)
+        case $3 in
+          item) echo '{"organizationId":null,"collectionIds":null,"folderId":null,"type":1,"name":"Item name","notes":"Some notes about this item.","favorite":false,"fields":[],"login":null,"secureNote":null,"card":null,"identity":null,"reprompt":0}' ;;
+          item.login) echo '{"uris":[],"username":"jdoe","password":"myp@ssword123","totp":null}' ;;
+          item.card) echo '{"cardholderName":"John Doe","brand":"visa","number":"","expMonth":"","expYear":"","code":""}' ;;
+          item.identity) echo '{"title":"Mr","firstName":"John","middleName":"William","lastName":"Doe","address1":"","city":"","state":"","postalCode":"","country":"","company":"","email":"","phone":"","ssn":"","username":"","passportNumber":"","licenseNumber":""}' ;;
+          item.securenote) echo '{"type":0}' ;;
+          send.text) echo '{"name":"Send name","notes":null,"type":0,"text":{"text":"","hidden":false},"file":null,"deletionDate":null}' ;;
+          send.file) echo '{"name":"Send name","notes":null,"type":1,"text":null,"file":{"fileName":""},"deletionDate":null}' ;;
+          *) echo "Unknown template." >&2; exit 1 ;;
+        esac ;;
+      attachment)
+        need
+        out=""
+        for ((i = 1; i <= $#; i++)); do [[ ${!i} == --output ]] && { j=$((i + 1)); out=${!j}; }; done
+        printf 'ATTACHMENT-CONTENT' >"$out"; echo "Saved $out" ;;
+    esac ;;
+  create)
+    need
+    case $2 in
+      item)
+        decode | jq -c --arg id "$(next_id new)" '. + {id: $id, attachments: [], passwordHistory: [], deletedDate: null}' >"$FAKE_DIR/last-create.json"
+        jq -c --slurpfile n "$FAKE_DIR/last-create.json" '.items += $n' "$FAKE_DIR/vault.json" | save_vault
+        cat "$FAKE_DIR/last-create.json" ;;
+      folder)
+        id=$(next_id f-new)
+        decode | jq -c --arg id "$id" '{id: $id, name}' >"$FAKE_DIR/last-folder.json"
+        jq -c --slurpfile n "$FAKE_DIR/last-folder.json" '.folders += $n' "$FAKE_DIR/vault.json" | save_vault
+        cat "$FAKE_DIR/last-folder.json" ;;
+      attachment)
+        file="" item=""
+        for ((i = 1; i <= $#; i++)); do [[ ${!i} == --file ]] && { j=$((i + 1)); file=${!j}; }; [[ ${!i} == --itemid ]] && { j=$((i + 1)); item=${!j}; }; done
+        cp "$file" "$FAKE_DIR/last-upload"
+        jq -c --arg i "$item" --arg n "$(basename "$file")" --arg a "$(next_id att)" '(.items[] | select(.id==$i) | .attachments) += [{id: $a, fileName: $n, size: "5", sizeName: "5 Bytes"}]' "$FAKE_DIR/vault.json" | save_vault
+        echo '{}' ;;
+    esac ;;
+  edit)
+    need
+    decode | jq -c . >"$FAKE_DIR/last-edit.json" || exit 1
+    jq -c --arg i "$3" --slurpfile n "$FAKE_DIR/last-edit.json" '.items |= map(if .id==$i then $n[0] else . end)' "$FAKE_DIR/vault.json" | save_vault
+    cat "$FAKE_DIR/last-edit.json" ;;
+  delete)
+    need
+    if [[ ${4:-} == --permanent ]]; then jq -c --arg i "$3" '.items |= map(select(.id != $i))' "$FAKE_DIR/vault.json" | save_vault
+    else jq -c --arg i "$3" '.items |= map(if .id==$i then .deletedDate="2026-10-17T00:00:00.000Z" else . end)' "$FAKE_DIR/vault.json" | save_vault; fi ;;
+  restore)
+    need
+    jq -c --arg i "$3" '.items |= map(if .id==$i then .deletedDate=null else . end)' "$FAKE_DIR/vault.json" | save_vault
+    echo '{}' ;;
+  send)
+    case $2 in
+      template) exec "$0" get template "${3:-send.text}" ;;
+      create) need; cat >/dev/null; echo '{"accessUrl":"https://send.example/#/abc/def"}' ;;
+    esac ;;
+  *) echo "fake bw: unsupported: $*" >&2; exit 2 ;;
+esac

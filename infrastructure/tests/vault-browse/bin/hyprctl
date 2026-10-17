@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# fake hyprctl: only `activewindow -j` (the window address lives in $FAKE_DIR/active)
+# shellcheck source=_common.sh
+. "$(dirname "$0")/_common.sh"
+case ${1:-} in
+  activewindow) printf '{"address":"%s"}\n' "$(cat "$FAKE_DIR/active" 2>/dev/null)" ;;
+  *) exit 0 ;;
+esac

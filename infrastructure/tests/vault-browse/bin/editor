@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# fake $EDITOR: records the mode of the file and its directory, then applies the next line of $FAKE_DIR/editor-script:
+#   BAD            write invalid JSON
+#   <jq filter>    apply the filter to the JSON in the file
+#   NOP            change nothing
+# shellcheck source=_common.sh
+. "$(dirname "$0")/_common.sh"
+f=$1
+{ echo "file $(stat -c %a "$f") dir $(stat -c %a "$(dirname "$f")") path $f"; cat "$f" | head -c 0; } >>"$FAKE_DIR/editor.log"
+cp "$f" "$FAKE_DIR/editor-input.json"
+n=$(cat "$FAKE_DIR/editor-calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" >"$FAKE_DIR/editor-calls"
+line=$(sed -n "${n}p" "$FAKE_DIR/editor-script")
+case $line in
+  BAD) cp "$f" "$FAKE_DIR/pristine.json"; echo '{ not json' >"$f" ;;
+  NOP | '') ;;
+  *)
+    src=$f
+    jq -e . "$f" >/dev/null 2>&1 || src=$FAKE_DIR/pristine.json   # the previous round left invalid JSON: fix the original
+    jq "$line" "$src" >"$f.new" && mv "$f.new" "$f" ;;
+esac

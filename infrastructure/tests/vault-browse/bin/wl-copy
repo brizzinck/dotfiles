@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# shellcheck source=_common.sh
+. "$(dirname "$0")/_common.sh"
+log_argv wl-copy "$@"
+if [[ ${1:-} == --clear ]]; then : >"$FAKE_DIR/clip.txt"; echo cleared >>"$FAKE_DIR/clip.events"; exit 0; fi
+printf '%s' "$*" >"$FAKE_DIR/clip.args"
+cat >"$FAKE_DIR/clip.txt"
+echo "copy $*" >>"$FAKE_DIR/clip.events"

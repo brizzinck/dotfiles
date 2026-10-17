@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# shellcheck source=_common.sh
+. "$(dirname "$0")/_common.sh"
+log_argv bitwarden-desktop "$@"
+echo app >>"$FAKE_DIR/app.log"

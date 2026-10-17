@@ -246,6 +246,24 @@ if [ -x "$DOTFILES/.config/hypr/scripts/vault.sh" ] && [ -r "$DOTFILES/.config/h
 else
   bad vault-userpass "vault.sh or vault-who.py missing"
 fi
+# U9: the vault browser (vault-browse.py, SUPER+CTRL+SHIFT+P): bind, hub row, leader item and the offline test with fakes
+if [ -r "$DOTFILES/.config/hypr/scripts/vault-browse.py" ]; then
+  if [ -n "${binds_json:-}" ]; then
+    if printf '%s' "$binds_json" | jq -e 'any(.[]; .submap == "" and .modmask == 69 and (.key | ascii_downcase) == "p" and .has_description)' >/dev/null 2>&1; then
+      ok vault-browse-bind "SUPER+CTRL+SHIFT+P is bound (vault browser)"
+    else
+      bad vault-browse-bind "SUPER+CTRL+SHIFT+P is not in the live bind table (hyprctl reload)"
+    fi
+  fi
+  if "$DOTFILES/.config/hub/hub" --list --all 2>/dev/null | grep -q 'vault-browse'; then ok vault-browse-row "hub row vault-browse exists"; else bad vault-browse-row "hub row vault-browse missing (.config/hub/actions.d/u9.tsv)"; fi
+  if vb_out="$("$DOTFILES/infrastructure/tests/vault-browse/run.sh" --quick 2>&1)"; then
+    ok vault-browse "offline test with fake rbw/bw: $(printf '%s' "$vb_out" | tail -1 | sed 's/^vault-browse quick test: //')"
+  else
+    bad vault-browse "offline test failed (infrastructure/tests/vault-browse/run.sh --quick): $(printf '%s' "$vb_out" | grep -m1 '^FAIL')"
+  fi
+else
+  bad vault-browse ".config/hypr/scripts/vault-browse.py missing"
+fi
 # ── V1b: the shared modal fzf (vim keys in every menu) ──────────────────────────────────────────────────────────
 if [ -x "$HOME/.local/bin/fzf-menu" ] && [ -r "$HOME/.config/fzf/vimfzf.sh" ]; then
   if out="$("$HOME/.local/bin/fzf-menu" --self-test 2>&1)"; then ok fzf-menu "modal self-test passed ($(printf '%s\n' "$out" | grep -c '^ok') cases)"; else bad fzf-menu "$(printf '%s\n' "$out" | grep -m1 'FAIL\|self-test')"; fi

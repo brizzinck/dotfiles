@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# stands in for `ghostty --class=float.tui -e`: logs how it was called, then runs the command in place
+printf '%s\n' "$*" >>"$FAKE_DIR/term.log"
+exec "$@"

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# shellcheck source=_common.sh
+. "$(dirname "$0")/_common.sh"
+log_argv wtype "$@"
+if [[ ${1:-} == - ]]; then printf 'TEXT:%s\n' "$(cat)" >>"$FAKE_DIR/typed.log"; else printf 'KEY:%s\n' "$*" >>"$FAKE_DIR/typed.log"; fi

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# shellcheck source=_common.sh
+. "$(dirname "$0")/_common.sh"
+printf '%s\n' "${*: -2}" >>"$FAKE_DIR/notify.log"

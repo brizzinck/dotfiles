@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# fake pinentry (Assuan): answers GETPIN with the test master password
+echo "OK Pleased to meet you"
+while IFS= read -r line; do
+  case $line in
+    GETPIN) echo "D master-pw"; echo OK ;;
+    BYE) echo OK; exit 0 ;;
+    *) echo OK ;;
+  esac
+done

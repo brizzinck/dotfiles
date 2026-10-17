@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# fake ghostty for the no-tty path: `ghostty ... -e CMD ARGS` runs CMD in a new window of the test's tmux session (so
+# the harness can type into it) and waits until it ends, like the real terminal that closes with its command
+# shellcheck source=_common.sh
+. "$(dirname "$0")/_common.sh"
+cmd=()
+args=("$@")
+for i in "${!args[@]}"; do
+  if [[ ${args[i]} == -e ]]; then cmd=("${args[@]:i+1}"); break; fi
+done
+((${#cmd[@]})) || exit 0
+n=$(cat "$FAKE_DIR/gui-seq" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" >"$FAKE_DIR/gui-seq"
+run="$FAKE_DIR/gui-run.$n.sh" done="$FAKE_DIR/gui-done.$n"
+{
+  echo ". '$FAKE_DIR/env.sh'"
+  printf 'cd %q\n' "$PWD"
+  printf '%q ' "${cmd[@]}"; echo
+  echo "echo \$? >'$done'"
+} >"$run"
+printf '%s\n' "${args[*]}" >>"$FAKE_DIR/gui.log"
+tmux -L "${VBTEST_TMUX:?}" new-window -t t: "bash '$run'"
+until [[ -e $done ]]; do sleep 0.1; done
+exit "$(cat "$done")"

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# fake pkill: the vault scripts poke waybar with it; the test must not signal the owner's bar
+exit 0
