@@ -19,25 +19,47 @@ Run through `vault.sh bw CMD` (hub rows in actions.d/u6.tsv, interactive ones in
   vault-bw.py sync            bw sync (needs an open session)
   vault-bw.py import-csv FILE unlock, `bw import bitwardencsv FILE`, `bw sync` + `rbw sync`, drop the 2FA index (used by
                               2fa-import; the file is a path, never a secret on the command line)
+  vault-bw.py call [--stdin] BW-ARGS...
+                              run one bw command through the backend below (--stdin: the body for create / edit is read
+                              from stdin; stdout / exit code are bw's): the way shell scripts (linux-pass) reach bw
+  vault-bw.py serve-status    print running|stopped and the socket; exit 0 only when the server answers
+  vault-bw.py serve-stop      stop the per-session server (the session key stays; the next bw action restarts it)
+
+Backend (BW1): rbw does every read it can (lists, pickers, get, TOTP, history, sync). What only bw can do (edit, create,
+delete, restore, Trash, folders, templates, attachments) goes through ONE per-session `bw serve --hostname unix://...bw.sock`
+(no TCP, never): `bw` of the CLI is a ~1 s start per call, the server answers in milliseconds. The socket is
+$XDG_RUNTIME_DIR/vault/bw.sock (dir 700, socket 600), the server is a user unit `vault-bw-serve` started by this file
+(`_serve`: reads the 600 session file, puts the key into the environment of the one `bw serve` child, never argv; without a
+user manager it is a detached child). It starts when a bw action needs it, stops on lock, at login (session-start), when the
+rbw agent locks and after the rbw `lock_timeout` without a request (the session key stays; the next bw action starts it
+again). `bw()` below is the one client: REST over AF_UNIX (http.client), the CLI as fallback when the server cannot run
+or the call has no REST form (Send, import, passphrases).
 
 Secrets: the master password only travels pinentry -> this process -> the environment of ONE `bw unlock` child
 (--passwordenv), never argv, never a file. The session key lives in $XDG_RUNTIME_DIR/vault/bw-session (tmpfs, mode 600)
 and reaches `bw` as BW_SESSION in that child's environment. Item JSON (with the new password) and the Send password
 go to bw on stdin, never argv. Generated and old passwords are copied with `wl-copy --sensitive` and cleared in 30 s.
 A Send link is meant to be shared, so it is copied plainly.
-Test hooks: BW_BIN, RBW_BIN, PINENTRY_BIN, VAULT_RBW_CONF, BW_DOWNLOAD_DIR, EDITOR.
+Test hooks: BW_BIN, RBW_BIN, PINENTRY_BIN, VAULT_RBW_CONF, BW_DOWNLOAD_DIR, EDITOR, VAULT_BW_SERVE=0 (CLI only),
+VAULT_BW_LAUNCH=popen|systemd, VAULT_BW_IDLE (seconds; default the rbw lock_timeout).
 vault-browse.py (the vault browser, SUPER+CTRL+SHIFT+P) imports this file for the bw session, the pickers and the
 actions above; run directly it is the command line behind the u6 hub rows.
 """
 import base64
 import getpass
+import http.client
 import json
 import os
 import re
+import secrets
 import shutil
+import signal
+import socket
+import string
 import subprocess
 import sys
 import time
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -47,9 +69,18 @@ HERE = Path(__file__).resolve().parent
 TOTP_PY = HERE / "vault-totp.py"
 RUN = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp") / "vault"
 SESSION = RUN / "bw-session"
+SOCK = RUN / "bw.sock"
+SERVE_PID = RUN / "bw-serve.pid"      # pid of the supervisor (`_serve`)
+SERVE_USED = RUN / "bw-serve.used"    # touched by every request: the idle clock
+SERVE_LOCK = RUN / "bw-serve.lock"
+SERVE_LOG = RUN / "bw-serve.log"
+SERVE_ON = os.environ.get("VAULT_BW_SERVE", "1") != "0"
+UNIT = os.environ.get("VAULT_BW_UNIT", "vault-bw-serve")
+SERVE_HOST = "localhost:8087"         # the Host header bw's origin protection allows (the port is never bound)
 CONF_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
 RBW_CONF = Path(os.environ.get("VAULT_RBW_CONF") or CONF_HOME / "rbw" / "config.json")
 DOWNLOADS = Path(os.environ.get("BW_DOWNLOAD_DIR") or Path.home() / "Downloads")
+TERMINAL_UNLOCK = False
 os.umask(0o077)
 
 
@@ -128,7 +159,8 @@ def drop_session():
     SESSION.unlink(missing_ok=True)
 
 
-def bw(*args, stdin=None, session=True, extra_env=None):
+def bw_cli(*args, stdin=None, session=True, extra_env=None):
+    """One `bw` process (about 1 s of start-up each): the fallback and the calls the server does not do."""
     env = dict(os.environ)
     env.pop("BW_SESSION", None)
     env["BW_NOINTERACTION"] = "true"
@@ -142,6 +174,337 @@ def bw(*args, stdin=None, session=True, extra_env=None):
         return subprocess.run([BW, *args], input=stdin, capture_output=True, text=True, env=env)
     except FileNotFoundError:
         die("bw is not installed (sudo ~/dotfiles/apply-system.sh --only install)")
+
+
+def bw(*args, stdin=None, session=True, extra_env=None):
+    """The one way to run a bw command: through the per-session server when it can (REST over the unix socket, started on
+    demand while a session key exists), else as a CLI process. Same arguments and the same CompletedProcess either way."""
+    if SERVE_ON and session and not extra_env:
+        done = bw_via_server(args, stdin)
+        if done is not None:
+            return done
+    return bw_cli(*args, stdin=stdin, session=session, extra_env=extra_env)
+
+
+# ───────────────────────────── the per-session bw server (REST over a unix socket) ─────────────────────────────
+
+class ServeDown(Exception):
+    """Nothing listens on the socket."""
+
+
+class ServeBroken(Exception):
+    """The server went away in the middle of a request."""
+
+
+class _UnixConn(http.client.HTTPConnection):
+    def __init__(self, path, timeout):
+        super().__init__(SERVE_HOST, timeout=timeout)
+        self._path = path
+
+    def connect(self):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(self.timeout)
+        try:
+            s.connect(self._path)
+        except OSError:
+            s.close()
+            raise
+        self.sock = s
+
+
+_start_failed = False
+
+
+def touch_used():
+    try:
+        os.utime(SERVE_USED)
+    except FileNotFoundError:
+        try:
+            fd = os.open(SERVE_USED, os.O_WRONLY | os.O_CREAT, 0o600)
+            os.close(fd)
+        except OSError:
+            pass
+    except OSError:
+        pass
+
+
+def rest(method, path, query=None, body=None, ctype="application/json", timeout=120):
+    """One request to the server -> (status, bytes). ServeDown when nothing listens, ServeBroken when it dies mid-request."""
+    if query:
+        path += "?" + urllib.parse.urlencode(query)
+    data = body if isinstance(body, (bytes, type(None))) else json.dumps(body).encode()
+    headers = {"Accept": "application/json"}
+    if data is not None:
+        headers["Content-Type"] = ctype
+    conn = _UnixConn(str(SOCK), timeout)
+    try:
+        try:
+            conn.connect()
+        except (FileNotFoundError, ConnectionRefusedError, NotADirectoryError, PermissionError) as e:
+            raise ServeDown(str(e)) from e
+        try:
+            conn.request(method, path, body=data, headers=headers)
+            resp = conn.getresponse()
+            raw = resp.read()
+        except (OSError, http.client.HTTPException) as e:
+            raise ServeBroken(str(e)) from e
+        touch_used()
+        return resp.status, raw
+    finally:
+        conn.close()
+
+
+def serve_up():
+    try:
+        return rest("GET", "/status", timeout=5)[0] == 200
+    except (ServeDown, ServeBroken):
+        return False
+
+
+def read_pid():
+    try:
+        pid = int(SERVE_PID.read_text().strip())
+    except (OSError, ValueError):
+        return 0
+    try:
+        cmd = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return 0
+    return pid if b"vault-bw.py" in cmd and b"_serve" in cmd else 0
+
+
+def serve_args():
+    return [sys.executable, "-I", str(Path(__file__).resolve()), "_serve"]
+
+
+def serve_environment():
+    """The non-secret settings the detached server needs (the session key is read from the 600 file by `_serve`)."""
+    keep = ("BW_BIN", "RBW_BIN", "VAULT_RBW_CONF", "VAULT_BW_IDLE", "BITWARDENCLI_APPDATA_DIR", "XDG_CONFIG_HOME",
+            "VAULT_BW_SERVE_POLL", "FAKE_DIR", "PATH", "VAULT_BW_UNIT")
+    env = {k: os.environ[k] for k in keep if k in os.environ}
+    env["XDG_RUNTIME_DIR"] = str(RUN.parent)
+    return env
+
+
+def launch_serve():
+    """Start `_serve` as a transient user unit (survives the window it was started from) or, without a user manager, as a
+    detached child. Returns the Popen for the second form."""
+    SERVE_LOG.touch(mode=0o600)
+    mode = os.environ.get("VAULT_BW_LAUNCH", "auto")
+    env = serve_environment()
+    if mode != "popen" and have("systemd-run") and have("systemctl"):
+        sd_env = dict(os.environ)
+        if os.environ.get("VAULT_BW_SYSTEMD_RUNTIME"):   # test hook: the user bus lives in the real runtime directory
+            sd_env["XDG_RUNTIME_DIR"] = os.environ["VAULT_BW_SYSTEMD_RUNTIME"]
+        subprocess.run(["systemctl", "--user", "stop", UNIT], check=False, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, env=sd_env)
+        cmd = ["systemd-run", "--user", "--quiet", "--collect", f"--unit={UNIT}",
+               "--description=Bitwarden CLI server (unix socket)"] + [f"--setenv={k}={v}" for k, v in env.items()] \
+            + ["--", *serve_args()]
+        if subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                          env=sd_env).returncode == 0:
+            return None
+    log = open(SERVE_LOG, "ab")
+    return subprocess.Popen(serve_args(), stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
+                            env=dict(os.environ, **env))
+
+
+def start_serve(wait=20.0):
+    """Make the server run (needs a stored session key). True when it answers."""
+    global _start_failed
+    if not SERVE_ON or not have(BW) or not read_session():
+        return False
+    try:
+        RUN.mkdir(parents=True, exist_ok=True)
+        os.chmod(RUN, 0o700)
+        import fcntl
+        lock = os.open(SERVE_LOCK, os.O_WRONLY | os.O_CREAT, 0o600)
+    except OSError:
+        _start_failed = True
+        return False
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if serve_up():
+            return True
+        SOCK.unlink(missing_ok=True)
+        try:
+            child = launch_serve()
+        except OSError:
+            _start_failed = True
+            return False
+        deadline = time.time() + wait
+        while time.time() < deadline:
+            if SOCK.exists() and serve_up():
+                return True
+            if child is not None and child.poll() is not None:
+                break
+            time.sleep(0.05)
+        _start_failed = True
+        return False
+    finally:
+        os.close(lock)
+
+
+def stop_serve(wait=4.0):
+    """Stop the server (SIGTERM to its supervisor, which ends the bw child) and remove the socket. Idempotent."""
+    pid = read_pid()
+    if pid:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+        end = time.time() + wait
+        while time.time() < end and read_pid():
+            time.sleep(0.05)
+        if read_pid():
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+    SOCK.unlink(missing_ok=True)
+    SERVE_PID.unlink(missing_ok=True)
+
+
+VALUE_OPTS = {"--folderid", "--search", "--itemid", "--output", "--file", "--collectionid", "--organizationid"}
+
+
+def split_args(a):
+    pos, opt, i = [], {}, 0
+    while i < len(a):
+        x = a[i]
+        if x.startswith("--"):
+            if x in VALUE_OPTS and i + 1 < len(a):
+                opt[x] = a[i + 1]
+                i += 2
+                continue
+            opt[x] = True
+        else:
+            pos.append(x)
+        i += 1
+    return pos, opt
+
+
+def multipart(field_name, filename, content):
+    boundary = "----vaultbw" + secrets.token_hex(12)
+    head = (f'--{boundary}\r\nContent-Disposition: form-data; name="{field_name}"; filename="{filename}"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n").encode()
+    return head + content + f"\r\n--{boundary}--\r\n".encode(), f"multipart/form-data; boundary={boundary}"
+
+
+def translate(args, stdin):
+    """bw CLI arguments -> (method, path, query, body, ctype, kind, mutating, outfile), or None when there is no REST form
+    (Send, import, TOTP, generate, ...). kind says how the answer becomes CLI-style stdout."""
+    pos, opt = split_args(list(args))
+    if not pos:
+        return None
+    cmd, tail = pos[0], pos[1:]
+    q = urllib.parse.quote
+
+    def body():
+        try:
+            return base64.b64decode(stdin.strip(), validate=True)
+        except ValueError:
+            return stdin.encode() if isinstance(stdin, str) else stdin
+
+    if cmd == "status" and not tail:
+        return ("GET", "/status", None, None, None, "template", False, None)
+    if cmd == "sync" and not tail:
+        return ("POST", "/sync", None, None, None, "text:Syncing complete.", True, None)
+    if cmd == "list" and len(tail) == 1 and tail[0] in ("items", "folders"):
+        query = {}
+        if opt.get("--trash"):
+            query["trash"] = "true"
+        for flag, name in (("--folderid", "folderid"), ("--search", "search"), ("--collectionid", "collectionid"),
+                           ("--organizationid", "organizationid")):
+            if isinstance(opt.get(flag), str):
+                query[name] = opt[flag]
+        return ("GET", f"/list/object/{tail[0]}", query or None, None, None, "list", False, None)
+    if cmd == "get" and len(tail) == 2:
+        what, ident = tail
+        if what == "item":
+            return ("GET", f"/object/item/{q(ident, safe='')}", None, None, None, "data", False, None)
+        if what == "template":
+            return ("GET", f"/object/template/{q(ident, safe='')}", None, None, None, "template", False, None)
+        if what == "attachment" and isinstance(opt.get("--itemid"), str) and isinstance(opt.get("--output"), str):
+            return ("GET", f"/object/attachment/{q(ident, safe='')}", {"itemid": opt["--itemid"]}, None, None, "file",
+                    False, opt["--output"])
+    if cmd == "create" and len(tail) == 1 and tail[0] in ("item", "folder") and stdin is not None:
+        return ("POST", f"/object/{tail[0]}", None, body(), "application/json", "data", True, None)
+    if cmd == "create" and tail == ["attachment"] and isinstance(opt.get("--file"), str) \
+            and isinstance(opt.get("--itemid"), str):
+        try:
+            content = Path(opt["--file"]).read_bytes()
+        except OSError:
+            return None
+        data, ctype = multipart("file", os.path.basename(opt["--file"]), content)
+        return ("POST", "/attachment", {"itemid": opt["--itemid"]}, data, ctype, "data", True, None)
+    if cmd == "edit" and len(tail) == 2 and tail[0] == "item" and stdin is not None:
+        return ("PUT", f"/object/item/{q(tail[1], safe='')}", None, body(), "application/json", "data", True, None)
+    if cmd == "delete" and len(tail) == 2 and tail[0] == "item":
+        return ("DELETE", f"/object/item/{q(tail[1], safe='')}", {"permanent": "true"} if opt.get("--permanent") else None,
+                None, None, "none", True, None)
+    if cmd == "restore" and len(tail) == 2 and tail[0] == "item":
+        return ("POST", f"/restore/item/{q(tail[1], safe='')}", None, None, None, "data", True, None)
+    return None
+
+
+def render(req, status_code, raw):
+    """The server's answer as the CompletedProcess the CLI would have produced."""
+    kind, outfile = req[5], req[7]
+    argv = ["bw (server)", req[0], req[1]]
+    if kind == "file" and status_code == 200:
+        try:
+            fd = os.open(outfile, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(raw)
+        except OSError as e:
+            return subprocess.CompletedProcess(argv, 1, "", f"could not write {outfile}: {e}")
+        return subprocess.CompletedProcess(argv, 0, f"Saved {outfile}\n", "")
+    try:
+        doc = json.loads(raw.decode("utf-8", "replace") or "{}")
+    except ValueError:
+        return subprocess.CompletedProcess(argv, 1, "", f"the bw server answered something that is not JSON ({status_code})")
+    if not isinstance(doc, dict):
+        doc = {"success": False}
+    if status_code >= 400 or not doc.get("success", True):
+        msg = doc.get("message")
+        if not msg and isinstance(doc.get("data"), dict):
+            msg = doc["data"].get("message")
+        return subprocess.CompletedProcess(argv, 1, "", (msg or f"bw server error {status_code}") + "\n")
+    data = doc.get("data")
+    if kind == "template":
+        data = data.get("template", data) if isinstance(data, dict) else data
+    elif kind == "list":
+        data = data.get("data", []) if isinstance(data, dict) else (data or [])
+    if kind.startswith("text:"):
+        out = kind[5:] + "\n"
+    elif kind == "none" or data is None:
+        out = ""
+    else:
+        out = json.dumps(data)
+    return subprocess.CompletedProcess(argv, 0, out, "")
+
+
+def bw_via_server(args, stdin):
+    """The call through the server, or None for 'use the CLI' (no REST form, no session, server cannot run)."""
+    req = translate(args, stdin)
+    if req is None:
+        return None
+    method, path, query, body, ctype, _kind, mutating, _outfile = req
+    for attempt in (0, 1):
+        try:
+            code, raw = rest(method, path, query, body, ctype or "application/json")
+        except ServeDown:
+            if attempt == 0 and not _start_failed and read_session() and start_serve():
+                continue
+            return None
+        except ServeBroken as e:
+            if mutating:
+                return subprocess.CompletedProcess(["bw (server)"], 1, "", "the bw server stopped during the request "
+                                                   f"({e}); check the vault before repeating it\n")
+            return None
+        return render(req, code, raw)
+    return None
 
 
 def bw_json(*args, stdin=None):
@@ -165,15 +528,30 @@ def b64(obj):
     return base64.b64encode(json.dumps(obj).encode()).decode()
 
 
+_status_memo = (0.0, None)
+
+
 def status():
-    """unauthenticated | locked | unlocked, or None when bw is missing or does not answer."""
+    """unauthenticated | locked | unlocked, or None when bw is missing or does not answer. With a stored session key the
+    server answers (and is started when it is not running); the answer is remembered for 3 s inside one process."""
+    global _status_memo
     if not have(BW):
         return None
+    if time.time() - _status_memo[0] < 3 and _status_memo[1]:
+        return _status_memo[1]
     p = bw("status")
     try:
-        return json.loads(p.stdout).get("status")
+        st = json.loads(p.stdout).get("status")
     except ValueError:
         return None
+    _status_memo = (time.time(), st)
+    return st
+
+
+def forget_status():
+    global _status_memo, _start_failed
+    _status_memo = (0.0, None)
+    _start_failed = False
 
 
 def state():
@@ -185,6 +563,108 @@ def state():
     if st == "unlocked":
         return "unlocked"
     return "locked"
+
+
+def idle_limit():
+    """Seconds without a request after which the server stops: the rbw lock_timeout (the same patience the vault has)."""
+    try:
+        return max(2, int(os.environ["VAULT_BW_IDLE"]))
+    except (KeyError, ValueError):
+        pass
+    try:
+        return max(30, int(json.loads(RBW_CONF.read_text()).get("lock_timeout", 3600)))
+    except (OSError, ValueError, TypeError):
+        return 3600
+
+
+def rbw_unlocked():
+    try:
+        return subprocess.run([RBW, "unlocked"], capture_output=True).returncode == 0
+    except OSError:
+        return None
+
+
+def die_with_parent():
+    """The bw child gets SIGTERM when the supervisor dies in any way (even SIGKILL): no orphan server keeps the key."""
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)   # PR_SET_PDEATHSIG
+    except (OSError, AttributeError):
+        pass
+
+
+def cmd_serve():
+    """The supervisor behind `_serve`: runs `bw serve` on the socket with the session key in ITS environment only, and ends
+    it (and itself) on SIGTERM, when the session file is gone (lock), after the idle limit and when the rbw agent locked."""
+    key = read_session()
+    if not key or not have(BW):
+        return 1
+    RUN.mkdir(parents=True, exist_ok=True)
+    os.chmod(RUN, 0o700)
+    SOCK.unlink(missing_ok=True)
+    SERVE_PID.write_text(str(os.getpid()))
+    touch_used()
+    env = dict(os.environ, BW_SESSION=key, BW_NOINTERACTION="true", NODE_NO_WARNINGS="1")
+    key = None
+    log = open(SERVE_LOG, "ab")
+    child = subprocess.Popen([BW, "serve", "--hostname", f"unix://{SOCK}"], stdin=subprocess.DEVNULL, stdout=log,
+                             stderr=log, env=env, preexec_fn=die_with_parent)
+    env = None
+    stop = {"now": False}
+
+    def on_term(_sig, _frm):
+        stop["now"] = True
+
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, on_term)
+    poll = float(os.environ.get("VAULT_BW_SERVE_POLL", "2"))
+    idle, seen_rbw, chmoded, last = idle_limit(), False, False, 0.0
+    while not stop["now"] and child.poll() is None:
+        time.sleep(0.1)
+        if not chmoded and SOCK.exists():
+            try:
+                os.chmod(SOCK, 0o600)
+            except OSError:
+                pass
+            chmoded = True
+        now = time.time()
+        if now - last < poll:
+            continue
+        last = now
+        if not SESSION.exists():
+            break
+        try:
+            if now - SERVE_USED.stat().st_mtime > idle:
+                break
+        except OSError:
+            pass
+        if rbw_ready():
+            up = rbw_unlocked()
+            if up:
+                seen_rbw = True
+            elif up is False and seen_rbw:
+                break
+    if child.poll() is None:
+        child.terminate()
+        try:
+            child.wait(4)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait()
+    SOCK.unlink(missing_ok=True)
+    try:
+        if SERVE_PID.read_text().strip() == str(os.getpid()):
+            SERVE_PID.unlink()
+    except OSError:
+        pass
+    return 0
+
+
+def cmd_serve_status():
+    up = serve_up()
+    pid = read_pid()
+    print(f"{'running' if up else 'stopped'} socket={SOCK} pid={pid or '-'}")
+    return 0 if up else 1
 
 
 # ───────────────────────────── pinentry and unlock ─────────────────────────────
@@ -211,7 +691,15 @@ def pin_escape(text):
 
 
 def pin_ask(desc, error=None, prompt="Master password:"):
-    """Run pinentry (Assuan) and return the typed secret, or None when cancelled."""
+    """Run pinentry (Assuan) and return the typed secret, or None when cancelled. With no graphical session (or
+    `unlock --terminal`) the password is read on this terminal instead (no echo)."""
+    if TERMINAL_UNLOCK:
+        if error:
+            print(error, file=sys.stderr)
+        try:
+            return getpass.getpass("Bitwarden master password: ") or None
+        except (EOFError, KeyboardInterrupt):
+            return None
     lines = ["SETTITLE Bitwarden CLI", f"SETDESC {pin_escape(desc)}", f"SETPROMPT {prompt}"]
     if error:
         lines.append(f"SETERROR {pin_escape(error)}")
@@ -245,11 +733,14 @@ def unlock():
         if pw is None:
             print("cancelled", file=sys.stderr)
             sys.exit(1)
-        p = bw("unlock", "--raw", "--passwordenv", "BWV_MP", session=False, extra_env={"BWV_MP": pw})
+        p = bw_cli("unlock", "--raw", "--passwordenv", "BWV_MP", session=False, extra_env={"BWV_MP": pw})
         pw = None
         key = p.stdout.strip()
         if p.returncode == 0 and key:
+            stop_serve()          # a server that is still running holds the old key
             write_session(key)
+            forget_status()
+            start_serve()         # one start now: every bw call after this is a request, not a process
             sync_quiet()
             poke_bar()
             return
@@ -269,9 +760,13 @@ def ensure():
 
 
 def cmd_lock():
-    if have(BW) and status() not in (None, "unauthenticated"):
-        bw("lock", session=True)
+    # the server goes first (the real `bw serve` exits by itself on POST /lock, so the REST lock cannot be relied on to finish
+    # its disk writes); then ONE `bw lock` process clears the stored keys, exactly as before BW1
+    stop_serve()
+    if have(BW):
+        bw_cli("lock", session=True)
     drop_session()
+    forget_status()
     poke_bar()
 
 
@@ -331,6 +826,22 @@ def list_items():
     return [i for i in items if not i.get("deletedDate")]
 
 
+def rbw_all_items():
+    """Every item rbw knows as {id, name, login: {username}, attachments: []}, or None (rbw not set up or locked and
+    cancelled): the ids are the Bitwarden cipher ids, so they work for bw too."""
+    if not rbw_ready():
+        return None
+    p = subprocess.run([RBW, "list", "--raw"], capture_output=True, text=True)
+    if p.returncode != 0:
+        return None
+    try:
+        raw = json.loads(p.stdout or "[]")
+    except ValueError:
+        return None
+    return [{"id": i["id"], "name": i.get("name"), "login": {"username": i.get("user")}, "attachments": []}
+            for i in raw if i.get("id")]
+
+
 def item_rows(items, with_attachments=False):
     rows = []
     for i in sorted(items, key=lambda i: (i.get("name") or "").lower()):
@@ -342,7 +853,10 @@ def item_rows(items, with_attachments=False):
 
 
 def pick_item(prompt, items=None, with_attachments=False, header=""):
-    items = items if items is not None else list_items()
+    if items is None:
+        items = None if with_attachments else rbw_all_items()   # rbw has no attachment list: bw answers those
+        if items is None:
+            items = list_items()
     if not items:
         die("no items to pick from")
     row = fzf(item_rows(items, with_attachments), prompt, header)
@@ -374,7 +888,28 @@ def pick_file(prompt="file"):
 
 # ───────────────────────────── generator ─────────────────────────────
 
+def generate_local(classes, length):
+    """A password from the character classes u l n s (at least one of each chosen class), random from the OS."""
+    sets = {"u": string.ascii_uppercase, "l": string.ascii_lowercase, "n": string.digits, "s": "!@#$%^&*"}
+    chosen = [sets[c] for c in "ulns" if c in classes]
+    if not chosen:
+        chosen = [sets["l"], sets["n"]]
+    length = max(length, len(chosen))
+    pool = "".join(chosen)
+    chars = [secrets.choice(c) for c in chosen] + [secrets.choice(pool) for _ in range(length - len(chosen))]
+    secrets.SystemRandom().shuffle(chars)
+    return "".join(chars)
+
+
 def generate_password(*opts):
+    flags = [o for o in opts if re.fullmatch(r"-[a-z]+", o)]
+    if flags and not any("p" in f for f in flags):
+        classes = "".join(flags).lstrip("-").replace("-", "")
+        try:
+            length = int(opts[list(opts).index("--length") + 1])
+        except (ValueError, IndexError):
+            length = 14
+        return generate_local(classes, length)   # no `bw generate` process (a second) for plain character passwords
     p = bw("generate", *opts, session=False)
     pw = p.stdout.strip()
     if p.returncode != 0 or not pw:
@@ -416,7 +951,7 @@ def cmd_generate():
 # ───────────────────────────── folders ─────────────────────────────
 
 def folder_map():
-    """{folder id: name} from `bw list folders`."""
+    """{folder id: name} from `bw list folders` (one server request)."""
     return {f["id"]: f.get("name") or "" for f in bw_json("list", "folders") if f.get("id")}
 
 
@@ -694,6 +1229,7 @@ COMMANDS = {
 
 
 def main(argv):
+    global TERMINAL_UNLOCK
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
         return 0
@@ -704,6 +1240,24 @@ def main(argv):
         return 0 if st == "unlocked" else 1
     if cmd == "sync":
         return cmd_sync()
+    if cmd == "_serve":
+        return cmd_serve()
+    if cmd == "serve-status":
+        return cmd_serve_status()
+    if cmd == "serve-stop":
+        stop_serve()
+        return 0
+    if cmd == "call":
+        rest_args = argv[1:]
+        feed = None
+        if rest_args[:1] == ["--stdin"]:      # `call --stdin create item`: the body arrives on stdin (base64 JSON)
+            rest_args, feed = rest_args[1:], sys.stdin.read()
+        p = bw(*rest_args, stdin=feed)
+        sys.stdout.write(p.stdout or "")
+        sys.stderr.write(p.stderr or "")
+        return p.returncode
+    if cmd == "unlock" and "--terminal" in argv[1:]:
+        TERMINAL_UNLOCK = True
     if cmd == "import-csv":
         if len(argv) != 2:
             print("usage: vault-bw.py import-csv FILE", file=sys.stderr)

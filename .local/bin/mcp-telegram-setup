@@ -81,7 +81,28 @@ def load_vault_bw():
     return mod
 
 
+def rbw_record(m) -> dict | None:
+    """The item through rbw (milliseconds, no bw process, no bw unlock): `rbw get --raw --folder MCP telegram-mcp`. None when rbw
+    cannot give a complete record (not set up, locked and cancelled, item or custom fields missing): bw then answers."""
+    if not m.rbw_ready():
+        return None
+    p = subprocess.run([m.RBW, "get", "--raw", "--folder", FOLDER, ITEM], capture_output=True, text=True)
+    if p.returncode != 0:
+        return None
+    try:
+        rec = json.loads(p.stdout)
+    except ValueError:
+        return None
+    if not rec.get("id") or not field(rec, "api_id") or not field(rec, "api_hash"):
+        return None
+    rec["_src"] = "rbw"   # set_fields reads the full bw item before it edits (rbw cannot write custom fields)
+    return rec
+
+
 def find_item(m) -> dict:
+    rec = rbw_record(m)
+    if rec is not None:
+        return rec
     fid = m.folder_id(FOLDER, create=False)
     if not fid:
         die(f"Bitwarden has no folder {FOLDER}. Create the login item {ITEM} in it with the custom fields api_id and api_hash "
@@ -101,13 +122,15 @@ def field(item: dict, name: str) -> str:
 
 def set_fields(m, item: dict, values: dict[str, tuple[str, int]]) -> None:
     """Set custom fields (name -> (value, type)); type 0 = text, 1 = hidden. Written with `bw edit item` (stdin)."""
-    fields = [f for f in item.get("fields") or [] if f.get("name") not in values]
+    target = m.bw_json("get", "item", item["id"]) if item.get("_src") == "rbw" else item
+    fields = [f for f in target.get("fields") or [] if f.get("name") not in values]
     for name, (value, ftype) in values.items():
         fields.append({"name": name, "value": value, "type": ftype})
-    item["fields"] = fields
-    p = m.bw("edit", "item", item["id"], stdin=base64.b64encode(json.dumps(item).encode()).decode())
+    target["fields"] = fields
+    p = m.bw("edit", "item", item["id"], stdin=base64.b64encode(json.dumps(target).encode()).decode())
     if p.returncode != 0:
         die(f"could not update the Bitwarden item: {m.first_line(p.stderr or p.stdout)}")
+    item["fields"] = fields
     m.refresh_rbw()
 
 

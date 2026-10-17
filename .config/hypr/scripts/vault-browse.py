@@ -23,7 +23,8 @@ cycle the folders (All, each folder, no folder, Trash); the header lists the key
   Tab / Shift+Tab   next / previous folder
 
 rbw does: the list, previews, copy, type, TOTP, history, sync, lock. bw does: Trash, attachments, edit, new, delete,
-restore, Send (through vault-bw.py; the session key lives in $XDG_RUNTIME_DIR/vault/bw-session). Account settings,
+restore, Send (through vault-bw.py: one per-session `bw serve` on a unix socket, so these are requests of a few
+milliseconds instead of a 1 s bw process each; the session key lives in $XDG_RUNTIME_DIR/vault/bw-session). Account settings,
 emergency access and organisation admin stay in the app (the last list row opens it).
 
 Internal subcommands (called by fzf): rows, header [--cycle next|prev], preview ID; `_act NAME ARGS` runs the steps that
@@ -33,7 +34,7 @@ Secrets: never in the list, argv, notifications or logs. They go to `wl-copy --s
 `wtype -` on stdin (type-guard.sh: only into the window that was focused before the browser), to bw on stdin, or into
 the 600 edit file on tmpfs that is shredded afterwards. The metadata cache ($XDG_RUNTIME_DIR/vault/browse-index.json:
 names, folders, attachments, masked fields, never a value) only exists while the bw session is open.
-Test hooks: RBW_BIN, BW_BIN, VAULT_TERMINAL (command prefix replacing `ghostty --class=float.tui -e`), VAULT_CLEAR_AFTER,
+Test hooks: RBW_BIN, BW_BIN, VAULT_BW_SERVE=0 (bw as processes only), VAULT_TERMINAL (command prefix replacing `ghostty --class=float.tui -e`), VAULT_CLEAR_AFTER,
 VAULT_BROWSE_STATE, EDITOR, FZF_MENU_HERE.
 """
 import importlib.util

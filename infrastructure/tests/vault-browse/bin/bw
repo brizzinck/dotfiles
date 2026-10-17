@@ -3,6 +3,7 @@
 # shellcheck source=_common.sh
 . "$(dirname "$0")/_common.sh"
 log_argv bw "$@"
+[[ -n ${FAKE_BW_DELAY:-} && ${1:-} != serve ]] && sleep "$FAKE_BW_DELAY"   # the real CLI needs ~0.9 s to start
 KEY=SESSION-KEY-abc
 unlocked() { [[ -f $FAKE_DIR/bw-unlocked && ${BW_SESSION:-} == "$KEY" ]]; }
 need() { unlocked || { echo "Vault is locked." >&2; exit 1; }; }
@@ -10,6 +11,7 @@ decode() { base64 -d; }
 next_id() { local n; n=$(cat "$FAKE_DIR/seq" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" >"$FAKE_DIR/seq"; echo "$1-$n"; }
 cmd=${1:-}
 case $cmd in
+  serve) exec python3 -I "$(dirname "$0")/bw-serve.py" "$@" ;;
   status)
     if unlocked; then echo '{"status":"unlocked"}'; else echo '{"status":"locked"}'; fi ;;
   unlock)

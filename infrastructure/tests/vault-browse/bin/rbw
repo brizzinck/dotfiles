@@ -29,11 +29,17 @@ case ${1:-} in
     jq -c "$JQ_DEFS"'. as $d | [.items[] | select(.deletedDate == null) | {id, name, user: (.login.username // null), folder: fname($d), uris: [.login.uris[]?.uri], type: rtype}]' "$VIEW" ;;
   get)
     shift
-    raw=0
-    if [[ ${1:-} == --raw ]]; then raw=1; shift; fi
+    raw=0 folder=""
+    while [[ ${1:-} == --* ]]; do
+      case $1 in
+        --raw) raw=1; shift ;;
+        --folder) folder=${2:-}; shift 2 ;;
+        *) shift ;;
+      esac
+    done
     id=${1:-}
     if ((raw)); then
-      jq -c --arg id "$id" "$JQ_DEFS"'. as $d | .items[] | select(.id==$id and .deletedDate==null) | {id, folder: fname($d), name, data: data, fields: [.fields[]? | {name, value, type: (if .type==1 then "hidden" else "text" end)}], notes, history: [.passwordHistory[]? | {last_used_date: .lastUsedDate, password}]}' "$VIEW" | { read -r l && printf '%s\n' "$l" || exit 1; }
+      jq -c --arg id "$id" --arg f "$folder" "$JQ_DEFS"'. as $d | .items[] | select((.id==$id or .name==$id) and .deletedDate==null and ($f=="" or fname($d)==$f)) | {id, folder: fname($d), name, data: data, fields: [.fields[]? | {name, value, type: (if .type==1 then "hidden" else "text" end)}], notes, history: [.passwordHistory[]? | {last_used_date: .lastUsedDate, password}]}' "$VIEW" | { read -r l && printf '%s\n' "$l" || exit 1; }
     else
       jq -r --arg id "$id" '.items[] | select(.id==$id) | .login.password // empty' "$VIEW"
     fi ;;

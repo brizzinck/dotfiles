@@ -23,12 +23,13 @@
 #                               masks every secret and ticks the TOTP code; letters / Alt keys copy, type, edit, create,
 #                               trash, restore, attach, send, sync and lock (keys: header of vault-browse.py). rbw lists,
 #                               previews, copies and types; bw (vault-bw.py) does Trash, attachments, edit, new, delete
-#   vault.sh lock               lock the vault now: rbw lock and the official CLI session (bw lock)
+#   vault.sh lock               lock the vault now: rbw lock and the official CLI session (bw lock; also stops the
+#                               per-session `bw serve` on $XDG_RUNTIME_DIR/vault/bw.sock that vault-bw.py runs)
 #   vault.sh sync               rbw sync (asks for the master password when locked) and, when its session is open, bw sync
 #   vault.sh status             print locked|unlocked|unconfigured|missing, exit 0 only when unlocked
 #   vault.sh waybar             JSON for the custom/vault module (signal 15)
-#   vault.sh session-start      Hyprland exec-once: stop the rbw agent and drop the bw session left over from the
-#                               previous login so the master password is asked once per login session (silent without
+#   vault.sh session-start      Hyprland exec-once: stop the rbw agent and drop the bw session (and its server) left over
+#                               from the previous login so the master password is asked once per login session (silent without
 #                               rbw/bw); starts the Bitwarden desktop app (tray, no focus) when the SSH agent is on
 #   vault.sh bw CMD             official CLI actions (vault-bw.py): unlock new-login generate edit history send-text
 #                               send-file attach-get attach-add delete (hub rows in actions.d/u6.tsv)

@@ -88,6 +88,8 @@ setup_bw() {
   ( umask 077; mkdir -p "$rundir"; printf '%s' "$key" >"$rundir/bw-session.tmp" && mv -f "$rundir/bw-session.tmp" "$rundir/bw-session" )
   BW_SESSION=$key NODE_NO_WARNINGS=1 bw sync >/dev/null && echo "bw synced."
   key=
+  # a per-session bw server of an earlier login holds the old key: stop it, the next bw action starts one with the new key
+  python3 -I "${XDG_CONFIG_HOME:-$HOME/.config}/hypr/scripts/vault-bw.py" serve-stop >/dev/null 2>&1 || true
 }
 echo
 setup_bw || true

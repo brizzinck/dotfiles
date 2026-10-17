@@ -541,6 +541,22 @@ check "setup: --new-login skips the stored session" bash -c ': >"$2"; FAKE_PICK_
 check "setup: nothing ticked and no allowlist -> refuses, nothing sent to the root helper" bash -c 'rm -f "$3"; jq "del(.fields[] | select(.name==\"allowlist\" or .name==\"session\"))" "$2" >"$2.x" && mv "$2.x" "$2"; FAKE_PICK_IDS="" "${@:4}" "$1" >/dev/null 2>&1; rc=$?; [ $rc -ne 0 ] && [ ! -e "$3" ]' _ "$SETUP" "$FAKE_DIR/bw-item.json" "$FAKE_DIR/creds-payload.json" env BW_BIN="$HERE/bin/bw" VAULT_BW="$REPO/.config/hypr/scripts/vault-bw.py" VAULT_RBW_CONF=/nonexistent PATH="$HERE/bin:$PATH" MCP_TG_PYTHON=/usr/bin/python3 MCP_TG_LOGIN="$HERE/fake_login.py" MCP_TG_CREDS="$HERE/fake_creds.sh" MCP_TG_SUDO=env MCP_TG_PICK="$HERE/fake_pick.sh" MCP_GATEWAY_CMD="$HERE/fake_gw_tg.sh" MCP_ADD_CMD="$HERE/fake_add.sh" MCP_TG_NO_VERIFY=1 MCP_STATE_DIR="$SCRATCH/setup-state"
 check "setup: a missing Bitwarden folder gives instructions" bash -c 'out=$(FAKE_BW_NOFOLDER=1 "${@:2}" "$1" 2>&1); grep -q "no folder MCP" <<<"$out"' _ "$SETUP" env BW_BIN="$HERE/bin/bw" VAULT_BW="$REPO/.config/hypr/scripts/vault-bw.py" VAULT_RBW_CONF=/nonexistent PATH="$HERE/bin:$PATH" MCP_TG_PYTHON=/usr/bin/python3 MCP_TG_LOGIN="$HERE/fake_login.py" MCP_TG_CREDS="$HERE/fake_creds.sh" MCP_TG_SUDO=env MCP_TG_PICK="$HERE/fake_pick.sh" MCP_GATEWAY_CMD="$HERE/fake_gw_tg.sh" MCP_ADD_CMD="$HERE/fake_add.sh" MCP_TG_NO_VERIFY=1 MCP_STATE_DIR="$SCRATCH/setup-state"
 
+# BW1: with rbw set up the item is read through rbw (no bw list / get process); only the write needs bw
+echo '{"email":"test@example.com"}' >"$FAKE_DIR/rbw-ready.json"
+cat >"$FAKE_DIR/bw-item.json" <<'EOF'
+{"id":"I1","name":"telegram-mcp","folderId":"F1","type":1,"login":{"username":null,"password":null},
+ "fields":[{"name":"api_id","value":"12345678","type":0},{"name":"api_hash","value":"0123456789abcdef0123456789abcdef","type":0}]}
+EOF
+rm -rf "$SCRATCH/setup-state"; : >"$FAKE_DIR/argv.log"; : >"$FAKE_DIR/login.log"
+FAKE_PICK_IDS="-1001111 42" setup_env VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" >"$SCRATCH/setup-rbw.out" 2>&1
+check "rbw-first: the item is read with rbw get --raw --folder MCP, not with bw list / folders" bash -c 'grep -qx "rbw get --raw --folder MCP telegram-mcp" "$1" && ! grep -qE "^bw list" "$1"' _ "$FAKE_DIR/argv.log"
+check "rbw-first: bw is only used for the write (get item + edit item of the rbw id)" bash -c 'grep -qx "bw get item I1" "$1" && grep -qx "bw edit item I1" "$1"' _ "$FAKE_DIR/argv.log"
+check "rbw-first: Bitwarden still gets the session and allowlist fields, the other fields stay" jq -e '(.fields[] | select(.name=="session") | .type == 1) and (.fields[] | select(.name=="allowlist") | .value == "-1001111,42") and ([.fields[].name] | index("api_hash") != null) and (has("_src") | not)' "$FAKE_DIR/bw-item.json"
+check "rbw-first: the session is on no argv" bash -c '! grep -q FRESHSESSION "$1"' _ "$FAKE_DIR/argv.log"
+: >"$FAKE_DIR/argv.log"
+FAKE_RBW_FAIL=1 FAKE_PICK_IDS="42" setup_env VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" chats >/dev/null 2>&1
+check "rbw-first: when rbw cannot give the record, bw answers (list folders / items / get item)" bash -c 'grep -qx "bw list folders" "$1" && grep -q "^bw list items" "$1" && grep -qx "bw get item I1" "$1"' _ "$FAKE_DIR/argv.log"
+
 # the agents' send-request server (telegram-send.py) against a fake broker socket
 if [[ -x $VENV_PY ]]; then
   count_py "$VENV_PY" "$HERE/test_telegram_send.py" "$REPO/.config/mcp/telegram-send.py"
