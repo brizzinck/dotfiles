@@ -25,6 +25,8 @@ local wallpaper = "~/.config/hypr/scripts/wallpaper.sh apply"
 -- Floating terminal for TUIs; matched by the float-tui window rule below
 local tui = "ghostty --class=float.tui -e"
 local scripts = "~/.config/hypr/scripts"
+-- App binds (T Telegram, S YouTube Music, N Obsidian) are the pinned apps' left click: focus, repeat = next window, launch when closed.
+local pinned = "~/.config/waybar/scripts/pinned.sh"
 
 -- ───────────────────────────── autostart ────────────────────────────
 -- hyprland.start fires once per session (not on reload).
@@ -415,9 +417,9 @@ hl.bind(mainMod .. " + G", hl.dsp.exec_cmd(browser), { description = "Browser" }
 hl.bind(mainMod .. " + E", hl.dsp.exec_cmd(fileManagerTerminal), { description = "File manager (yazi)" })
 hl.bind(mainMod .. " + SHIFT + E", hl.dsp.exec_cmd(fileManagerGUI), { description = "File manager (nemo)" })
 hl.bind(mainMod .. " + space", hl.dsp.exec_cmd(menu), { description = "App launcher" })
-hl.bind(mainMod .. " + T", hl.dsp.exec_cmd("Telegram"), { description = "Telegram" })
-hl.bind(mainMod .. " + S", hl.dsp.exec_cmd("if pgrep -x \"ytm\" > /dev/null; then hyprd focuswindow class:youtube-music-desktop-app; else flatpak run app.ytmdesktop.ytmdesktop; fi"), { description = "YouTube Music" })
-hl.bind(mainMod .. " + N", hl.dsp.exec_cmd("obsidian"), { description = "Obsidian" })
+hl.bind(mainMod .. " + T", hl.dsp.exec_cmd(pinned .. " click telegram"), { description = "Telegram" })
+hl.bind(mainMod .. " + S", hl.dsp.exec_cmd(pinned .. " click ytm"), { description = "YouTube Music" })
+hl.bind(mainMod .. " + N", hl.dsp.exec_cmd(pinned .. " click obsidian"), { description = "Obsidian" })
 hl.bind(mainMod .. " + O", hl.dsp.exec_cmd(wallpaper .. " --force"), { description = "Reload wallpaper" })
 hl.bind(mainMod .. " + B", hl.dsp.exec_cmd("~/.config/waybar/scripts/bar.sh mode toggle"), { description = "Bar compact or full" })
 hl.bind(mainMod .. " + CTRL + B", hl.dsp.exec_cmd("~/.config/waybar/scripts/bar.sh hide toggle"), { description = "Hide or show the bar" })
