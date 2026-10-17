@@ -263,6 +263,24 @@ PY' _ "$V"
   stop_bw_servers
   quick_linux_pass_unreadable
   quick_socket_trust
+  quick_no_core
+}
+
+# BW1-fix 3: nothing that holds the session key can leave a core file (RLIMIT_CORE 0 for the supervisor, the bw child and
+# every CLI process; the systemd launch sets LimitCORE=0 on the unit)
+quick_no_core() {
+  local V="$SCRIPTS/vault-bw.py" sup child
+  reset unlocked
+  # shellcheck disable=SC1091
+  . "$FAKE/env.sh"
+  ( ulimit -c unlimited 2>/dev/null; python3 -I "$V" call list folders </dev/null >/dev/null )
+  sup=$(srv_pid); child=$(pgrep -P "$sup" | head -1)
+  check "core: the server supervisor and its bw child run with RLIMIT_CORE 0 (started from a shell that allowed cores)" bash -c 'for p in "$1" "$2"; do grep -q "^Max core file size *0 *0" /proc/$p/limits || exit 1; done' _ "$sup" "$child"
+  stop_bw_servers
+  printf '#!/bin/sh\nulimit -c >"%s/cli-core"\nexec %s "$@"\n' "$FAKE" "$BIN/bw" >"$FAKE/corebw"; chmod +x "$FAKE/corebw"
+  ( ulimit -c unlimited 2>/dev/null; BW_BIN="$FAKE/corebw" VAULT_BW_SERVE=0 python3 -I "$V" call list folders </dev/null >/dev/null )
+  check "core: a bw CLI process (the fallback) runs with RLIMIT_CORE 0 too" file_eq "$FAKE/cli-core" 0
+  check "core: the systemd-run launch carries -p LimitCORE=0" grep -q '"-p", "LimitCORE=0"' "$V"
 }
 
 # BW1-fix 2: the socket is only trusted inside a private directory of this user and only when its peer is this user
@@ -377,6 +395,7 @@ quick_bw1_slow() {
     reset unlocked
     VAULT_BW_LAUNCH=auto VAULT_BW_UNIT=$unit VAULT_BW_SYSTEMD_RUNTIME=$REAL_XDG python3 -I "$V" call list folders </dev/null >/dev/null
     check "unit launch: the server runs as a transient user unit (outlives the window it was started from)" bash -c '$1 is-active '$unit' | grep -qx active' _ "$sd"
+    check "  the unit has LimitCORE=0" bash -c '$1 show '$unit' -p LimitCORE | grep -qx "LimitCORE=0"' _ "$sd"
     check "  the session key is not a property of the unit (it is read from the 600 file)" bash -c '! $1 show '$unit' -p Environment | grep -q SESSION-KEY' _ "$sd"
     VAULT_BW_LAUNCH=auto VAULT_BW_UNIT=$unit VAULT_BW_SYSTEMD_RUNTIME=$REAL_XDG python3 -I "$V" lock </dev/null
     check "  lock ends the unit" bash -c 'sleep 1; ! $1 is-active '$unit' | grep -qx active' _ "$sd"

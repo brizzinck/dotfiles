@@ -53,6 +53,7 @@ import http.client
 import json
 import os
 import re
+import resource
 import secrets
 import shutil
 import signal
@@ -163,6 +164,15 @@ def drop_session():
     SESSION.unlink(missing_ok=True)
 
 
+def no_core():
+    """preexec_fn: no core dump for this process and everything it starts (a crashing bw/node holding the session key must
+    not leave it in a core file: systemd-coredump would keep it on disk)."""
+    try:
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except (OSError, ValueError):
+        pass
+
+
 def bw_cli(*args, stdin=None, session=True, extra_env=None):
     """One `bw` process (about 1 s of start-up each): the fallback and the calls the server does not do."""
     env = dict(os.environ)
@@ -175,7 +185,7 @@ def bw_cli(*args, stdin=None, session=True, extra_env=None):
     if extra_env:
         env.update(extra_env)
     try:
-        return subprocess.run([BW, *args], input=stdin, capture_output=True, text=True, env=env)
+        return subprocess.run([BW, *args], input=stdin, capture_output=True, text=True, env=env, preexec_fn=no_core)
     except FileNotFoundError:
         die("bw is not installed (sudo ~/dotfiles/apply-system.sh --only install)")
 
@@ -327,14 +337,14 @@ def launch_serve():
         subprocess.run(["systemctl", "--user", "stop", UNIT], check=False, stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL, env=sd_env)
         cmd = ["systemd-run", "--user", "--quiet", "--collect", f"--unit={UNIT}",
-               "--description=Bitwarden CLI server (unix socket)"] + [f"--setenv={k}={v}" for k, v in env.items()] \
+               "--description=Bitwarden CLI server (unix socket)", "-p", "LimitCORE=0"] + [f"--setenv={k}={v}" for k, v in env.items()] \
             + ["--", *serve_args()]
         if subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                           env=sd_env).returncode == 0:
             return None
     log = open(SERVE_LOG, "ab")
     return subprocess.Popen(serve_args(), stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
-                            env=dict(os.environ, **env))
+                            env=dict(os.environ, **env), preexec_fn=no_core)
 
 
 def start_serve(wait=20.0):
@@ -615,7 +625,9 @@ def rbw_unlocked():
 
 
 def die_with_parent():
-    """The bw child gets SIGTERM when the supervisor dies in any way (even SIGKILL): no orphan server keeps the key."""
+    """preexec_fn of the bw child: no core dump, and SIGTERM when the supervisor dies in any way (even SIGKILL), so no
+    orphan server keeps the key."""
+    no_core()
     try:
         import ctypes
         ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)   # PR_SET_PDEATHSIG
@@ -626,6 +638,7 @@ def die_with_parent():
 def cmd_serve():
     """The supervisor behind `_serve`: runs `bw serve` on the socket with the session key in ITS environment only, and ends
     it (and itself) on SIGTERM, when the session file is gone (lock), after the idle limit and when the rbw agent locked."""
+    no_core()
     key = read_session()
     if not key or not have(BW):
         return 1
