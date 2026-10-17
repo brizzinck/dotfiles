@@ -5,6 +5,9 @@
 # file, an argument list or a plain file on disk.
 #   credentials: api_id api_hash session (a Telethon session STRING, no .session file) allowlist (comma separated chat ids)
 #                token (bearer token the gateway sends)
+#   optional:    send_token + send_allowlist (both or neither; sealed by creds-install, passed in by the drop-in
+#                telegram-mcp.service.d/send.conf): they switch on the owner-confirmed POST /x-send route inside serve.py. The
+#                send token exists only for this service and for the tgconfirm broker, never for the owner or an agent.
 # Fails closed (exit 78) when any is missing or the allowlist is empty. Test hooks: TELEGRAM_MCP_PYTHON, TELEGRAM_MCP_SERVE.
 set -eu
 cred=${CREDENTIALS_DIRECTORY:?CREDENTIALS_DIRECTORY is not set (start this through telegram-mcp.service)}
@@ -19,6 +22,11 @@ TELEGRAM_API_HASH=$(tr -d ' \r\n' <"$cred/api_hash")
 TELEGRAM_SESSION_STRING=$(tr -d ' \r\n' <"$cred/session")
 TELEGRAM_MCP_TOKEN=$(tr -d ' \r\n' <"$cred/token")
 export TELEGRAM_API_ID TELEGRAM_API_HASH TELEGRAM_SESSION_STRING TELEGRAM_MCP_TOKEN
+if [[ -s $cred/send_token && -s $cred/send_allowlist ]]; then
+  TELEGRAM_SEND_TOKEN=$(tr -d ' \r\n' <"$cred/send_token")
+  TELEGRAM_SEND_ALLOWLIST=$(tr -d ' \r\n' <"$cred/send_allowlist")
+  export TELEGRAM_SEND_TOKEN TELEGRAM_SEND_ALLOWLIST
+fi
 export TELEGRAM_ALLOWED_CHAT_IDS=$allow
 # read-only: upstream registers only tools annotated readOnlyHint (no send, edit, delete, forward, mark-read, drafts, admin)
 export TELEGRAM_EXPOSED_TOOLS=read-only

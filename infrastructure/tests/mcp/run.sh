@@ -309,6 +309,27 @@ check "creds-install: refuses to run as a normal user without the test hook" bas
 rm -rf "$CS"; : >"$FAKE_DIR/argv.log"
 printf '{"allowlist":"1"}' | "$CI" >/dev/null 2>&1
 check "creds-install: the service is not started while credentials are missing" bash -c '! grep -q "restart telegram-mcp.service" "$1" && grep -q "enable telegram-mcp.service" "$1"' _ "$FAKE_DIR/argv.log"
+# optional send credentials: two sealed copies (route + broker), a drop-in only while both exist, broker restarted
+DROP="$SCRATCH/dropin"; UD="$SCRATCH/units"; mkdir -p "$UD"; : >"$UD/tgconfirm.service"
+export DROPIN_DIR="$DROP" SEND_CONF_SRC="$TGD/send.conf" UNIT_DIR="$UD"
+SENDTOK="sendtokensendtokensendtokensendtoken1234"
+rm -rf "$CS"; : >"$FAKE_DIR/argv.log"
+printf '%s' "$PAYLOAD" | "$CI" >/dev/null 2>&1
+check "send creds: the base setup alone installs no drop-in" bash -c '[ ! -e "$1/send.conf" ]' _ "$DROP"
+printf '{"send_token":"%s"}' "$SENDTOK" | "$CI" >/dev/null 2>&1
+check "send creds: a send token alone installs no drop-in (the unit would fail on the missing allowlist)" bash -c '[ ! -e "$1/send.conf" ]' _ "$DROP"
+printf '{"send_token":"%s","send_allowlist":"-1001111"}' "$SENDTOK" | "$CI" >/dev/null 2>&1
+check "send creds: sealed for the route AND for the tgconfirm broker" bash -c '[ -s "$1/telegram-mcp.send_token" ] && [ -s "$1/telegram-mcp.send_allowlist" ] && [ -s "$1/tgconfirm.send_token" ]' _ "$CS"
+check "send creds: both copies sealed with the credential name send_token" bash -c '[ "$(grep -c -- "--name=send_token - " "$1")" -ge 2 ]' _ "$FAKE_DIR/argv.log"
+check "send creds: the drop-in loads exactly the two send credentials" bash -c 'grep -q "^LoadCredentialEncrypted=send_token:/etc/credstore.encrypted/telegram-mcp.send_token" "$1/send.conf" && grep -q "^LoadCredentialEncrypted=send_allowlist:" "$1/send.conf" && [ "$(grep -c "^LoadCredentialEncrypted=" "$1/send.conf")" = 2 ]' _ "$DROP"
+check "send creds: the send token never reaches argv or a plain file" bash -c '! grep -q "$2" "$1" && ! grep -rq "$2" "$3"' _ "$FAKE_DIR/argv.log" "$SENDTOK" "$CS"
+check "send creds: the broker is enabled and restarted when a send token was stored" bash -c 'grep -q "systemctl enable tgconfirm.service" "$1" && grep -q "systemctl restart tgconfirm.service" "$1"' _ "$FAKE_DIR/argv.log"
+check "send creds: a send token equal to the MCP token is refused" bash -c '! printf "{\"token\":\"%s\",\"send_token\":\"%s\"}" "$2" "$2" | "$1"' _ "$CI" "$SENDTOK"
+check "send creds: a bad send allowlist is refused" bash -c '! printf "{\"send_allowlist\":\"@x\"}" | "$1"' _ "$CI"
+check "send creds: --status lists the send credentials" bash -c '"$1" --status | grep -q "^send_token: present" && "$1" --status | grep -q "^tgconfirm send_token: present"' _ "$CI"
+rm -f "$CS/telegram-mcp.send_allowlist"; "$CI" --sync >/dev/null 2>&1
+check "send creds: --sync removes the drop-in when a send credential is gone" bash -c '[ ! -e "$1/send.conf" ]' _ "$DROP"
+unset DROPIN_DIR SEND_CONF_SRC UNIT_DIR
 unset CREDSTORE_DIR SYSTEMD_CREDS_BIN SYSTEMCTL_BIN CREDS_INSTALL_ALLOW_NONROOT
 
 # run wrapper: credentials directory -> environment, fail closed
@@ -328,6 +349,15 @@ check "run: allowlist from the credential" grep -qx 'TELEGRAM_ALLOWED_CHAT_IDS=-
 check "run: session string, api id/hash and token reach the environment" bash -c 'grep -q "^TELEGRAM_SESSION_STRING=1AAAA" "$1" && grep -qx "TELEGRAM_API_ID=12345678" "$1" && grep -qx "TELEGRAM_MCP_TOKEN=bearer-token-value" "$1"' _ "$FAKE_DIR/run-env.txt"
 check "run: HTTP on loopback only, local whisper engine, no cloud key" bash -c 'grep -qx "MCP_HOST=127.0.0.1" "$1" && grep -qx "MCP_TRANSPORT=http" "$1" && grep -qx "TELEGRAM_TRANSCRIBE_ENGINE=openai" "$1" && grep -qx "TELEGRAM_TRANSCRIBE_OPENAI_URL=http://127.0.0.1:8766" "$1" && ! grep -q GROQ "$1"' _ "$FAKE_DIR/run-env.txt"
 check "run: secrets are not in the argument list" bash -c 'grep "^args:" "$1" | grep -qv -e AAAA -e bearer-token -e 0123456789abcdef' _ "$FAKE_DIR/run-env.txt"
+check "run: no send credentials, no send environment" bash -c '! grep -q "SEND" "$1"' _ "$FAKE_DIR/run-env.txt"
+printf 'send-token-value-send-token-value-1' >"$CRED/send_token"; printf -- '-1001111\n' >"$CRED/send_allowlist"
+"${TG_RUN[@]}" >/dev/null 2>&1
+check "run: both send credentials reach the environment" bash -c 'grep -qx "TELEGRAM_SEND_TOKEN=send-token-value-send-token-value-1" "$1" && grep -qx "TELEGRAM_SEND_ALLOWLIST=-1001111" "$1"' _ "$FAKE_DIR/run-env.txt"
+check "run: the exposure stays read-only with the send credentials" grep -qx 'TELEGRAM_EXPOSED_TOOLS=read-only' "$FAKE_DIR/run-env.txt"
+rm -f "$CRED/send_allowlist"
+"${TG_RUN[@]}" >/dev/null 2>&1
+check "run: a send token without an allowlist is not exported" bash -c '! grep -q "SEND" "$1"' _ "$FAKE_DIR/run-env.txt"
+rm -f "$CRED/send_token"
 printf '\n' >"$CRED/allowlist"
 check "run: an empty allowlist refuses to start (78)" bash -c '"${@}" >/dev/null 2>&1; [ $? -eq 78 ]' _ "${TG_RUN[@]}"
 printf -- '-1001111\n' >"$CRED/allowlist"; rm -f "$CRED/session"

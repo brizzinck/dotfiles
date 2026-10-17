@@ -1129,8 +1129,9 @@ section_users() {
 #   * units: telegram-mcp.service (user aimcp, 127.0.0.1:8765, LoadCredentialEncrypted= from /etc/credstore.encrypted, sandboxed;
 #     only starts once mcp-telegram-setup stored the credentials), telegram-whisper-proxy.socket (127.0.0.1:8766) which starts
 #     telegram-whisper.service (whisper.cpp server) on demand and stops it after 5 idle minutes;
-#   * /usr/local/lib/telegram-mcp/{run,serve.py,creds-install,login.py}: the wrapper, the fail-closed entry point, the root helper
-#     that mcp-telegram-setup calls through sudo, and the QR login / chat lister.
+#   * /usr/local/lib/telegram-mcp/{run,serve.py,creds-install,login.py,send.conf}: the wrapper, the fail-closed entry point (also
+#     the owner-confirmed POST /x-send route), the root helper that mcp-telegram-setup calls through sudo, the QR login / chat
+#     lister and the drop-in text for the optional send credentials.
 # Nothing is logged in to Telegram here: the owner runs `mcp-telegram-setup` (QR + sudo password + master password).
 MCP_DIR="$INFRA/mcp/telegram"
 TG_OPT=/opt/telegram-mcp
@@ -1280,10 +1281,15 @@ section_mcp() {
   for f in run serve.py creds-install login.py; do
     install_file "$MCP_DIR/$f" "$TG_LIB/$f" 755
   done
+  # drop-in with the optional send credentials (installed into telegram-mcp.service.d only while both exist)
+  install_file "$MCP_DIR/send.conf" "$TG_LIB/send.conf" 644
   run install -d -m 700 "$CREDSTORE"
   for unit in telegram-mcp.service telegram-whisper.service telegram-whisper-proxy.service telegram-whisper-proxy.socket; do
     install_file "$MCP_DIR/$unit" "/etc/systemd/system/$unit"
   done
+  if [ -e "$CREDSTORE/telegram-mcp.send_token" ] && [ -e "$CREDSTORE/telegram-mcp.send_allowlist" ]; then
+    run "$TG_LIB/creds-install" --sync    # send drop-in (owner-confirmed sending) follows the credentials that exist
+  fi
   run systemctl daemon-reload
   if [ "$DRY_RUN" -eq 0 ] && command -v systemd-analyze >/dev/null; then
     systemd-analyze verify /etc/systemd/system/telegram-mcp.service >/dev/null 2>&1 || warn "mcp: systemd-analyze verify reports a problem in telegram-mcp.service"

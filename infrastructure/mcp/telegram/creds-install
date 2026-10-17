@@ -1,17 +1,27 @@
 #!/usr/bin/env python3
 """/usr/local/lib/telegram-mcp/creds-install - root helper of mcp-telegram-setup (run with `sudo`, which asks for the password).
 
-Reads ONE JSON object on stdin (never argv) with any of: api_id, api_hash, session, allowlist, token, and stores each value as
-an encrypted systemd credential /etc/credstore.encrypted/telegram-mcp.<key>, sealed to this machine's TPM2 and host key
-(`systemd-creds encrypt --with-key=tpm2+host`). telegram-mcp.service loads them with LoadCredentialEncrypted=, so nothing is
-readable as a plain file; only root can read the credstore directory.
+Reads ONE JSON object on stdin (never argv) with any of: api_id, api_hash, session, allowlist, token and the optional send
+credentials send_token, send_allowlist, and stores each value as an encrypted systemd credential
+/etc/credstore.encrypted/telegram-mcp.<key>, sealed to this machine's TPM2 and host key (`systemd-creds encrypt
+--with-key=tpm2+host`). telegram-mcp.service loads them with LoadCredentialEncrypted=, so nothing is readable as a plain file;
+only root can read the credstore directory.
+
+The send token (owner-confirmed Telegram sending, see infrastructure/mcp/confirm) is stored TWICE, as
+telegram-mcp.send_token (the route inside telegram-mcp.service) and tgconfirm.send_token (the tgconfirm broker, the only client
+of the route). Neither copy is readable by the owner or an agent, and mcp-telegram-setup never writes it to Bitwarden or a
+file: it is generated per run, piped in here and forgotten. The two send credentials reach telegram-mcp.service through the
+drop-in telegram-mcp.service.d/send.conf, installed here only while both exist (LoadCredentialEncrypted= of a missing file
+would fail the whole unit).
 
   creds-install            apply stdin, then enable the whisper socket + telegram-mcp.service and (re)start the service
+                           (and the tgconfirm broker when a send token was stored)
   creds-install --no-start apply stdin only
-  creds-install --status   which of the five credentials exist (names only)
+  creds-install --sync     only (re)install or remove the send drop-in from the credentials that exist, then daemon-reload
+  creds-install --status   which credentials exist (names only)
 
-The service only starts when all five exist (ConditionPathExists= in the unit). Test hooks: CREDSTORE_DIR, SYSTEMD_CREDS_BIN,
-SYSTEMCTL_BIN, CREDS_INSTALL_ALLOW_NONROOT=1.
+The service only starts when the five base credentials exist (ConditionPathExists= in the unit). Test hooks: CREDSTORE_DIR,
+SYSTEMD_CREDS_BIN, SYSTEMCTL_BIN, DROPIN_DIR, SEND_CONF_SRC, UNIT_DIR, CREDS_INSTALL_ALLOW_NONROOT=1.
 """
 import json
 import os
@@ -23,13 +33,20 @@ import tempfile
 STORE = os.environ.get("CREDSTORE_DIR", "/etc/credstore.encrypted")
 CREDS = os.environ.get("SYSTEMD_CREDS_BIN", "systemd-creds")
 SYSTEMCTL = os.environ.get("SYSTEMCTL_BIN", "systemctl")
-KEYS = ("api_id", "api_hash", "session", "allowlist", "token")
+DROPIN_DIR = os.environ.get("DROPIN_DIR", "/etc/systemd/system/telegram-mcp.service.d")
+SEND_CONF_SRC = os.environ.get("SEND_CONF_SRC", "/usr/local/lib/telegram-mcp/send.conf")
+UNIT_DIR = os.environ.get("UNIT_DIR", "/etc/systemd/system")
+REQUIRED = ("api_id", "api_hash", "session", "allowlist", "token")
+OPTIONAL = ("send_token", "send_allowlist")
+KEYS = REQUIRED + OPTIONAL
 RULES = {
     "api_id": re.compile(r"^[0-9]{3,12}$"),
     "api_hash": re.compile(r"^[0-9a-fA-F]{32}$"),
     "session": re.compile(r"^1[A-Za-z0-9_=+/-]{100,}$"),
     "allowlist": re.compile(r"^-?[0-9]+(,-?[0-9]+)*$"),
     "token": re.compile(r"^[A-Za-z0-9_-]{32,}$"),
+    "send_token": re.compile(r"^[A-Za-z0-9_-]{32,}$"),
+    "send_allowlist": re.compile(r"^-?[0-9]+(,-?[0-9]+)*$"),
 }
 
 
@@ -38,11 +55,11 @@ def die(msg, code=1):
     sys.exit(code)
 
 
-def path(key):
-    return os.path.join(STORE, f"telegram-mcp.{key}")
+def path(key, owner="telegram-mcp"):
+    return os.path.join(STORE, f"{owner}.{key}")
 
 
-def store(key, value):
+def store(key, value, owner="telegram-mcp"):
     tmp_fd, tmp = tempfile.mkstemp(dir=STORE, prefix=f".{key}.")
     os.close(tmp_fd)
     try:
@@ -51,10 +68,33 @@ def store(key, value):
         if p.returncode != 0:
             die(f"systemd-creds encrypt failed for {key}: {p.stderr.decode(errors='replace').strip()[:200]}")
         os.chmod(tmp, 0o600)
-        os.replace(tmp, path(key))
+        os.replace(tmp, path(key, owner))
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
+
+
+def sync_dropin():
+    """Install telegram-mcp.service.d/send.conf while both send credentials exist, remove it otherwise."""
+    target = os.path.join(DROPIN_DIR, "send.conf")
+    have = all(os.path.exists(path(k)) for k in OPTIONAL)
+    if have:
+        if not os.path.exists(SEND_CONF_SRC):
+            die(f"{SEND_CONF_SRC} is missing (sudo ~/dotfiles/apply-system.sh --only mcp)")
+        os.makedirs(DROPIN_DIR, mode=0o755, exist_ok=True)
+        with open(SEND_CONF_SRC, "rb") as f:
+            data = f.read()
+        if not os.path.exists(target) or open(target, "rb").read() != data:
+            tmp = target + ".tmp"
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, target)
+            print("installed the send drop-in (telegram-mcp.service.d/send.conf)")
+    elif os.path.exists(target):
+        os.unlink(target)
+        print("removed the send drop-in (a send credential is missing)")
+    return have
 
 
 def main(argv):
@@ -68,6 +108,11 @@ def main(argv):
     if "--status" in argv:
         for k in KEYS:
             print(f"{k}: {'present' if os.path.exists(path(k)) else 'missing'}")
+        print(f"tgconfirm send_token: {'present' if os.path.exists(path('send_token', 'tgconfirm')) else 'missing'}")
+        return 0
+    if "--sync" in argv:
+        sync_dropin()
+        subprocess.run([SYSTEMCTL, "daemon-reload"], check=False)
         return 0
     try:
         data = json.load(sys.stdin)
@@ -81,12 +126,18 @@ def main(argv):
     for k, v in data.items():
         if not isinstance(v, str) or not RULES[k].match(v.strip()):
             die(f"value for {k} has the wrong shape (the value is not shown)")
+    if "send_token" in data and "token" in data and data["send_token"].strip() == data["token"].strip():
+        die("send_token must differ from token")
     for k, v in data.items():
         store(k, v.strip())
         print(f"stored {k} (TPM2 + host key)")
+        if k == "send_token":
+            store(k, v.strip(), "tgconfirm")
+            print("stored send_token for the tgconfirm broker (TPM2 + host key)")
+    sync_dropin()
     if "--no-start" in argv:
         return 0
-    missing = [k for k in KEYS if not os.path.exists(path(k))]
+    missing = [k for k in REQUIRED if not os.path.exists(path(k))]
     subprocess.run([SYSTEMCTL, "daemon-reload"], check=False)
     subprocess.run([SYSTEMCTL, "enable", "--now", "telegram-whisper-proxy.socket"], check=False)
     subprocess.run([SYSTEMCTL, "enable", "telegram-mcp.service"], check=False)
@@ -95,6 +146,10 @@ def main(argv):
         return 0
     r = subprocess.run([SYSTEMCTL, "restart", "telegram-mcp.service"], check=False)
     print("telegram-mcp.service (re)started" if r.returncode == 0 else "telegram-mcp.service failed to start: systemctl status telegram-mcp")
+    if "send_token" in data and os.path.exists(os.path.join(UNIT_DIR, "tgconfirm.service")):
+        subprocess.run([SYSTEMCTL, "enable", "tgconfirm.service"], check=False)
+        b = subprocess.run([SYSTEMCTL, "restart", "tgconfirm.service"], check=False)
+        print("tgconfirm.service (re)started" if b.returncode == 0 else "tgconfirm.service failed to start: systemctl status tgconfirm")
     return r.returncode
 
 
