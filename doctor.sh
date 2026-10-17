@@ -228,8 +228,8 @@ if [ ! -e /etc/ufw/.dotfiles-net ]; then
 else
   net_bad=""
   grep -qx 'ENABLED=yes' /etc/ufw/ufw.conf 2>/dev/null || net_bad="$net_bad; ufw.conf ENABLED is not yes"
-  systemctl is-active --quiet ufw.service || net_bad="$net_bad; ufw.service is not active"
-  systemctl is-enabled --quiet ufw.service || net_bad="$net_bad; ufw.service is not enabled (no firewall after a reboot)"
+  systemctl is-active --quiet ufw.service || net_bad="$net_bad; ufw.service is not active (sudo systemctl enable --now ufw.service, or sudo ./apply-system.sh --only net)"
+  systemctl is-enabled --quiet ufw.service || net_bad="$net_bad; ufw.service is not enabled (no firewall after a reboot; sudo systemctl enable --now ufw.service)"
   grep -qx 'DEFAULT_INPUT_POLICY="DROP"' /etc/default/ufw 2>/dev/null || net_bad="$net_bad; incoming is not default deny"
   grep -qx 'DEFAULT_OUTPUT_POLICY="ACCEPT"' /etc/default/ufw 2>/dev/null || net_bad="$net_bad; outgoing is not default allow"
   grep -qx 'IPV6=yes' /etc/default/ufw 2>/dev/null || net_bad="$net_bad; IPv6 rules are off"
@@ -449,7 +449,7 @@ if [ -x "$HOME/.local/bin/mcp-gateway" ]; then
     if [ "$(getent passwd aimcp | cut -d: -f7)" = /usr/bin/nologin ] && [ "$(stat -c %a "$aimcp_home" 2>/dev/null)" = 700 ] && ! id -nG aimcp | tr ' ' '\n' | grep -qxE 'wheel|docker|sudo'; then
       ok mcp-aimcp "aimcp: nologin, home 0700, not in wheel/docker"
     else bad mcp-aimcp "aimcp must have shell nologin, home 0700 and no wheel/docker membership"; fi
-    if sudo -n -u aimcp true >/dev/null 2>&1; then bad mcp-aimcp-sudo "the owner can reach aimcp without a password (sudo -n -u aimcp works)"
+    if sudo -k -n -u aimcp true >/dev/null 2>&1; then bad mcp-aimcp-sudo "the owner can reach aimcp without a password (sudo -k -n -u aimcp works)"
     elif machinectl --no-ask-password --quiet shell aimcp@ /usr/bin/true >/dev/null 2>&1; then bad mcp-aimcp-sudo "machinectl shell aimcp@ needs no password"
     else ok mcp-aimcp-sudo "aimcp is reachable only with a sudo password (no passwordless sudo -u / machinectl)"; fi
   else
@@ -484,7 +484,7 @@ if [ -x "$HOME/.local/bin/mcp-gateway" ]; then
       # everything tgconfirm can reach in the runtime dir, by the kernel's rules (named ACL entry, else the OTHER bits): only the Wayland socket
       snd_acl="$(python3 -I "$DOTFILES/infrastructure/users/acl-reach.py" "$(id -u tgconfirm)" "/run/user/$(id -u)" --allow "$(basename "${WAYLAND_DISPLAY:-wayland-1}")" 2>&1 | head -4 | paste -sd';')"
       [ -n "$snd_acl" ] && snd_bad="$snd_bad; tgconfirm can reach in /run/user/$(id -u) (named ACL or other bits): $snd_acl (only the Wayland socket is allowed; run: usr clipboard-acl)"
-      sudo -n -u tgconfirm true >/dev/null 2>&1 && snd_bad="$snd_bad; the owner can reach tgconfirm without a password"
+      sudo -k -n -u tgconfirm true >/dev/null 2>&1 && snd_bad="$snd_bad; the owner can reach tgconfirm without a password"
     fi
     if [ -n "${WAYLAND_DISPLAY:-}" ]; then
       if snd_wl="$(python3 -I "$DOTFILES/infrastructure/mcp/confirm/broker.py" --check-wayland 2>&1)"; then ok mcp-send-wayland "the broker's socket check accepts the live session ($snd_wl)"
