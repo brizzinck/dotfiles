@@ -1036,6 +1036,9 @@ section_greeter() {
 # Managed child users (stage U7): td, yc and later service users such as aimcp, all listed in infrastructure/users/managed.tsv
 # (the registry also read by the `usr` command and doctor.sh). What this section sets up, every step idempotent:
 #   * the managed users get NO access to the owner's home: their ACL entries on it (access + default) are removed;
+#   * leftover extended ACLs of the owner's home that nobody intended (default-ACL skeletons without a named entry: they make
+#     new files 0650/0750) are stripped, and the known secret locations (secret-paths.txt) become owner-only, both through
+#     infrastructure/users/home-acl.sh (before-state in /var/lib/usr-managed, keep list home-acl-keep.txt);
 #   * the owner keeps full access to the managed homes (u:OWNER:rwx plus a default ACL);
 #   * passwordless "become" for the owner, only for the listed users and never root: a sudoers drop-in (sudo -u USER ...)
 #     and a polkit rule (machinectl shell USER@); users flagged nobecome (aimcp) get neither;
@@ -1131,6 +1134,41 @@ users_acl_remove() {
   changed "removed every ACL entry of $u from $OWNER_HOME (before-state of the top levels: $saved)"
 }
 
+# users_home_acl_cleanup: strip the unintended extended ACLs (skeletons, leftover masks) of the owner's home and make the secret
+# locations owner-only. All logic is in infrastructure/users/home-acl.sh (`report` in a dry run, `apply` otherwise; the same
+# script backs doctor's `home-acl` check and the tests). USERS_ACL_ROOT replaces the home (test hook).
+users_home_acl_cleanup() {
+  local script="$USERS_DIR/home-acl.sh" root="${USERS_ACL_ROOT:-$OWNER_HOME}" out rc=0 res strip tighten
+  [ -d "$root" ] || return 0
+  if [ ! -x "$script" ]; then
+    warn "users: $script is missing, the home ACL cleanup was skipped"
+    return 0
+  fi
+  local args=(--root "$root" --owner "$OWNER" --state "$USERS_STATE" --repo "$REPO" --managed "$(managed_users | paste -sd' ' -)")
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "home ACL cleanup of $root (read-only report; nothing is changed):"
+    out="$("$script" report "${args[@]}" 2>&1)" || rc=$?
+  else
+    out="$("$script" apply "${args[@]}" 2>&1)" || rc=$?
+  fi
+  printf '%s\n' "$out" | grep -v '^RESULT ' | sed 's/^/  /'
+  res="$(printf '%s\n' "$out" | grep '^RESULT ' | tail -1)"
+  strip="$(sed -n 's/.*strip=\([0-9]*\).*/\1/p' <<<"$res")"
+  tighten="$(sed -n 's/.*tighten=\([0-9]*\).*/\1/p' <<<"$res")"
+  if [ "$rc" -ne 0 ] || [ -z "$res" ]; then
+    warn "users: the home ACL cleanup failed (exit $rc); run: $script report"
+    return 0
+  fi
+  if [ "${strip:-0}" -eq 0 ] && [ "${tighten:-0}" -eq 0 ]; then
+    log "unchanged: no unintended extended ACL under $root and every secret location is owner-only"
+  elif [ "$DRY_RUN" -eq 1 ]; then
+    log "[dry-run] would strip ${strip:-0} unintended ACLs and tighten ${tighten:-0} secret paths ($script apply)"
+    changed "would strip ${strip:-0} unintended extended ACLs and tighten ${tighten:-0} secret paths under $root"
+  else
+    changed "home ACL cleanup under $root: stripped ${strip:-0} unintended extended ACLs, tightened ${tighten:-0} secret paths (before-state in $USERS_STATE)"
+  fi
+}
+
 # users_home_acl USER: the owner gets u:OWNER:rwx and a default ACL on the managed home (once; later files inherit it)
 users_home_acl() {
   local u="$1" h
@@ -1186,6 +1224,8 @@ section_users() {
     getent passwd "$u" >/dev/null || { log "skip: account $u does not exist"; continue; }
     users_acl_remove "$u"
   done
+  # 2b. what no managed user owns any more: unintended extended ACLs of the owner's home, secret locations owner-only
+  users_home_acl_cleanup
 
   # 3. the owner reaches every managed home (unless flagged noacl)
   for u in $(managed_users acl); do
@@ -1263,7 +1303,7 @@ section_users() {
   fi
 
   followup "managed users: usr list | usr term td | SUPER+SHIFT+T (picker); checks: ./doctor.sh | grep users-"
-  followup "rollback of the users section: sudo $USERS_DIR/rollback.sh"
+  followup "rollback of the users section: sudo $USERS_DIR/rollback.sh (--home-acl-cleanup also puts the stripped ACL skeletons and the old secret modes back)"
 }
 
 # --- mcp ---------------------------------------------------------------------

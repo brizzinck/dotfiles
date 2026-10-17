@@ -928,6 +928,28 @@ if [ -r "$users_lib" ]; then
     [ "$n" -gt 0 ] && users_acl="$users_acl $u($n)"
   done
   if [ -z "$users_acl" ]; then ok users-acl-home "no managed user has an ACL entry on $HOME"; else users_report users-acl-home "ACL entries on $HOME remain for:$users_acl (sudo ./apply-system.sh --only users)"; fi
+  # no unintended extended ACL (default skeletons make new files 0650/0750) and the secret locations are owner-only; bounded scan
+  # (top 5 levels + the secret locations, 10 s); INFO until the users section ran with the cleanup (marker file), FAIL after it
+  if [ -x "$DOTFILES/infrastructure/users/home-acl.sh" ]; then
+    ha_out="$("$DOTFILES/infrastructure/users/home-acl.sh" check --budget 10 2>/dev/null)"
+    ha_get() { printf '%s\n' "$ha_out" | sed -n "s/^$1=//p" | head -1; }
+    ha_acl="$(ha_get acl_count)"; ha_mode="$(ha_get mode_count)"; ha_part="$(ha_get partial)"; ha_mark="$(ha_get marker)"
+    ha_note=""; [ "$ha_part" = 1 ] && ha_note=" (scan stopped at the time budget: partial)"
+    ha_msg=""
+    [ "${ha_acl:-0}" -gt 0 ] && ha_msg="$ha_acl unintended extended ACL(s) under $HOME, e.g. $(ha_get acl_examples)"
+    [ "${ha_mode:-0}" -gt 0 ] && ha_msg="${ha_msg:+$ha_msg; }$ha_mode secret path(s) group/other accessible, e.g. $(ha_get mode_examples)"
+    if [ -z "$ha_out" ]; then
+      info home-acl "home-acl.sh check gave no answer (run: infrastructure/users/home-acl.sh check)"
+    elif [ -z "$ha_msg" ]; then
+      ok home-acl "no unintended extended ACL, secret locations owner-only$ha_note"
+    elif [ "$ha_mark" = 1 ]; then
+      bad home-acl "$ha_msg$ha_note; fix: sudo ./apply-system.sh --only users (preview: infrastructure/users/home-acl.sh report)"
+    else
+      info home-acl "$ha_msg$ha_note; the users section has not run the cleanup yet: sudo ./apply-system.sh --only users"
+    fi
+  else
+    bad home-acl "infrastructure/users/home-acl.sh is missing or not executable"
+  fi
   # the owner reaches the managed homes
   users_noacl=""
   for u in $(managed_users acl); do

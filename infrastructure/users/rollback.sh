@@ -4,6 +4,11 @@
 #                                                    entries on the owner's home back (recursively, rwx on directories, rwX on files)
 #   sudo infrastructure/users/rollback.sh --srv      also remove /srv/dotfiles and /srv/nvim-shared
 #   sudo infrastructure/users/rollback.sh --home-acl also drop the owner's ACL from managed homes that had none before (yc)
+#   sudo infrastructure/users/rollback.sh --home-acl-cleanup
+#                                              put back what home-acl.sh stripped from the owner's home (the ACL skeletons, from
+#                                              the newest home-acl-before-*.txt.gz) and the modes of the secret locations (newest
+#                                              secret-modes-before-*.txt). Rarely wanted: the skeletons are what made new files
+#                                              0650/0750; the marker file is removed so doctor's home-acl check goes back to INFO
 # Not undone (never changed by the section): passwords, shells, groups, linger of td/yc, the user-level files in ~/dotfiles
 # (revert those commits; `usr link --restore` as the managed user puts its old links back).
 set -euo pipefail
@@ -13,12 +18,13 @@ if [ -z "$OWNER" ] || [ "$OWNER" = root ]; then echo "run this through sudo as t
 OWNER_HOME="$(getent passwd "$OWNER" | cut -d: -f6)"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE=/var/lib/usr-managed
-DO_SRV=0 DO_HOME=0
+DO_SRV=0 DO_HOME=0 DO_CLEAN=0
 for a in "$@"; do
   case "$a" in
     --srv) DO_SRV=1 ;;
     --home-acl) DO_HOME=1 ;;
-    -h | --help) sed -n '2,9p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    --home-acl-cleanup) DO_CLEAN=1 ;;
+    -h | --help) sed -n '2,14p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "unknown argument: $a" >&2; exit 2 ;;
   esac
 done
@@ -46,6 +52,24 @@ for u in $(managed_users); do
     rm -f -- "$STATE/home-acl-added-$u"
   fi
 done
+
+if [ "$DO_CLEAN" = 1 ]; then
+  last="$(ls -1 "$STATE"/home-acl-before-*.txt.gz 2>/dev/null | tail -1 || true)"
+  if [ -n "$last" ]; then
+    echo "restoring the extended ACLs of $OWNER_HOME from $last"
+    (cd / && zcat "$last" | setfacl --restore=-) || echo "warning: setfacl --restore reported errors (paths that no longer exist)"
+  else
+    echo "no home-acl-before-*.txt.gz in $STATE: no ACL to restore"
+  fi
+  last="$(ls -1 "$STATE"/secret-modes-before-*.txt 2>/dev/null | tail -1 || true)"
+  if [ -n "$last" ]; then
+    echo "restoring the modes of the secret locations from $last"
+    while IFS=$'\t' read -r m p; do [ -e "$p" ] && chmod "$m" -- "$p"; done <"$last"
+  else
+    echo "no secret-modes-before-*.txt in $STATE: no mode to restore"
+  fi
+  rm -f -- "$OWNER_HOME/.local/state/usr/home-acl-cleanup"
+fi
 
 if [ "$DO_SRV" = 1 ]; then
   rm -rf -- /srv/dotfiles /srv/nvim-shared

@@ -1,0 +1,8 @@
+# Paths (relative to the owner's home, a directory covers everything below it) whose extended ACLs are INTENDED and are never
+# stripped by `home-acl.sh` (apply-system.sh --only users, doctor check home-acl). One path per line, `#` comments.
+#
+# Empty on purpose. Measured 2026-10-18 on the owner's home: no tool of this setup puts an ACL on it (the clipboard ACLs of
+# `usr clipboard-acl` are on $XDG_RUNTIME_DIR, the managed homes carry the owner's ACL, not the other way round), flatpak and
+# the portals do not set ACLs in $HOME, and the only named entries ever found were the td/yc/aimcp/tgconfirm ones that the
+# users section removes. A path with a named entry of somebody else is kept anyway (and listed), files owned by another uid
+# (Docker volumes) are never touched. Add a line here only for an ACL somebody wants to keep.

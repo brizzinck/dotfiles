@@ -63,7 +63,10 @@ fi
 exec /usr/bin/getent "$@"
 FAKE
 chmod +x "$T/fakebin/getent"
-dry="$(PATH="$T/fakebin:$PATH" FAKE_PASSWD_OWNER="$ME" "$REPO/apply-system.sh" --dry-run --only users 2>&1)"
+mkdir -p "$T/dryhome/skel"
+setfacl -d -m g::r-x,o::r-x,m::r-x "$T/dryhome/skel" 2>/dev/null
+printf 'echo hi\n' >"$T/dryhome/leak.sh"
+dry="$(PATH="$T/fakebin:$PATH" FAKE_PASSWD_OWNER="$ME" USERS_ACL_ROOT="$T/dryhome" "$REPO/apply-system.sh" --dry-run --only users 2>&1)"
 case "$dry" in *"Runas_Alias USR_MANAGED = td, yc"*) ok ;; *) bad "sudoers Runas list is not td, yc" ;; esac
 case "$dry" in *"var managed = [\"td\", \"yc\"];"*) ok ;; *) bad "polkit list is not td, yc" ;; esac
 sudoers_rules="$(printf '%s\n' "$dry" | sed -n '/rendered .*50-usr-managed (mode/,/install -Dm440/p' | grep -E '\| (Runas_Alias|[a-z]+ ALL =)')"
@@ -271,6 +274,105 @@ if [ "$QUICK" = 0 ] && command -v nvim >/dev/null 2>&1; then
   rm -f "$T/shared/.ready"
   chmod a-w "$T/shared"
   expect "nvim: no .ready = own dirs" "nil" "$(probe NVIM_SHARED_DEFAULT="$T/shared")"
+fi
+
+# ── home ACL cleanup: skeletons stripped, secrets owner-only, keep list, idempotent, before-state (home-acl.sh) ─────────
+HA="$REPO/infrastructure/users/home-acl.sh"
+if mkdir -p "$T/aclprobe" && setfacl -d -m g::r-x "$T/aclprobe" 2>/dev/null && getfacl -p "$T/aclprobe" 2>/dev/null | grep -q '^default:'; then
+  # the dry run of apply-system.sh reported the fixture home and changed nothing
+  case "$dry" in *"extended ACLs under $T/dryhome: "*) ok ;; *) bad "dry run: no home ACL report for the fixture home" ;; esac
+  case "$dry" in *"would strip 1 unintended ACLs and tighten "*) ok ;; *) bad "dry run: wrong strip/tighten summary ($(printf '%s\n' "$dry" | grep 'would strip' | head -1))" ;; esac
+  getfacl -p "$T/dryhome/skel" | grep -q '^default:' && ok || bad "dry run removed the fixture's default ACL"
+
+  H="$T/aclhome" ST="$T/aclstate" REPOFIX="$T/aclrepo"
+  mkdir -p "$H/skel/sub" "$H/keep/in" "$H/sec/dir" "$H/sec2" "$H/outside" "$ST" "$REPOFIX"
+  setfacl -d -m g::r-x,o::r-x,m::r-x "$H/skel" "$H/keep"
+  mkdir -p "$H/skel/sub2" && touch "$H/skel/f" "$H/keep/in/f"            # inherit the skeleton
+  touch "$H/resid" "$H/mgd" "$H/oth" "$H/geff"
+  setfacl -m u:nobody:r "$H/resid" && setfacl -x u:nobody "$H/resid"       # what `setfacl -x user:td` leaves: a mask
+  setfacl -m u:nobody:r "$H/mgd"                                          # a managed user's entry (nobody stands for td)
+  setfacl -m u:daemon:r "$H/oth"                                          # somebody else's entry: kept
+  chmod 640 "$H/geff" && setfacl -n -m m::rwx "$H/geff"                   # group entry r--, mask rwx: effective r--
+  printf 'x\n' >"$H/outside/f"; chmod 644 "$H/outside/f"
+  printf 'k\n' >"$H/sec/f644"; chmod 644 "$H/sec/f644"
+  printf '#!/bin/sh\n' >"$H/sec/dir/run"; chmod 755 "$H/sec/dir/run"; chmod 755 "$H/sec/dir"; chmod 755 "$H/sec"
+  printf 's\n' >"$H/sec2/file"; chmod 644 "$H/sec2/file"; chmod 755 "$H/sec2"
+  ln -s "$H/outside" "$H/sec/link"
+  printf 'e\n' >"$REPOFIX/env.secret.sh"; chmod 755 "$REPOFIX/env.secret.sh"
+  printf 'keep\n' >"$T/keep.txt"
+  printf 'sec full\nsec2 top   # an app writes here\nmissing top\n@REPO@/env.secret.sh\n' >"$T/secrets.txt"
+  ha() { "$HA" "$1" --root "$H" --owner "$ME" --state "$ST" --managed nobody --keep "$T/keep.txt" --secrets "$T/secrets.txt" --repo "$REPOFIX" "${@:2}" 2>&1; }
+  acl_files() { getfacl -R -p -s "$H" 2>/dev/null | sed -n 's/^# file: //p' | sort; }
+  acl_before="$(acl_files)"
+  modes_before="$(find "$H" -xdev ! -type l -printf '%m %p\n' | sort)"
+
+  chk="$(ha check)"
+  case "$chk" in *"marker=0"*) ok ;; *) bad "home-acl check: marker should be absent before apply" ;; esac
+  case "$chk" in *"acl_count=0"*) bad "home-acl check sees no unintended ACL in the fixture" ;; *) ok ;; esac
+  case "$chk" in *"mode_count=0"*) bad "home-acl check sees no wide secret in the fixture" ;; *) ok ;; esac
+
+  rep="$(ha report)"
+  expect "report: nothing changed (ACLs)" "$acl_before" "$(acl_files)"
+  expect "report: nothing changed (modes)" "$modes_before" "$(find "$H" -xdev ! -type l -printf '%m %p\n' | sort)"
+  case "$rep" in *"extended ACLs under $H: "*"unintended, to strip"*) ok ;; *) bad "report: no ACL summary" ;; esac
+  case "$rep" in *"def:user+def:group+def:mask+def:other"*) ok ;; *) bad "report: the skeleton kind is not listed" ;; esac
+  case "$rep" in *"KEPT, a named entry of somebody else (1)"*"$H/oth"*) ok ;; *) bad "report: the named entry of daemon is not listed as kept" ;; esac
+  case "$rep" in *"KEPT, listed in keep.txt"*) ok ;; *) bad "report: the keep list is not applied" ;; esac
+  for needle in "755 -> 700  ~/sec/dir" "755 -> 700  ~/sec/dir/run" "644 -> 600  ~/sec/f644" "755 -> 700  ~/sec2"; do
+    case "$rep" in *"$needle"*) ok ;; *) bad "report: not listed with its before -> after mode: $needle" ;; esac
+  done
+  case "$rep" in *"$REPOFIX/env.secret.sh"*"755 -> 700"*) ok ;; *) bad "report: @REPO@/env.secret.sh is not listed" ;; esac
+  case "$rep" in *"absent (nothing to do): ~/missing"*) ok ;; *) bad "report: an absent secret path is not mentioned" ;; esac
+  case "$rep" in *"$H/outside/f"*) bad "report lists a path outside the secret locations" ;; *) ok ;; esac
+
+  app="$(ha apply)"
+  case "$app" in *"before-state"*"home-acl-before-"*) ok ;; *) bad "apply: no before-state announced" ;; esac
+  # what is left: only the daemon entry and the kept tree
+  left="$(acl_files | grep -v -e "^$H/oth\$" -e "^$H/keep" || true)"
+  expect "apply: no unintended ACL left" "" "$left"
+  getfacl -p "$H/oth" | grep -q '^user:daemon:r--' && ok || bad "apply: the named entry of daemon was removed"
+  getfacl -p "$H/keep" | grep -q '^default:' && ok || bad "apply: the keep-list tree lost its default ACL"
+  getfacl -p -s "$H/skel" >/dev/null 2>&1; [ -z "$(getfacl -p -s "$H/skel" 2>/dev/null)" ] && ok || bad "apply: skel still has an ACL"
+  touch "$H/skel/after"; expect "apply: a new file in the cleaned tree is 0644 (umask)" "644" "$(stat -c %a "$H/skel/after")"
+  mkdir "$H/skel/newdir"; expect "apply: a new directory is 0755 (umask)" "755" "$(stat -c %a "$H/skel/newdir")"
+  expect "apply: group bits follow the effective permission (r-- not r-x/rwx)" "640" "$(stat -c %a "$H/geff")"
+  expect "apply: secret dir 0700" "700" "$(stat -c %a "$H/sec")"
+  expect "apply: secret file 0600" "600" "$(stat -c %a "$H/sec/f644")"
+  expect "apply: executable below a secret dir 0700" "700" "$(stat -c %a "$H/sec/dir/run")"
+  expect "apply: top location 0700" "700" "$(stat -c %a "$H/sec2")"
+  expect "apply: below a top location tightened once" "600" "$(stat -c %a "$H/sec2/file")"
+  expect "apply: @REPO@ file 0700" "700" "$(stat -c %a "$REPOFIX/env.secret.sh")"
+  expect "apply: the target of a symlink is not followed" "755" "$(stat -c %a "$H/outside")"
+  expect "apply: path outside the secrets untouched" "644" "$(stat -c %a "$H/outside/f")"
+  zcat "$ST"/home-acl-before-*.txt.gz 2>/dev/null | grep -q "^# file: $H/skel\$" && ok || bad "apply: the before-state does not hold the stripped paths"
+  zcat "$ST"/home-acl-before-*.txt.gz 2>/dev/null | grep -q "^default:group::r-x" && ok || bad "apply: the before-state does not hold the default entries"
+  grep -q "$H/sec/f644" "$ST"/secret-modes-before-*.txt 2>/dev/null && ok || bad "apply: no before-modes recorded"
+  [ -e "$H/.local/state/usr/home-acl-cleanup" ] && ok || bad "apply: marker file missing"
+
+  modes_after="$(find "$H" -xdev ! -type l -printf '%m %p\n' | sort)"
+  again="$(ha apply)"
+  case "$again" in *"unchanged: no unintended extended ACL"*"RESULT strip=0 tighten=0"*) ok ;; *) bad "apply is not idempotent: $(printf '%s\n' "$again" | tail -3 | paste -sd'|' -)" ;; esac
+  expect "idempotent: modes identical to the first apply" "$modes_after" "$(find "$H" -xdev ! -type l -printf '%m %p\n' | sort)"
+
+  chk="$(ha check)"
+  case "$chk" in *"acl_count=0"*"mode_count=0"*"marker=1"*) ok ;; *) bad "home-acl check after apply: $(printf '%s' "$chk" | paste -sd' ' -)" ;; esac
+  chmod 644 "$H/sec2/file"
+  case "$(ha check)" in *"mode_count=0"*) ok ;; *) bad "check: a top location must only be judged on its own path" ;; esac
+  chmod 755 "$H/sec2"
+  case "$(ha check)" in *"mode_count=1"*) ok ;; *) bad "check: a wide top location is not reported" ;; esac
+  chmod 700 "$H/sec2"; chmod 644 "$H/sec/f644"
+  case "$(ha check)" in *"mode_count=1"*"~/sec/f644"*) ok ;; *) bad "check: a wide file in a full location is not reported" ;; esac
+  chmod 600 "$H/sec/f644"
+  mkdir -p "$H/late" && setfacl -d -m g::r-x,o::r-x,m::r-x "$H/late"
+  case "$(ha check)" in *"acl_count=1"*"~/late"*) ok ;; *) bad "check: a new skeleton is not reported" ;; esac
+
+  # rollback path: the saved before-state puts the skeletons back (what rollback.sh --home-acl-cleanup runs)
+  (cd / && zcat "$ST"/home-acl-before-*.txt.gz | setfacl --restore=- 2>/dev/null)
+  getfacl -p "$H/skel" 2>/dev/null | grep -q '^default:group::r-x' && ok || bad "rollback: the before-state does not restore the skeleton"
+  ha apply >/dev/null
+  [ -z "$(getfacl -p -s "$H/skel" 2>/dev/null)" ] && ok || bad "re-apply after the restore did not clean again"
+else
+  printf 'skip  home ACL cleanup tests: no ACL support in %s\n' "${TMPDIR:-/tmp}"
 fi
 
 printf 'users tests: %s passed, %s failed\n' "$PASS" "$FAIL"
