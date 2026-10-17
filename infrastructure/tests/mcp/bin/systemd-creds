@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
-# fake systemd-creds encrypt: `encrypt --with-key=... --name=N - OUTFILE` (value on stdin); the "sealed" file holds only a hash
+# fake systemd-creds: `encrypt --with-key=... --name=N - OUTFILE` (value on stdin) and `decrypt --name=N FILE -`.
+# The "sealed" file holds a hash line (what the tests compare) and the value in base64 (so the fake can "decrypt" it again).
 echo "systemd-creds $*" >>"${FAKE_DIR:-/tmp}/argv.log"
-[[ $1 == encrypt ]] || exit 2
-out="${@: -1}"
-printf 'SEALED:%s\n' "$(sha256sum | cut -d' ' -f1)" >"$out"
+case $1 in
+  encrypt)
+    out="${@: -1}"
+    v=$(base64 -w0)
+    printf 'SEALED:%s\n%s\n' "$(printf '%s' "$v" | sha256sum | cut -d' ' -f1)" "$v" >"$out"
+    ;;
+  decrypt)
+    file="${@: -2:1}"
+    [[ -r $file ]] || exit 1
+    sed -n 2p "$file" | base64 -d
+    ;;
+  *) exit 2 ;;
+esac
