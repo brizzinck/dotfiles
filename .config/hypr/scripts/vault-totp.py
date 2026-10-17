@@ -24,7 +24,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 RBW = os.environ.get("RBW_BIN", "rbw")
-RUN = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp") / "vault"
+RUN = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "vault"   # never /tmp: anybody can plant a directory there
 INDEX = RUN / "totp-index.tsv"
 INDEX_TTL = 600
 CLEAR_AFTER = int(os.environ.get("VAULT_CLEAR_AFTER", "30"))

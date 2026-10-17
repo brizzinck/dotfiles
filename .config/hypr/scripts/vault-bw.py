@@ -32,7 +32,9 @@ $XDG_RUNTIME_DIR/vault/bw.sock (dir 700, socket 600), the server is a user unit 
 (`_serve`: reads the 600 session file, puts the key into the environment of the one `bw serve` child, never argv; without a
 user manager it is a detached child). It starts when a bw action needs it, stops on lock, at login (session-start), when the
 rbw agent locks and after the rbw `lock_timeout` without a request (the session key stays; the next bw action starts it
-again). `bw()` below is the one client: REST over AF_UNIX (http.client), the CLI as fallback when the server cannot run
+again). The client trusts the socket only inside a real, 700, own-user $XDG_RUNTIME_DIR/vault (no /tmp fallback: it is
+/run/user/UID when the variable is unset; anything else = the CLI path) and only when SO_PEERCRED says the server is this
+user's, before one byte of a request is sent. `bw()` below is the one client: REST over AF_UNIX (http.client), the CLI as fallback when the server cannot run
 or the call has no REST form (Send, import, passphrases).
 
 Secrets: the master password only travels pinentry -> this process -> the environment of ONE `bw unlock` child
@@ -55,7 +57,9 @@ import secrets
 import shutil
 import signal
 import socket
+import stat
 import string
+import struct
 import subprocess
 import sys
 import time
@@ -67,7 +71,7 @@ BW = os.environ.get("BW_BIN", "bw")
 RBW = os.environ.get("RBW_BIN", "rbw")
 HERE = Path(__file__).resolve().parent
 TOTP_PY = HERE / "vault-totp.py"
-RUN = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp") / "vault"
+RUN = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "vault"   # never /tmp: anybody can plant a directory there
 SESSION = RUN / "bw-session"
 SOCK = RUN / "bw.sock"
 SERVE_PID = RUN / "bw-serve.pid"      # pid of the supervisor (`_serve`)
@@ -196,6 +200,25 @@ class ServeBroken(Exception):
     """The server went away in the middle of a request."""
 
 
+def run_dir_trusted():
+    """The directory that holds the socket and the session key is a real directory of this user that nobody else can enter
+    (a symlink, a foreign owner or group/other bits mean: do not talk to anything in it, use the CLI)."""
+    try:
+        st = os.lstat(RUN)
+    except OSError:
+        return False
+    return stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid() and not st.st_mode & 0o077
+
+
+def peer_is_me(sock):
+    """SO_PEERCRED: the process that owns the other end of the socket runs as this user."""
+    try:
+        _pid, uid, _gid = struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))
+    except (OSError, struct.error):
+        return False
+    return uid == os.getuid()
+
+
 class _UnixConn(http.client.HTTPConnection):
     def __init__(self, path, timeout):
         super().__init__(SERVE_HOST, timeout=timeout)
@@ -209,6 +232,9 @@ class _UnixConn(http.client.HTTPConnection):
         except OSError:
             s.close()
             raise
+        if not peer_is_me(s):   # nothing is sent (item JSON, passwords) to a server another user owns
+            s.close()
+            raise ServeDown("the socket is served by another user")
         self.sock = s
 
 
@@ -236,6 +262,8 @@ def rest(method, path, query=None, body=None, ctype="application/json", timeout=
     headers = {"Accept": "application/json"}
     if data is not None:
         headers["Content-Type"] = ctype
+    if not run_dir_trusted():
+        raise ServeDown(f"{RUN} is not a private directory of this user")
     conn = _UnixConn(str(SOCK), timeout)
     try:
         try:
@@ -318,6 +346,8 @@ def start_serve(wait=20.0):
         RUN.mkdir(parents=True, exist_ok=True)
         os.chmod(RUN, 0o700)
         import fcntl
+        if not run_dir_trusted():
+            raise OSError("not a private directory of this user")
         lock = os.open(SERVE_LOCK, os.O_WRONLY | os.O_CREAT, 0o600)
     except OSError:
         _start_failed = True

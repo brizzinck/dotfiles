@@ -262,6 +262,67 @@ PY' _ "$V"
   check "  and no bw process was needed for it" bash -c '! grep -aq "^bw generate" "$1/argv.log"' _ "$FAKE"
   stop_bw_servers
   quick_linux_pass_unreadable
+  quick_socket_trust
+}
+
+# BW1-fix 2: the socket is only trusted inside a private directory of this user and only when its peer is this user
+quick_socket_trust() {
+  local V="$SCRIPTS/vault-bw.py" out
+  reset unlocked
+  # shellcheck disable=SC1091
+  . "$FAKE/env.sh"
+  check "RUN has no /tmp fallback: without XDG_RUNTIME_DIR it is /run/user/UID/vault (all three scripts)" bash -c 'for f in vault-bw vault-browse vault-totp; do ! grep -q "or \"/tmp\"" "$1/$f.py" || exit 1; done; out=$(env -u XDG_RUNTIME_DIR python3 -I -c "
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location(\"vb\", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(m.RUN)" "$1/vault-bw.py"); [ "$out" = "/run/user/$(id -u)/vault" ]' _ "$SCRIPTS"
+  out=$(python3 -I - "$V" "$FAKE" <<'PY'
+import importlib.util, os, socket, sys, threading
+spec = importlib.util.spec_from_file_location("vb", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+fake = sys.argv[2]
+# 1. directory rules
+d = os.path.join(fake, "trust"); os.makedirs(d, mode=0o700, exist_ok=True); os.chmod(d, 0o700)
+m.RUN = type(m.RUN)(d)
+print("private", m.run_dir_trusted())
+os.chmod(d, 0o755); print("open", m.run_dir_trusted()); os.chmod(d, 0o700)
+link = os.path.join(fake, "trust-link")
+if not os.path.islink(link): os.symlink(d, link)
+m.RUN = type(m.RUN)(link); print("symlink", m.run_dir_trusted()); m.RUN = type(m.RUN)(d)
+real = os.getuid(); os.getuid = lambda: real + 1; print("foreign", m.run_dir_trusted()); os.getuid = lambda: real
+# 2. peer check on a live socket pair
+a, b = socket.socketpair(socket.AF_UNIX); print("peer-me", m.peer_is_me(a))
+os.getuid = lambda: real + 1; print("peer-other", m.peer_is_me(a)); os.getuid = lambda: real
+# 3. a hostile server: listens in a trusted directory, owned (as far as the client can tell) by somebody else
+m.SOCK = type(m.RUN)(os.path.join(d, "bw.sock")); m.SOCK.unlink(missing_ok=True)
+srv = socket.socket(socket.AF_UNIX); srv.bind(str(m.SOCK)); srv.listen(1); srv.settimeout(3)
+got = []
+def accept():
+    try:
+        c, _ = srv.accept(); c.settimeout(1)
+        try: got.append(c.recv(4096))
+        except OSError: pass
+    except OSError: pass
+t = threading.Thread(target=accept); t.start()
+os.getuid = lambda: real + 1
+m.run_dir_trusted = lambda: True      # isolate the peer check
+try:
+    m.rest("POST", "/object/item", body=b"SECRET-ITEM-BODY")
+    print("hostile", "SENT")
+except m.ServeDown as e:
+    print("hostile ServeDown")
+t.join(); print("received", b"".join(got) == b"")
+PY
+)
+  check "trust: a private 0700 directory of this user is trusted" grep -qx 'private True' <<<"$out"
+  check "trust: group/other bits, a symlink and a foreign owner are not" bash -c 'grep -qx "open False" <<<"$1" && grep -qx "symlink False" <<<"$1" && grep -qx "foreign False" <<<"$1"' _ "$out"
+  check "SO_PEERCRED: the peer uid must be ours" bash -c 'grep -qx "peer-me True" <<<"$1" && grep -qx "peer-other False" <<<"$1"' _ "$out"
+  check "hostile socket (peer of another uid): ServeDown, not one byte of the request is sent" bash -c 'grep -qx "hostile ServeDown" <<<"$1" && grep -qx "received True" <<<"$1"' _ "$out"
+  # a RUN that is a symlink: no server is started or used, the call goes to the CLI
+  stop_bw_servers
+  mkdir -p "$FAKE/lrun"; rm -rf "$FAKE/lrun/vault"; ln -s "$RUN/vault" "$FAKE/lrun/vault"
+  : >"$FAKE/argv.log"
+  out=$(XDG_RUNTIME_DIR="$FAKE/lrun" python3 -I "$V" call list folders </dev/null)
+  check "untrusted run directory: bw runs as a CLI process, no server, no socket request" bash -c 'jq -e "type==\"array\"" <<<"$1" >/dev/null && grep -aq "^bw list folders" "$2/argv.log" && ! grep -aqE "^(bw serve|bw-serve)" "$2/argv.log"' _ "$out" "$FAKE"
+  rm -rf "$FAKE/lrun" "$FAKE/trust" "$FAKE/trust-link"
 }
 
 # BW1-fix 1: a folder that cannot be read is not an empty folder (linux-pass used to create duplicates). The command needs a
