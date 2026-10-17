@@ -665,8 +665,20 @@ section_config() {
   # coredump limits
   install_file "$INFRA/systemd/coredump-limits.conf" /etc/systemd/coredump.conf.d/limits.conf
 
-  # TLP drop-in (61-battery-care.conf only sets STOP_CHARGE_THRESH_*, no overlap with these keys)
-  install_file "$INFRA/tlp/62-power.conf" /etc/tlp.d/62-power.conf
+  # TLP drop-ins (61-battery-care.conf only sets STOP_CHARGE_THRESH_*, no overlap with 62-power.conf, which sets
+  # platform profile, EPP and boost for all three tlp-pd profiles). TLP reads /etc/tlp.d only on a run, so it is
+  # started again (applies the active profile) exactly when one of the two files changed.
+  local tlp_changed=0 f
+  for f in 61-battery-care.conf 62-power.conf; do
+    cmp -s -- "$INFRA/tlp/$f" "/etc/tlp.d/$f" 2>/dev/null || tlp_changed=1
+    install_file "$INFRA/tlp/$f" "/etc/tlp.d/$f"
+  done
+  if [ "$tlp_changed" -eq 1 ] && command -v tlp >/dev/null 2>&1; then
+    try tlp start
+    changed "tlp start (applied /etc/tlp.d/61-battery-care.conf and 62-power.conf to the active profile)"
+  else
+    log "tlp start not needed (/etc/tlp.d drop-ins unchanged)"
+  fi
 
   config_i2c
 }
@@ -720,7 +732,7 @@ section_services() {
   run systemctl daemon-reload
   local u
   # tlp-pd.service (TLP Profiles Daemon) is D-Bus activated and sits next to tlp.service: it only runs "tlp <profile>"
-  # for profile switches (tlpctl), the *_ON_AC/BAT values of /etc/tlp.d/62-power.conf stay the defaults
+  # for profile switches (tlpctl); performance -> *_ON_AC, balanced -> *_ON_BAT, power-saver -> *_ON_SAV of /etc/tlp.d/62-power.conf
   for u in fstrim.timer paccache.timer reflector.timer earlyoom.service tlp-pd.service; do
     # one unit at a time: a missing unit (for example after a failed install) must not cancel the others
     try systemctl enable --now "$u"
@@ -738,11 +750,6 @@ section_services() {
     followup "after reboot: docker info --format '{{json .BuilderGC}}' 2>/dev/null; docker start pgadmin   # restart=no container"
   else
     log "docker restart not needed (daemon.json already applied or docker is not running)"
-  fi
-
-  if command -v tlp >/dev/null 2>&1; then
-    try tlp start
-    changed "tlp start (applied /etc/tlp.d/62-power.conf)"
   fi
 
   # reflector: read-only sanity check of the shipped configuration

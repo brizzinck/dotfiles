@@ -165,6 +165,57 @@ else
   bad swap-zram "no zram swap device active"
 fi
 
+# ── TLP power profiles (62-power.conf: every key for all three tlp-pd profiles) ─
+# performance -> *_ON_AC, balanced -> *_ON_BAT, power-saver -> *_ON_SAV. The installed copy must equal the repo file (INFO while
+# the owner has not applied it: the old copy has no CPU_BOOST_ON_AC), and the live boost / EPP / platform profile must match the
+# active tlp-pd profile. Platform profile mismatch is INFO only (Fn+Q changes it behind TLP until the next TLP run).
+tlp_repo="$DOTFILES/infrastructure/tlp"
+tlp_inst=/etc/tlp.d/62-power.conf
+tlp_val() { sed -n "s/^$2=//p" "$1" | tail -1; } # tlp_val FILE KEY
+if [ ! -r "$tlp_inst" ]; then
+  info tlp-power "$tlp_inst not installed (sudo ~/dotfiles/apply-system.sh --only config)"
+elif ! cmp -s "$tlp_repo/62-power.conf" "$tlp_inst" || ! cmp -s "$tlp_repo/61-battery-care.conf" /etc/tlp.d/61-battery-care.conf; then
+  if grep -q '^CPU_BOOST_ON_AC=' "$tlp_inst"; then
+    bad tlp-power "/etc/tlp.d/6[12]-*.conf differ from infrastructure/tlp (sudo ~/dotfiles/apply-system.sh --only config)"
+  else
+    info tlp-power "old /etc/tlp.d/62-power.conf installed (no CPU_BOOST_ON_AC, boost stays off on AC after battery): sudo ~/dotfiles/apply-system.sh --only config"
+  fi
+else
+  tlp_missing=""
+  for sfx in AC BAT SAV; do
+    for k in PLATFORM_PROFILE CPU_ENERGY_PERF_POLICY CPU_BOOST; do
+      [ -n "$(tlp_val "$tlp_repo/62-power.conf" "${k}_ON_$sfx")" ] || tlp_missing="$tlp_missing ${k}_ON_$sfx"
+    done
+  done
+  tlp_prof="$(tlpctl get 2>/dev/null)"
+  case "$tlp_prof" in performance) sfx=AC ;; balanced) sfx=BAT ;; power-saver) sfx=SAV ;; *) sfx="" ;; esac
+  if [ -n "$tlp_missing" ]; then
+    bad tlp-power "repo 62-power.conf lacks:$tlp_missing"
+  elif [ -z "$sfx" ]; then
+    ok tlp-power "installed copy equals the repo; active tlp-pd profile unknown (tlpctl get: '${tlp_prof:-none}'), live values not checked"
+  else
+    want_pp="$(tlp_val "$tlp_repo/62-power.conf" PLATFORM_PROFILE_ON_$sfx)"
+    want_epp="$(tlp_val "$tlp_repo/62-power.conf" CPU_ENERGY_PERF_POLICY_ON_$sfx)"
+    want_boost="$(tlp_val "$tlp_repo/62-power.conf" CPU_BOOST_ON_$sfx)"
+    have_pp="$(cat /sys/firmware/acpi/platform_profile 2>/dev/null)"
+    have_boost="$(cat /sys/devices/system/cpu/cpufreq/boost 2>/dev/null)"
+    have_epp="$(cat /sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference 2>/dev/null | sort -u | tr '\n' ' ' | sed 's/ $//')"
+    have_dyn="$(cat /sys/devices/system/cpu/amd_pstate/dynamic_epp 2>/dev/null)"
+    tlp_bad=""
+    [ -z "$have_boost" ] || [ "$have_boost" = "$want_boost" ] || tlp_bad="$tlp_bad boost=$have_boost(want $want_boost)"
+    [ -z "$have_epp" ] || [ "$have_epp" = "$want_epp" ] || tlp_bad="$tlp_bad epp='$have_epp'(want $want_epp)"
+    [ -z "$have_dyn" ] || [ "$have_dyn" = disabled ] || tlp_bad="$tlp_bad dynamic_epp=$have_dyn(want disabled)"
+    if [ -n "$tlp_bad" ]; then
+      bad tlp-power "profile $tlp_prof:$tlp_bad (run: sudo tlp start)"
+    elif [ -n "$have_pp" ] && [ "$have_pp" != "$want_pp" ]; then
+      ok tlp-power "profile $tlp_prof: boost $have_boost, EPP $have_epp as configured"
+      info tlp-platform "platform profile is $have_pp, the config says $want_pp for $tlp_prof (Fn+Q changes it until the next TLP run)"
+    else
+      ok tlp-power "profile $tlp_prof: boost $have_boost, EPP $have_epp, platform ${have_pp:-n/a} as configured; dynamic_epp ${have_dyn:-n/a}"
+    fi
+  fi
+fi
+
 # ── Hyprland / waybar ───────────────────────────────────────────────────────────
 # The config is Lua: hyprland.lua is the only entry point, a leftover hyprland.conf must not exist (the .conf format is
 # deprecated and goes away in Hyprland 0.57), and the live bind table must come from the Lua file (Lua binds report the
