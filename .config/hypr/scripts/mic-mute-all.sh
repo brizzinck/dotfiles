@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Mute or unmute every microphone (all PipeWire Audio/Source nodes, not just the default one).
 #   mic-mute-all.sh             SUPER+SHIFT+M: if any microphone is live, mute all; otherwise unmute the default one
-#   mic-mute-all.sh status      print each source and its mute state; exit 0 when every microphone is muted
+#   mic-mute-all.sh status      print each source and its mute state; exit 0 when every microphone is muted. Always silent
+#                               (hub toggle row, waybar): no microphone at all prints nothing and exits 1; only a real toggle notifies
 #   --dry-run                   print the wpctl commands instead of running them
 # The waybar module (pulseaudio#mic) shows the DEFAULT source, and muting all always includes it, so the bar
 # reflects the change. A source that appears later (hot-plugged mic) starts unmuted; press the key again.
@@ -20,7 +21,10 @@ done
 mapfile -t SOURCES < <(pw-dump | jq -r '.[] | select(.type == "PipeWire:Interface:Node")
   | select(.info.props["media.class"] == "Audio/Source")
   | "\(.id)\t\(.info.props["node.description"] // .info.props["node.name"])"')
-((${#SOURCES[@]})) || { notify-send -a mic -u low "Microphones" "no microphone found"; exit 1; }
+if ((${#SOURCES[@]} == 0)); then
+  [[ $CMD == status ]] || notify-send -a mic -u low "Microphones" "no microphone found"
+  exit 1
+fi
 
 live=0
 for s in "${SOURCES[@]}"; do
