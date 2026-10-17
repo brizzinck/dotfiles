@@ -3,7 +3,7 @@
 #
 # Artwork: Bibata Modern (vector sources, GPL-3.0-or-later) through the rtgiskard/bibata_cursor build tool, which writes the
 # hyprcursor (SVG) and the XCursor build of the same art. Colours come from the palette: pointer.json is rendered by
-# themes/palette/render.py (fill = fg, outline = bg_oled, accent = green) and copied next to this file by apply-system.sh,
+# themes/palette/render.py (fill = green, outline = bg_oled, accent = bg_oled) and copied next to this file by apply-system.sh,
 # together with `build-stamp` (sha256 of PKGBUILD + pointer.json) that the package ships so apply-system.sh can tell whether
 # the installed theme is current.
 #
@@ -12,7 +12,7 @@
 #   cat PKGBUILD pointer.json | sha256sum > build-stamp && makepkg -f
 pkgname=everforest-cursor-theme
 pkgver=2025.01.28
-pkgrel=1
+pkgrel=2
 pkgdesc='Everforest pointer theme: Bibata Modern shape recoloured from the palette (hyprcursor SVG + XCursor)'
 arch=(any)
 url='https://github.com/rtgiskard/bibata_cursor'
@@ -38,7 +38,7 @@ p = json.load(open(sys.argv[1]))
 for key in ("name", "fill", "outline", "accent"):
     assert re.fullmatch(r"[A-Za-z0-9_-]+|#[0-9a-fA-F]{6}", p[key]), key
 rj = json.load(open("config/render.json"))
-# Bibata placeholders: 00FF00 body, 0000FF outline, FF0000 busy disk; the four pies of the busy cursor are hard-coded
+# Bibata placeholders: 00FF00 body, 0000FF outline, FF0000 busy disk; the four pies of the busy cursor (drawn at 80% opacity over the fill disk) are hard-coded
 # Windows colours that do not belong to any palette, so they become the accent
 colors = [
     {"match": "#00FF00", "replace": p["fill"]},

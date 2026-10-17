@@ -8,8 +8,8 @@
 #   build.sh --build OUTDIR       build the package into OUTDIR (makepkg, no install); prints the package path
 #   build.sh --install            --build into a temp dir, then `sudo pacman -U` it (skipped when up to date)
 #   --dry-run (with --build/--install)  print what would happen
-# Colours: themes/generated/black/pointer.json (rendered by themes/palette/render.py from the palette tokens fg, bg_oled,
-# green; black and night are identical, the pointer does not follow the theme variant).
+# Colours: themes/generated/black/pointer.json (rendered by themes/palette/render.py from the palette tokens green, bg_oled;
+# black and night are identical, the pointer does not follow the theme variant).
 set -u
 
 HERE=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
