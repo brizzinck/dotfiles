@@ -581,3 +581,15 @@ hl.bind("XF86AudioPrev", hl.dsp.exec_cmd("playerctl previous"), { locked = true,
 -- (hub / waybar toggle, lid.sh) holds a logind inhibitor so closing the lid does not suspend ---
 hl.bind("switch:on:Lid Switch", hl.dsp.exec_cmd(scripts .. "/lid.sh event close"), { locked = true })
 hl.bind("switch:off:Lid Switch", hl.dsp.exec_cmd(scripts .. "/lid.sh event open"), { locked = true })
+
+-- --- text consoles: Ctrl+Alt+F1..F6 ---
+-- Hyprland switches the VT itself on the XF86Switch_VT_n keysyms. These binds are a second path through logind (the active
+-- session may switch its seat), so the rescue console works without the keysym too. logind starts autovt@ttyN (a getty)
+-- on a VT that has no session. Only F2 is described (hub and cheatsheet row); F1 goes back to the graphical VT.
+local vt_switch = "busctl call org.freedesktop.login1 /org/freedesktop/login1/seat/seat0 org.freedesktop.login1.Seat SwitchTo u "
+for n = 1, 6 do
+    hl.bind("CTRL + ALT + F" .. n, hl.dsp.exec_cmd(vt_switch .. n), {
+        locked = true,
+        description = n == 2 and "Text console on TTY2 (rescue; Ctrl+Alt+F1 returns)" or nil,
+    })
+end

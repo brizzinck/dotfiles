@@ -66,3 +66,10 @@ hl.config({
 -- Closing the lid at the login screen turns the panel off; logind still decides about suspend.
 hl.bind("switch:on:Lid Switch", hl.dsp.dpms({ action = "off", monitor = "eDP-1" }), { locked = true })
 hl.bind("switch:off:Lid Switch", hl.dsp.dpms({ action = "on", monitor = "eDP-1" }), { locked = true })
+
+-- Text consoles: Ctrl+Alt+F1..F6. Hyprland switches the VT itself on the XF86Switch_VT_n keysyms; these binds are a second
+-- path through logind (the active greeter session may switch its seat), so the rescue console (TTY2) works without them.
+local vt_switch = "busctl call org.freedesktop.login1 /org/freedesktop/login1/seat/seat0 org.freedesktop.login1.Seat SwitchTo u "
+for n = 1, 6 do
+    hl.bind("CTRL + ALT + F" .. n, hl.dsp.exec_cmd(vt_switch .. n), { locked = true })
+end
