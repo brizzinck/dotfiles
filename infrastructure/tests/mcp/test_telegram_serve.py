@@ -193,6 +193,13 @@ async def send_tests():
     clock[0] += 601
     st, _, _ = await post(app, SEND_TOKEN, {**good_send, "request_id": "req-after-rate"})
     check("/x-send: the rate window slides (a send is possible again after 10 minutes)", st == 200)
+    clock[0] += 601
+    n_res = len([c for c in be.calls if c[0] == "resolve"])
+    be_res0 = n_res
+    codes = [(await post(app, SEND_TOKEN, {"action": "resolve", "account": "main", "chat": "Work chat"}))[0] for _ in range(35)]
+    check("/x-send: resolve is rate limited too (30 per 10 minutes, then 429, and the backend is not asked any more)",
+          codes.count(200) == 30 and codes[-1] == 429 and len([c for c in be.calls if c[0] == "resolve"]) == be_res0 + 30)
+    clock[0] += 601
 
 
 async def audit_tests():
@@ -250,6 +257,7 @@ if os.environ.get("RUN_REAL_SERVER") == "1":
     user = types.User(id=42, first_name="Ann", last_name="Lee", username="ann")
     other = types.User(id=555, first_name="Stranger")
     ents = {-1000000001111: chan, 42: user, 555: other, "@ann": user, "@stranger": other}
+    lookups = []
 
     class FakeMsg:
         id = 900
@@ -266,6 +274,7 @@ if os.environ.get("RUN_REAL_SERVER") == "1":
             return FakeMsg()
 
     async def fake_resolve(ident, client=None):
+        lookups.append(ident)
         if ident in ents:
             return ents[ident]
         raise ValueError("unknown")
@@ -281,13 +290,25 @@ if os.environ.get("RUN_REAL_SERVER") == "1":
         check("glue: a title resolves among the allowed chats only", r["chat_id"] == -1000000001111 and r["name"] == "Work chat" and r["kind"] == "Supergroup")
         r = await be.resolve("main", "@ann", scfg["ids"], scfg["allowed"], reply_to=7)
         check("glue: @username resolves, the reply preview is read", r["chat_id"] == 42 and r["name"] == "Ann Lee" and r["username"] == "ann" and r["reply_preview"] == "replied-to text")
-        refused = []
-        for chat in ("@stranger", 555, "Stranger"):
+        refused, msgs = [], set()
+        n0 = len(lookups)
+        for chat in ("@stranger", 555, "Stranger", "@nobody-at-all", 123456789, "no such title", "-100999"):
             try:
                 await be.resolve("main", chat, scfg["ids"], scfg["allowed"])
             except serve.SendError as e:
                 refused.append(e.status)
-        check("glue: a chat that is readable but not sendable is refused", refused == [403, 403, 404])
+                msgs.add(e.message)
+        check("glue: a chat that is readable but not sendable is refused (always 403, one message: no oracle for names or usernames)", refused == [403] * 7 and len(msgs) == 1)
+        check("glue: ... and none of those refusals made a Telegram lookup (no FLOOD_WAIT risk, nothing about other chats is fetched)", len(lookups) == n0)
+        check("glue: the lookups so far were only the allowlisted chats, once (cached)", sorted(map(str, lookups)) == sorted(map(str, scfg["ids"])))
+        r = await be.resolve("main", 42, scfg["ids"], scfg["allowed"])
+        r2 = await be.resolve("main", "-42", scfg["ids"], scfg["allowed"])
+        check("glue: a numeric id of an allowlisted chat resolves from the cache (any allowed spelling)", r["name"] == "Ann Lee" and r2["chat_id"] == 42 and len(lookups) == n0)
+        r = await be.resolve("main", "ann lee", scfg["ids"], scfg["allowed"])
+        check("glue: a title match is case-insensitive and local", r["chat_id"] == 42 and len(lookups) == n0)
+        be.clock = lambda: 10 ** 9
+        await be.resolve("main", "@ann", scfg["ids"], scfg["allowed"])
+        check("glue: the cache expires and the allowlisted chats are fetched again", len(lookups) == n0 + len(scfg["ids"]))
         out = await be.send("main", -1000000001111, "plain **text**", None, scfg["allowed"])
         check("glue: send goes through the same client, plain text (parse_mode=None), same entity", out["chat_id"] == -1000000001111 and FakeClient.sent == [(chan, "plain **text**", None, None)])
         try:
