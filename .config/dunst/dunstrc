@@ -68,15 +68,15 @@
     msg_urgency = critical
     fullscreen = show
 
-# Per-app accents (frame_color/highlight come from the theme drop-in: red = recording, yellow = attention, orange =
-# caution). Critical keeps the red frame (these rules only match normal/low).
-# Screen recorder (hypr/scripts/rec-toggle.sh): red = recording
+# Per-app accents (frame_color/highlight come from the theme drop-in, soft tokens only: red_soft = recording,
+# yellow_soft = attention and battery caution). Critical keeps the red_soft frame (these rules only match normal/low).
+# Screen recorder (hypr/scripts/rec-toggle.sh): red_soft = recording
 [recorder]
     appname = recorder
     msg_urgency = normal
     timeout = 3
 
-# Idle toggle (hypr/scripts/idle-toggle.sh): yellow = attention; replaces itself via the stack tag
+# Idle toggle (hypr/scripts/idle-toggle.sh): yellow_soft = attention; replaces itself via the stack tag
 [idle]
     appname = idle
     msg_urgency = normal
