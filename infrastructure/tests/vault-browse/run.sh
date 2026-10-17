@@ -210,6 +210,13 @@ quick_bw1() {
   python3 -I "$V" call create attachment --file "$FAKE/up2.txt" --itemid i-github </dev/null >/dev/null
   python3 -I "$V" call get attachment att-1 --itemid i-github --output "$FAKE/dl/got.bin" </dev/null >/dev/null
   check "server: attachment upload (multipart) and download (to a 600 file)" bash -c '[ "$(cat "$1/last-upload")" = "upload me" ] && [ "$(cat "$1/dl/got.bin")" = ATTACHMENT-CONTENT ] && [ "$(stat -c %a "$1/dl/got.bin")" = 600 ]' _ "$FAKE"
+  # BW1-fix 6: non-ASCII, quotes and a newline in the file name arrive intact (the fake server decodes like busboy)
+  for nm in 'отчёт ünï 日本.txt' 'a"b;c.txt' $'line\nbreak.txt'; do
+    printf 'x' >"$FAKE/$nm"
+    python3 -I "$V" call create attachment --file "$FAKE/$nm" --itemid i-github </dev/null >/dev/null
+    check "attachment upload keeps the file name: $(printf '%q' "$nm")" bash -c 'jq -e --arg n "$2" "any(.items[]|select(.id==\"i-github\")|.attachments[]?.fileName; . == \$n)" "$1" >/dev/null' _ "$FAKE/vault.json" "$nm"
+    rm -f "$FAKE/$nm"
+  done
   check "server: an error answer keeps the CLI behaviour (exit 1, message on stderr)" bash -c 'out=$(python3 -I "$1" call get item i-nothing </dev/null 2>&1); rc=$?; [ $rc = 1 ] && grep -q "Not found" <<<"$out"' _ "$V"
   check "no REST form (Send create) falls back to the CLI process" bash -c ': >"$1/argv.log"; echo "{}" | base64 -w0 | python3 -I "$2" call --stdin send create >/dev/null 2>&1; grep -aq "^bw send create" "$1/argv.log"' _ "$FAKE" "$V"
   # lock stops the server, drops the session

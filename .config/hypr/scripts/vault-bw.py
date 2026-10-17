@@ -429,9 +429,17 @@ def split_args(a):
 
 
 def multipart(field_name, filename, content):
+    """multipart/form-data body with one file part. The file name goes out twice, like a browser would: `filename*=UTF-8''..`
+    (RFC 5987, percent-encoded UTF-8: busboy, which bw serve uses, prefers it) and an ASCII-only plain `filename=".."` for
+    parsers that do not know the star form (busboy reads a plain one as latin1, which garbled every non-ASCII name).
+    Quote, CR and LF are %-escaped in the plain form (WHATWG) so they cannot end the parameter or the header line."""
     boundary = "----vaultbw" + secrets.token_hex(12)
-    head = (f'--{boundary}\r\nContent-Disposition: form-data; name="{field_name}"; filename="{filename}"\r\n'
-            "Content-Type: application/octet-stream\r\n\r\n").encode()
+    plain = "".join(
+        {'"': "%22", "\r": "%0D", "\n": "%0A"}.get(c, c if " " <= c < "\x7f" and c != "\\" else "_") for c in filename)
+    star = urllib.parse.quote(filename, safe="!#$&+-.^_`|~", encoding="utf-8", errors="replace")
+    head = (f'--{boundary}\r\nContent-Disposition: form-data; name="{field_name}"; filename="{plain}"; '
+            f"filename*=UTF-8''{star}\r\n"
+            "Content-Type: application/octet-stream\r\n\r\n").encode("ascii")
     return head + content + f"\r\n--{boundary}--\r\n".encode(), f"multipart/form-data; boundary={boundary}"
 
 

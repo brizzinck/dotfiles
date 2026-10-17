@@ -56,6 +56,42 @@ TEMPLATES = {
 }
 
 
+def disposition_filename(head):
+    """The file name the way busboy (multer, behind the real bw serve) reads it: `filename*` (RFC 5987, charset''pct) wins,
+    else the plain parameter, a quoted string with backslash escapes, decoded as latin1 (busboy's defParamCharset)."""
+    line = next((l for l in head.split(b"\r\n") if l.lower().startswith(b"content-disposition:")), b"")
+    params, i, n = {}, line.find(b";"), len(line)
+    while 0 <= i < n:
+        i += 1
+        while i < n and line[i:i + 1] in (b" ", b";"):
+            i += 1
+        j = line.find(b"=", i)
+        if j < 0:
+            break
+        key = line[i:j].strip().lower().decode("latin1")
+        i = j + 1
+        val = bytearray()
+        if line[i:i + 1] == b'"':
+            i += 1
+            while i < n and line[i:i + 1] != b'"':
+                if line[i:i + 1] == b"\\" and i + 1 < n:
+                    i += 1
+                val += line[i:i + 1]
+                i += 1
+            i += 1
+        else:
+            k = line.find(b";", i)
+            k = n if k < 0 else k
+            val += line[i:k].strip()
+            i = k
+        params[key] = bytes(val)
+    if "filename*" in params:
+        charset, _, rest = params["filename*"].partition(b"'")
+        _lang, _, enc = rest.partition(b"'")
+        return urllib.parse.unquote_to_bytes(enc.decode("ascii")).decode(charset.decode() or "utf-8", "replace")
+    return params.get("filename", b"").decode("latin1")
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -164,7 +200,7 @@ class Handler(BaseHTTPRequestHandler):
             part = body.split(b"--" + boundary)[1]
             head, _, content = part.partition(b"\r\n\r\n")
             content = content[:-2] if content.endswith(b"\r\n") else content
-            name = head.decode().split('filename="')[1].split('"')[0]
+            name = disposition_filename(head)
             with open(f"{FAKE}/last-upload", "wb") as f:
                 f.write(content)
             for i in v["items"]:
