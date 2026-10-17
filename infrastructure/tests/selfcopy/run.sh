@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Test of the private-copy header of doctor.sh and apply-system.sh (the "immune to concurrent edits" block): the copy must not be
+# left behind after Ctrl+C / SIGTERM (it was: the parent died before its rm), and as root the copy never goes to $TMPDIR.
+# The header is cut out of the real files and run with a body that only sleeps, so nothing of doctor or apply-system runs.
+#   run.sh
+set -u
+unset DOCTOR_SELF APPLY_SYSTEM_SELF   # doctor runs this test with DOCTOR_SELF exported, which would skip the copy under test
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO=$(cd "$HERE/../../.." && pwd)
+SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/selfcopy-test.XXXXXX")
+trap 'rm -rf "$SCRATCH"' EXIT
+PASS=0 FAILS=0
+check() { local name=$1; shift; if "$@"; then PASS=$((PASS + 1)); printf 'ok    %s\n' "$name"; else FAILS=$((FAILS + 1)); printf 'FAIL  %s\n' "$name"; fi; }
+
+# header NAME PREAMBLE: the block from "# Immune to concurrent edits" to its closing `fi`, as a runnable script
+make_script() { # FILE PREAMBLE
+  local file=$1 pre=$2 src=$3
+  {
+    printf '#!/usr/bin/env bash\n%s\n' "$pre"
+    awk '/^# Immune to concurrent edits/ {on=1} on {print} on && /^fi$/ {exit}' "$src"
+    printf 'echo "body ran from $0" >>"$SELFCOPY_LOG"\nsleep "${SELFCOPY_SLEEP:-0}"\nexit 7\n'
+  } >"$file"
+  chmod +x "$file"
+}
+mkdir -p "$SCRATCH/s"
+make_script "$SCRATCH/s/doctor.sh" 'set -u' "$REPO/doctor.sh"
+make_script "$SCRATCH/s/apply-system.sh" 'set -euo pipefail' "$REPO/apply-system.sh"
+check "the header was found in both scripts" bash -c '[ "$(grep -c "mktemp -d" "$1/doctor.sh")" = 1 ] && [ "$(grep -c "mktemp -d" "$1/apply-system.sh")" = 1 ]' _ "$SCRATCH/s"
+
+# run SCRIPT SIGNAL: start it in its own process group, wait for the private copy, send the signal to the group (what the
+# terminal does for Ctrl+C), print "rc=<returncode> leftovers=<n>"
+runsig() {
+  python3 -I - "$1" "$2" "$SCRATCH/tmp" "$SCRATCH/log" <<'PY'
+import glob, os, signal, subprocess, sys, time
+script, sig, tmp, log = sys.argv[1], getattr(signal, sys.argv[2]), sys.argv[3], sys.argv[4]
+os.makedirs(tmp, exist_ok=True)
+env = dict(os.environ, TMPDIR=tmp, SELFCOPY_LOG=log, SELFCOPY_SLEEP="30")
+p = subprocess.Popen(["bash", script], env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+for _ in range(100):
+    if glob.glob(tmp + "/*/*.sh") and os.path.exists(log):
+        break
+    time.sleep(0.05)
+os.killpg(p.pid, sig)
+try:
+    rc = p.wait(10)
+except subprocess.TimeoutExpired:
+    os.killpg(p.pid, signal.SIGKILL); rc = "hung"
+time.sleep(0.2)
+print(f"rc={rc} leftovers={len(os.listdir(tmp))} copy_was_used={os.path.exists(log)}")
+PY
+}
+for s in doctor.sh apply-system.sh; do
+  for sig in SIGINT SIGTERM; do
+    rm -rf "$SCRATCH/tmp" "$SCRATCH/log"
+    out=$(runsig "$SCRATCH/s/$s" "$sig")
+    check "$s: $sig removes the private copy (no temp dir left) and the script dies by that signal" bash -c 'grep -q "leftovers=0 copy_was_used=True" <<<"$1" && grep -qE "rc=-(2|15)\b" <<<"$1"' _ "$out"
+  done
+  # a normal run: exit status of the copy is passed on, no leftover
+  rm -rf "$SCRATCH/tmp" "$SCRATCH/log"; mkdir -p "$SCRATCH/tmp"
+  TMPDIR="$SCRATCH/tmp" SELFCOPY_LOG="$SCRATCH/log" bash "$SCRATCH/s/$s"; rc=$?
+  check "$s: a normal run runs the copy, passes its exit status on and leaves nothing behind" bash -c '[ "$1" = 7 ] && [ -z "$(ls -A "$2")" ] && grep -q "body ran from $2/" "$3"' _ "$rc" "$SCRATCH/tmp" "$SCRATCH/log"
+  # as root (a fake `id` that says 0): TMPDIR is ignored, the copy goes to /tmp
+  rm -rf "$SCRATCH/tmp" "$SCRATCH/fb"; mkdir -p "$SCRATCH/tmp" "$SCRATCH/fb"
+  printf '#!/bin/sh\necho 0\n' >"$SCRATCH/fb/id"
+  printf '#!/bin/sh\necho "$@" >>"%s/mktemp.log"\nexec /usr/bin/mktemp "$@"\n' "$SCRATCH" >"$SCRATCH/fb/mktemp"
+  chmod +x "$SCRATCH/fb/id" "$SCRATCH/fb/mktemp"; rm -f "$SCRATCH/mktemp.log"
+  PATH="$SCRATCH/fb:$PATH" TMPDIR="$SCRATCH/tmp" SELFCOPY_LOG="$SCRATCH/log" bash "$SCRATCH/s/$s"
+  check "$s: as root (EUID 0) the copy is made in /tmp and TMPDIR is ignored" bash -c 'grep -q -- "^-d /tmp/" "$1" && ! grep -q "$2" "$1" && ! ls "$3" | grep -q .' _ "$SCRATCH/mktemp.log" "$SCRATCH/tmp" "$SCRATCH/tmp"
+  printf '#!/bin/sh\necho 1000\n' >"$SCRATCH/fb/id"
+  rm -f "$SCRATCH/mktemp.log"
+  PATH="$SCRATCH/fb:$PATH" TMPDIR="$SCRATCH/tmp" SELFCOPY_LOG="$SCRATCH/log" bash "$SCRATCH/s/$s"
+  check "$s: as a normal user the copy follows TMPDIR" bash -c 'grep -q -- "^-d $2/" "$1"' _ "$SCRATCH/mktemp.log" "$SCRATCH/tmp"
+done
+printf '\nselfcopy test: %d passed, %d failed\n' "$PASS" "$FAILS"
+((FAILS == 0))

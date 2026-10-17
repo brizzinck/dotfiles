@@ -16,17 +16,23 @@
 set -euo pipefail
 
 # Immune to concurrent edits: bash reads a script incrementally, so a commit that rewrites this file during a run breaks it
-# mid-way. Run from a private copy (root-owned 0700 temp dir when under sudo, removed afterwards); APPLY_SYSTEM_SELF is the
-# original path (repo lookups, the sudo re-exec, hints). Falls through to running in place when the copy cannot be made.
+# mid-way. Run from a private copy (root-owned 0700 temp dir when under sudo, removed afterwards, also on Ctrl+C or SIGTERM:
+# the trap removes it and re-raises the signal; as root TMPDIR is ignored, always /tmp); APPLY_SYSTEM_SELF is the original
+# path (repo lookups, the sudo re-exec, hints). Falls through to running in place when the copy cannot be made.
 if [ -z "${APPLY_SYSTEM_SELF:-}" ]; then
   APPLY_SYSTEM_SELF="$(readlink -f "${BASH_SOURCE[0]}")"
-  if _atmp="$(mktemp -d "${TMPDIR:-/tmp}/apply-system.XXXXXX" 2>/dev/null)" && install -m 0700 "$APPLY_SYSTEM_SELF" "$_atmp/apply-system.sh"; then
+  _abase="${TMPDIR:-/tmp}"
+  [ "$(id -u)" = 0 ] && _abase=/tmp
+  if _atmp="$(mktemp -d "$_abase/apply-system.XXXXXX" 2>/dev/null)" && install -m 0700 "$APPLY_SYSTEM_SELF" "$_atmp/apply-system.sh"; then
     export APPLY_SYSTEM_SELF
     _arc=0
+    trap 'rm -rf "$_atmp"; trap - INT; kill -INT $$' INT
+    trap 'rm -rf "$_atmp"; trap - TERM; kill -TERM $$' TERM
     bash "$_atmp/apply-system.sh" "$@" || _arc=$?
     rm -rf "$_atmp"
     exit "$_arc"
   fi
+  [ -n "${_atmp:-}" ] && rm -rf "$_atmp"
 fi
 
 ORIG_ARGS=("$@")

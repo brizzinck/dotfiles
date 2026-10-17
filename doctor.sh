@@ -6,17 +6,23 @@
 set -u
 
 # Immune to concurrent edits: bash reads a script incrementally, so a commit that rewrites this file during a run breaks it
-# mid-way ("syntax error near unexpected token"). Run from a private copy (0700 temp dir, removed afterwards); DOCTOR_SELF is
-# the original path, used for the repo lookups. Falls through to running in place when the copy cannot be made.
+# mid-way ("syntax error near unexpected token"). Run from a private copy (0700 temp dir, removed afterwards, also on Ctrl+C or
+# SIGTERM: the trap removes it and re-raises the signal; as root TMPDIR is ignored, always /tmp); DOCTOR_SELF is the original
+# path, used for the repo lookups. Falls through to running in place when the copy cannot be made.
 if [ -z "${DOCTOR_SELF:-}" ]; then
   DOCTOR_SELF="$(readlink -f "${BASH_SOURCE[0]}")"
-  if _dtmp="$(mktemp -d "${TMPDIR:-/tmp}/doctor.XXXXXX" 2>/dev/null)" && install -m 0700 "$DOCTOR_SELF" "$_dtmp/doctor.sh"; then
+  _dbase="${TMPDIR:-/tmp}"
+  [ "$(id -u)" = 0 ] && _dbase=/tmp
+  if _dtmp="$(mktemp -d "$_dbase/doctor.XXXXXX" 2>/dev/null)" && install -m 0700 "$DOCTOR_SELF" "$_dtmp/doctor.sh"; then
     export DOCTOR_SELF
     _drc=0
+    trap 'rm -rf "$_dtmp"; trap - INT; kill -INT $$' INT
+    trap 'rm -rf "$_dtmp"; trap - TERM; kill -TERM $$' TERM
     bash "$_dtmp/doctor.sh" "$@" || _drc=$?
     rm -rf "$_dtmp"
     exit "$_drc"
   fi
+  [ -n "${_dtmp:-}" ] && rm -rf "$_dtmp"
 fi
 
 DOTFILES="$(cd "$(dirname "$DOCTOR_SELF")" && pwd)"
@@ -1047,6 +1053,7 @@ else
   bad tmux-destroy "infrastructure/tests/tmux-destroy/run.sh or tmux missing"
 fi
 if o1_out="$("$DOTFILES/infrastructure/tests/o1/run.sh" 2>&1)"; then ok o1-tests "desktop helpers (displays, zoom, brightness, restart, lock, media, transcode): $(printf '%s' "$o1_out" | tail -1)"; else bad o1-tests "$(printf '%s' "$o1_out" | grep -m1 '^FAIL') (infrastructure/tests/o1/run.sh)"; fi
+if sc_copy_out="$("$DOTFILES/infrastructure/tests/selfcopy/run.sh" 2>&1)"; then ok selfcopy-tests "doctor/apply-system private copy: removed on Ctrl+C and SIGTERM, /tmp as root: $(printf '%s' "$sc_copy_out" | tail -1)"; else bad selfcopy-tests "$(printf '%s' "$sc_copy_out" | grep -m1 '^FAIL') (infrastructure/tests/selfcopy/run.sh)"; fi
 if edit_out="$("$DOTFILES/infrastructure/tests/edit/run.sh" 2>&1)"; then ok edit-tests "edit anywhere (SUPER+CTRL+E): $(printf '%s' "$edit_out" | tail -1)"; else bad edit-tests "$(printf '%s' "$edit_out" | grep -m1 '^FAIL') (infrastructure/tests/edit/run.sh)"; fi
 if [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && command -v hyprctl >/dev/null 2>&1; then
   o1_rate="$(hyprctl getoption input:repeat_rate -j 2>/dev/null | jq -r '.int // empty')"
