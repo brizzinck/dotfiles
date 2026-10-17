@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Offline test of sysup (UPD1): fake sudo/checkupdates/yay/flatpak/npm in a temp PATH, a temp state dir and a fake pacman cache.
+# Never touches the real system: nothing is installed, the real steps (repo, flatpak, npm, go, nvim ...) are never run.
+#   infrastructure/tests/sysup/run.sh
+set -u
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO=$(cd "$HERE/../../.." && pwd)
+SYSUP="$REPO/.local/bin/sysup"
+UPDATES="$REPO/.config/waybar/scripts/updates.sh"
+T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT
+mkdir -p "$T/bin" "$T/state" "$T/cache" "$T/pred"
+fails=0
+pass() { printf 'PASS  %s\n' "$1"; }
+fail() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
+expect() { # name, condition command...
+  local n=$1; shift
+  if "$@" >/dev/null 2>&1; then pass "$n"; else fail "$n"; fi
+}
+
+cat >"$T/bin/sudo" <<'X'
+#!/bin/sh
+echo "[fake sudo] $*" >>"$FAKE_LOG"
+exit 0
+X
+cat >"$T/bin/checkupdates" <<'X'
+#!/bin/sh
+printf 'alpha 1.0-1 -> 1.1-1\nbeta 2:3.0-1 -> 2:3.1-1\n'
+X
+cat >"$T/bin/yay" <<'X'
+#!/bin/sh
+case "$*" in *-Qua*) printf 'aurpkg 1-1 -> 2-1\n' ;; *) echo "[fake yay] $*" >>"$FAKE_LOG" ;; esac
+X
+cat >"$T/bin/flatpak" <<'X'
+#!/bin/sh
+printf 'org.example.App\t1.2\n'
+X
+cat >"$T/bin/npm" <<'X'
+#!/bin/sh
+printf '{"codex":{"current":"1.0.0","latest":"1.1.0"}}'
+X
+chmod +x "$T/bin"/*
+export FAKE_LOG="$T/fake.log"
+: >"$FAKE_LOG"
+# beta is already "downloaded" (a .sig alone must not count for alpha)
+touch "$T/cache/beta-2:3.1-1-x86_64.pkg.tar.zst" "$T/cache/alpha-1.1-1-x86_64.pkg.tar.zst.sig"
+printf '1700000000\n2\nok\n' >"$T/pred/state"
+export XDG_STATE_HOME="$T/state" SYSUP_PKGCACHE="$T/cache" SYSUP_PRED="$T/pred" XDG_RUNTIME_DIR="$T/run" PATH="$T/bin:$PATH"
+mkdir -p "$XDG_RUNTIME_DIR"
+
+expect "steps list in order" bash -c "[ \"\$($SYSUP steps | tr '\n' ' ')\" = 'space news prune keyring repo flatpak rust npm pipx go claude nvim zsh tmux report ' ]"
+expect "dry run prints the plan and writes no log" bash -c "$SYSUP --dry-run | grep -q keyring && [ ! -e '$T/state/sysup/last.log' ]"
+
+"$SYSUP" check --quiet
+P="$T/state/sysup/pending.json"
+expect "check writes pending.json" test -s "$P"
+expect "repo count 2, aur 1, flatpak 1, npm 1" jq -e '(.repo|length)==2 and (.aur|length)==1 and (.flatpak|length)==1 and (.npm|length)==1' "$P"
+expect "only the complete package counts as downloaded" jq -e '.downloaded==1 and (.repo[]|select(.name=="beta").downloaded) and (.repo[]|select(.name=="alpha").downloaded|not)' "$P"
+expect "predownload state is read" jq -e '.predownload_active==true and .predownload_ts==1700000000' "$P"
+expect "status prints the numbers" bash -c "$SYSUP status | grep -q 'repo     2 pending, 1 already downloaded'"
+
+# waybar module: counts repo + aur + flatpak, tooltip with the download line and the hint line
+J=$("$UPDATES")
+expect "badge text counts 4" bash -c "jq -e '.text | endswith(\" 4\")' <<<'$J'"
+expect "badge tooltip has the hint line" bash -c "jq -e '.tooltip | contains(\"L: install everything · M: check now · R: pending list\")' <<<'$J'"
+expect "badge tooltip says what is downloaded" bash -c "jq -e '.tooltip | contains(\"Downloaded in the background: 1 of 2\")' <<<'$J'"
+
+# a run with the safe steps only: logged, inhibited, summarised, nothing real executed
+out=$("$SYSUP" --only space,prune,keyring,report --yes 2>&1)
+rc=$?
+expect "install run exits 0" test "$rc" = 0
+expect "log file exists with the summary" grep -q 'summary' "$T/state/sysup/last.log"
+expect "prune used paccache twice" bash -c "[ \$(grep -c 'paccache' '$FAKE_LOG') = 2 ]"
+expect "keyring runs before any upgrade" bash -c "grep -q 'pacman -Sy --needed --noconfirm archlinux-keyring' '$FAKE_LOG' && ! grep -q 'fake yay' '$FAKE_LOG'"
+expect "skipped steps are listed as skipped" bash -c "grep -q 'repo     skipped' <<<'$out'"
+
+# a second run rotates the log
+"$SYSUP" --only space --yes >/dev/null 2>&1
+expect "the previous log is kept" bash -c "ls '$T'/state/sysup/[0-9]*.log >/dev/null 2>&1"
+
+# low disk: refuses (df is faked by a function-free shim)
+cat >"$T/bin/df" <<'X'
+#!/bin/sh
+printf 'Avail\n1048576\n'
+X
+chmod +x "$T/bin/df"
+"$SYSUP" --only space --yes >/dev/null 2>&1; rc=$?
+expect "refuses below 2 GiB" test "$rc" != 0
+"$SYSUP" --only space --yes --force >/dev/null 2>&1; rc=$?
+expect "--force continues" test "$rc" = 0
+
+echo "sysup tests: $fails failure(s)"
+exit $((fails > 0))

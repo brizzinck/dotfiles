@@ -1,0 +1,485 @@
+#!/usr/bin/env bash
+# sysup - the one update tool (UPD1): background CHECK + DOWNLOAD, INSTALL only when you run it.
+#
+#   sysup                   install everything now (asks once; waybar updates click, SUPER+SHIFT+U, hub "System update")
+#   sysup open              the same in a floating terminal that waits for a key at the end (binds, hub, waybar)
+#   sysup check [--quiet]   look for pending updates and refresh the waybar badge; never installs (the user timer runs it)
+#   sysup status            what is pending and how much of it is already downloaded
+#   sysup log               open the log of the last install run (~/.local/state/sysup/last.log)
+#   sysup steps             list the steps of an install run
+#   sysup --dry-run         print the plan, change nothing
+#   sysup --yes             skip the confirmation (the run is still started by you)
+#   sysup --ask             let pacman and yay ask their own questions (default: --noconfirm, AUR without PKGBUILD review)
+#   sysup --devel           also rebuild VCS (-git) AUR packages
+#   sysup --skip A,B | --only A,B   leave steps out / run only these (names: sysup steps)
+#   sysup --force           continue even when free space is low
+#
+# One install run: free-space check -> Arch news + confirmation -> pacman cache prune -> archlinux-keyring first ->
+# pacman + AUR (yay, fully automatic) -> flatpak -> rustup + cargo crates -> npm -g (Codex, Gemini, ...) -> pipx/uv tools ->
+# Go tools (go install @latest) -> Claude Code -> nvim (lazy lockfile bump committed in the nvim submodule, Mason, treesitter) ->
+# oh-my-zsh + zsh plugins -> tmux plugins (tpm) -> report: pacnew, reboot hint, services to restart, failed units.
+# The whole run holds a sleep/idle/lid inhibitor and is logged to ~/.local/state/sysup/last.log.
+# NOT part of it: firmware (hub rows "Firmware"), the real downloads of packages happen earlier in the background
+# (root timer dotfiles-predownload, see infrastructure/pacman/), so the install itself is mostly unpacking.
+# Rollback: pacman keeps the previous two versions in /var/cache/pacman/pkg; hub row "Downgrade a package" (AUR downgrade).
+set -u
+
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/sysup"
+PENDING="$STATE/pending.json"
+LOG="$STATE/last.log"
+PRED="${SYSUP_PRED:-/var/lib/dotfiles-predownload}"
+PKGCACHE="${SYSUP_PKGCACHE:-/var/cache/pacman/pkg}"
+SELF=$(readlink -f "${BASH_SOURCE[0]}")
+WAYBAR_SCRIPTS="$HOME/.config/waybar/scripts"
+STEPS=(space news prune keyring repo flatpak rust npm pipx go claude nvim zsh tmux report)
+
+mkdir -p "$STATE"
+
+# ───────────────────────────── helpers ─────────────────────────────
+
+have() { command -v "$1" >/dev/null 2>&1; }
+c_dim() { printf '\e[2m%s\e[0m' "$*"; }
+say() { printf '\e[1;32m::\e[0m \e[1m%s\e[0m\n' "$*"; }
+warn() { printf '\e[1;33m!!\e[0m %s\n' "$*"; }
+fail() { printf '\e[1;31m!!\e[0m %s\n' "$*"; }
+poke_bar() {
+  [[ -x $WAYBAR_SCRIPTS/cache.sh ]] && "$WAYBAR_SCRIPTS/cache.sh" --drop updates
+  pkill -o -u "$UID" -RTMIN+9 -x waybar 2>/dev/null || true
+}
+
+# ───────────────────────────── check ─────────────────────────────
+
+# "name old -> new" lines -> JSON [{name, old, new, downloaded}]; downloaded = the new version already sits in the pacman cache
+pkgs_json() { # $1 = 1: test the cache
+  local line name old new dl
+  while read -r line; do
+    [[ -n $line ]] || continue
+    name=${line%% *}
+    old=$(awk '{print $2}' <<<"$line")
+    new=$(awk '{print $4}' <<<"$line")
+    dl=false
+    if [[ $1 == 1 ]] && compgen -G "$PKGCACHE/$name-$new-*.pkg.tar.*" >/dev/null 2>&1; then
+      # a .sig alone does not count
+      local f
+      for f in "$PKGCACHE/$name-$new-"*.pkg.tar.*; do
+        [[ $f == *.sig ]] || { dl=true; break; }
+      done
+    fi
+    jq -cn --arg n "$name" --arg o "$old" --arg v "$new" --argjson d "$dl" '{name:$n, old:$o, new:$v, downloaded:$d}'
+  done | jq -sc '.'
+}
+
+cmd_check() {
+  local quiet=0 repo aur rc flat npmo repo_json aur_json flat_json npm_json pred_ts=0 pred_ok=false
+  [[ ${1:-} == --quiet ]] && quiet=1
+  exec 8>"$STATE/check.lock"
+  flock -n 8 || { ((quiet)) || echo "sysup: a check is already running"; return 0; }
+
+  # repo: checkupdates syncs a private copy of the databases, so the real one is never touched
+  repo=""
+  if have checkupdates; then
+    repo=$(checkupdates --nocolor 2>/dev/null); rc=$?
+    if ((rc != 0 && rc != 2)); then
+      ((quiet)) || warn "checkupdates failed (offline?); keeping the previous state"
+      return 1
+    fi
+  fi
+  aur=""
+  have yay && aur=$(yay -Qua 2>/dev/null | grep -v '^$' || true)
+  flat=""
+  if have flatpak; then
+    flat=$(flatpak remote-ls --updates --columns=application,version 2>/dev/null | grep -v '^$' || true)
+  fi
+  npmo=""
+  if have npm; then
+    npmo=$(npm -g outdated --json 2>/dev/null | jq -r 'to_entries[] | "\(.key) \(.value.current // "?") -> \(.value.latest)"' 2>/dev/null || true)
+  fi
+
+  repo_json=$(pkgs_json 1 <<<"$repo")
+  aur_json=$(pkgs_json 0 <<<"$aur")
+  npm_json=$(pkgs_json 0 <<<"$npmo")
+  flat_json=$(jq -Rsc 'split("\n") | map(select(length > 0) | split("\t") | {name: .[0], new: (.[1] // "")})' <<<"$flat")
+  if [[ -r $PRED/state ]]; then
+    pred_ts=$(sed -n 1p "$PRED/state" 2>/dev/null || echo 0)
+    pred_ok=true
+  fi
+  jq -n --argjson ts "$(date +%s)" --argjson repo "$repo_json" --argjson aur "$aur_json" --argjson flatpak "$flat_json" \
+    --argjson npm "$npm_json" --argjson pts "${pred_ts:-0}" --argjson pok "$pred_ok" \
+    '{ts:$ts, repo:$repo, aur:$aur, flatpak:$flatpak, npm:$npm, predownload_ts:$pts, predownload_active:$pok,
+      downloaded: ($repo | map(select(.downloaded)) | length)}' >"$PENDING.tmp" && mv -f "$PENDING.tmp" "$PENDING"
+  poke_bar
+  ((quiet)) || cmd_status
+}
+
+cmd_status() {
+  if [[ ! -r $PENDING ]]; then
+    echo "sysup: no check yet (run: sysup check)"
+    return 0
+  fi
+  jq -r '
+    def age: ((now - .) / 60 | floor) as $m | if $m < 90 then "\($m) min ago" else "\($m / 60 | floor) h ago" end;
+    "checked \(.ts | age)",
+    "repo     \(.repo | length) pending, \(.downloaded) already downloaded",
+    (.repo[:12][] | "  \(.name) \(.old) -> \(.new)\(if .downloaded then "  [downloaded]" else "" end)"),
+    (if (.repo | length) > 12 then "  ... \((.repo | length) - 12) more" else empty end),
+    "aur      \(.aur | length) pending (built at install time)",
+    (.aur[] | "  \(.name) \(.old) -> \(.new)"),
+    "flatpak  \(.flatpak | length) pending",
+    "npm -g   \(.npm | length) pending",
+    (.npm[] | "  \(.name) \(.old) -> \(.new)"),
+    (if .predownload_active then "background download: last run \(.predownload_ts | age)" else "background download: not installed (sudo ./apply-system.sh --only services)" end)' "$PENDING"
+}
+
+# ───────────────────────────── install steps ─────────────────────────────
+
+RESULTS=()
+record() { RESULTS+=("$1|$2|$3"); } # name|status|seconds
+
+step_space() {
+  local avail_g
+  avail_g=$(($(df -B1 --output=avail / | tail -n1 | tr -d ' ') / 1073741824))
+  say "free space on /: ${avail_g} GiB"
+  if ((avail_g < 2)) && [[ $FORCE != 1 ]]; then
+    fail "less than 2 GiB free: refusing to upgrade (sysup --force overrides)"
+    return 1
+  fi
+  ((avail_g < 10)) && warn "less than 10 GiB free: the pacman cache prune runs first, but consider cleaning up"
+  return 0
+}
+
+step_news() {
+  have yay && yay -Pw
+  if [[ $YES != 1 && $DRY != 1 ]]; then
+    local ans
+    read -r -p "Upgrade now? [y/N] " -n1 ans
+    echo
+    [[ $ans == [yY] ]] || { warn "cancelled"; exit 1; }
+  fi
+  return 0
+}
+
+step_prune() {
+  if have paccache; then
+    # keep the two newest versions of every package: the installed one (rollback) and the freshly downloaded one
+    sudo paccache -rk2 && sudo paccache -ruk0
+  else
+    warn "paccache is missing (pacman-contrib)"
+  fi
+}
+
+step_keyring() {
+  # a long gap between upgrades otherwise ends in signature errors; the database sync is followed by the full upgrade at once
+  sudo pacman -Sy --needed --noconfirm archlinux-keyring
+}
+
+step_repo() {
+  local -a args=(-Syu --sudoloop --cleanafter --removemake)
+  if [[ $ASK != 1 ]]; then
+    args+=(--noconfirm --answerdiff None --answerclean None --answeredit None --answerupgrade None)
+  fi
+  [[ $DEVEL == 1 ]] && args+=(--devel)
+  if have yay; then
+    yay "${args[@]}"
+  elif [[ $ASK == 1 ]]; then
+    sudo pacman -Syu
+  else
+    sudo pacman -Syu --noconfirm
+  fi
+}
+
+step_flatpak() {
+  have flatpak || { echo "flatpak is not installed"; return 0; }
+  flatpak update -y --noninteractive && flatpak uninstall --unused -y --noninteractive
+}
+
+step_rust() {
+  have rustup && rustup update
+  if have cargo; then
+    local line name url re='^([A-Za-z0-9_-]+) v[^ :]+( \(([^)]*)\))?:$'
+    # "name vX.Y.Z:" (registry) or "name vX.Y.Z (git-url#rev):"; path installs are skipped
+    while read -r line; do
+      [[ $line =~ $re ]] || continue
+      name=${BASH_REMATCH[1]} url=${BASH_REMATCH[3]:-}
+      if [[ -z $url ]]; then
+        echo "cargo install $name"; cargo install --locked "$name" || return 1
+      elif [[ $url == http*#* || $url == git+* ]]; then
+        url=${url#git+}; url=${url%%#*}
+        echo "cargo install $name (git)"; cargo install --locked --git "$url" "$name" || return 1
+      fi
+    done < <(cargo install --list 2>/dev/null | grep -E '^[A-Za-z0-9_-]+ v')
+  fi
+  return 0
+}
+
+step_npm() {
+  have npm || { echo "npm is not installed"; return 0; }
+  # global packages live in the user prefix (~/.npm-global): Codex, Gemini CLI, claude-agent-acp, MCP helpers
+  npm -g update
+}
+
+step_pipx() {
+  local ran=0
+  have pipx && { pipx upgrade-all; ran=1; }
+  have uv && { uv tool upgrade --all; ran=1; }
+  ((ran)) || echo "no pipx / uv tools here"
+  return 0
+}
+
+step_go() {
+  have go || { echo "go is not installed"; return 0; }
+  local bin gobin f pkg mod out bad=0
+  gobin=$(go env GOBIN)
+  [[ -n $gobin ]] || gobin="$(go env GOPATH)/bin"
+  [[ -d $gobin ]] || return 0
+  for f in "$gobin"/*; do
+    [[ -f $f && -x $f ]] || continue
+    bin=$(basename "$f")
+    pkg=$(go version -m "$f" 2>/dev/null | awk '$1 == "path" {print $2; exit}')
+    mod=$(go version -m "$f" 2>/dev/null | awk '$1 == "mod" {print $3; exit}')
+    if [[ -z $pkg || $pkg == command-line-arguments || $mod == "(devel)" ]]; then
+      echo "skip $bin (no module path: built from source)"
+      continue
+    fi
+    echo "go install $pkg@latest"
+    out=$(go install "$pkg@latest" 2>&1) || { bad=1; printf '%s\n' "$out" | tail -n3; }
+  done
+  # a tool that cannot be fetched (private module, offline) is a warning, never a failed run
+  ((bad)) && warn "some Go tools could not be updated (see above)"
+  return 0
+}
+
+step_claude() {
+  if have claude; then claude update; else echo "claude is not installed"; fi
+}
+
+nvim_repo() { # prints "<nvim dir>|<repo top-level>"
+  local dir top
+  dir=$(readlink -f "${XDG_CONFIG_HOME:-$HOME/.config}/nvim")
+  top=$(git -C "$dir/.." rev-parse --show-toplevel 2>/dev/null) || top=""
+  printf '%s|%s\n' "$dir" "$top"
+}
+
+step_nvim() {
+  have nvim || { echo "nvim is not installed"; return 0; }
+  local dir top before after
+  IFS='|' read -r dir top < <(nvim_repo)
+  [[ -f $dir/scripts/update.lua ]] || { warn "$dir/scripts/update.lua is missing: nvim step skipped"; return 0; }
+  before=$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo none)
+  # lazy plugins (the lockfile moves), Mason packages, treesitter parsers; never `Lazy sync` (it can clean) and the lock is
+  # committed right away so the bump is never lost
+  timeout 1800 nvim --headless -c "luafile $dir/scripts/update.lua" || { fail "nvim update failed"; return 1; }
+  if git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 && ! git -C "$dir" diff --quiet -- lazy-lock.json 2>/dev/null; then
+    git -C "$dir" add lazy-lock.json
+    git -C "$dir" commit -q -m "chore(lazy): update plugins ($(date +%F), sysup)" -- lazy-lock.json && echo "committed lazy-lock.json in the nvim repo"
+    # the parent repo records the new submodule commit; only that path is committed
+    if [[ -n $top && $top != "$dir" ]] && ! git -C "$top" diff --quiet -- "${dir#"$top"/}" 2>/dev/null; then
+      git -C "$top" commit -q -m "chore(nvim): bump the nvim config (plugin update, sysup)" -- "${dir#"$top"/}" \
+        && echo "committed the submodule bump in $top"
+    fi
+    after=$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo none)
+    [[ $before != "$after" ]] && echo "not pushed: git -C $dir push && git -C $top push"
+  fi
+  # the managed users read a shared plugin root: refresh it in the background when it exists
+  if have usr && [[ -d ${USR_NVIM_SHARED:-/srv/nvim-shared} ]]; then
+    usr nvim-sync --background 2>&1 | tail -n1 || true
+  fi
+  return 0
+}
+
+step_zsh() {
+  local d
+  for d in "$HOME/.oh-my-zsh" "$HOME"/.oh-my-zsh/custom/plugins/* "$HOME"/.oh-my-zsh/custom/themes/*; do
+    [[ -d $d/.git ]] || continue
+    echo "git pull $d"
+    git -C "$d" pull --ff-only --quiet 2>&1 | tail -n2 || true
+  done
+  return 0
+}
+
+step_tmux() {
+  local tpm="$HOME/.tmux/plugins/tpm/bin"
+  if [[ -x $tpm/update_plugins ]]; then
+    "$tpm/update_plugins" all
+  else
+    echo "tpm is not installed"
+  fi
+}
+
+# changed packages of this run (snapshot taken before the repo step)
+step_report() {
+  local after changed
+  say "report"
+  if have pacdiff; then
+    local pn
+    pn=$(sudo pacdiff -o 2>/dev/null || true)
+    if [[ -n $pn ]]; then
+      printf '%s\n' "$pn" | sed 's/^/pacnew: /'
+      echo "  merge: sudo DIFFPROG='nvim -d' pacdiff"
+    else
+      echo "no .pacnew / .pacsave files"
+    fi
+  fi
+  after="$STATE/after.pkgs"
+  pacman -Q >"$after" 2>/dev/null
+  if [[ -r $STATE/before.pkgs ]]; then
+    changed=$(join -j1 <(sort "$STATE/before.pkgs") <(sort "$after") | awk '$2 != $3 {print $1}')
+    local n
+    n=$(wc -l <<<"$changed")
+    [[ -z $changed ]] && n=0
+    echo "$n packages changed in this run"
+    # reboot hint: running kernel vs installed kernel modules
+    if [[ ! -d /usr/lib/modules/$(uname -r) ]]; then
+      warn "the running kernel ($(uname -r)) is gone from /usr/lib/modules: reboot now"
+    elif grep -qxE 'linux|linux-lts|linux-zen|linux-hardened' <<<"$changed"; then
+      warn "a kernel package was updated: reboot to use it"
+    fi
+    local svc
+    for svc in hyprland waybar dunst pipewire wireplumber xdg-desktop-portal-hyprland hyprlock hypridle; do
+      grep -qx "$svc" <<<"$changed" && echo "restart hint: $svc was updated (log out and in, or restart it)"
+    done
+    for svc in systemd mesa; do
+      grep -qx "$svc" <<<"$changed" && echo "restart hint: $svc was updated (a reboot is the clean way)"
+    done
+  fi
+  local sf uf
+  sf=$(systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}')
+  uf=$(systemctl --user --failed --no-legend --plain 2>/dev/null | awk '{print $1}')
+  if [[ -n $sf$uf ]]; then
+    warn "failed units: $(echo $sf $uf)"
+  else
+    echo "no failed units"
+  fi
+  return 0
+}
+
+# ───────────────────────────── driver ─────────────────────────────
+
+plan_has() {
+  local s=$1
+  if [[ -n $ONLY ]]; then [[ ,$ONLY, == *,"$s",* ]]; return; fi
+  [[ ,$SKIP, != *,"$s",* ]]
+}
+
+run_steps() {
+  local s t0 rc status
+  if [[ $DRY == 1 ]]; then
+    say "dry run: these steps would run, in this order"
+    for s in "${STEPS[@]}"; do plan_has "$s" && echo "  $s"; done
+    echo "log: $LOG (inhibitors: sleep, idle, lid switch)"
+    return 0
+  fi
+  sudo -v || { fail "sudo is needed"; exit 1; }
+  # keep the sudo timestamp alive for steps that call sudo themselves (yay has its own --sudoloop)
+  ( while sleep 50; do sudo -n true 2>/dev/null || exit; done ) &
+  KEEP=$!
+  trap 'kill $KEEP 2>/dev/null' EXIT
+  pacman -Q >"$STATE/before.pkgs" 2>/dev/null
+  for s in "${STEPS[@]}"; do
+    plan_has "$s" || { record "$s" skipped 0; continue; }
+    say "step: $s"
+    t0=$SECONDS
+    "step_$s"; rc=$?
+    status=ok
+    ((rc != 0)) && status=FAILED
+    record "$s" "$status" $((SECONDS - t0))
+    if ((rc != 0)) && [[ $s == space || $s == keyring || $s == repo ]]; then
+      fail "step $s failed: stopping before anything else is touched (log: $LOG)"
+      summary
+      return 1
+    fi
+  done
+  summary
+  "$SELF" check --quiet >/dev/null 2>&1 || true
+  grep -q FAILED < <(printf '%s\n' "${RESULTS[@]}") && return 1
+  return 0
+}
+
+summary() {
+  local r name st sec
+  echo
+  say "summary"
+  for r in "${RESULTS[@]}"; do
+    IFS='|' read -r name st sec <<<"$r"
+    case $st in
+      ok) printf '  \e[32m%-8s ok\e[0m  %ss\n' "$name" "$sec" ;;
+      FAILED) printf '  \e[31m%-8s FAILED\e[0m  %ss\n' "$name" "$sec" ;;
+      *) printf '  \e[2m%-8s skipped\e[0m\n' "$name" ;;
+    esac
+  done
+  echo "log: $LOG"
+}
+
+rotate_logs() {
+  [[ -f $LOG ]] || return 0
+  mv -f "$LOG" "$STATE/$(date -r "$LOG" +%Y%m%d-%H%M%S).log"
+  # keep the ten newest old logs
+  ls -1t "$STATE"/[0-9]*.log 2>/dev/null | tail -n +11 | xargs -r rm -f --
+}
+
+pause_end() {
+  [[ $PAUSE == 1 && $DRY != 1 && -t 0 ]] || return 0
+  printf '\n[press a key]'
+  read -rsn1 _
+}
+
+main() {
+  YES=0 ASK=0 DEVEL=0 DRY=0 FORCE=0 PAUSE=0 ONLY="" SKIP=""
+  local a rc
+  case ${1:-} in
+    open)
+      shift
+      have ghostty || { echo "sysup: ghostty is missing"; return 1; }
+      setsid -f ghostty --class=float.tui --title=sysup -e "$SELF" install --pause "$@" >/dev/null 2>&1 </dev/null
+      return 0 ;;
+    check) shift; cmd_check "$@"; return ;;
+    status) cmd_status; return ;;
+    steps) printf '%s\n' "${STEPS[@]}"; return ;;
+    log)
+      [[ -f $LOG ]] || { echo "sysup: no log yet"; return 1; }
+      if [[ -t 1 ]]; then exec less -R +G "$LOG"; else cat "$LOG"; fi
+      return ;;
+    -h | --help) sed -n '2,/^set -u/p' "$SELF" | sed '$d; s/^# \{0,1\}//'; return ;;
+    install) shift ;;
+  esac
+  while (($#)); do
+    a=$1
+    case $a in
+      --yes | -y) YES=1 ;;
+      --ask) ASK=1 ;;
+      --devel) DEVEL=1 ;;
+      --dry-run | -n) DRY=1 ;;
+      --force) FORCE=1 ;;
+      --pause) PAUSE=1 ;;
+      --only) ONLY=${2:-}; shift ;;
+      --skip) SKIP=${2:-}; shift ;;
+      *) echo "sysup: unknown argument '$a' (try --help)" >&2; return 2 ;;
+    esac
+    shift
+  done
+  if [[ ${SYSUP_INNER:-} != 1 && $DRY != 1 ]]; then
+    # the whole run under one inhibitor (a lid close or idle must not suspend a half-done upgrade) and a typescript
+    rotate_logs
+    local -a args=()
+    [[ $YES == 1 ]] && args+=(--yes)
+    [[ $ASK == 1 ]] && args+=(--ask)
+    [[ $DEVEL == 1 ]] && args+=(--devel)
+    [[ $FORCE == 1 ]] && args+=(--force)
+    [[ -n $ONLY ]] && args+=(--only "$ONLY")
+    [[ -n $SKIP ]] && args+=(--skip "$SKIP")
+    local cmd
+    cmd=$(printf '%q ' "$SELF" install "${args[@]}")
+    if have systemd-inhibit && have script; then
+      SYSUP_INNER=1 systemd-inhibit --what=sleep:idle:handle-lid-switch --who=sysup --why="system upgrade in progress" \
+        --mode=block script -qefc "$cmd" "$LOG"
+      rc=$?
+      pause_end
+      return $rc
+    fi
+  fi
+  run_steps
+  rc=$?
+  pause_end
+  return $rc
+}
+
+main "$@"

@@ -1,0 +1,11 @@
+[Unit]
+Description=Pre-download pending updates every few hours (install stays manual: sysup)
+
+[Timer]
+OnBootSec=10min
+OnUnitInactiveSec=4h
+RandomizedDelaySec=15min
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target

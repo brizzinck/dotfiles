@@ -164,7 +164,8 @@
     "return-type": "json",
     "interval": 3600,
     "signal": 9,
-    "on-click": "ghostty --class=float.tui -e zsh -ic sysup; ~/.config/waybar/scripts/cache.sh --drop updates; pkill -o -u $(id -u) -RTMIN+9 -x waybar",
+    "on-click": "~/.local/bin/sysup open",
+    "on-click-middle": "~/.local/bin/sysup check --quiet",
     "on-click-right": "~/.config/waybar/scripts/updates.sh list"
   },
   "custom/updates": {
@@ -172,7 +173,8 @@
     "return-type": "json",
     "interval": 3600,
     "signal": 9,
-    "on-click": "ghostty --class=float.tui -e zsh -ic sysup; ~/.config/waybar/scripts/cache.sh --drop updates; pkill -o -u $(id -u) -RTMIN+9 -x waybar",
+    "on-click": "~/.local/bin/sysup open",
+    "on-click-middle": "~/.local/bin/sysup check --quiet",
     "on-click-right": "~/.config/waybar/scripts/updates.sh list"
   },
 

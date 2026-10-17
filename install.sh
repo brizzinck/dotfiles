@@ -273,10 +273,10 @@ log "Browser settings (Zen user.js memory prefs, Chrome disk-cache flag; copied 
 log "Obsidian (vault .obsidian -> apps/obsidian/vault-config, pinned plugins from GitHub, Everforest snippet, vimrc)"
 "$DOTFILES/apps/obsidian/apply.sh" || warn "apps/obsidian/apply.sh failed"
 
-log "User timers: cache aging (user tmpfiles), Codex release pruning and the sysalert health check"
+log "User timers: cache aging (user tmpfiles), Codex release pruning and the sysalert health check and the background update check (sysup-check)"
 systemctl --user daemon-reload 2>/dev/null || true
-systemctl --user enable --now systemd-tmpfiles-clean.timer codex-prune-releases.timer sysalert.timer 2>/dev/null \
-  || later "enable the user timers once logged in: systemctl --user enable --now systemd-tmpfiles-clean.timer codex-prune-releases.timer sysalert.timer"
+systemctl --user enable --now systemd-tmpfiles-clean.timer codex-prune-releases.timer sysalert.timer sysup-check.timer 2>/dev/null \
+  || later "enable the user timers once logged in: systemctl --user enable --now systemd-tmpfiles-clean.timer codex-prune-releases.timer sysalert.timer sysup-check.timer"
 
 # ───────────────────────────── 8. identity ────────────────────────────────────
 log "Git identity (~/.gitconfig.local)"

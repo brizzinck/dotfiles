@@ -1,0 +1,8 @@
+[Unit]
+Description=Check for pending updates (repo, AUR, flatpak, npm tools); never installs
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/sysup check --quiet
+Nice=15
+IOSchedulingClass=idle

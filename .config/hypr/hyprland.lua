@@ -428,7 +428,7 @@ hl.bind(mainMod .. " + CTRL + B", hl.dsp.exec_cmd("~/.config/waybar/scripts/bar.
 hl.bind(mainMod .. " + Escape", hl.dsp.exec_cmd("pidof hyprlock || hyprlock"), { description = "Lock screen (password)" })
 hl.bind(mainMod .. " + SHIFT + Escape", hl.dsp.exec_cmd(scripts .. "/powermenu.sh"), { description = "Power menu" })
 hl.bind("XF86PowerOff", hl.dsp.exec_cmd(scripts .. "/powermenu.sh"), { description = "Power menu" })
-hl.bind(mainMod .. " + SHIFT + U", hl.dsp.exec_cmd(tui .. " zsh -ic 'sysup; read -k1'"), { description = "System update (sysup)" })
+hl.bind(mainMod .. " + SHIFT + U", hl.dsp.exec_cmd("~/.local/bin/sysup open"), { description = "System update (sysup: install everything now)" })
 hl.bind(mainMod .. " + CTRL + I", hl.dsp.exec_cmd(scripts .. "/idle-toggle.sh"), { description = "Toggle idle (hypridle)" })
 hl.bind(mainMod .. " + SHIFT + N", hl.dsp.exec_cmd("pkill -x hyprsunset || hyprsunset -t 4500; pkill -o -u $(id -u) -RTMIN+8 -x waybar"), { description = "Toggle night light" })
 hl.bind(mainMod .. " + X", hl.dsp.exec_cmd("dunstctl close"), { description = "Dismiss notification" })

@@ -1,0 +1,15 @@
+[Unit]
+Description=Download pending pacman updates into the cache (no install)
+Documentation=file:///usr/local/bin/dotfiles-predownload
+After=network-online.target
+Wants=network-online.target
+# not on battery: the download is bulk traffic and disk writes
+ConditionACPower=true
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/dotfiles-predownload
+Nice=19
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+TimeoutStartSec=2h

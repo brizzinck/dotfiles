@@ -1,0 +1,11 @@
+[Unit]
+Description=Look for pending updates every two hours (install stays manual: sysup)
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=2h
+RandomizedDelaySec=5min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

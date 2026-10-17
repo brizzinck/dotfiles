@@ -275,19 +275,8 @@ fi
 (( $+commands[direnv] )) && eval "$(direnv hook zsh)"
 
 # ── Maintenance helpers ─────────────────────────────────────────────────────
-# One command for system upgrades: news first, then packages, flatpaks, pacnew, cache, status.
-sysup() {
-  yay -Pw                                               # Arch news: read before upgrading
-  read -q "?Upgrade now? [y/N] " || { echo; return 1 }; echo
-  yay -Syu --sudoloop || return
-  (( $+commands[flatpak] )) && flatpak update -y
-  (( $+commands[pacdiff] )) && sudo pacdiff -o | sed 's/^/pacnew: /'   # merge: sudo DIFFPROG='nvim -d' pacdiff
-  if (( $+commands[paccache] )); then
-    sudo paccache -rk2; sudo paccache -ruk0
-  fi
-  [[ "$(pacman -Q linux | awk '{print $2}' | sed 's/\.arch/-arch/')" != "$(uname -r)" ]] && echo ">> kernel updated: reboot"
-  systemctl --failed --no-legend; systemctl --user --failed --no-legend
-}
+# System upgrades: `sysup` is ~/.local/bin/sysup (background check + download, install only when you run it:
+# keyring, pacman + AUR, flatpak, dev tools, nvim, zsh/tmux plugins, report). `sysup --help`, `sysup check`, `sysup log`.
 
 # fzf-menu (shared modal fzf, vim keys) toggle for the VPN/proxy daemons that exist on this machine
 vpn() {

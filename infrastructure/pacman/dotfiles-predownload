@@ -1,0 +1,40 @@
+#!/usr/bin/bash
+# dotfiles-predownload (root, system timer): download pending pacman updates into the cache, install NOTHING.
+# Installed to /usr/local/bin by apply-system.sh (section services) and run by dotfiles-predownload.timer.
+#
+# Same method as `checkupdates -d`: the package databases are synced into a PRIVATE copy ($STATE/db), never into
+# /var/lib/pacman/sync, so a later `pacman -S pkg` is not a partial upgrade. The upgrade itself (and the AUR) runs only when
+# the owner starts `sysup`; it then finds the packages in /var/cache/pacman/pkg and only unpacks them.
+# Flatpak: `flatpak update --no-deploy` pulls the new commits into the local repo (also nothing is deployed).
+# State for the owner's tools (waybar updates badge, sysup status): $STATE/state = epoch, count, ok|fail (world readable).
+set -u
+STATE=/var/lib/dotfiles-predownload
+export CHECKUPDATES_DB="$STATE/db/"
+mkdir -p "$STATE" "$CHECKUPDATES_DB"
+chmod 755 "$STATE"
+
+# a real pacman transaction owns the cache right now: try again at the next timer run
+if [ -e /var/lib/pacman/db.lck ]; then
+  echo "pacman database is locked, skipping"
+  exit 0
+fi
+
+out=$(checkupdates --nocolor -d 2>&1)
+rc=$?
+count=0
+status=ok
+case $rc in
+  0) count=$(printf '%s\n' "$out" | grep -c ' -> ') ;;
+  2) count=0 ;; # nothing pending
+  *) status=fail; echo "checkupdates -d failed ($rc): $out" >&2 ;;
+esac
+printf '%s\n' "$out" | grep ' -> ' >"$STATE/packages.tmp" 2>/dev/null
+mv -f "$STATE/packages.tmp" "$STATE/packages"
+if command -v flatpak >/dev/null 2>&1; then
+  flatpak update --system --no-deploy -y --noninteractive >/dev/null 2>&1 || true
+fi
+printf '%s\n%s\n%s\n' "$(date +%s)" "$count" "$status" >"$STATE/state.tmp"
+chmod 644 "$STATE/state.tmp" "$STATE/packages"
+mv -f "$STATE/state.tmp" "$STATE/state"
+echo "predownload: $count package(s), $status"
+[ "$status" = ok ]
