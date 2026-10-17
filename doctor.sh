@@ -677,7 +677,13 @@ if [ -z "$bar_err" ]; then ok bar-state "config and modules.jsonc parse, mode $(
 if [ "${n_bar:-0}" -ge 1 ] && command -v hyprctl >/dev/null 2>&1 && [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]; then
   bar_hidden=0; [ -e "$bar_state/hidden" ] && bar_hidden=1
   bar_mode="$("$bar_sh" status --short 2>/dev/null)"
-  layers_err="$(jq -rn --argjson L "$(hyprctl layers -j 2>/dev/null)" --argjson M "$(hyprctl monitors -j 2>/dev/null)" \
+  # An output that is dpms-off presents no frames, and Hyprland only finishes frame-driven work in a render pass: the closing
+  # fade of a layer (a `bar.sh restart` leaves a pid -1 ghost layer) and the fade-out of its error bar (a config error from a
+  # reload; the bar reserves 61 px at 1.5 scale and pushes the bars and windows down) stay as they were until the panel wakes
+  # (hypridle dpms off after 20 min idle). Those monitors are skipped here instead of reported as a broken bar.
+  bar_mons="$(hyprctl monitors -j 2>/dev/null | jq -c '[.[] | select(.dpmsStatus != false)]')"
+  bar_off="$(hyprctl monitors -j 2>/dev/null | jq -r '[.[] | select(.dpmsStatus == false) | .name] | join(" ")')"
+  layers_err="$(jq -rn --argjson L "$(hyprctl layers -j 2>/dev/null)" --argjson M "${bar_mons:-[]}" \
     --argjson hidden "$bar_hidden" --arg mode "$bar_mode" '
     [ $M[] | . as $m
       | ($L[$m.name].levels // {} | to_entries
@@ -692,8 +698,9 @@ if [ "${n_bar:-0}" -ge 1 ] && command -v hyprctl >/dev/null 2>&1 && [ -n "${HYPR
     ] | join("; ")' 2>&1)"
   if [ -z "$layers_err" ]; then ok bar-layers "compact and full surfaces on every monitor match mode $bar_mode$([ "$bar_hidden" = 1 ] && echo ' (hidden)')"; else bad bar-layers "$layers_err"; fi
   want_top=28; [ "$bar_hidden" = 1 ] && want_top=0
-  res_err="$(hyprctl monitors -j 2>/dev/null | jq -r --argjson w "$want_top" '[.[] | select(.reserved[1] != $w) | "\(.name) reserved \(.reserved[1])"] | join("; ")')"
-  if [ -z "$res_err" ]; then ok bar-reserved "reserved top strip is ${want_top}px on every monitor"; else bad bar-reserved "$res_err (expected $want_top)"; fi
+  res_err="$(printf '%s' "${bar_mons:-[]}" | jq -r --argjson w "$want_top" '[.[] | select(.reserved[1] != $w) | "\(.name) reserved \(.reserved[1])" + (if (.solitaryBlockedBy // [] | index("CONFIGERROR")) then " (the Hyprland error bar is up: hyprctl configerrors, fix the config and hyprctl reload)" else "" end)] | join("; ")')"
+  if [ -z "$res_err" ]; then ok bar-reserved "reserved top strip is ${want_top}px on every awake monitor"; else bad bar-reserved "$res_err (expected $want_top)"; fi
+  [ -n "$bar_off" ] && info bar-panel-off "$bar_off dpms off: layers and reserved area are not refreshed until it wakes (no frames), so bar-layers / bar-reserved skip it"
 fi
 # pinned apps (FIX-pinned): list parses, generated modules are current in both bars, the daemon runs, nothing else uses signal 14
 pin_err="$("$HOME/.config/waybar/scripts/pinned.sh" check 2>&1)"
