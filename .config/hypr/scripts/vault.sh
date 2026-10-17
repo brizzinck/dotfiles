@@ -11,6 +11,12 @@
 #                               second); Enter / y copies the code (clears after 30 s), Alt+t / t types it,
 #                               Alt+r / r rescans the vault
 #   vault.sh totp-tui           same list in the current terminal (hub row)
+#   vault.sh user-pass          SUPER+CTRL+U: type the Linux password of the user the focused window asks for (no Enter).
+#                               Bitwarden folder `Linux`, one login per Linux user, item name = user name. The user comes
+#                               from the window (vault-who.py: terminal foreground process through tmux, sudo -> the
+#                               invoking user, su NAME -> NAME, polkit agent -> the owner). Typed only into terminals
+#                               and the polkit agent; any other window gets a 30 s clipboard copy instead. An unknown
+#                               user or a missing item opens an fzf-menu picker over the folder.
 #   vault.sh lock               lock the vault now: rbw lock and the official CLI session (bw lock)
 #   vault.sh sync               rbw sync (asks for the master password when locked) and, when its session is open, bw sync
 #   vault.sh status             print locked|unlocked|unconfigured|missing, exit 0 only when unlocked
@@ -38,6 +44,8 @@ SELF="$HERE/vault.sh"
 TYPE_PREV=''   # the window the menu was opened over: the only one text is typed into (type-guard.sh)
 TOTP_PY="$HERE/vault-totp.py"
 BW_PY="$HERE/vault-bw.py"
+WHO_PY="$HERE/vault-who.py"
+LINUX_FOLDER=Linux
 RUN="${XDG_RUNTIME_DIR:-/tmp}/vault"
 BW_SESSION_FILE="$RUN/bw-session"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/vault"
@@ -157,6 +165,83 @@ passwords() {
   esac
   pass=""
   poke_bar
+  return 0
+}
+
+# json_get JSON FIELD: one field of the vault-who.py answer
+json_get() { jq -r --arg f "$2" '.[$f] // empty' <<<"$1"; }
+
+# SUPER+CTRL+U: the Linux password of the user the focused window is asking for. Which user and whether typing is
+# allowed is vault-who.py's call (read-only); the password is only read on the real path and never printed or logged.
+user_pass() {
+  local target who cls kind user rule detail action rows id out interactive=0 pass hint
+  target=$(tg_record)
+  TYPE_PREV=$target
+  who=$(python3 -I "$WHO_PY" ${target:+--address "$target"}) || { note "Vault" "Could not inspect the focused window" critical; return 1; }
+  cls=$(json_get "$who" class); kind=$(json_get "$who" kind); user=$(json_get "$who" user)
+  rule=$(json_get "$who" rule); detail=$(json_get "$who" detail)
+  case $kind in terminal | polkit) action='type' ;; *) action='copy' ;; esac
+  if ((DRY)); then
+    echo "window: class=${cls:-none} address=${target:-none} kind=$kind"
+    echo "user: ${user:-unknown} (rule: $rule${detail:+; $detail})"
+    if [[ $action == type ]]; then hint='wtype -, no Enter'; else hint='wl-copy --sensitive, cleared in 30 s'; fi
+    if [[ -z $user ]]; then echo "action: picker over the $LINUX_FOLDER folder, then $action ($hint)"; else echo "action: $action ($hint)"; fi
+    if have rbw && rbw unlocked >/dev/null 2>&1; then
+      rows=$(rbw list --fields id,name,user,folder 2>/dev/null | awk -F'\t' -v f="$LINUX_FOLDER" '$4 == f')
+      if [[ -z $rows ]]; then
+        echo "item: folder $LINUX_FOLDER missing or empty"
+      elif [[ -n $user ]]; then
+        if awk -F'\t' -v n="$user" '$2 == n { f = 1 } END { exit !f }' <<<"$rows"; then echo "item: $LINUX_FOLDER/$user found"; else echo "item: $LINUX_FOLDER/$user missing (picker)"; fi
+      fi
+    else
+      echo "item: not checked (vault locked)"
+    fi
+    return 0
+  fi
+  need_ready || return 1
+  if [[ $action == type ]] && ! have wtype; then note "Vault" "wtype is not installed" critical; return 1; fi
+  rbw unlocked >/dev/null 2>&1 || interactive=1   # the unlock prompt (pinentry) takes the focus for a moment
+  rows=$(rbw list --fields id,name,user,folder 2>/dev/null) || { note "Vault" "Could not read the vault (locked and cancelled?)" critical; return 1; }
+  poke_bar
+  rows=$(awk -F'\t' -v f="$LINUX_FOLDER" '$4 == f' <<<"$rows")
+  if [[ -z $rows ]]; then
+    note "No \"$LINUX_FOLDER\" folder in the vault" "Create it: one login per Linux user, item name = user name, password = Linux password" critical
+    return 1
+  fi
+  id=''
+  [[ -n $user ]] && id=$(awk -F'\t' -v n="$user" '$2 == n { print $1; exit }' <<<"$rows")
+  if [[ -z $id ]]; then
+    have fzf-menu || { note "Vault" "fzf-menu is not installed" critical; return 1; }
+    [[ -n $user ]] && note "No item \"$user\" in folder $LINUX_FOLDER" "Pick another one (or add the item)"
+    if [[ $action == type ]]; then hint="type into ${cls:-the window}"; else hint="copy (not a terminal)"; fi
+    out=$(awk -F'\t' '{ printf "%s\t%s\n", $1, $2 }' <<<"$rows" |
+      fzf-menu -p linux --delimiter=$'\t' --with-nth=2.. --header "Linux user: Enter = $hint") || return 0
+    interactive=1
+    id=${out%%$'\t'*}
+    [[ -n $id ]] || return 0
+    user=$(awk -F'\t' -v i="$id" '$1 == i { print $2; exit }' <<<"$rows")
+  fi
+  pass=$(rbw get "$id") || { note "Vault" "Could not read the password" critical; return 1; }
+  if [[ $action == copy ]]; then
+    have wl-copy || { note "Vault" "wl-copy is not installed" critical; return 1; }
+    printf '%s' "$pass" | wl-copy --sensitive
+    pass=''
+    note "Password of $user" "Not a terminal or password dialog: copied for 30 s instead" normal
+    arm_clear
+    return 0
+  fi
+  # the unlock prompt or the picker may have moved the focus: back to the window this key was pressed over (a verified
+  # terminal / polkit window); without such a step a changed focus is refused by tg_ok below
+  if ((interactive)) && [[ -n $target && $(tg_active) != "$target" ]] && have hyprd; then
+    hyprd focuswindow "address:$target" >/dev/null 2>&1
+    sleep 0.15
+  fi
+  sleep 0.1
+  if printf '%s' "$pass" | type_text; then
+    if [[ $kind == polkit ]]; then hint='into the polkit dialog'; else hint="into ${cls:-the terminal}"; fi
+    note "Typed the password of $user" "$hint, no Enter"
+  fi
+  pass=''
   return 0
 }
 
@@ -334,6 +419,7 @@ case ${1:-passwords} in
   pw-preview) pw_preview "${2:?id}" ;;
   totp) totp_menu ;;
   totp-tui) totp_menu --here ;;
+  user-pass) user_pass ;;
   lock) lock ;;
   sync) sync_vault ;;
   status) state ;;
@@ -344,5 +430,5 @@ case ${1:-passwords} in
   app) app ;;
   web) web ;;
   ssh-agent) shift; ssh_agent "$@" ;;
-  *) echo "usage: vault.sh passwords|pw-preview ID|totp|totp-tui|lock|sync|status|waybar|session-start|arm-clear|bw CMD|app|web|ssh-agent on|off|toggle|status [--dry-run]" >&2; exit 2 ;;
+  *) echo "usage: vault.sh passwords|pw-preview ID|totp|totp-tui|user-pass|lock|sync|status|waybar|session-start|arm-clear|bw CMD|app|web|ssh-agent on|off|toggle|status [--dry-run]" >&2; exit 2 ;;
 esac
