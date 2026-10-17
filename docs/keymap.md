@@ -17,7 +17,7 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Desktop | [System, power, bar](#system-power-bar) | 12 |
 | Desktop | [Pointer from the keyboard](#pointer-from-the-keyboard) | 21 |
 | Desktop | [Other Hyprland binds](#other-hyprland-binds) | 16 |
-| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 151 |
+| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 152 |
 | Terminal | [tmux: this setup](#tmux-this-setup) | 55 |
 | Terminal | [tmux: stock prefix keys](#tmux-stock-prefix-keys) | 80 |
 | Terminal | [Terminal: ghostty](#terminal-ghostty) | 13 |
@@ -469,6 +469,7 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; x l` | AI and MCP: Gateway logs |
 | `Super+; x m` | AI and MCP: Telegram: allow sending |
 | `Super+; x n` | AI and MCP: Window, text only |
+| `Super+; x p` | AI and MCP: Telegram send chats |
 | `Super+; x q` | AI and MCP: Question about the selection |
 | `Super+; x r` | AI and MCP: Restart gateway |
 | `Super+; x s` | AI and MCP: Gateway status |

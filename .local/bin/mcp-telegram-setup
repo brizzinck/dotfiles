@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""mcp-telegram-setup - one-time setup (and later upkeep) of the read-only Telegram MCP service. Run it in a terminal.
+"""mcp-telegram-setup - one-time setup (and later upkeep) of the Telegram MCP service (read tools; owner-confirmed sending). Run it in a terminal.
 
   mcp-telegram-setup              first setup: log in by QR (or reuse the session stored in Bitwarden), tick the chats the AI
                                   may read, store everything, start the service, check it through the gateway
@@ -20,7 +20,8 @@ Where things go:
   * /etc/credstore.encrypted/telegram-mcp.* : the same values as systemd credentials sealed to the TPM2 + host key, written by
     the root helper /usr/local/lib/telegram-mcp/creds-install through `sudo` (password required; it receives the values on
     stdin). telegram-mcp.service (user aimcp, 127.0.0.1:8765) loads them with LoadCredentialEncrypted=: no plaintext session
-    file anywhere. The service is read-only (no send, edit, delete, mark-read) and fails closed without an allowlist.
+    file anywhere. The MCP tools are read-only (no send, edit, delete, mark-read) and the service fails closed without an allowlist; sending
+    exists only as the separate owner-confirmed route (see send-chats).
   * ~/.local/state/mcp/telegram.token (0600): bearer token between the gateway and the service, also stored in the credstore.
 Sending (M1-send): `send-chats` stores the text field `send_allowlist` in the same Bitwarden item (chat ids, not secret) and seals it
 for the send route inside telegram-mcp; the root helper generates the send token ITSELF (--ensure-send-token) and seals it for

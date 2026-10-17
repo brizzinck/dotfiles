@@ -1,5 +1,5 @@
 [Unit]
-Description=Telegram MCP (chigwell/telegram-mcp: read-only, chat allowlist, bearer token) on 127.0.0.1:8765
+Description=Telegram MCP (chigwell/telegram-mcp: read-only MCP tools, chat allowlist, bearer token; plus /x-send, which only the owner-confirming tgconfirm broker may call) on 127.0.0.1:8765
 After=network-online.target
 Wants=network-online.target
 # started only once mcp-telegram-setup has stored all five credentials (otherwise the unit is skipped, not failed)
