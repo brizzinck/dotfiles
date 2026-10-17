@@ -5,7 +5,21 @@
 # Repo-only (listed in .stow-local-ignore). Declined items (restic, keyring, ...) are intentionally not checked.
 set -u
 
-DOTFILES="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Immune to concurrent edits: bash reads a script incrementally, so a commit that rewrites this file during a run breaks it
+# mid-way ("syntax error near unexpected token"). Run from a private copy (0700 temp dir, removed afterwards); DOCTOR_SELF is
+# the original path, used for the repo lookups. Falls through to running in place when the copy cannot be made.
+if [ -z "${DOCTOR_SELF:-}" ]; then
+  DOCTOR_SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+  if _dtmp="$(mktemp -d "${TMPDIR:-/tmp}/doctor.XXXXXX" 2>/dev/null)" && install -m 0700 "$DOCTOR_SELF" "$_dtmp/doctor.sh"; then
+    export DOCTOR_SELF
+    _drc=0
+    bash "$_dtmp/doctor.sh" "$@" || _drc=$?
+    rm -rf "$_dtmp"
+    exit "$_drc"
+  fi
+fi
+
+DOTFILES="$(cd "$(dirname "$DOCTOR_SELF")" && pwd)"
 ONLY_FAILS=0
 [ "${1:-}" = "--fails" ] && ONLY_FAILS=1
 

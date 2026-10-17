@@ -15,6 +15,20 @@
 # System config files live in infrastructure/<area>/ and are installed from there (see apply-memory.sh).
 set -euo pipefail
 
+# Immune to concurrent edits: bash reads a script incrementally, so a commit that rewrites this file during a run breaks it
+# mid-way. Run from a private copy (root-owned 0700 temp dir when under sudo, removed afterwards); APPLY_SYSTEM_SELF is the
+# original path (repo lookups, the sudo re-exec, hints). Falls through to running in place when the copy cannot be made.
+if [ -z "${APPLY_SYSTEM_SELF:-}" ]; then
+  APPLY_SYSTEM_SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+  if _atmp="$(mktemp -d "${TMPDIR:-/tmp}/apply-system.XXXXXX" 2>/dev/null)" && install -m 0700 "$APPLY_SYSTEM_SELF" "$_atmp/apply-system.sh"; then
+    export APPLY_SYSTEM_SELF
+    _arc=0
+    bash "$_atmp/apply-system.sh" "$@" || _arc=$?
+    rm -rf "$_atmp"
+    exit "$_arc"
+  fi
+fi
+
 ORIG_ARGS=("$@")
 DRY_RUN=0
 ONLY=""
@@ -23,7 +37,7 @@ SECTIONS=(cleanup upgrade install remove config services net greeter users mcp d
 
 usage() {
   cat <<EOF
-Usage: ${0##*/} [--dry-run] [--only <section>] [-h|--help]
+Usage: ${APPLY_SYSTEM_SELF##*/} [--dry-run] [--only <section>] [-h|--help]
 Sections: ${SECTIONS[*]}
 EOF
 }
@@ -54,7 +68,7 @@ fi
 # --- privileges / owner ------------------------------------------------------
 # A dry run only reads, so it works unprivileged; a real run re-execs itself under sudo.
 if [ "$EUID" -ne 0 ] && [ "$DRY_RUN" -eq 0 ]; then
-  exec sudo "$0" "${ORIG_ARGS[@]}"
+  exec sudo "$APPLY_SYSTEM_SELF" "${ORIG_ARGS[@]}"
 fi
 
 if [ "$EUID" -eq 0 ]; then
@@ -67,7 +81,7 @@ else
   OWNER="$(id -un)"
 fi
 OWNER_HOME="$(getent passwd "$OWNER" | cut -d: -f6)"
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$(dirname "$APPLY_SYSTEM_SELF")" && pwd)"
 INFRA="$REPO/infrastructure"
 
 # --- helpers -----------------------------------------------------------------
@@ -379,7 +393,7 @@ install_aur_package() {
       warn "built $pkg but pacman -U failed"
     fi
   else
-    warn "AUR build of $pkg FAILED ($(aur_build_error "$build_dir/makepkg.log")); continuing without it. Rerun: sudo $0 --only install"
+    warn "AUR build of $pkg FAILED ($(aur_build_error "$build_dir/makepkg.log")); continuing without it. Rerun: sudo $APPLY_SYSTEM_SELF --only install"
   fi
   rm -rf -- "$build_dir"
 }
@@ -1316,7 +1330,7 @@ mcp_whisper_model() {
   else
     log "downloading $WHISPER_MODEL_FILE (about 466 MB, once)"
     if ! curl -fL --retry 3 -C - -o "$part" "$WHISPER_MODEL_URL"; then
-      warn "mcp: downloading the Whisper model failed; voice messages cannot be transcribed until: sudo $0 --only mcp"
+      warn "mcp: downloading the Whisper model failed; voice messages cannot be transcribed until: sudo $APPLY_SYSTEM_SELF --only mcp"
       return 0
     fi
   fi
@@ -1399,7 +1413,7 @@ mcp_tgconfirm() {
     if [ "$DRY_RUN" -eq 1 ]; then
       log "[dry-run] tgconfirm does not exist yet: the users section creates it (service, noacl, nobecome, wayland)"
     else
-      warn "mcp: the service user tgconfirm does not exist; run: sudo $0 --only users,mcp (owner-confirmed Telegram sending was not set up)"
+      warn "mcp: the service user tgconfirm does not exist; run: sudo $APPLY_SYSTEM_SELF --only users,mcp (owner-confirmed Telegram sending was not set up)"
       return 0
     fi
   fi
@@ -1457,7 +1471,7 @@ section_mcp() {
     if [ "$DRY_RUN" -eq 1 ]; then
       log "[dry-run] aimcp does not exist yet: the users section creates it (service, noacl, nobecome); a real run of --only users,mcp does both"
     else
-      warn "mcp: the service user aimcp does not exist; run: sudo $0 --only users,mcp (nothing of the Telegram service was set up)"
+      warn "mcp: the service user aimcp does not exist; run: sudo $APPLY_SYSTEM_SELF --only users,mcp (nothing of the Telegram service was set up)"
       return 0
     fi
   fi
