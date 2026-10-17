@@ -177,6 +177,14 @@ for case in ":_session nobody tmux" "alt-enter:_session nobody shell" "attach:_s
   sleep 0.2
   case "$(cat "$STUB_LOG")" in *"--title=nobody -e $USR ${case#*:}"*) ok ;; *) bad "usr menu key [${case%%:*}] did not open: ${case#*:} (log: $(cat "$STUB_LOG"))" ;; esac
 done
+# usr exec: sudo -n -u USER -i, with -C a cd wrapper; a service user is still reachable (it asks for the sudo password itself)
+: >"$STUB_LOG"
+PATH="$T/bin:$PATH" USR_MANAGED_TSV="$T/pick.tsv" "$USR" exec nobody -- ls -la /x >/dev/null 2>&1
+expect "usr exec" "sudo -n -u nobody -i -- ls -la /x" "$(cat "$STUB_LOG")"
+: >"$STUB_LOG"
+PATH="$T/bin:$PATH" USR_MANAGED_TSV="$T/pick.tsv" "$USR" exec nobody -C /srv/x -- make test >/dev/null 2>&1
+case "$(cat "$STUB_LOG")" in "sudo -n -u nobody -i -- sh -c "*"_ /srv/x make test") ok ;; *) bad "usr exec -C: $(cat "$STUB_LOG")" ;; esac
+if PATH="$T/bin:$PATH" USR_MANAGED_TSV="$T/pick.tsv" "$USR" exec stranger -- id >/dev/null 2>&1; then bad "usr exec works for an unmanaged user"; else ok; fi
 export XDG_RUNTIME_DIR="$T/rt" WAYLAND_DISPLAY=wayland-9
 : >"$STUB_LOG"
 PATH="$T/bin:$PATH" USR_MANAGED_TSV="$T/pick.tsv" "$USR" _session nobody tmux >/dev/null 2>&1
