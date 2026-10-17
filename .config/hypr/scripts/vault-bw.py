@@ -31,10 +31,11 @@ delete, restore, Trash, folders, templates, attachments) goes through ONE per-se
 $XDG_RUNTIME_DIR/vault/bw.sock (dir 700, socket 600), the server is a user unit `vault-bw-serve` started by this file
 (`_serve`: reads the 600 session file, puts the key into the environment of the one `bw serve` child, never argv; without a
 user manager it is a detached child). It starts when a bw action needs it, stops on lock, at login (session-start), when the
-rbw agent locks and after the rbw `lock_timeout` without a request (the session key stays; the next bw action starts it
-again). The client trusts the socket only inside a real, 700, own-user $XDG_RUNTIME_DIR/vault (no /tmp fallback: it is
-/run/user/UID when the variable is unset; anything else = the CLI path) and only when SO_PEERCRED says the server is this
-user's, before one byte of a request is sent. `bw()` below is the one client: REST over AF_UNIX (http.client), the CLI as fallback when the server cannot run
+rbw agent locks (seen within 20 s) and after 15 minutes without a request, or the rbw `lock_timeout` when that is shorter
+(the session key stays; the next bw action starts it again). The client trusts the socket only inside a real, 700,
+own-user $XDG_RUNTIME_DIR/vault (no /tmp fallback: it is /run/user/UID when the variable is unset; anything else = the CLI
+path) and only when SO_PEERCRED says the server is this user's, before one byte of a request is sent. `bw()` below is the
+one client: REST over AF_UNIX (http.client), the CLI as fallback when the server cannot run
 or the call has no REST form (Send, import, passphrases).
 
 Secrets: the master password only travels pinentry -> this process -> the environment of ONE `bw unlock` child
@@ -43,7 +44,8 @@ and reaches `bw` as BW_SESSION in that child's environment. Item JSON (with the 
 go to bw on stdin, never argv. Generated and old passwords are copied with `wl-copy --sensitive` and cleared in 30 s.
 A Send link is meant to be shared, so it is copied plainly.
 Test hooks: BW_BIN, RBW_BIN, PINENTRY_BIN, VAULT_RBW_CONF, BW_DOWNLOAD_DIR, EDITOR, VAULT_BW_SERVE=0 (CLI only),
-VAULT_BW_LAUNCH=popen|systemd, VAULT_BW_IDLE (seconds; default the rbw lock_timeout).
+VAULT_BW_LAUNCH=popen|systemd, VAULT_BW_IDLE (seconds; default the rbw lock_timeout
+capped at 900), VAULT_BW_SERVE_POLL (supervisor tick, 2 s), VAULT_BW_RBW_POLL (how often it runs `rbw unlocked`, 20 s).
 vault-browse.py (the vault browser, SUPER+CTRL+SHIFT+P) imports this file for the bw session, the pickers and the
 actions above; run directly it is the command line behind the u6 hub rows.
 """
@@ -318,7 +320,7 @@ def serve_args():
 def serve_environment():
     """The non-secret settings the detached server needs (the session key is read from the 600 file by `_serve`)."""
     keep = ("BW_BIN", "RBW_BIN", "VAULT_RBW_CONF", "VAULT_BW_IDLE", "BITWARDENCLI_APPDATA_DIR", "XDG_CONFIG_HOME",
-            "VAULT_BW_SERVE_POLL", "FAKE_DIR", "PATH", "VAULT_BW_UNIT")
+            "VAULT_BW_SERVE_POLL", "VAULT_BW_RBW_POLL", "FAKE_DIR", "PATH", "VAULT_BW_UNIT")
     env = {k: os.environ[k] for k in keep if k in os.environ}
     env["XDG_RUNTIME_DIR"] = str(RUN.parent)
     return env
@@ -605,16 +607,19 @@ def state():
     return "locked"
 
 
+IDLE_DEFAULT = 900   # seconds: the rbw lock_timeout here is a year, which would keep the server (and the key) alive all day
+
+
 def idle_limit():
-    """Seconds without a request after which the server stops: the rbw lock_timeout (the same patience the vault has)."""
+    """Seconds without a request after which the server stops: VAULT_BW_IDLE, else the rbw lock_timeout capped at 15 min."""
     try:
         return max(2, int(os.environ["VAULT_BW_IDLE"]))
     except (KeyError, ValueError):
         pass
     try:
-        return max(30, int(json.loads(RBW_CONF.read_text()).get("lock_timeout", 3600)))
+        return min(IDLE_DEFAULT, max(30, int(json.loads(RBW_CONF.read_text()).get("lock_timeout", IDLE_DEFAULT))))
     except (OSError, ValueError, TypeError):
-        return 3600
+        return IDLE_DEFAULT
 
 
 def rbw_unlocked():
@@ -661,9 +666,10 @@ def cmd_serve():
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, on_term)
     poll = float(os.environ.get("VAULT_BW_SERVE_POLL", "2"))
-    idle, seen_rbw, chmoded, last = idle_limit(), False, False, 0.0
+    rbw_poll = float(os.environ.get("VAULT_BW_RBW_POLL", "20"))   # `rbw unlocked` is a process: not every 2 s (43k a day)
+    idle, seen_rbw, chmoded, last, last_rbw = idle_limit(), False, False, 0.0, 0.0
     while not stop["now"] and child.poll() is None:
-        time.sleep(0.1)
+        time.sleep(0.1 if not chmoded else min(0.5, poll))
         if not chmoded and SOCK.exists():
             try:
                 os.chmod(SOCK, 0o600)
@@ -681,7 +687,8 @@ def cmd_serve():
                 break
         except OSError:
             pass
-        if rbw_ready():
+        if now - last_rbw >= rbw_poll and rbw_ready():
+            last_rbw = now
             up = rbw_unlocked()
             if up:
                 seen_rbw = True

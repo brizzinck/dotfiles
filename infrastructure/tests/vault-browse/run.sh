@@ -42,7 +42,7 @@ export RBW_BIN=rbw BW_BIN=bw PINENTRY_BIN='$BIN/pinentry' VAULT_RBW_CONF='$FAKE/
 export EDITOR='$BIN/editor' VISUAL= VAULT_CLEAR_AFTER=2 BW_DOWNLOAD_DIR='$FAKE/dl'
 export HYPRLAND_INSTANCE_SIGNATURE=fake VAULT_TERMINAL='$BIN/faketerm'
 export FZF_MENU_NO_SERVER=1 VBTEST_TMUX='$SOCK'
-export VAULT_BW_LAUNCH=popen VAULT_BW_SERVE_POLL=0.3
+export VAULT_BW_LAUNCH=popen VAULT_BW_SERVE_POLL=0.3 VAULT_BW_RBW_POLL=0.3
 unset TG_SKIP TMUX_PANE
 ENV
 echo '{"email":"test@example.com"}' >"$FAKE/rbw.json"
@@ -264,6 +264,31 @@ PY' _ "$V"
   quick_linux_pass_unreadable
   quick_socket_trust
   quick_no_core
+  quick_idle_limit
+}
+
+# BW1-fix 4: the idle default is 15 minutes even though rbw's lock_timeout here is a year
+quick_idle_limit() {
+  local V="$SCRIPTS/vault-bw.py" out
+  out=$(python3 -I - "$V" "$FAKE" <<'PY'
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("vb", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+conf = os.path.join(sys.argv[2], "idle-rbw.json")
+from pathlib import Path
+m.RBW_CONF = Path(conf)
+os.environ.pop("VAULT_BW_IDLE", None)
+def lim(doc):
+    Path(conf).write_text(json.dumps(doc)); return m.idle_limit()
+print("year", lim({"lock_timeout": 31536000}))
+print("short", lim({"lock_timeout": 120}))
+print("tiny", lim({"lock_timeout": 5}))
+print("unset", lim({}))
+Path(conf).unlink(); print("noconf", m.idle_limit())
+os.environ["VAULT_BW_IDLE"] = "5000"; print("env", m.idle_limit())
+PY
+)
+  check "idle: rbw lock_timeout of a year gives 900 s, a shorter one wins, no config gives 900" bash -c 'for l in "year 900" "short 120" "tiny 30" "unset 900" "noconf 900"; do grep -qx "$l" <<<"$1" || exit 1; done' _ "$out"
+  check "idle: VAULT_BW_IDLE overrides the cap" grep -qx 'env 5000' <<<"$out"
 }
 
 # BW1-fix 3: nothing that holds the session key can leave a core file (RLIMIT_CORE 0 for the supervisor, the bw child and
@@ -388,6 +413,13 @@ quick_bw1_slow() {
   sleep 0.8
   touch "$FAKE/rbw-locked"
   check "rbw lock: the server stops (and the session key stays for a later start)" wait_srv_gone 30
+  stop_bw_servers
+  # the supervisor must not spawn `rbw unlocked` every tick (every 2 s was ~43k processes a day)
+  reset unlocked
+  : >"$FAKE/argv.log"
+  VAULT_BW_SERVE_POLL=0.2 VAULT_BW_RBW_POLL=1.5 python3 -I "$V" call list folders </dev/null >/dev/null
+  sleep 3.4
+  check "rbw poll: with a 0.2 s tick and VAULT_BW_RBW_POLL=1.5 rbw unlocked runs at most 3 times in 3.4 s" bash -c '[ "$(grep -ac "^rbw unlocked" "$1/argv.log")" -le 3 ] && [ "$(grep -ac "^rbw unlocked" "$1/argv.log")" -ge 1 ]' _ "$FAKE"
   stop_bw_servers
   # the real launch path: a transient user unit of the user manager (own unit name, own runtime dir; skipped without a manager)
   if XDG_RUNTIME_DIR=$REAL_XDG systemctl --user show-environment >/dev/null 2>&1 && command -v systemd-run >/dev/null; then
