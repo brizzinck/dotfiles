@@ -2,12 +2,14 @@
 # greetd.service or getty@tty1. Run from a terminal of the live session:
 #   sudo greetd --config /etc/greetd/config-test.toml
 # greetd switches to VT3 and shows the greeter; the session it starts is /usr/bin/true (a PAM-path dry run), after which the
-# greeter returns. Ctrl+Alt+F1 goes back to the live session; Ctrl+C in the terminal stops this greetd.
+# greeter returns. The Shell session is real (a console shell on VT3; `exit` returns to the greeter), and root can log in
+# under "Other user...". Ctrl+Alt+F1 goes back to the live session; Ctrl+C in the terminal stops this greetd.
 [terminal]
 vt = 3
 
 [general]
 source_profile = false
+service = "greetd-login"
 
 [default_session]
 command = "env GREETER_TEST_SESSION=1 /usr/local/lib/greeter/greeter-session"

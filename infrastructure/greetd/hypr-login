@@ -3,6 +3,11 @@
 # shell. The session then gets the same environment as the old flow (log in on tty1, type start-hyprland): PATH, EDITOR,
 # SSH_AUTH_SOCK, ... exported by ~/.zshrc. greetd itself only sources /etc/profile and ~/.profile.
 # Hyprland's autostart (hyprland.lua) still runs once per login: theme init, waybar, vault.sh session-start, ...
+# Hyprland is not started as root (a compositor writing into /root and the root user's runtime dir is a mistake waiting to
+# happen): root gets the console shell instead, with a one-line explanation.
+if [ "$(id -u)" = 0 ]; then
+  SHELL_LOGIN_NOTE="Hyprland is not started for root: this is a root shell. Log out to return to the login screen." exec /usr/local/bin/shell-login
+fi
 shell=$(getent passwd "$(id -un)" | cut -d: -f7)
 [ -x "$shell" ] || shell=/bin/sh
 exec "$shell" -l -i -c 'exec /usr/bin/start-hyprland'

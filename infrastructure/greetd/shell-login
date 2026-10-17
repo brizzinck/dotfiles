@@ -1,0 +1,50 @@
+#!/bin/sh
+# greetd session command of the greeter's "Shell" session (installed as /usr/local/bin/shell-login): an interactive login
+# shell on the console, the text console the login screen promises (F2 > Shell). Logging out returns to the greeter.
+# The greeter's Hyprland ran on this VT before: the VT may have been left in graphics mode or with a raw keyboard, and
+# stdin must really be the terminal or zsh starts non-interactive and exits at once. So this script
+#   1. finds the terminal (stdio, else the VT greetd gave the session, else the active VT) and makes it stdin/out/err,
+#   2. puts that VT back into text mode (KD_TEXT) with a unicode keyboard, clears it,
+#   3. execs the user's login shell with -l -i (their normal .zshrc, as hypr-login does).
+# It writes a few lines to ${XDG_STATE_HOME:-~/.local/state}/greeter-shell.log (what it found, so a failure can be read).
+# Hyprland refuses to run as root (see hypr-login), which lands root here with SHELL_LOGIN_NOTE set.
+state=${XDG_STATE_HOME:-$HOME/.local/state}
+log=$state/greeter-shell.log
+mkdir -p "$state" 2>/dev/null
+note() { printf '%s shell-login: %s\n' "$(date '+%F %T')" "$*" >>"$log" 2>/dev/null; }
+
+tty_dev=
+for fd in 0 1 2; do
+  t=$(readlink "/proc/$$/fd/$fd" 2>/dev/null)
+  case $t in /dev/tty[0-9]* | /dev/pts/*) tty_dev=$t; break ;; esac
+done
+if [ -z "$tty_dev" ]; then
+  vt=${XDG_VTNR:-$(sed 's/^tty//' /sys/class/tty/tty0/active 2>/dev/null)}
+  [ -n "$vt" ] && tty_dev=/dev/tty$vt
+fi
+note "start uid=$(id -u) stdin=$(readlink /proc/$$/fd/0) stdout=$(readlink /proc/$$/fd/1) vtnr=${XDG_VTNR:-none} term=${TERM:-none} -> tty ${tty_dev:-none}"
+
+if [ -n "$tty_dev" ] && [ -c "$tty_dev" ] && (: <"$tty_dev" >"$tty_dev") 2>/dev/null; then
+  # text mode (KDSETMODE KD_TEXT) and unicode keyboard (KDSKBMODE K_UNICODE); both are ENOTTY no-ops on a pty
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -I -c 'import fcntl, os, sys
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_NOCTTY)
+for req, arg in ((0x4B3A, 0), (0x4B45, 3)):
+    try:
+        fcntl.ioctl(fd, req, arg)
+    except OSError as e:
+        print("ioctl %#x: %s" % (req, e.strerror))' "$tty_dev" >>"$log" 2>&1
+  fi
+  exec <"$tty_dev" >"$tty_dev" 2>&1
+  printf '\033[0m\033[2J\033[H\033[?25h'
+else
+  note "no usable terminal found; continuing with the inherited stdio"
+fi
+
+case ${TERM:-dumb} in dumb | unknown) TERM=linux; export TERM ;; esac
+[ -n "${SHELL_LOGIN_NOTE:-}" ] && printf '%s\n\n' "$SHELL_LOGIN_NOTE"
+
+shell=$(getent passwd "$(id -un)" | cut -d: -f7)
+[ -x "$shell" ] || shell=/bin/sh
+note "exec $shell -l -i"
+exec "$shell" -l -i

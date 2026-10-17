@@ -5,6 +5,8 @@
 #   command = "/usr/bin/tuigreet --config /etc/greetd/tuigreet.toml --cmd /usr/local/bin/hypr-login"
 # and run `sudo systemctl restart greetd` from TTY2 (never from the graphical session: it stops tty1).
 # Undo: put /usr/local/lib/greeter/greeter-session back.
+# A session command is ONE argv element in users.json: greetd runs `sh -c "exec <argv joined by spaces>"`, so a `sh -c '...'`
+# array loses its quoting (that is why the old Shell session ended at once); multi-word logic belongs in a script.
 
 [terminal]
 vt = 1
@@ -12,6 +14,9 @@ vt = 1
 [general]
 # greetd sources /etc/profile and ~/.profile before the session command
 source_profile = true
+# Own PAM service (pam/greetd-login): the package's "greetd" starts with pam_securetty, which fails for root because greetd
+# sets no PAM_TTY before authenticating ("cannot determine user's tty"). Undo: service = "greetd".
+service = "greetd-login"
 
 [default_session]
 command = "/usr/local/lib/greeter/greeter-session"

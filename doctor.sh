@@ -389,7 +389,7 @@ greeter_bad=""
 for f in config.toml config-test.toml tuigreet.toml hyprland.lua tmpfiles.conf greeter-session run-qs hypr-login greeter/shell.qml greeter/Greeter.qml greeter/Theme.qml greeter/users.json; do
   [ -r "$greeter_src/$f" ] || greeter_bad="$greeter_bad $f"
 done
-for f in greeter-session run-qs hypr-login; do
+for f in greeter-session run-qs hypr-login shell-login; do
   { [ -x "$greeter_src/$f" ] && sh -n "$greeter_src/$f" 2>/dev/null; } || greeter_bad="$greeter_bad $f(not executable or syntax)"
 done
 # the greeter must start /usr/bin/Hyprland itself: start-hyprland restarts a crashed compositor in --safe-mode and never returns
@@ -397,6 +397,16 @@ done
 grep -qE '^/usr/bin/Hyprland ' "$greeter_src/greeter-session" 2>/dev/null && ! grep -qE '^[^#]*start-hyprland' "$greeter_src/greeter-session" 2>/dev/null ||
   greeter_bad="$greeter_bad greeter-session(must run /usr/bin/Hyprland directly, not start-hyprland)"
 grep -q 'disable_watchdog_warning = true' "$greeter_src/hyprland.lua" 2>/dev/null || greeter_bad="$greeter_bad hyprland.lua(disable_watchdog_warning)"
+# greetd runs `sh -c "exec <argv joined by spaces>"`: a session command must be ONE argv element (a script), or its quoting is lost
+jq -e '[.sessions[].cmd | length == 1] | all' "$greeter_src/greeter/users.json" >/dev/null 2>&1 ||
+  greeter_bad="$greeter_bad users.json(every session cmd must be a single script path: greetd joins the argv with spaces)"
+# the PAM service of the sessions must not start with pam_securetty (it fails for root: greetd sets no PAM_TTY)
+{ grep -qE '^service = "greetd-login"' "$greeter_src/config.toml" && ! grep -qE '^[^#]*pam_securetty' "$greeter_src/pam/greetd-login"; } 2>/dev/null ||
+  greeter_bad="$greeter_bad pam/greetd-login(config.toml service = greetd-login, no pam_securetty)"
+# text consoles: both Hyprlands carry the Ctrl+Alt+Fn -> logind SwitchTo binds, and logind can start a getty on TTY2
+for f in "$DOTFILES/.config/hypr/hyprland.lua" "$greeter_src/hyprland.lua"; do
+  grep -q 'Seat SwitchTo u' "$f" 2>/dev/null || greeter_bad="$greeter_bad ${f##*/}(Ctrl+Alt+Fn VT binds)"
+done
 if [ -n "$greeter_bad" ]; then
   bad greeter-repo "missing or broken in infrastructure/greetd:$greeter_bad"
 elif [ "$(readlink -f "$greeter_src/greeter/Theme.qml")" != "$(readlink -f "$DOTFILES/themes/generated/black/greeter-palette.qml")" ]; then
@@ -419,6 +429,13 @@ fi
 if [ "$greeter_on" = 1 ] && systemctl is-enabled getty@tty1.service >/dev/null 2>&1; then
   bad greeter-getty "greetd and getty@tty1 are both enabled (rollback half-done?): sudo systemctl disable getty@tty1"
 fi
+# the rescue console (Ctrl+Alt+F2): logind starts autovt@tty2 (an alias of getty@) when VT2 gets switched to
+tty_bad=""
+systemctl cat autovt@tty2.service >/dev/null 2>&1 || tty_bad="autovt@.service alias is missing, logind cannot start a getty on VT2 (sudo ln -s /usr/lib/systemd/system/getty@.service /etc/systemd/system/autovt@.service)"
+[ "$(systemctl is-enabled getty@tty2.service 2>/dev/null)" = masked ] && tty_bad="${tty_bad:+$tty_bad; }getty@tty2 is masked"
+nautovt="$(cat /etc/systemd/logind.conf /etc/systemd/logind.conf.d/*.conf 2>/dev/null | sed -n 's/^NAutoVTs=//p' | tail -n 1)"
+[ "${nautovt:-6}" = 0 ] && tty_bad="${tty_bad:+$tty_bad; }logind NAutoVTs=0 (no getty on VT2)"
+if [ -z "$tty_bad" ]; then ok tty-console "logind can start a getty on TTY2 (autovt@ alias present, not masked)"; else bad tty-console "$tty_bad"; fi
 missing_pkgs=""
 for p in greetd greetd-tuigreet quickshell; do pacman -Q "$p" >/dev/null 2>&1 || missing_pkgs="$missing_pkgs $p"; done
 if [ -z "$missing_pkgs" ]; then
@@ -437,7 +454,8 @@ done < <(
   printf '%s %s\n' "$greeter_src/config.toml" /etc/greetd/config.toml "$greeter_src/config-test.toml" /etc/greetd/config-test.toml \
     "$greeter_src/tuigreet.toml" /etc/greetd/tuigreet.toml "$greeter_src/hyprland.lua" /etc/greetd/hyprland.lua \
     "$DOTFILES/.config/hypr/monitors.lua" /etc/greetd/monitors.lua "$greeter_src/greeter-session" /usr/local/lib/greeter/greeter-session \
-    "$greeter_src/run-qs" /usr/local/lib/greeter/run-qs "$greeter_src/hypr-login" /usr/local/bin/hypr-login
+    "$greeter_src/run-qs" /usr/local/lib/greeter/run-qs "$greeter_src/hypr-login" /usr/local/bin/hypr-login \
+    "$greeter_src/shell-login" /usr/local/bin/shell-login "$greeter_src/pam/greetd-login" /etc/pam.d/greetd-login
   printf '%s %s\n' "$greeter_src/tmpfiles.conf" /etc/tmpfiles.d/greeter.conf "$users_rendered" /etc/greetd/greeter/users.json
   for f in "$greeter_src"/greeter/*.qml; do printf '%s %s\n' "$f" "/etc/greetd/greeter/$(basename "$f")"; done
 )

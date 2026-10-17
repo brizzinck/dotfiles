@@ -14,7 +14,7 @@
     {
       "id": "shell",
       "label": "Shell",
-      "cmd": ["/bin/sh", "-c", "exec \"$(getent passwd \"$(id -un)\" | cut -d: -f7)\" -l"],
+      "cmd": ["/usr/local/bin/shell-login"],
       "env": []
     }
   ]

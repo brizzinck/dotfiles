@@ -75,6 +75,9 @@ Scope {
             check("wrong password: failed state", !Greeter.busy && Greeter.failed && Greeter.attempts === 1);
             check("wrong password: status text", Greeter.statusText === "Wrong user or password (1)" && Greeter.statusKind === 2);
             check("wrong password: field cleared", Greeter.password === "");
+            check("PAM service error text", Greeter.errorText("authentication error: pam_authenticate: SERVICE_ERR") === "Login failed: PAM service error (see journalctl -u greetd)");
+            check("lost connection text", Greeter.errorText("failed to send").indexOf("lost the connection to greetd") >= 0);
+            check("other error text", Greeter.errorText("boom") === "Login failed: boom (see journalctl -u greetd)");
             Greeter.onLayoutEvent("at-translated-set-2-keyboard,Ukrainian");
             check("activelayout event: Ukrainian -> UA, warns", Greeter.layoutCode === "UA" && Greeter.layoutWarn);
             Greeter.onLayoutEvent("kbd,Russian");

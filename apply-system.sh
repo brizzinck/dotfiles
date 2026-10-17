@@ -780,6 +780,9 @@ section_greeter() {
     try systemd-sysusers
   fi
 
+  # PAM service of the greetd sessions first: config.toml names it (service = "greetd-login"). It is the package's
+  # /etc/pam.d/greetd without pam_securetty, which fails for root (greetd sets no PAM_TTY before authenticating)
+  install_file "$GREETD_SRC/pam/greetd-login" /etc/pam.d/greetd-login
   # configuration, greeter UI and helper scripts
   install_file "$GREETD_SRC/config.toml" /etc/greetd/config.toml
   install_file "$GREETD_SRC/config-test.toml" /etc/greetd/config-test.toml
@@ -789,6 +792,7 @@ section_greeter() {
   install_file "$GREETD_SRC/greeter-session" /usr/local/lib/greeter/greeter-session 755
   install_file "$GREETD_SRC/run-qs" /usr/local/lib/greeter/run-qs 755
   install_file "$GREETD_SRC/hypr-login" /usr/local/bin/hypr-login 755
+  install_file "$GREETD_SRC/shell-login" /usr/local/bin/shell-login 755     # the greeter's Shell session (a console login shell)
   install_file "$GREETD_SRC/tmpfiles.conf" /etc/tmpfiles.d/greeter.conf
   # Theme.qml in the repo is a symlink to themes/generated/black/greeter-palette.qml (install follows it)
   for f in "$GREETD_SRC"/greeter/*.qml; do
@@ -828,7 +832,7 @@ section_greeter() {
   GREETER_BANNER=1
   followup "reboot to switch to the login screen; rollback from TTY2: sudo systemctl disable greetd && sudo systemctl enable getty@tty1 && sudo reboot"
   followup "emergency (no VT): GRUB entry, press e, append systemd.mask=greetd.service to the linux line, Ctrl+X"
-  followup "optional test before the reboot, on VT3 with a dry-run session: sudo greetd --config /etc/greetd/config-test.toml (Ctrl+Alt+F1 returns, Ctrl+C stops it)"
+  followup "optional test before the reboot, on VT3 (dry-run session; the Shell session is real; also try root under Other user...): sudo greetd --config /etc/greetd/config-test.toml (Ctrl+Alt+F1 returns, Ctrl+C stops it)"
   followup "after the reboot: ./doctor.sh --fails; loginctl show-session \$XDG_SESSION_ID -p Service -p Type    # Service=greetd, Type=wayland"
 }
 

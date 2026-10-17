@@ -14,7 +14,8 @@ Singleton {
     // ---- modes (environment) --------------------------------------------------------------------------------------
     // GREETER_DEMO=1: a floating window with two virtual outputs inside a running session (no layer shell, no dpms,
     // no marker file). Without a greetd socket the fake backend is used as well: the password "demo" succeeds and the
-    // launch only quits. GREETER_TEST_SESSION=1: launch /usr/bin/true instead of the session (greetd PAM dry run).
+    // launch only quits. GREETER_TEST_SESSION=1: launch /usr/bin/true instead of the session (greetd PAM dry run); the Shell
+    // session stays real (a console shell on the test VT).
     readonly property bool demoWindow: Quickshell.env("GREETER_DEMO") === "1"
     readonly property bool fakeAuth: demoWindow || !Greetd.available
     readonly property bool testSession: Quickshell.env("GREETER_TEST_SESSION") === "1"
@@ -194,6 +195,16 @@ Singleton {
         focusRequested();
     }
 
+    // The text for an error greetd (or the socket) reports, in English: a PAM service error is not a wrong password.
+    function errorText(error: string): string {
+        const e = error.toLowerCase();
+        if (e.indexOf("service_err") >= 0 || e.indexOf("pam_") >= 0)
+            return "Login failed: PAM service error (see journalctl -u greetd)";
+        if (e.indexOf("failed to send") >= 0 || e.indexOf("socket") >= 0 || e.indexOf("broken pipe") >= 0)
+            return "Login failed: lost the connection to greetd (see journalctl -u greetd)";
+        return "Login failed: " + (error !== "" ? error : "unknown error") + " (see journalctl -u greetd)";
+    }
+
     function authFailed() {
         busy = false;
         attempts += 1;
@@ -213,7 +224,7 @@ Singleton {
 
     function doLaunch() {
         const s = sessions[sessionIndex];
-        const cmd = testSession ? ["/usr/bin/true"] : s.cmd;
+        const cmd = (testSession && s.id !== "shell") ? ["/usr/bin/true"] : s.cmd;
         if (fakeAuth) {
             console.log("greeter: fake backend, would launch " + JSON.stringify(cmd) + " with " + JSON.stringify(s.env));
             fakeLaunched = true;
@@ -277,7 +288,7 @@ Singleton {
         function onError(error: string) {
             ctrl.busy = false;
             ctrl.password = "";
-            ctrl.showStatus(error, 2);
+            ctrl.showStatus(ctrl.errorText(error), 2);
             if (Greetd.state !== GreetdState.Inactive)
                 Greetd.cancelSession();
             ctrl.focusRequested();

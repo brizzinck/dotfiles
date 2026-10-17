@@ -170,10 +170,10 @@ by physical key, so everything below works on the ua and ru layouts too (Caps sw
 | `Ctrl+J` / `Ctrl+K`, `Down` / `Up`, `Tab` | user name field / password field (Other user...) |
 | `Enter` | next field, then log in |
 | `Esc` | clear the password; empty: cancel a pending PAM question, then back from Other user... to the main user |
-| `F2` | session menu (Hyprland, Shell) |
+| `F2` | session menu (Hyprland, Shell = a login shell on this console, `exit` returns here; root gets that shell for either session) |
 | `F12` | power menu (suspend, reboot, power off) |
 | `j` / `k`, arrows, `Enter` / `l`, `Esc` / `h` (open menu) | move, pick, close |
-| `Ctrl+Alt+F2` | text login on TTY2 (rollback and rescue) |
+| `Ctrl+Alt+F2` | text login on TTY2 (rollback and rescue; a Hyprland bind through logind as well as the native keysym, in the greeter and in the session; `Ctrl+Alt+F1` returns) |
 
 ## Layout-independent keys (us, ua, ru)
 
