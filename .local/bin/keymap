@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# keymap: the automatic shortcut reference (see ~/.config/keymap/keymap.py --help). SUPER+/ search, SUPER+SHIFT+/ page.
+exec env PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-/tmp/pycache}" python3 "${XDG_CONFIG_HOME:-$HOME/.config}/keymap/keymap.py" "$@"

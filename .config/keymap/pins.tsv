@@ -1,0 +1,15 @@
+# "Start here" on the reading page: the shortcuts you use all day. Each line is the key text of an existing row; a pin that
+# no longer matches a row fails `keymap check` (the page never shows a stale key). Format: keys <TAB> block id (optional).
+Super+Space
+Super+Enter
+Super+W
+Super+H
+Super+1..0
+Super+M
+Super+;
+Super+/
+Super+Shift+/
+Alt+S
+Super+C
+Super+Ctrl+P
+Super+Esc

@@ -1,0 +1,5 @@
+# Short orientation cards at the top of the reading page and the document: title <TAB> text.
+Windows	The modifier picks the layer, h j k l the direction: Super focuses, Super+Shift moves, Super+Ctrl resizes, Super+Alt switches tabs and workspaces.
+Menus	Every menu except the app launcher is one modal list. It opens in INSERT (type to filter). Esc goes to NORMAL (j k g G, q quits). A second press of the bind closes it.
+Bar	Every module: L main action, M quick toggle, R menu, scroll changes the value. The tooltip lists the clicks.
+Lost?	Super+/ searches every shortcut, Super+Shift+/ opens this page, Super+M is the hub (every action, searchable), Super+; the leader menu. In nvim: Space f k.

@@ -1,0 +1,40 @@
+# Blocks of the shortcut reference: id <TAB> group <TAB> title <TAB> description. The order here is the order everywhere
+# (docs/keymap.md, the SUPER+/ menu, the reading page). A row whose source finds no better block lands in "Other ..." of
+# its source, so a new shortcut is never lost. Groups: Desktop, Terminal, Editor, Menus and bar, Apps and login.
+apps	Desktop	Apps and launchers	Hyprland. Terminals, browser, file managers, the launcher, the hub and the cheatsheets. SUPER is the main modifier.
+windows	Desktop	Windows	Hyprland. One grammar: the modifier picks the layer, h j k l the direction. SUPER focuses, SUPER+SHIFT moves or swaps, SUPER+CTRL resizes (repeats while held), SUPER+ALT switches group tabs and workspaces. Resize mode (SUPER+CTRL+R) keeps h j k l active until any other key.
+groups	Desktop	Groups (tabs)	Hyprland. A group stacks windows as tabs in one tile.
+workspaces	Desktop	Workspaces and monitors	Hyprland. 20 workspaces (SUPER = 1-10, SUPER+ALT = 11-20, add SHIFT to move the window there), a scratch workspace and monitor moves.
+capture	Desktop	Screenshots and recording	Hyprland. Frozen = the screen stops at the key press and you select on the still image.
+clipboard	Desktop	Clipboard, text and secrets	Hyprland. Clipboard history, emoji, snippets and the Bitwarden pickers (copied secrets are cleared after 30 s).
+audio	Desktop	Audio, media, brightness	Hyprland. Volume, microphones, media keys and brightness of the focused monitor.
+notify	Desktop	Notifications	Hyprland. Dunst: dismiss, history, do-not-disturb and the actions of the visible notification.
+system	Desktop	System, power, bar	Hyprland. Lock, power, update, idle, night light, the bar and the network pickers.
+pointer	Desktop	Pointer from the keyboard	Hyprland. wl-kbptr hint click and drag, plus the mouse submap (SUPER+ALT+M) where hjkl move the pointer; any key not listed leaves it.
+hypr-other	Desktop	Other Hyprland binds	Hyprland binds that no classification rule claims yet (add a rule to rules.tsv).
+leader	Desktop	Leader menu (SUPER+;)	One-shot which-key popup generated from the hub rows: press SUPER+; then the group key, then the item key. The popup lists every option, so you can read as you go. Keys work on the ua and ru layouts.
+tmux-custom	Terminal	tmux: this setup	tmux, read from a private server that loads tmux.conf (notes are the -N text of each bind). The prefix is Ctrl+Space. Status badges: PREFIX yellow, COPY blue, ZOOM purple, SYNC red; a red bell marks a background window that needs attention.
+tmux-default	Terminal	tmux: stock prefix keys	The unchanged default prefix keys that tmux documents (list-keys -N). Everything in the block above overrides or extends them.
+zsh-keys	Terminal	zsh line editor	zsh vi-mode (Esc = NORMAL, cursor beam = INSERT, block = NORMAL; [I] [N] [V] in the prompt). Read with bindkey from an interactive zsh; vi motions and operators are the standard ones.
+zsh-helpers	Terminal	zsh helpers	Functions of .zshrc that carry a comment, plus the commands of this setup.
+zsh-aliases	Terminal	zsh aliases	Every alias of .zshrc with what it expands to.
+nvim-ai	Editor	Neovim: AI agents	Neovim (NvChad fork), dumped headless from the live mappings that carry a desc. Space is the leader; which-key shows the options after a moment.
+nvim-find	Editor	Neovim: find	Telescope: files, grep, buffers, help, keymaps.
+nvim-git	Editor	Neovim: git	LazyGit, Telescope git pickers and diffview.
+nvim-lsp	Editor	Neovim: LSP and code	Definitions, references, actions, rename, format, symbols and diagnostics.
+nvim-debug	Editor	Neovim: debug	DAP (breakpoints, stepping, REPL).
+nvim-trouble	Editor	Neovim: Trouble	Diagnostics, quickfix, symbols and todos lists.
+nvim-test	Editor	Neovim: tests and terminals	Test runner and terminal splits.
+nvim-buffers	Editor	Neovim: buffers and directories	Buffer closing and working directory moves.
+nvim-session	Editor	Neovim: sessions	auto-session: load, search, delete.
+nvim-pkg	Editor	Neovim: plugins and packages	Lazy, Mason and plugin updates.
+nvim-files	Editor	Neovim: files and misc	File tree, Yazi, save, quit and the other single-key leader mappings.
+nvim-edit	Editor	Neovim: moving and editing	Mappings outside the leader: jumps, windows, comments, flash, diagnostics navigation.
+menu-modal	Menus and bar	Menus: list grammar	Every menu except the app launcher is one Telescope-like modal list (fzf-menu, ~/.config/fzf/vimfzf.sh) in a floating ghostty, or in the current terminal. A second press of the bind closes the open menu; the previously focused window gets the focus back. Cyrillic (ua/ru) twins of every NORMAL key are generated.
+menu-keys	Menus and bar	Menus: keys of each menu	Menu-specific keys keep the Alt+ form (works in both modes) and get a NORMAL letter; the header of each menu lists them.
+tuis	Menus and bar	TUIs and viewers	Programs that read characters themselves, so they have no Cyrillic twins.
+bar	Menus and bar	Bar (waybar)	Two bars per monitor: compact and full (SUPER+B switches, SUPER+CTRL+B hides). Click grammar of every module: L main action (a switch toggles), R menu or alternative, M quick binary action, scroll adjusts the value. Read from the tooltip hints of modules.jsonc and the bar scripts.
+telegram	Apps and login	Telegram	apps/telegram/shortcuts-custom.json (needs one Telegram restart).
+vimium	Apps and login	Browser (Vimium C)	Vimium C defaults stay; the ua/ru layouts get the same keys through mapKey. Import browsers/vimium-c.json once.
+login	Apps and login	Login screen	greetd + Quickshell greeter. Letters are matched by physical key, so everything works on the ua and ru layouts (Caps switches us / ua / ru; the layout pill turns yellow when it is not US).
+layout	Apps and login	Layout-independent keys (us, ua, ru)	Every bind works while the Ukrainian or Russian layout is active. One physical-key map (.config/layout/keymap.tsv) feeds layout.py, which writes the per-tool files; never type Cyrillic twins by hand.

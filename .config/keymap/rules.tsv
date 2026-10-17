@@ -1,0 +1,15 @@
+# Classification of the live Hyprland binds into blocks: kind <TAB> regex <TAB> block. First match wins (case-insensitive,
+# re.search). kind `submap` matches the submap name, `desc` the bind description, `key` the label (super+ctrl+r, lower case).
+# A bind no rule claims lands in block hypr-other, so a new bind is never lost.
+submap	^resize$	windows
+submap	^mouse$	pointer
+desc	^(Terminal|Browser|File manager|App launcher|Telegram|YouTube Music|Obsidian|Calculator|System monitor|Project sessions|Drop-down terminal|Notes scratchpad|Utility hub|Leader menu|Keybind|Keymap|Shortcut)	apps
+desc	^(Pointer|Mouse mode|Left click|Right click|Middle click)	pointer
+desc	(group|tab in group)	groups
+desc	^(Cycle windows|Close window|Window |Toggle floating|Fullscreen|Maximize|Pin floating|Focus (urgent|left|right|up|down)|Move window (left|right|up|down)$|Resize)	windows
+desc	^(Workspace|Move window to|Move workspace|Focus (previous|next) monitor|Toggle scratch|Send window to scratch|Next workspace|Previous workspace)	workspaces
+desc	^(Screenshot|Frozen|Capture menu|OCR|Record|Color picker)	capture
+desc	^(Clipboard|Emoji|Snippets|Paste|Passwords|2FA|Type the Linux password)	clipboard
+desc	^(Audio|Mute|Volume|Focused app|Brightness|Play|Pause|Next track|Previous track|Prev track)	audio
+desc	(notification|do-not-disturb)	notify
+desc	^(Lock|Power|System update|Toggle idle|Toggle night|Bar |Hide or show the bar|Wi-Fi|Bluetooth|Reload wallpaper|Text console)	system

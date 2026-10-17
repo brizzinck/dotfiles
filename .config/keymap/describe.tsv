@@ -1,0 +1,143 @@
+# Small description tables of the generator: kind <TAB> key <TAB> value.
+#
+# zsh-widget: a bound zle widget -> what the key does (builtin widgets are listed only when they are worth showing;
+# every widget the user defines or a plugin adds shows up anyway, named after the widget, when no line exists here)
+zsh-widget	vi-cmd-mode	NORMAL mode
+zsh-widget	beginning-of-line	Start of the line
+zsh-widget	end-of-line	End of the line
+zsh-widget	backward-char	One character left
+zsh-widget	forward-char	One character right
+zsh-widget	kill-line	Delete to the end of the line
+zsh-widget	backward-kill-line	Delete to the start of the line
+zsh-widget	backward-kill-word	Delete the word before the cursor
+zsh-widget	backward-delete-char	Delete the character before the cursor
+zsh-widget	clear-screen	Clear the screen
+zsh-widget	up-history	Previous history entry
+zsh-widget	down-history	Next history entry
+zsh-widget	up-line-or-beginning-search	History entries that start like the typed text (up)
+zsh-widget	down-line-or-beginning-search	History entries that start like the typed text (down)
+zsh-widget	autosuggest-accept	Accept the autosuggestion
+zsh-widget	sudo-command-line	Put sudo in front of the command line
+zsh-widget	edit-command-line	Edit the whole line in nvim
+zsh-widget	visual-mode	Visual selection
+zsh-widget	visual-line-mode	Visual selection by line
+zsh-widget	fzf-history-widget	History search (fzf)
+zsh-widget	fzf-file-widget	Insert a file path (fzf)
+zsh-widget	fzf-cd-widget	cd into a directory (fzf)
+zsh-widget	fzf-tab-complete	Completion with fzf
+zsh-widget	fzf-completion	Completion with fzf
+zsh-widget	reverse-menu-complete	Previous completion
+zsh-widget	history-incremental-search-backward	Incremental history search
+zsh-widget	vi-yank	Yank (copies to the Wayland clipboard)
+#
+# helper: a function of .zshrc whose comment is not a description, or a command of this setup without a function
+helper	grun	go run for ./main.go, ./cmd/main.go or ./cmd/api/main.go
+helper	codex	Codex CLI without approval prompts or sandboxing
+#
+# tmux-cmd: description of a bind that has no -N note (plugins), by regex on the command
+tmux-cmd	tmux-sidebar.*focus	File tree sidebar in a pane (focus it)
+tmux-cmd	tmux-sidebar	File tree sidebar in a pane
+tmux-cmd	tmux-fingers start --mode jump	Hints: jump mode (the cursor goes to the match in copy mode)
+tmux-cmd	tmux-fingers start	Hints: URLs, paths, hashes (hint letter copies, Ctrl+letter opens, Shift+letter pastes, Tab multi-select)
+tmux-cmd	install_plugins	TPM: install plugins
+tmux-cmd	clean_plugins	TPM: remove plugins that are no longer listed
+tmux-cmd	resurrect.*save\.sh	tmux-resurrect: save the sessions
+tmux-cmd	resurrect.*restore\.sh	tmux-resurrect: restore the saved sessions
+tmux-cmd	^send-prefix$	Send the prefix key to the program inside
+tmux-cmd	update_plugins	TPM: update plugins
+#
+# nvim-prefix: the character after <leader> -> block
+nvim-prefix	a	nvim-ai
+nvim-prefix	f	nvim-find
+nvim-prefix	g	nvim-git
+nvim-prefix	l	nvim-lsp
+nvim-prefix	d	nvim-debug
+nvim-prefix	x	nvim-trouble
+nvim-prefix	t	nvim-test
+nvim-prefix	h	nvim-test
+nvim-prefix	v	nvim-test
+nvim-prefix	b	nvim-buffers
+nvim-prefix	c	nvim-buffers
+nvim-prefix	S	nvim-session
+nvim-prefix	p	nvim-pkg
+#
+# nvim-desc: tidy a description (regex <TAB> replacement) where the mapping only has a call as its desc
+nvim-desc	^vim\.lsp\.buf\.code_action\(\)$	Code action
+nvim-desc	^vim\.lsp\.buf\.rename\(\)$	Rename
+nvim-desc	^vim\.lsp\.buf\.references\(\)$	References
+nvim-desc	^vim\.lsp\.buf\.implementation\(\)$	Implementation
+nvim-desc	^vim\.lsp\.buf\.type_definition\(\)$	Type definition
+nvim-desc	^vim\.lsp\.buf\.document_symbol\(\)$	Document symbols
+nvim-desc	^vim\.lsp\.buf\.signature_help\(\)$	Signature help
+nvim-desc	^vim\.lsp\.codelens\.run\(\)$	Run the code lens
+#
+# nvim-skip: mappings that are noise (regex on desc): defaults, langmapper twins, Plug and SNR targets
+nvim-skip	^LM 
+nvim-skip	LM \(translate
+nvim-skip	^:
+nvim-skip	<Plug>
+nvim-skip	<SNR>
+nvim-skip	^Opens filepath or URI
+#
+# barmod: module id of modules.jsonc -> label shown in the bar block
+barmod	battery	Battery
+barmod	custom/mode#compact	Mode icon (compact bar)
+barmod	custom/mode#full	Mode icon (full bar)
+barmod	custom/recording	Recording
+barmod	custom/health	Health badge
+barmod	custom/ai	AI usage
+barmod	custom/updates#alert	Updates alert
+barmod	custom/updates	Updates
+barmod	custom/toggles	Switches summary
+barmod	custom/vault	Vault
+barmod	network	Network
+barmod	bluetooth	Bluetooth
+barmod	wireplumber	Volume
+barmod	pulseaudio	Volume
+barmod	pulseaudio#mic	Microphone
+barmod	wireplumber#mic	Microphone
+barmod	network#alert	Network (alert)
+barmod	backlight	Brightness
+barmod	memory	Memory
+barmod	cpu	CPU
+barmod	temperature	CPU temperature
+barmod	script:toggles.sh	Switches
+barmod	script:updates.sh	Updates
+barmod	script:health.sh	Health badge
+barmod	script:ai-usage.sh	AI usage
+barmod	script:recording.sh	Recording
+barmod	script:pinned-watch.py	Pinned app
+#
+# vimium: the Vimium C default keys that browsers/vimium-c.json keeps (the list comes from its comment line)
+vimium	j	Scroll down
+vimium	k	Scroll up
+vimium	h	Scroll left
+vimium	l	Scroll right
+vimium	gg	Scroll to the top
+vimium	G	Scroll to the bottom
+vimium	d	Half page down
+vimium	u	Half page up
+vimium	f	Open a link by hint
+vimium	F	Open a link by hint in a new tab
+vimium	H	Back in history
+vimium	L	Forward in history
+vimium	J	Previous tab
+vimium	K	Next tab
+vimium	x	Close the tab
+vimium	X	Restore the closed tab
+vimium	o	Open a URL, bookmark or history entry
+vimium	O	Open it in a new tab
+vimium	b	Open a bookmark
+vimium	B	Open a bookmark in a new tab
+vimium	T	Search open tabs
+vimium	yy	Copy the page URL
+vimium	yf	Copy a link URL by hint
+vimium	p	Open the clipboard URL
+vimium	P	Open the clipboard URL in a new tab
+vimium	gi	Focus the first input
+vimium	gs	View the page source
+vimium	/	Find in the page
+vimium	n	Next find match
+vimium	N	Previous find match
+vimium	v	Visual mode
+vimium	V	Visual line mode
