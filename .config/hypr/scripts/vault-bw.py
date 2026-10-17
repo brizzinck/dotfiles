@@ -366,6 +366,8 @@ def start_serve(wait=20.0):
         return False
     try:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        if not read_session():   # a lock ran while we waited for the flock: the key is gone, so is the server's reason to be
+            return False
         if serve_up():
             return True
         SOCK.unlink(missing_ok=True)
@@ -810,12 +812,28 @@ def ensure():
 
 
 def cmd_lock():
-    # the server goes first (the real `bw serve` exits by itself on POST /lock, so the REST lock cannot be relied on to finish
-    # its disk writes); then ONE `bw lock` process clears the stored keys, exactly as before BW1
-    stop_serve()
-    if have(BW):
-        bw_cli("lock", session=True)
+    # Order matters (BW1-fix): the key is read once and the session file goes FIRST, so no client can start a new server
+    # with it while we stop the old one (`start_serve` and `_serve` both need the file). Then the server is stopped under
+    # the same flock `start_serve` holds (a start that is in flight finishes first and is stopped too), then ONE `bw lock`
+    # clears bw's own keys with the key we still hold in memory. The real `bw serve` exits by itself on POST /lock, so the
+    # REST lock cannot be relied on to finish its disk writes: the server is stopped, not asked.
+    key = read_session()
     drop_session()
+    lock = None
+    try:
+        import fcntl
+        RUN.mkdir(parents=True, exist_ok=True)
+        lock = os.open(SERVE_LOCK, os.O_WRONLY | os.O_CREAT, 0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+    except OSError:
+        pass   # no directory or no flock: stop it anyway
+    try:
+        stop_serve()
+    finally:
+        if lock is not None:
+            os.close(lock)
+    if have(BW):
+        bw_cli("lock", session=False, extra_env={"BW_SESSION": key} if key else None)
     forget_status()
     poke_bar()
 

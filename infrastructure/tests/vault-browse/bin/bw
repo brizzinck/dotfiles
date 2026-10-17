@@ -19,7 +19,11 @@ case $cmd in
     for ((i = 1; i <= $#; i++)); do [[ ${!i} == --passwordenv ]] && { j=$((i + 1)); var=${!j}; }; done
     [[ -n $var && ${!var:-} == master-pw ]] || { echo "Invalid master password." >&2; exit 1; }
     touch "$FAKE_DIR/bw-unlocked"; printf '%s' "$KEY" ;;
-  lock) rm -f "$FAKE_DIR/bw-unlocked"; echo '{"success":true}' ;;
+  lock)
+    # what the lock saw: was the session file already gone, was the server socket already gone, which key did it get
+    printf 'session=%s sock=%s key=%s\n' "$([[ -e ${XDG_RUNTIME_DIR:-/x}/vault/bw-session ]] && echo present || echo gone)" \
+      "$([[ -S ${XDG_RUNTIME_DIR:-/x}/vault/bw.sock ]] && echo present || echo gone)" "${BW_SESSION:-}" >>"$FAKE_DIR/lock-state"
+    rm -f "$FAKE_DIR/bw-unlocked"; echo '{"success":true}' ;;
   sync) need; echo "Syncing complete." ;;
   generate) echo "GEN-erated-Pw-0001" ;;
   encode) base64 -w0 ;;

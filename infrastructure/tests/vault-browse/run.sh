@@ -63,7 +63,7 @@ reset() { # [unlocked]: fresh vault and logs; "unlocked" starts with an open bw 
   mkdir -p "$RUN/vault" "$FAKE/dl"
   chmod 700 "$RUN" "$RUN/vault"
   cp "$HERE/fixture.json" "$FAKE/vault.json"
-  rm -f "$FAKE"/{rbw-view.json,rbw-locked,bw-unlocked,seq,editor-calls,editor-script,editor.log,editor-input.json,pristine.json,typed.log,notify.log,\
+  rm -f "$FAKE"/{lock-state,rbw-view.json,rbw-locked,bw-unlocked,seq,editor-calls,editor-script,editor.log,editor-input.json,pristine.json,typed.log,notify.log,\
 clip.txt,clip.args,clip.events,app.log,last-*,term.log,gui-seq,gui-run.*,gui-done.*,gui.log}
   echo 0xAAA >"$FAKE/active"
   if [[ ${1:-} == unlocked ]]; then
@@ -265,6 +265,39 @@ PY' _ "$V"
   quick_socket_trust
   quick_no_core
   quick_idle_limit
+  quick_lock_order
+}
+
+# BW1-fix 5: lock drops the session file first, stops the server under the start flock, then runs bw lock with the key it held
+quick_lock_order() {
+  local V="$SCRIPTS/vault-bw.py" holder lockpid i
+  reset unlocked
+  # shellcheck disable=SC1091
+  . "$FAKE/env.sh"
+  python3 -I "$V" call list folders </dev/null >/dev/null
+  python3 -I "$V" lock </dev/null
+  check "lock order: bw lock got the key, and the session file was already gone when it ran" grep -qx 'session=gone sock=.* key=SESSION-KEY-abc' "$FAKE/lock-state"
+  check "  and the bw lock process ran after the server was stopped (socket gone)" grep -qx 'session=gone sock=gone key=SESSION-KEY-abc' "$FAKE/lock-state"
+  check "  session file and socket are gone afterwards" bash -c '[ ! -e "$1/bw-session" ] && [ ! -e "$1/bw.sock" ]' _ "$RUN/vault"
+  # a start that holds the flock (in flight) is waited for: lock removes the key at once but stops the server only afterwards
+  reset unlocked
+  python3 -I "$V" call list folders </dev/null >/dev/null
+  flock "$RUN/vault/bw-serve.lock" sleep 2.5 &
+  holder=$!
+  sleep 0.3
+  python3 -I "$V" lock </dev/null &
+  lockpid=$!
+  sleep 1
+  check "lock waits for the start flock: the key is already gone, bw lock has not run yet" bash -c '[ ! -e "$1/vault/bw-session" ] && kill -0 "$2" 2>/dev/null && [ ! -s "$3/lock-state" ]' _ "$RUN" "$lockpid" "$FAKE"
+  check "  a client that wants a server now cannot start one (no key)" bash -c 'python3 -I - "$1" <<PY
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("vb", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+sys.exit(0 if m.start_serve(wait=1) is False else 1)
+PY' _ "$V"
+  wait "$holder" 2>/dev/null
+  wait "$lockpid" 2>/dev/null
+  check "  after the flock is released bw lock runs, with the key, and the server is gone" bash -c '[ ! -e "$1/vault/bw.sock" ] && grep -qx "session=gone sock=gone key=SESSION-KEY-abc" "$2/lock-state"' _ "$RUN" "$FAKE"
+  stop_bw_servers
 }
 
 # BW1-fix 4: the idle default is 15 minutes even though rbw's lock_timeout here is a year
