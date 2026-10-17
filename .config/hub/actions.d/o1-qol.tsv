@@ -9,3 +9,6 @@ transcode	Capture	Transcode a picture or video for sharing	SUPER+CTRL+period	run
 ytdl	Capture	Download the video from the clipboard URL (yt-dlp)	-	tui	+pause ~/.config/hypr/scripts/ytdl.sh	-	yt-dlp wl-paste	Copy a video URL first (Zen, Telegram, anywhere). The file lands in ~/Videos/downloads.	c d;Download video
 media-play	Sound	Media: play / pause	XF86AudioPlay	run	playerctl play-pause	-	playerctl	-	a y;Play/pause
 media-menu	Sound	Media: player menu (next, previous, focus the player)	-	run	~/.config/waybar/scripts/media.sh menu	-	playerctl fzf-menu	The same menu as a right click on the waybar media module.	a n;Media menu
+reminder-new	Reminders	New reminder (25 tea, 14:30 standup)	SUPER+ALT+T	run	~/.config/hypr/scripts/reminder.sh set	-	systemd-run fzf-menu	Type a time first: 25 (minutes), 90s, 2h, 1h30, or a time of day 14:30, then the text. The notification is critical (stays until dismissed). Timers are transient: they do not survive a reboot.	r n;New reminder
+reminder-list	Reminders	Reminders: list and cancel	SUPER+CTRL+ALT+T	run	~/.config/hypr/scripts/reminder.sh list	-	systemctl fzf-menu	Pending reminders with the time left; d or Alt+d cancels the selected one.	r l;Reminder list
+reminder-clear	Reminders	Cancel all reminders	-	run	~/.config/hypr/scripts/reminder.sh clear	-	systemctl fzf-menu	Asks first.	r c;Clear reminders

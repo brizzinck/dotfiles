@@ -118,6 +118,17 @@
     "modules": [{ "type": "screenshare" }, { "type": "audio-in" }]
   },
 
+  // pending reminders (transient systemd user timers, hypr/scripts/reminder.sh); hidden while none; signal 17 redraws it
+  "custom/reminder": {
+    "exec": "~/.config/hypr/scripts/reminder.sh waybar",
+    "return-type": "json",
+    "interval": 30,
+    "signal": 17,
+    "on-click": "~/.config/hypr/scripts/reminder.sh list",
+    "on-click-middle": "~/.config/hypr/scripts/reminder.sh set",
+    "on-click-right": "~/.config/hypr/scripts/reminder.sh clear"
+  },
+
   // what the active MPRIS player plays (hidden unless Playing); L play/pause, M next, R menu, scroll next/previous
   "custom/media": {
     "exec": "~/.config/waybar/scripts/media.sh --follow",

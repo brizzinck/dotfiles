@@ -16,8 +16,8 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Desktop | [Notifications](#notifications) | 4 |
 | Desktop | [System, power, bar](#system-power-bar) | 12 |
 | Desktop | [Pointer from the keyboard](#pointer-from-the-keyboard) | 21 |
-| Desktop | [Other Hyprland binds](#other-hyprland-binds) | 7 |
-| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 123 |
+| Desktop | [Other Hyprland binds](#other-hyprland-binds) | 9 |
+| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 126 |
 | Terminal | [tmux: this setup](#tmux-this-setup) | 55 |
 | Terminal | [tmux: stock prefix keys](#tmux-stock-prefix-keys) | 80 |
 | Terminal | [zsh line editor](#zsh-line-editor) | 34 |
@@ -300,6 +300,8 @@ Hyprland binds that no classification rule claims yet (add a rule to rules.tsv).
 
 | Keys | Action |
 |---|---|
+| `Super+Alt+T` | New reminder (25 tea or 14:30 standup) |
+| `Super+Ctrl+Alt+T` | Reminders: list and cancel |
 | `Super+Ctrl+.` | Transcode a picture or video for sharing |
 | `Super+Ctrl+Delete` | Laptop panel on or off (needs an external monitor) |
 | `Super+Ctrl+Alt+Delete` | Mirror the laptop panel to the external monitor |
@@ -437,6 +439,9 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; l a` | Learn: Arch wiki |
 | `Super+; l c` | Learn: Architecture notes |
 | `Super+; l h` | Learn: Hyprland wiki |
+| `Super+; r c` | Reminders: Clear reminders |
+| `Super+; r l` | Reminders: Reminder list |
+| `Super+; r n` | Reminders: New reminder |
 
 ## Terminal
 

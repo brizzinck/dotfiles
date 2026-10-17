@@ -215,5 +215,37 @@ else
   echo "ffmpeg missing: recording tests skipped"
 fi
 
+# ── D4 reminders ──
+cat >"$T/bin/systemd-run" <<'X'
+#!/bin/sh
+echo "systemd-run $*" >>"$FAKE_LOG"
+X
+cat >"$T/bin/systemctl" <<'X'
+#!/bin/sh
+echo "systemctl $*" >>"$FAKE_LOG"
+case "$*" in
+  *list-timers*) echo "[{\"unit\":\"reminder-1-2.timer\",\"next\":$(( ($(date +%s) + 600) * 1000000 ))},{\"unit\":\"reminder-3-4.timer\",\"next\":$(( ($(date +%s) + 7200) * 1000000 ))}]" ;;
+esac
+X
+chmod +x "$T/bin/systemd-run" "$T/bin/systemctl"
+mkdir -p "$T/run/systemd/transient"
+printf '[Unit]\nDescription=reminder: tea\n' >"$T/run/systemd/transient/reminder-1-2.service"
+printf '[Unit]\nDescription=reminder: standup\n' >"$T/run/systemd/transient/reminder-3-4.service"
+R="$SC/reminder.sh"
+expect "reminder preview: minutes" test "$("$R" --parse '25 tea')" = "in 25m: tea"
+expect "reminder preview: h and m" test "$("$R" --parse '1h30 call')" = "in 1h30m: call"
+expect "reminder preview: seconds" test "$("$R" --parse '90s x')" = "in 90s: x"
+expect "reminder preview: a bad time" bash -c "'$R' --parse 'tea 25' | grep -q 'time first'"
+reset; "$R" set 25 tea >/dev/null
+expect "reminder set: one transient timer 1500 s ahead" grep -q -e '--on-active=1500s' -e 'on-active=1500s' "$T/log"
+expect "reminder set: message and critical urgency in the service command" bash -c "grep 'systemd-run' '$T/log' | grep -q 'notify-send -u critical -a reminder' && grep 'systemd-run' '$T/log' | grep -q ' tea '"
+reset; "$R" set nonsense >/dev/null 2>&1; rc=$?
+expect "reminder set: a bad time creates nothing" bash -c "[ $rc != 0 ] && ! grep -q '^systemd-run' '$T/log'"
+w=$("$R" waybar)
+expect "reminder waybar: next one and the count" bash -c "jq -e '.text | test(\"10m \\\\+1\")' <<<'$w'"
+expect "reminder waybar: tooltip lists both with the hint line" bash -c "jq -e '.tooltip | contains(\"tea\") and contains(\"standup\") and endswith(\"L: list · M: new · R: clear all\")' <<<'$w'"
+reset; "$R" clear --yes >/dev/null
+expect "reminder clear stops every timer and service" bash -c "grep -c 'systemctl --user stop reminder-' '$T/log' | grep -q '^2$'"
+
 echo "o1 tests: $fails failure(s)"
 exit $((fails > 0))

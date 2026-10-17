@@ -482,6 +482,8 @@ hl.bind(mainMod .. " + C", hl.dsp.exec_cmd(scripts .. "/clipboard.sh"), { descri
 hl.bind(mainMod .. " + SHIFT + C", hl.dsp.exec_cmd("hyprpicker -a"), { description = "Color picker" })
 hl.bind(mainMod .. " + period", hl.dsp.exec_cmd(scripts .. "/emoji.sh"), { description = "Emoji picker" })
 hl.bind(mainMod .. " + SHIFT + period", hl.dsp.exec_cmd(scripts .. "/snippets.sh"), { description = "Snippets picker" })
+hl.bind(mainMod .. " + ALT + T", hl.dsp.exec_cmd(scripts .. "/reminder.sh set"), { description = "New reminder (25 tea or 14:30 standup)" })
+hl.bind(mainMod .. " + CTRL + ALT + T", hl.dsp.exec_cmd(scripts .. "/reminder.sh list"), { description = "Reminders: list and cancel" })
 hl.bind(mainMod .. " + CTRL + period", hl.dsp.exec_cmd(scripts .. "/transcode.sh"), { description = "Transcode a picture or video for sharing" })
 hl.bind(mainMod .. " + CTRL + V", hl.dsp.exec_cmd(scripts .. "/paste-plain.sh"), { description = "Paste clipboard as plain text" })
 hl.bind(mainMod .. " + ALT + V", hl.dsp.exec_cmd(scripts .. "/clipboard.sh --paste-last-image"), { description = "Paste last screenshot or image" })
