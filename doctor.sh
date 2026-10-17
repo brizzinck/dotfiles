@@ -230,6 +230,9 @@ done
 # count only top-level waybar processes: it forks a child (also named waybar) per script run
 n_bar="$(ps -u "$(id -u)" -o pid=,ppid=,comm= 2>/dev/null | awk '$3 == "waybar" {p[$1] = 1; pp[$1] = $2} END {n = 0; for (i in p) if (!(pp[i] in p)) n++; print n}')"
 if [ "${n_bar:-0}" = 1 ]; then ok waybar "single instance"; else bad waybar "${n_bar:-0} instances (expected 1)"; fi
+# the watchdog (waybar-run.sh) restarts a crashed waybar; without it a crash leaves the screen without a bar until bar.sh restart
+sup_pid="$(cat "${XDG_RUNTIME_DIR:-/tmp}/waybar-bar/supervisor.pid" 2>/dev/null)"
+if [ -n "$sup_pid" ] && grep -qs waybar-run "/proc/$sup_pid/cmdline" 2>/dev/null; then ok bar-watchdog "waybar-run.sh supervises waybar (pid $sup_pid; restarts are in: journalctl -t waybar-run)"; else bad bar-watchdog "no waybar-run.sh supervisor running (a waybar crash would not be restarted; run: bar.sh restart)"; fi
 
 # ── waybar (W1): config parses, state files match the mode, both bars sit where the design puts them ────────────
 bar_sh="$HOME/.config/waybar/scripts/bar.sh"

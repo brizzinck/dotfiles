@@ -19,7 +19,9 @@
 #   bar.sh sync [--if-stale]          reload (with --if-stale only when a toggle left the running config stale; the
 #                                     monitor.added hook of hyprland.lua uses it so a new monitor gets the right mode)
 #   bar.sh init                       login / install: default mode, clear `hidden`, render
-#   bar.sh restart                    stop waybar, render, start it again (log: $RT/waybar.log; WAYBAR_LOG_LEVEL=debug for details)
+#   bar.sh restart                    stop the waybar-run.sh supervisor and waybar, render, start it again (log: $RT/waybar.log;
+#                                     WAYBAR_LOG_LEVEL=debug for details). A crashed waybar is restarted by the supervisor
+#                                     (waybar-run.sh), never by this script; a stop by this script is never mistaken for one.
 #   bar.sh menu                       fzf-menu: compact / full / hide / restart / theme
 #   --dry-run                         print the writes and signals instead of doing them
 # Never send SIGUSR1 to waybar by hand: the mode file would disagree with the screen (`sync` repairs that).
@@ -141,9 +143,22 @@ cmd_sync() {
   reload
 }
 
+# stop_supervisor: end the waybar-run.sh watchdog first (SIGTERM = a stop on request: it passes the signal on to waybar and
+# does not restart it), so killing waybar below can never look like a crash to it. $RT/supervisor.pid is written by it.
+stop_supervisor() {
+  local pid _
+  { pid=$(<"$RT/supervisor.pid"); } 2>/dev/null || return 0
+  [[ $pid =~ ^[0-9]+$ ]] && grep -qs waybar-run "/proc/$pid/cmdline" || return 0
+  kill -TERM "$pid" 2>/dev/null
+  for _ in $(seq 50); do kill -0 "$pid" 2>/dev/null || return 0; sleep 0.1; done
+  kill -KILL "$pid" 2>/dev/null
+  return 0
+}
+
 cmd_restart() {
   local _
-  if ((DRY)); then say "would run: pkill -x waybar; render; setsid -f waybar-run.sh"; return 0; fi
+  if ((DRY)); then say "would run: stop the waybar-run.sh supervisor; pkill -x waybar; render; setsid -f waybar-run.sh"; return 0; fi
+  stop_supervisor
   pkill -u "$(id -u)" -x waybar 2>/dev/null
   for _ in $(seq 30); do pgrep -u "$(id -u)" -x waybar >/dev/null || break; sleep 0.1; done
   if pgrep -u "$(id -u)" -x waybar >/dev/null; then # did not exit on SIGTERM
