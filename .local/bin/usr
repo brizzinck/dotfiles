@@ -261,7 +261,7 @@ block_set() {
 
 # runs as the managed user (or, with USR_TARGET_USER/USR_TARGET_HOME and --dry-run, as the owner reading that home)
 cmd__link() {
-  local dry=0 restore=0 a user home profile list path src dst bdir ts kind target hex n_ok=0 n_link=0 n_skip=0 n_move=0
+  local dry=0 restore=0 a user home profile list path src dst bdir ts kind target hex check_root n_ok=0 n_link=0 n_skip=0 n_move=0
   for a in "$@"; do
     case "$a" in
       --dry-run) dry=1 ;;
@@ -273,9 +273,18 @@ cmd__link() {
   managed_users | grep -qx -- "$user" || die "link: $user is not a managed user"
   managed_has "$user" profile || { note "$user has no dotfiles profile (service user): nothing to link"; return 0; }
   profile=$(managed_field "$user" profile)
+  if [ "$dry" = 1 ] && { [ ! -r "$home" ] || [ ! -x "$home" ]; }; then
+    echo "note   $home is not readable for $ME yet (the users section gives the owner access): the preview assumes it is empty"
+  fi
   list="$REPO/infrastructure/users/profiles/$profile.txt"
   [ -r "$list" ] || die "link: $list is missing"
-  [ -d "$SRV" ] || die "link: $SRV does not exist yet (usr sync, after sudo ./apply-system.sh --only users)"
+  check_root="$SRV"
+  if [ ! -d "$SRV" ]; then
+    # a dry run before the users section: preview against the repo, the section publishes it to $SRV first
+    [ "$dry" = 1 ] || die "link: $SRV does not exist yet (usr sync, after sudo ./apply-system.sh --only users)"
+    check_root="$REPO"
+    echo "note   $SRV does not exist yet; previewing against $REPO"
+  fi
 
   if [ "$restore" = 1 ]; then
     bdir=$(find "$home/.local/state/usr" -maxdepth 1 -type d -name 'backup-*' 2>/dev/null | sort | tail -1)
@@ -310,7 +319,7 @@ cmd__link() {
     [ -n "$path" ] || continue
     src="$SRV/$path"
     dst="$home/$path"
-    if [ ! -e "$src" ] && [ ! -L "$src" ]; then echo "skip   $path (not in $SRV yet)"; n_skip=$((n_skip + 1)); continue; fi
+    if [ ! -e "$check_root/$path" ] && [ ! -L "$check_root/$path" ]; then echo "skip   $path (not in $SRV yet)"; n_skip=$((n_skip + 1)); continue; fi
     if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then n_ok=$((n_ok + 1)); continue; fi
     if [ -L "$(dirname "$dst")" ]; then echo "skip   $path (its parent directory is a link; fix it by hand)"; n_skip=$((n_skip + 1)); continue; fi
     kind=none target=-

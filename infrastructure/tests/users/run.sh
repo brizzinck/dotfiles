@@ -139,6 +139,57 @@ expect "clipboard pipewire denied" "user:nobody:---" "$(getfacl -p "$T/rt/pipewi
 expect "clipboard bus denied" "user:nobody:---" "$(getfacl -p "$T/rt/bus" 2>/dev/null | grep '^user:nobody:')"
 unset XDG_RUNTIME_DIR WAYLAND_DISPLAY
 
+# ── the picker and the session command, with stub fzf-menu / ghostty / machinectl / sudo / su ───────────────────
+mkdir -p "$T/bin"
+cat >"$T/bin/fzf-menu" <<'STUB'
+#!/usr/bin/env bash
+# stub: choose the first row; STUB_KEY is the key line (empty = Enter)
+rows=$(cat); who=$(printf '%s\n' "$rows" | head -1 | cut -f1)
+printf '%s\n%s\n' "${STUB_KEY:-}" "$who"
+STUB
+cat >"$T/bin/ghostty" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$STUB_LOG"
+STUB
+cat >"$T/bin/machinectl" <<'STUB'
+#!/usr/bin/env bash
+printf 'machinectl %s\n' "$*" >>"$STUB_LOG"
+[ "${STUB_MACHINECTL_FAIL:-0}" = 1 ] && exit 1
+exit 0
+STUB
+cat >"$T/bin/sudo" <<'STUB'
+#!/usr/bin/env bash
+printf 'sudo %s\n' "$*" >>"$STUB_LOG"
+[ "${STUB_SUDO_FAIL:-0}" = 1 ] && exit 1
+exit 0
+STUB
+cat >"$T/bin/su" <<'STUB'
+#!/usr/bin/env bash
+printf 'su %s\n' "$*" >>"$STUB_LOG"
+exit 0
+STUB
+chmod +x "$T/bin/"*
+export STUB_LOG="$T/stub.log"
+printf 'nobody\t-\tinteractive,clipboard\torange\n' >"$T/pick.tsv"
+for case in ":_session nobody tmux" "alt-enter:_session nobody shell" "attach:_session nobody attach"; do
+  : >"$STUB_LOG"
+  PATH="$T/bin:$PATH" STUB_KEY="${case%%:*}" USR_MANAGED_TSV="$T/pick.tsv" "$USR" menu >/dev/null 2>&1
+  sleep 0.2
+  case "$(cat "$STUB_LOG")" in *"--title=nobody -e $USR ${case#*:}"*) ok ;; *) bad "usr menu key [${case%%:*}] did not open: ${case#*:} (log: $(cat "$STUB_LOG"))" ;; esac
+done
+export XDG_RUNTIME_DIR="$T/rt" WAYLAND_DISPLAY=wayland-9
+: >"$STUB_LOG"
+PATH="$T/bin:$PATH" USR_MANAGED_TSV="$T/pick.tsv" "$USR" _session nobody tmux >/dev/null 2>&1
+log="$(cat "$STUB_LOG")"
+case "$log" in *"machinectl --quiet shell -E TERM="*"-E WAYLAND_DISPLAY=$T/rt/wayland-9 nobody@ "*"-lc exec tmux new-session -s term-"*"-e WAYLAND_DISPLAY=$T/rt/wayland-9 \\; set-option destroy-unattached on"*) ok ;; *) bad "machinectl session line: $log" ;; esac
+: >"$STUB_LOG"
+PATH="$T/bin:$PATH" STUB_MACHINECTL_FAIL=1 USR_MANAGED_TSV="$T/pick.tsv" "$USR" _session nobody shell >/dev/null 2>&1
+case "$(cat "$STUB_LOG")" in *"machinectl "*"sudo -n -u nobody -H env "*) ok ;; *) bad "no sudo fallback when machinectl fails at once: $(cat "$STUB_LOG")" ;; esac
+: >"$STUB_LOG"
+PATH="$T/bin:$PATH" STUB_MACHINECTL_FAIL=1 STUB_SUDO_FAIL=1 USR_MANAGED_TSV="$T/pick.tsv" "$USR" _session nobody shell >/dev/null 2>&1
+case "$(cat "$STUB_LOG")" in *"su - nobody -c "*) ok ;; *) bad "no su fallback when sudo fails too: $(cat "$STUB_LOG")" ;; esac
+unset XDG_RUNTIME_DIR WAYLAND_DISPLAY
+
 # ── nvim: which plugin/Mason root is chosen ─────────────────────────────────────
 if [ "$QUICK" = 0 ] && command -v nvim >/dev/null 2>&1; then
   mkdir -p "$T/shared/lazy"
