@@ -16,7 +16,7 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Desktop | [Notifications](#notifications) | 4 |
 | Desktop | [System, power, bar](#system-power-bar) | 12 |
 | Desktop | [Pointer from the keyboard](#pointer-from-the-keyboard) | 21 |
-| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 93 |
+| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 97 |
 | Terminal | [tmux: this setup](#tmux-this-setup) | 55 |
 | Terminal | [tmux: stock prefix keys](#tmux-stock-prefix-keys) | 80 |
 | Terminal | [zsh line editor](#zsh-line-editor) | 34 |
@@ -35,7 +35,7 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Editor | [Neovim: files and misc](#neovim-files-and-misc) | 17 |
 | Editor | [Neovim: moving and editing](#neovim-moving-and-editing) | 62 |
 | Menus and bar | [Menus: list grammar](#menus-list-grammar) | 19 |
-| Menus and bar | [Menus: keys of each menu](#menus-keys-of-each-menu) | 56 |
+| Menus and bar | [Menus: keys of each menu](#menus-keys-of-each-menu) | 61 |
 | Menus and bar | [TUIs and viewers](#tuis-and-viewers) | 3 |
 | Menus and bar | [Bar (waybar)](#bar-waybar) | 45 |
 | Apps and login | [Telegram](#telegram) | 6 |
@@ -60,7 +60,7 @@ Hyprland. Terminals, browser, file managers, the launcher, the hub and the cheat
 |---|---|
 | `Super+Enter` | Terminal (new tmux session) |
 | `Super+Shift+Enter` | Terminal (attach tmux) |
-| `Super+Shift+T` | Terminal as user td |
+| `Super+Shift+T` | Terminal as a managed user (picker) |
 | `Super+G` | Browser |
 | `Super+E` | File manager (yazi) |
 | `Super+Shift+E` | File manager (nemo) |
@@ -386,6 +386,10 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; o p` | OBS: Recording pause or resume |
 | `Super+; o r` | OBS: Recording start or stop |
 | `Super+; o s` | OBS: Switch scene |
+| `Super+; u l` | Users: Overview |
+| `Super+; u n` | Users: Shared nvim install |
+| `Super+; u s` | Users: Publish dotfiles |
+| `Super+; u t` | Users: Terminal as a managed user |
 
 ## Terminal
 
@@ -614,7 +618,7 @@ Every alias of .zshrc with what it expands to.
 | `gto` | cd ~/job/obsidian |
 | `gtjr` | cd ~/job/rust && clear && ls -a |
 | `gtjg` | cd ~/job/go && clear && ls -a |
-| `tdterm` | ghostty -e su - td -c "tmux set-environment -g XDG_RUNTIME_DIR /run/user/1000; tmux set-environment -g WAYLAND_DISPLAY wayland-1; tmux source-file ~/.config/tmux/tmux.conf; exec tmux new-session -A -s main" & |
+| `tdterm` | usr term td |
 | `g` | git |
 | `gs` | git status |
 | `ga` | git add |
@@ -1040,6 +1044,11 @@ Menu-specific keys keep the Alt+ form (works in both modes) and get a NORMAL let
 | `Enter` / `d` | Kill | Kill-session picker (tmux prefix X) |
 | `Enter` | Restore | Snapshot restore (tmux prefix R) |
 | `d` / `x` | Delete a snapshot | Snapshot restore (tmux prefix R) |
+| `Enter` | Terminal as that user (new tmux session, ends with the window) | Managed users (SUPER+SHIFT+T) |
+| `Alt+Enter` / `s` | Plain login shell as that user | Managed users (SUPER+SHIFT+T) |
+| `a` | Attach to that user's tmux | Managed users (SUPER+SHIFT+T) |
+| `f` | Files (yazi) in that user's home | Managed users (SUPER+SHIFT+T) |
+| `l` | Follow the journal of that user's processes | Managed users (SUPER+SHIFT+T) |
 
 ### TUIs and viewers
 

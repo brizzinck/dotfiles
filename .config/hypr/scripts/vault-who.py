@@ -12,8 +12,9 @@ user is empty when it cannot be determined (the caller then opens a picker).
 
 Terminal windows: the terminal emulator's pty -> the foreground process group of that pty. When a tmux client runs
 there, the client -> its session -> the active pane -> the foreground group of the pane's pty. A tmux server of another
-user (the `tdterm` window) cannot be queried, so its panes are read from /proc: one pane or all panes agreeing, else
-the panes that wait at sudo/su/doas, else undetermined.
+user (a legacy `su - td` window) cannot be queried, so its panes are read from /proc: one pane or all panes agreeing, else
+the panes that wait at sudo/su/doas, else undetermined. A window opened by `usr term USER` / SUPER+SHIFT+T runs
+`machinectl shell USER@ ...` on its pty: the user is USER (the prompts in it, sudo and the like, are USER's).
 Prompt rules: sudo / doas -> the invoking (real) uid, never root; `su [-] NAME` -> NAME, plain su -> root; anything else
 (ssh, passwd, a shell, ...) -> the real uid of the foreground process. sudo/doas that already run a command are
 followed into that command.
@@ -145,6 +146,35 @@ def su_target(argv):
     return argv[i] if i < len(argv) else "root"
 
 
+def machinectl_target(argv):
+    """USER of `machinectl [opts] shell [opts] USER@HOST ...` (root without a USER@ / --uid), None for other commands."""
+    args = argv[1:] if argv and os.path.basename(argv[0]) == "machinectl" else argv
+    with_value = {"-E", "-H", "-M", "-p", "-n", "-o", "--setenv", "--uid", "--host", "--machine", "--property", "--lines",
+                  "--output", "--signal", "-s", "--kill-whom", "--kill-who"}
+    uid_opt = None
+    i, seen_shell = 0, False
+    while i < len(args):
+        a = args[i]
+        if a.startswith("--") and "=" in a:
+            if a.startswith("--uid="):
+                uid_opt = a.split("=", 1)[1]
+            i += 1
+        elif a.startswith("-"):
+            if a == "--uid" and i + 1 < len(args):
+                uid_opt = args[i + 1]
+            i += 2 if a in with_value else 1
+        elif not seen_shell:
+            if a != "shell":
+                return None
+            seen_shell = True
+            i += 1
+        else:
+            if "@" in a:
+                return a.split("@", 1)[0] or uid_opt or "root"
+            return uid_opt or "root"
+    return (uid_opt or "root") if seen_shell else None
+
+
 def decide(procs, proc, depth=0):
     """(user, rule, comm of the deciding process) for the prompt of `proc`."""
     comm = proc.comm
@@ -244,6 +274,12 @@ def analyse_terminal(procs, pid, no_tmux):
         return {"user": "", "rule": "several ptys (tabs) in one terminal process", "detail": ""}
     tty = ptys.pop()
     on_tty = [p for p in desc if p.tty == tty]
+    for p in on_tty:   # `usr term USER`: machinectl forwards the pty of a session of another user
+        if p.comm == "machinectl":
+            target = machinectl_target(p.cmdline())
+            if target:
+                return {"user": target, "rule": f"machinectl shell {target}@: the window is a session of {target}",
+                        "comm": "machinectl", "detail": f"machinectl pid {p.pid}"}
     client = next((p for p in on_tty if p.comm in ("tmux", "tmux: client")), None)
     if client is None:
         res = decide_tty(procs, tty, on_tty[0].tpgid)

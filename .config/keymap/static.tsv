@@ -77,6 +77,11 @@ menu-keys	Tab	Select several	Kill-session picker (tmux prefix X)
 menu-keys	Enter / d	Kill	Kill-session picker (tmux prefix X)
 menu-keys	Enter	Restore	Snapshot restore (tmux prefix R)
 menu-keys	d / x	Delete a snapshot	Snapshot restore (tmux prefix R)
+menu-keys	Enter	Terminal as that user (new tmux session, ends with the window)	Managed users (SUPER+SHIFT+T)
+menu-keys	Alt+Enter / s	Plain login shell as that user	Managed users (SUPER+SHIFT+T)
+menu-keys	a	Attach to that user's tmux	Managed users (SUPER+SHIFT+T)
+menu-keys	f	Files (yazi) in that user's home	Managed users (SUPER+SHIFT+T)
+menu-keys	l	Follow the journal of that user's processes	Managed users (SUPER+SHIFT+T)
 tuis	j / k	Move (vim keys natively)	btop, wiremix, bluetui, yazi, lazygit, lazydocker, pacseek
 tuis	Ctrl+J / Ctrl+K / Ctrl+D / Ctrl+U	Move and page	pik
 tuis	hjkl w b e 0 $ g G v y /	vi keys (mode-keys vi)	tmux copy-mode and choose-tree
