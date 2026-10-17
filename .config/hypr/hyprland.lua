@@ -25,9 +25,6 @@ local wallpaper = "swaybg -i ~/pics/walls/lol.jpg"
 local tui = "ghostty --class=float.tui -e"
 local scripts = "~/.config/hypr/scripts"
 
--- Pointer theme name, chosen in the environment section below (declared here: the autostart handler is defined first)
-local pointer_theme
-
 -- ───────────────────────────── autostart ────────────────────────────
 -- hyprland.start fires once per session (not on reload).
 -- The marker (per Hyprland instance, in the runtime dir) keeps a `hyprctl reload full-reset` from starting everything twice.
@@ -44,10 +41,13 @@ hl.on("hyprland.start", function()
         mark:write("1")
         mark:close()
     end
-    -- pointer: set the theme explicitly once the compositor is up. The hl.env calls below reach the children of Hyprland, but
-    -- the compositor's own cursor manager may have been created before them (greetd -> hypr-login -> start-hyprland), which
-    -- left the old pointer; `hyprctl setcursor` reloads it (hyprcursor + XCursor) with the theme chosen in the environment section.
-    hl.exec_cmd("hyprctl setcursor " .. pointer_theme .. " 32")
+    -- pointer: the hl.env calls below already reach the cursor manager on a clean start (Hyprland v0.56.2 creates it in
+    -- CCompositor::initServer after Config::mgr()->init(), and libhyprcursor / CXCursorManager read HYPRCURSOR_THEME,
+    -- XCURSOR_THEME and the *_SIZE variables themselves), so `setcursor` is a belt-and-braces step for a compositor that
+    -- came up with a different theme (greetd -> hypr-login -> start-hyprland). It must not run as the very first command: the
+    -- autostart fires before the IPC loop runs, so cursor-apply --boot waits until hyprctl answers, applies gsettings +
+    -- `hyprctl setcursor`, retries once and logs to the journal (journalctl -t cursor-apply).
+    hl.exec_cmd("~/.local/bin/cursor-apply --boot")
     -- palette link first (black when missing): waybar, dunst, rofi, swayosd read ~/.local/state/theme/current
     hl.exec_cmd("~/.local/bin/theme init")
     hl.exec_cmd("~/.config/waybar/scripts/bar.sh init; ~/.config/waybar/scripts/waybar-run.sh & hypridle")
@@ -79,7 +79,7 @@ hl.env("QT_QPA_PLATFORMTHEME", "qt6ct")
 -- Pointer: Everforest-Cursor (local package infrastructure/cursor, installed system-wide by apply-system.sh so flatpaks see it:
 -- hyprcursor SVG build + XCursor build of one artwork). Until it is installed the config falls back to Bibata-Modern-Ice and
 -- leaves HYPRCURSOR_THEME unset (a missing hyprcursor theme is never requested). Size 32 = 48 px on the 1.5 panel, 1:1.
-pointer_theme = "Bibata-Modern-Ice"
+local pointer_theme = "Bibata-Modern-Ice"
 local function readable(path)
     local f = io.open(path, "r")
     if f then

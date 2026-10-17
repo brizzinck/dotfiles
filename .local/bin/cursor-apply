@@ -5,6 +5,10 @@
 #                             running GTK3 apps such as waybar and Zen keep the old pointer until they restart)
 #   cursor-apply --status     print what is installed and what is active
 #   cursor-apply --revert     back to Bibata-Modern-Ice (the fallback that stays installed)
+#   cursor-apply --boot       what the Hyprland autostart (hyprland.lua, hyprland.start) runs: wait until `hyprctl` answers
+#                             (up to ~6 s; the autostart fires before the IPC loop runs), then apply the theme hyprland.lua
+#                             chose (Everforest-Cursor, else the Bibata fallback), retry once, and log the result to the
+#                             journal (`journalctl -t cursor-apply`); never prints, never fails the session
 # Safe to rerun; refuses to switch while the theme is not installed.
 set -u
 
@@ -30,7 +34,45 @@ apply() {
   echo "cursor: $name, size $SIZE (new Hyprland sessions pick it from hyprland.lua)"
 }
 
+log() { logger -t cursor-apply -- "$*" 2>/dev/null || true; }
+
+# the theme hyprland.lua selects: Everforest-Cursor when complete (manifest.hl + cursors/left_ptr), else the Bibata fallback
+boot_theme() {
+  if [[ -r $ICONS/$THEME/manifest.hl && -e $ICONS/$THEME/cursors/left_ptr ]]; then echo "$THEME"; else echo "$FALLBACK"; fi
+}
+
+# true once the compositor answers on its IPC socket
+hypr_ready() { hyprctl version >/dev/null 2>&1; }
+
+boot() {
+  local name i out tries=0
+  name=$(boot_theme)
+  if ! command -v hyprctl >/dev/null 2>&1 || [[ -z ${HYPRLAND_INSTANCE_SIGNATURE:-} ]]; then
+    log "skipped: not inside a Hyprland session"
+    return 0
+  fi
+  for ((i = 0; i < 30; i++)); do hypr_ready && break; sleep 0.2; done
+  hypr_ready || { log "hyprctl did not answer within 6 s, $name not applied"; return 0; }
+  command -v gsettings >/dev/null 2>&1 && {
+    gsettings set org.gnome.desktop.interface cursor-theme "$name" 2>/dev/null
+    gsettings set org.gnome.desktop.interface cursor-size "$SIZE" 2>/dev/null
+  }
+  while ((tries < 2)); do
+    tries=$((tries + 1))
+    out=$(hyprctl setcursor "$name" "$SIZE" 2>&1)
+    if [[ $out == ok* ]]; then
+      log "applied $name size $SIZE (hyprctl setcursor ok, attempt $tries)"
+      return 0
+    fi
+    log "hyprctl setcursor $name $SIZE answered '${out:-nothing}' (attempt $tries)"
+    sleep 1
+  done
+  log "gave up: $name not applied"
+  return 0
+}
+
 case ${1:-} in
+  --boot) boot ;;
   --status)
     for t in "$THEME" "$FALLBACK"; do
       if installed "$t"; then echo "$t: installed$(has_hypr "$t" && echo ', hyprcursor SVG build')"; else echo "$t: not installed"; fi
@@ -39,5 +81,5 @@ case ${1:-} in
     echo "env: HYPRCURSOR_THEME=${HYPRCURSOR_THEME:-} XCURSOR_THEME=${XCURSOR_THEME:-} XCURSOR_SIZE=${XCURSOR_SIZE:-}" ;;
   --revert) apply "$FALLBACK" ;;
   "") apply "$THEME" ;;
-  *) echo "usage: cursor-apply [--status | --revert]" >&2; exit 2 ;;
+  *) echo "usage: cursor-apply [--status | --revert | --boot]" >&2; exit 2 ;;
 esac

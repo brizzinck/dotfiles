@@ -326,18 +326,28 @@ else
   cur_err=""
   [ -r "$cur_dir/manifest.hl" ] && [ -e "$cur_dir/cursors/left_ptr" ] && [ -r "$cur_dir/hyprcursors/left_ptr.hlc" ] || cur_err="theme dir incomplete (manifest.hl, cursors/left_ptr, hyprcursors/left_ptr.hlc)"
   if [ -z "$cur_err" ] && [ "$(cat "$cur_dir/.build-stamp" 2>/dev/null)" != "$("$DOTFILES/infrastructure/cursor/build.sh" --stamp 2>/dev/null)" ]; then
-    cur_err="built from an older palette or PKGBUILD (sudo ~/dotfiles/apply-system.sh --only install rebuilds it)"
+    cur_err="built from an older palette or PKGBUILD: run sudo ~/dotfiles/apply-system.sh --only install (rebuilds and installs it)"
   fi
   if [ -z "$cur_err" ]; then
-    want_fill="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["fill"].lower())' "$DOTFILES/themes/generated/black/pointer.json" 2>/dev/null)"
-    unzip -p "$cur_dir/hyprcursors/left_ptr.hlc" '*.svg' 2>/dev/null | grep -qi "$want_fill" || cur_err="left_ptr fill is not $want_fill"
+    # roles: fill = green token, outline = accent = bg_oled token (accent = the busy cursor's pies, dark on the green disk)
+    want="$(python3 -I -c 'import json,sys; t=json.load(open(sys.argv[1]))["shared"]["tokens"]; print(t["green"].lower(), t["bg_oled"].lower())' "$DOTFILES/themes/palette/everforest.json" 2>/dev/null)"
+    want_fill="${want% *}"; want_line="${want#* }"
+    got="$(python3 -I -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["fill"].lower(), p["outline"].lower(), p["accent"].lower())' "$DOTFILES/themes/generated/black/pointer.json" 2>/dev/null)"
+    [ "$got" = "$want_fill $want_line $want_line" ] || cur_err="pointer.json is '$got', the palette wants fill=$want_fill (green) outline=accent=$want_line (bg_oled); rerun themes/palette/render.py"
   fi
-  if [ -z "$cur_err" ]; then ok cursor "Everforest-Cursor installed (hyprcursor + XCursor), up to date with the palette"; else bad cursor "$cur_err"; fi
+  if [ -z "$cur_err" ]; then
+    unzip -p "$cur_dir/hyprcursors/left_ptr.hlc" '*.svg' 2>/dev/null | grep -qi "fill=\"$want_fill\"" || cur_err="left_ptr fill is not $want_fill (sudo ~/dotfiles/apply-system.sh --only install)"
+  fi
+  if [ -z "$cur_err" ]; then
+    unzip -p "$cur_dir/hyprcursors/left_ptr_watch.hlc" '*.svg' 2>/dev/null | grep -qi "fill=\"$want_fill\"" || cur_err="busy cursor disk is not $want_fill (sudo ~/dotfiles/apply-system.sh --only install)"
+  fi
+  if [ -z "$cur_err" ]; then ok cursor "Everforest-Cursor installed (hyprcursor + XCursor), fill green $want_fill, up to date with the palette"; else bad cursor "$cur_err"; fi
   if command -v gsettings >/dev/null 2>&1; then
     cur_gs="$(gsettings get org.gnome.desktop.interface cursor-theme 2>/dev/null | tr -d "'")"
     if [ "$cur_gs" = Everforest-Cursor ]; then ok cursor-gtk "gsettings cursor-theme is Everforest-Cursor"; else info cursor-gtk "gsettings cursor-theme is '$cur_gs' (log in again, or run cursor-apply)"; fi
   fi
 fi
+if grep -q 'cursor-apply --boot' "$DOTFILES/.config/hypr/hyprland.lua" && ! grep -q 'exec_cmd("hyprctl setcursor' "$DOTFILES/.config/hypr/hyprland.lua"; then ok cursor-boot "autostart runs cursor-apply --boot (waits for hyprctl, retries, logs to the journal)"; else bad cursor-boot "hyprland.lua must run cursor-apply --boot, not a bare hyprctl setcursor"; fi
 if grep -q 'Everforest-Cursor' "$DOTFILES/.config/hypr/hyprland.lua"; then ok cursor-env "hyprland.lua selects Everforest-Cursor when installed, Bibata otherwise"; else bad cursor-env "hyprland.lua has no Everforest-Cursor selection"; fi
 
 # ── palette variant (black | night): link present, generated fragments in sync with the token source ───────────
