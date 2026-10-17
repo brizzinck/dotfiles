@@ -11,11 +11,12 @@
 #   linux-pass --help          this text
 #
 # Needs a terminal (the passwords are typed here). Reads go through rbw (milliseconds; --list needs no bw at all, and a
-# setup with nothing missing does not open bw). Writes go through vault-bw.py (BW1: the per-session bw server, no 1 s bw
-# process per call): its session is opened with the themed pinentry or, with no graphical session, with a master-password
-# prompt on this terminal; when this command unlocked it, it locks bw again at the end (rbw is left alone). Passwords
-# never reach argv, the environment of this shell, a file, the screen or a log: each one lives in a shell variable and
-# goes to ONE jq process through its environment.
+# setup with nothing missing does not open bw). When rbw cannot list the vault (locked, cancelled pinentry) the folder is
+# read through bw instead; when neither can, nothing is created (an unreadable folder is never an empty one). Writes go
+# through vault-bw.py (BW1: the per-session bw server, no 1 s bw process per call): its session is opened with the themed
+# pinentry or, with no graphical session, with a master-password prompt on this terminal; when this command unlocked it,
+# it locks bw again at the end (rbw is left alone). Passwords never reach argv, the environment of this shell, a file,
+# the screen or a log: each one lives in a shell variable and goes to ONE jq process through its environment.
 # Test hooks: RBW_BIN, VAULT_BW (path of vault-bw.py), VAULT_RBW_CONF, LINUX_PASS_FOLDER.
 set -euo pipefail
 
@@ -31,7 +32,7 @@ FOLDER_ID=''
 die() { echo "linux-pass: $*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
 
-usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # every bw call goes through vault-bw.py (the per-session server, CLI fallback inside); --stdin = the body is on stdin
 bwc() { python3 -I "$VAULT_BW" call "$@" </dev/null; }
@@ -100,17 +101,26 @@ resolve_folder() {
   return 0
 }
 
-# the folder's items as a JSON array [{id, name}]: rbw when it is set up (its local copy, synced first), else bw
-folder_items() {
+# the folder's items as a JSON array [{id, name}] into the global ITEMS (never in a command substitution: the bw fallback
+# opens the session, and its state would be lost in the subshell). rbw first (its local copy, synced before); when rbw
+# fails (locked, agent down, cancelled pinentry) bw answers instead. Returns 1 when neither could read the folder: the
+# callers stop then, because an unreadable folder is not an empty folder (it used to create duplicate items).
+ITEMS='[]'
+load_items() {
+  local out
   if rbw_ready; then
-    "$RBW" list --raw | jq -c --arg f "$FOLDER" '[.[] | select(.folder == $f) | {id, name}]' || die "rbw list failed"
-  else
-    [[ -n $FOLDER_ID ]] || { echo '[]'; return 0; }
-    bwc list items --folderid "$FOLDER_ID" | jq -c '[.[] | {id, name}]' || die "bw list items failed"
+    if out=$("$RBW" list --raw 2>/dev/null) && ITEMS=$(jq -c --arg f "$FOLDER" '[.[] | select(.folder == $f) | {id, name}]' <<<"$out" 2>/dev/null); then
+      return 0
+    fi
+    say "(rbw could not list the vault: asking bw instead)" >&2
   fi
+  resolve_folder 0 || return 1
+  if [[ -z $FOLDER_ID ]]; then ITEMS='[]'; return 0; fi   # bw answered: the folder does not exist yet
+  out=$(bwc list items --folderid "$FOLDER_ID") || return 1
+  ITEMS=$(jq -c '[.[] | {id, name}]' <<<"$out") || return 1
 }
 
-folder_names() { jq -r '.[].name' <<<"$(folder_items)" | sort; }
+item_names() { jq -r '.[].name' <<<"$ITEMS" | sort; }
 
 local_users() { # root first, then the human users
   echo root
@@ -149,7 +159,7 @@ create_item() { # NAME, password in the global pw
 
 update_item() { # NAME, password in the global pw
   local name=$1 id item
-  id=$(folder_items | jq -r --arg n "$name" '[.[] | select(.name == $n)][0].id // empty')
+  id=$(jq -r --arg n "$name" '[.[] | select(.name == $n)][0].id // empty' <<<"$ITEMS")
   [[ -n $id ]] || return 2
   item=$(bwc get item "$id") || return 1
   PW=$pw jq -c '.login.password = env.PW' <<<"$item" | base64 -w0 | bwc_in edit item "$id" >/dev/null
@@ -160,9 +170,10 @@ finish_sync() {
   if command -v "$RBW" >/dev/null 2>&1; then "$RBW" sync >/dev/null 2>&1 || say "(rbw sync failed: SUPER+CTRL+U may see the new items after the next vault sync)"; fi
 }
 
-show_list() {
+show_list() { # re-reads the folder: it changed since the last load
+  load_items || { say "(could not re-read the folder $FOLDER)"; return 0; }
   say "Folder $FOLDER:"
-  folder_names | sed 's/^/  /'
+  item_names | sed 's/^/  /'
 }
 
 # rbw sees what the web vault / other devices changed after a sync (one network call, no bw)
@@ -175,8 +186,8 @@ rbw_refresh() {
 cmd_setup() {
   local u made=0 skipped=0 existing missing=()
   rbw_refresh
-  rbw_ready || resolve_folder 0   # no rbw: the folder list and the items come from bw
-  existing=$(folder_names)
+  load_items || die "could not read the folder $FOLDER (rbw and bw both failed): nothing was created"
+  existing=$(item_names)
   while IFS= read -r u; do
     grep -Fxq -- "$u" <<<"$existing" || missing+=("$u")
   done < <(local_users)
@@ -212,6 +223,7 @@ cmd_update() {
   getent passwd "$name" >/dev/null || say "note: there is no local user '$name'."
   rbw_refresh
   resolve_folder 1
+  load_items || die "could not read the folder $FOLDER (rbw and bw both failed): nothing was changed"
   ask_password "$name" || die "no password given, nothing changed"
   rc=0
   update_item "$name" || rc=$?
@@ -230,8 +242,8 @@ cmd_update() {
 cmd_list() {
   local names u
   rbw_refresh
-  rbw_ready || resolve_folder 0   # without rbw this is the only case that opens bw
-  names=$(folder_names)
+  load_items || die "could not read the folder $FOLDER (rbw and bw both failed)"
+  names=$(item_names)
   if [[ -z $names ]]; then
     say "The folder $FOLDER has no items yet (or does not exist): run linux-pass."
   else

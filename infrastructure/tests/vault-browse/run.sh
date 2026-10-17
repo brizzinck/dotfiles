@@ -261,6 +261,34 @@ assert len(pw) == 20 and pw.isalnum()
 PY' _ "$V"
   check "  and no bw process was needed for it" bash -c '! grep -aq "^bw generate" "$1/argv.log"' _ "$FAKE"
   stop_bw_servers
+  quick_linux_pass_unreadable
+}
+
+# BW1-fix 1: a folder that cannot be read is not an empty folder (linux-pass used to create duplicates). The command needs a
+# terminal, so it runs under script(1) with blank lines on stdin (Enter = skip every password).
+lp_run() { # ARGS...: prints the transcript, last line LP_RC=<exit status of linux-pass>
+  yes '' | head -30 | script -qec "$REPO/.local/bin/linux-pass $*; echo LP_RC=\$?" /dev/null 2>&1 | tr -d '\r'
+}
+quick_linux_pass_unreadable() {
+  local out
+  command -v script >/dev/null || { printf 'skip  linux-pass unreadable folder (no script(1))\n'; return; }
+  reset unlocked
+  touch "$FAKE/rbw-locked"
+  : >"$FAKE/argv.log"
+  out=$(lp_run)
+  check "linux-pass setup, rbw locked: the folder is read through bw, the stored user is not asked again" bash -c 'grep -q "skalse: already stored, skipped" <<<"$1" && ! grep -q "Linux password of skalse" <<<"$1" && grep -aq "^bw-serve GET /list/object/items" "$2/argv.log"' _ "$out" "$FAKE"
+  check "  no item was created or edited" bash -c '! grep -aqE "^bw-serve (POST /object/item|PUT)" "$1/argv.log"' _ "$FAKE"
+  stop_bw_servers
+  # rbw AND bw unreadable: stop before asking anything, create nothing
+  reset unlocked
+  touch "$FAKE/rbw-locked"
+  printf 'import sys\na = sys.argv[1:]\nif a[:1] == ["state"]:\n    print("unlocked"); sys.exit(0)\nsys.exit(0 if a[:2] == ["call", "sync"] else 1)   # bw answers sync, nothing else\n' >"$FAKE/badvault.py"
+  : >"$FAKE/argv.log"
+  out=$(VAULT_BW="$FAKE/badvault.py" lp_run)
+  check "linux-pass setup, rbw and bw both failing: stops, asks no password, creates nothing" bash -c '! grep -q "Linux password of" <<<"$1" && grep -qE "bw list folders failed|could not read the folder" <<<"$1" && ! grep -q "LP_RC=0" <<<"$1"' _ "$out"
+  out=$(VAULT_BW="$FAKE/badvault.py" lp_run --update skalse)
+  check "linux-pass --update, rbw and bw both failing: no new item for an existing user" bash -c '! grep -q "no item yet, created" <<<"$1" && ! grep -q "LP_RC=0" <<<"$1"' _ "$out"
+  stop_bw_servers
 }
 
 # the slow BW1 cases (idle limit, rbw lock): full run only
