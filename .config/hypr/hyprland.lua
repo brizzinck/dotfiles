@@ -519,6 +519,7 @@ hl.bind(mainMod .. " + CTRL + T", hl.dsp.exec_cmd(scripts .. "/ai-ask.sh telegra
 hl.bind(mainMod .. " + slash", hl.dsp.exec_cmd("~/.local/bin/keymap menu"), { description = "Shortcut search (every key of every tool)" })
 hl.bind(mainMod .. " + SHIFT + slash", hl.dsp.exec_cmd("~/.local/bin/keymap page"), { description = "Shortcut reference page (browser window)" })
 hl.bind(mainMod .. " + M", hl.dsp.exec_cmd("~/.config/hub/hub open"), { description = "Utility hub (fzf)" })
+hl.bind(mainMod .. " + ALT + SHIFT + D", hl.dsp.exec_cmd(scripts .. "/dictation.sh cycle"), { description = "Dictation: next language (ru uk en)" })
 hl.bind(mainMod .. " + semicolon", hl.dsp.exec_cmd("~/.config/hub/leader"), { description = "Leader menu (which-key)" })
 
 -- --- capture ---

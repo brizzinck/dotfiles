@@ -305,10 +305,21 @@ expect "a muted program never raises a toast" bash -c "! grep -q 'noisy crashed'
 expect "unmute brings it back" grep -q 'noisy crashed' "$T/log"
 unset CRASH_WATCH_SYNC
 
-# ── D1 dictation (fake voxtype) ──
+# ── D1 dictation (fake voxtype, fake systemctl; independent of whether the voxtype package is installed) ──
 DC="$SC/dictation.sh"
 export DICTATION_NO_DOWNLOAD=1 VOXTYPE_MODEL_DIR="$T/models"
-mkdir -p "$T/run/voxtype" "$T/models"
+mkdir -p "$T/run/voxtype" "$T/models" "$HOME/.config/voxtype"
+cat >"$T/bin/systemctl" <<'X'
+#!/bin/sh
+echo "systemctl $*" >>"$FAKE_LOG"
+case "$*" in
+  *"show voxtype.service -p NRestarts"*) echo "${FAKE_NRESTARTS:-0}" ;;
+  *"is-active"*) exit 3 ;;
+esac
+exit 0
+X
+chmod +x "$T/bin/systemctl"
+export VOXTYPE_BIN="$T/none"  # an explicit "not installed": the real /usr/bin/voxtype of this machine is never looked at
 reset; "$DC" toggle
 expect "without voxtype the key only says how to install it" bash -c "grep -q 'Dictation needs voxtype' '$T/log' && grep -q 'apply-system.sh --only install' '$T/log'"
 cat >"$T/bin/voxtype" <<'X'
@@ -316,6 +327,7 @@ cat >"$T/bin/voxtype" <<'X'
 echo "voxtype $*" >>"$FAKE_LOG"
 X
 chmod +x "$T/bin/voxtype"
+export VOXTYPE_BIN="$T/bin/voxtype"
 reset; "$DC" toggle
 expect "model missing: no recording, a notification" bash -c "grep -q 'the model is missing' '$T/log' && ! grep -q '^voxtype record' '$T/log'"
 printf 'x' >"$T/models/ggml-small.bin"
@@ -328,17 +340,126 @@ expect "F9 press while already recording does nothing" bash -c "! grep -q '^voxt
 echo idle >"$T/run/voxtype/state"; reset; "$DC" stop
 expect "F9 release while idle does nothing" bash -c "! grep -q '^voxtype record' '$T/log'"
 expect "status reads the daemon state file" bash -c "echo transcribing >'$T/run/voxtype/state'; [ \"\$('$DC' status)\" = transcribing ]"
-mkdir -p "$HOME/.config/voxtype"; cp "$REPO/.config/voxtype/config.toml" "$HOME/.config/voxtype/config.toml"
-"$DC" lang ru >/dev/null
-expect "the language choice is stored" test "$(cat "$HOME/.local/state/dictation/lang")" = ru
+echo idle >"$T/run/voxtype/state"
+cp "$REPO/.config/voxtype/config.toml" "$HOME/.config/voxtype/config.toml"
+expect "the tracked config defaults to ru" grep -q '^language = "ru"' "$HOME/.config/voxtype/config.toml"
+rm -rf "$HOME/.local/state/dictation"
 "$DC" run --dry-run >/dev/null
-expect "the runtime config carries the language, the tracked file stays auto" bash -c "grep -q '^language = \"ru\"' '$T/run/voxtype/config.toml' && grep -q '^language = \"auto\"' '$HOME/.config/voxtype/config.toml'"
+expect "no state file: the runtime config is Russian and the model small" bash -c "grep -q '^language = \"ru\"' '$T/run/voxtype/config.toml' && grep -q '^model = \"small\"' '$T/run/voxtype/config.toml'"
+reset; "$DC" lang uk >/dev/null
+expect "the language choice is stored" test "$(cat "$HOME/.local/state/dictation/lang")" = uk
+"$DC" run --dry-run >/dev/null
+expect "the runtime config carries the language, the tracked file stays ru" bash -c "grep -q '^language = \"uk\"' '$T/run/voxtype/config.toml' && grep -q '^language = \"ru\"' '$HOME/.config/voxtype/config.toml'"
+expect "the daemon is restarted without waiting" grep -q '^systemctl --user try-restart --no-block voxtype.service' "$T/log"
 expect "a bad language is refused" bash -c "! '$DC' lang klingon >/dev/null 2>&1"
+expect "auto cannot be mixed into a list" bash -c "! '$DC' lang en,auto >/dev/null 2>&1"
+"$DC" lang en,ru,uk >/dev/null
+expect "a comma list is accepted and reaches the daemon config" bash -c "'$DC' run --dry-run >/dev/null; grep -q '^language = \"en,ru,uk\"' '$T/run/voxtype/config.toml'"
+"$DC" lang auto >/dev/null
+expect "auto is accepted" test "$(cat "$HOME/.local/state/dictation/lang")" = auto
+# SUPER+ALT+SHIFT+D: ru > uk > en > ru, one replacing notification
+echo idle >"$T/run/voxtype/state"
+"$DC" lang ru >/dev/null
+for want in uk en ru; do
+  reset; "$DC" cycle
+  expect "cycle -> $want (stored)" test "$(cat "$HOME/.local/state/dictation/lang")" = "$want"
+done
+expect "cycle: one notification with the language and the stack tag" bash -c "[ \$(grep -c '^notify' '$T/log') = 1 ] && grep -q 'x-dunst-stack-tag:dictation' '$T/log' && grep -q 'Dictation: RU' '$T/log'"
+"$DC" lang en,ru,uk >/dev/null; "$DC" cycle
+expect "cycle from a list or auto starts at ru" test "$(cat "$HOME/.local/state/dictation/lang")" = ru
+echo recording >"$T/run/voxtype/state"; reset; "$DC" cycle
+expect "cycle while recording changes nothing and says so" bash -c "[ \"\$(cat '$HOME/.local/state/dictation/lang')\" = ru ] && grep -q 'Dictation is busy' '$T/log'"
+echo idle >"$T/run/voxtype/state"
+# waybar: always the language and the state
+"$DC" lang uk >/dev/null
+out=$(timeout 3 "$DC" --follow 2>/dev/null | head -n 1)
+expect "waybar follow: idle shows the language, dim, tooltip with model, backend and the hint line" bash -c "jq -e '.class == \"dim\" and (.text | endswith(\"UK\")) and (.tooltip | contains(\"Language: UK\") and contains(\"Model: small\") and contains(\"Backend:\") and endswith(\"L: dictate · M: next language · R: menu\"))' <<<'$out'"
 echo recording >"$T/run/voxtype/state"
 out=$(timeout 3 "$DC" --follow 2>/dev/null | head -n 1)
-expect "waybar follow: recording is critical with the hint line" bash -c "jq -e '.class == \"critical\" and (.tooltip | endswith(\"L: toggle · M: language · R: menu\"))' <<<'$out'"
-rm -f "$T/bin/voxtype" "$T/run/voxtype/state"
-unset DICTATION_NO_DOWNLOAD VOXTYPE_MODEL_DIR
+expect "waybar follow: recording is critical and still shows the language" bash -c "jq -e '.class == \"critical\" and (.text | contains(\"UK\")) and (.tooltip | endswith(\"L: dictate · M: next language · R: menu\"))' <<<'$out'"
+echo transcribing >"$T/run/voxtype/state"
+out=$(timeout 3 "$DC" --follow 2>/dev/null | head -n 1)
+expect "waybar follow: transcribing is warning" bash -c "jq -e '.class == \"warning\" and (.text | contains(\"UK\"))' <<<'$out'"
+out=$(VOXTYPE_BIN="$T/none" timeout 3 "$DC" --follow 2>/dev/null | head -n 1)
+expect "waybar follow: hidden without voxtype" bash -c "jq -e '.text == \"\"' <<<'$out'"
+echo idle >"$T/run/voxtype/state"
+# models
+reset; "$DC" model large-v3-turbo --dry-run >/dev/null
+expect "model NAME without the file would download it from the whisper.cpp repository" bash -c "'$DC' model large-v3-turbo --dry-run | grep -q 'ggml-large-v3-turbo.bin'"
+printf 'x' >"$T/models/ggml-large-v3-turbo.bin"; reset
+"$DC" model large-v3-turbo >/dev/null
+expect "model NAME selects an installed model and restarts the daemon" bash -c "[ \"\$(cat '$HOME/.local/state/dictation/model')\" = large-v3-turbo ] && grep -q 'try-restart --no-block' '$T/log'"
+"$DC" run --dry-run >/dev/null
+expect "the runtime config carries the chosen model" grep -q '^model = "large-v3-turbo"' "$T/run/voxtype/config.toml"
+expect "a bad model name is refused" bash -c "! '$DC' model '../x' >/dev/null 2>&1"
+"$DC" model small >/dev/null
+
+# ── D1b backend: Vulkan when a real GPU works, else the best CPU build by the CPU flags ──
+unset VOXTYPE_BIN
+LIB="$T/lib"; mkdir -p "$LIB"
+cat >"$LIB/voxtype-vulkan" <<'X'
+#!/bin/sh
+echo "voxtype-vulkan $*" >>"$FAKE_LOG"
+case "$*" in
+  *transcribe*)
+    echo probe >>"$FAKE_PROBES"
+    echo "whisper_init_with_params_no_state: use gpu    = 1"
+    if [ "${FAKE_GPU:-ok}" = ok ]; then
+      echo "ggml_vulkan: Found 1 Vulkan devices:"
+      echo "ggml_vulkan: 0 = Fake GPU 9000 (FAKE) (radv) | uma: 1 | fp16: 1 | warp size: 64"
+      echo "whisper_backend_init_gpu: using Vulkan0 backend"
+    elif [ "$FAKE_GPU" = soft ]; then
+      echo "ggml_vulkan: 0 = llvmpipe (LLVM 21.1.0, 256 bits) (llvmpipe) | uma: 0 | fp16: 0"
+      echo "whisper_backend_init_gpu: using Vulkan0 backend"
+    else
+      echo "whisper_backend_init_gpu: no GPU found"
+    fi ;;
+esac
+X
+for v in avx512 avx2 baseline; do printf '#!/bin/sh\necho "voxtype-%s $*" >>"$FAKE_LOG"\n' "$v" >"$LIB/voxtype-$v"; done
+chmod +x "$LIB"/voxtype-*
+export VOXTYPE_LIBDIR="$LIB" FAKE_PROBES="$T/probes"
+cpu512="$T/cpu512"; echo 'flags : fpu sse2 avx avx2 fma avx512f avx512dq avx512cd avx512bw avx512vl' >"$cpu512"
+cpu2="$T/cpu2"; echo 'flags : fpu sse2 avx avx2 fma' >"$cpu2"
+cpu0="$T/cpu0"; echo 'flags : fpu sse2' >"$cpu0"
+bk() { rm -rf "$HOME/.local/state/dictation/backend" "$T/probes"; DICTATION_CPUINFO=$1 "$DC" backend --path; }
+expect "a working Vulkan device wins over any CPU build" test "$(FAKE_GPU=ok bk "$cpu512")" = "$LIB/voxtype-vulkan"
+expect "the GPU name is cached for the tooltip" grep -q '^device=Fake GPU 9000 (FAKE)$' "$HOME/.local/state/dictation/backend"
+rm -f "$T/probes"; "$DC" backend --path >/dev/null; "$DC" backend --path >/dev/null
+expect "the probe result is cached: no second probe" test ! -e "$T/probes"
+"$DC" backend --probe >/dev/null
+expect "backend --probe probes again" test "$(wc -l <"$T/probes")" = 1
+expect "no Vulkan device: avx512 on an avx512 CPU" test "$(FAKE_GPU=none bk "$cpu512")" = "$LIB/voxtype-avx512"
+expect "a software Vulkan device (llvmpipe) does not count" test "$(FAKE_GPU=soft bk "$cpu512")" = "$LIB/voxtype-avx512"
+expect "no Vulkan device: avx2 without avx512" test "$(FAKE_GPU=none bk "$cpu2")" = "$LIB/voxtype-avx2"
+expect "no Vulkan device: the baseline build on an old CPU" test "$(FAKE_GPU=none bk "$cpu0")" = "$LIB/voxtype-baseline"
+mv "$LIB/voxtype-avx512" "$LIB/voxtype-avx512.off"
+expect "an avx512 CPU without the avx512 build falls back to avx2" test "$(FAKE_GPU=none bk "$cpu512")" = "$LIB/voxtype-avx2"
+mv "$LIB/voxtype-avx512.off" "$LIB/voxtype-avx512"
+mv "$T/models/ggml-small.bin" "$T/models/ggml-small.off"; rm -f "$T/models/ggml-large-v3-turbo.bin"
+expect "no model yet: the probe is skipped, a CPU build is used" test "$(FAKE_GPU=ok bk "$cpu512")" = "$LIB/voxtype-avx512"
+expect "...and that decision is not cached" test ! -e "$HOME/.local/state/dictation/backend"
+mv "$T/models/ggml-small.off" "$T/models/ggml-small.bin"
+# the daemon runs the variant directly: no PATH hack
+rm -rf "$HOME/.local/state/dictation/backend"
+out=$(FAKE_GPU=ok DICTATION_CPUINFO=$cpu512 "$DC" run --dry-run)
+expect "run execs the variant binary directly" bash -c "grep -q '^exec $LIB/voxtype-vulkan -c $T/run/voxtype/config.toml daemon' <<<'$out'"
+reset; FAKE_GPU=ok DICTATION_CPUINFO=$cpu512 "$DC" run
+expect "run (for real) starts the daemon from that binary" grep -q "^voxtype-vulkan -c $T/run/voxtype/config.toml daemon" "$T/log"
+# a Vulkan daemon that crash-loops (systemd restarted it twice) is demoted to the CPU build
+reset; FAKE_NRESTARTS=2 FAKE_GPU=ok DICTATION_CPUINFO=$cpu512 "$DC" run
+expect "two automatic restarts demote Vulkan to the CPU build" grep -q "^voxtype-avx512 -c $T/run/voxtype/config.toml daemon" "$T/log"
+expect "the demotion is cached with its reason" grep -q 'crash-looped' "$HOME/.local/state/dictation/backend"
+reset; DICTATION_CPUINFO=$cpu512 "$DC" run
+expect "a demoted backend stays demoted until the probe is repeated" grep -q "^voxtype-avx512 -c" "$T/log"
+# no variant directory at all: the package binary on PATH
+rm -rf "$HOME/.local/state/dictation/backend"
+out=$(VOXTYPE_LIBDIR="$T/nolib" "$DC" backend 2>&1)
+expect "without /usr/lib/voxtype variants the package binary is used" bash -c "grep -q 'backend: CPU (package default)' <<<'$out'"
+rm -rf "$HOME/.local/state/dictation/backend"
+unset VOXTYPE_LIBDIR FAKE_PROBES
+rm -f "$T/bin/voxtype" "$T/bin/systemctl" "$T/run/voxtype/state"
+unset DICTATION_NO_DOWNLOAD VOXTYPE_MODEL_DIR VOXTYPE_BIN
 
 echo "o1 tests: $fails failure(s)"
 exit $((fails > 0))

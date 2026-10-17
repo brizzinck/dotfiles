@@ -118,14 +118,14 @@
     "modules": [{ "type": "screenshare" }, { "type": "audio-in" }]
   },
 
-  // dictation (Voxtype): hidden while idle, red while recording, yellow while transcribing; signal 18 redraws it at once
+  // dictation (Voxtype): always shows the language (RU/UK/EN) and the state: grey idle, red_soft recording, yellow_soft transcribing; hidden only without voxtype
   "custom/dictation": {
     "exec": "~/.config/hypr/scripts/dictation.sh --follow",
     "return-type": "json",
     "restart-interval": 5,
     "signal": 18,
     "on-click": "~/.config/hypr/scripts/dictation.sh toggle",
-    "on-click-middle": "~/.config/hypr/scripts/dictation.sh lang",
+    "on-click-middle": "~/.config/hypr/scripts/dictation.sh cycle",
     "on-click-right": "~/.config/hypr/scripts/dictation.sh menu"
   },
 

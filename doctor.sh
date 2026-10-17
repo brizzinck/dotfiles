@@ -831,13 +831,29 @@ if [ -e "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/idle-off" ]; then info hypridle-
 if systemctl --user is-enabled hypridle-watch.timer >/dev/null 2>&1; then ok hypridle-watch "user timer hypridle-watch.timer restarts hypridle when it died"; else bad hypridle-watch "hypridle-watch.timer not enabled (stow ., systemctl --user enable --now hypridle-watch.timer)"; fi
 if systemctl --user is-active crash-watch.service >/dev/null 2>&1; then ok crash-watch "crash-watch.service follows the coredump journal (toast, details, ask Claude, mute)"; else bad crash-watch "crash-watch.service is not running (stow ., systemctl --user enable --now crash-watch.service)"; fi
 if command -v voxtype >/dev/null 2>&1; then
-  if [ -s "$HOME/.local/share/voxtype/models/ggml-small.bin" ]; then info dictation "voxtype installed, model small present"; else info dictation "voxtype installed, model missing (dictation.sh model)"; fi
+  dict_model="$(cat "${XDG_STATE_HOME:-$HOME/.local/state}/dictation/model" 2>/dev/null)"; dict_model="${dict_model:-small}"
+  if [ -s "$HOME/.local/share/voxtype/models/ggml-$dict_model.bin" ]; then info dictation "voxtype installed, model $dict_model present, language $(cat "${XDG_STATE_HOME:-$HOME/.local/state}/dictation/lang" 2>/dev/null || echo ru)"; else info dictation "voxtype installed, model $dict_model missing (dictation.sh model)"; fi
   if systemctl --user is-active voxtype.service >/dev/null 2>&1; then ok dictation-daemon "voxtype.service runs"; else info dictation-daemon "voxtype.service is not running (it starts on first use or at login)"; fi
 else
   info dictation "voxtype is not installed: SUPER+ALT+D / F9 show how to install it (sudo ./apply-system.sh --only install)"
 fi
 if [ "$(systemctl --user is-enabled voxtype.service 2>/dev/null)" = enabled ] && [ -r "$HOME/.config/voxtype/config.toml" ]; then ok dictation-unit "voxtype.service enabled, config tracked"; else bad dictation-unit "voxtype.service not enabled or ~/.config/voxtype/config.toml missing (stow ., systemctl --user enable voxtype.service)"; fi
 hub_groups="$("$DOTFILES/.config/hub/hub" groups 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"
+# D1b: the daemon runs the variant dictation.sh picks (Vulkan when a real GPU works, else the best CPU build), started directly:
+# a leftover runtime drop-in or ~/.local/share/voxtype/bin link from the manual Vulkan setup must be gone
+if command -v voxtype >/dev/null 2>&1; then
+  dict_stale=""
+  [ -e "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/systemd/user/voxtype.service.d/vulkan.conf" ] && dict_stale="$dict_stale runtime drop-in vulkan.conf"
+  [ -e "$HOME/.local/share/voxtype/bin/voxtype" ] && dict_stale="$dict_stale ~/.local/share/voxtype/bin/voxtype"
+  dict_want="$("$DOTFILES/.config/hypr/scripts/dictation.sh" backend --path 2>/dev/null)"
+  dict_label="$("$DOTFILES/.config/hypr/scripts/dictation.sh" backend 2>/dev/null | sed -n 's/^backend: //p')"
+  dict_pid="$(systemctl --user show voxtype.service -p MainPID --value 2>/dev/null)"
+  if [ -n "$dict_stale" ]; then bad dictation-backend "leftovers of the manual Vulkan setup:$dict_stale (remove them; dictation.sh run picks the variant)"
+  elif [ -z "$dict_want" ] || [ ! -x "$dict_want" ]; then bad dictation-backend "dictation.sh backend finds no voxtype binary (package voxtype-bin, /usr/lib/voxtype)"
+  elif [ -n "$dict_pid" ] && [ "$dict_pid" != 0 ]; then
+    if [ "$(readlink "/proc/$dict_pid/exe" 2>/dev/null)" = "$dict_want" ]; then ok dictation-backend "voxtype.service runs $(basename "$dict_want"): $dict_label"; else bad dictation-backend "voxtype.service runs $(readlink "/proc/$dict_pid/exe" 2>/dev/null) but dictation.sh picks $dict_want (systemctl --user restart voxtype)"; fi
+  else info dictation-backend "voxtype.service is not running; it would start $(basename "$dict_want"): $dict_label"; fi
+fi
 hub_missing=""
 for g in Setup Update Learn Fix; do case " $hub_groups " in *" $g "*) ;; *) hub_missing="$hub_missing $g" ;; esac; done
 if [ -z "$hub_missing" ]; then ok hub-groups "groups Setup/Update/Learn/Fix exist (hub groups)"; else bad hub-groups "hub groups lacks:$hub_missing"; fi

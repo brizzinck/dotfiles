@@ -1,8 +1,10 @@
 # Voxtype (AUR voxtype-bin): offline dictation with a local Whisper model, typed into the focused window with wtype.
 # Hyprland owns the keys (SUPER+ALT+D toggle, hold F9), so the daemon's own hotkey is off. The daemon is started by the
 # user unit voxtype.service through `dictation.sh run`, which copies this file to $XDG_RUNTIME_DIR/voxtype/config.toml with
-# the language chosen in the hub ("Dictation: language ...", ~/.local/state/dictation/lang) before `voxtype daemon` reads it.
-# The model: ~/.local/share/voxtype/models/ggml-small.bin (multilingual, ~466 MB; dictation.sh model downloads it).
+# the language (SUPER+ALT+SHIFT+D cycles ru > uk > en, ~/.local/state/dictation/lang) and the model (menu, ~/.local/state/dictation/model)
+# the owner chose before the best voxtype binary (GPU Vulkan, else avx512/avx2/baseline) runs `daemon` on it.
+# The model: ~/.local/share/voxtype/models/ggml-small.bin (multilingual, ~466 MB; dictation.sh model downloads it); the menu also
+# offers large-v3-turbo (1.6 GB), see CLAUDE.md "Dictation" for the benchmark.
 # The same file serves the planned Telegram voice transcription (M1), see HANDOFF.md.
 state_file = "auto"            # $XDG_RUNTIME_DIR/voxtype/state: idle | recording | transcribing (waybar custom/dictation)
 
@@ -15,7 +17,7 @@ max_duration_secs = 60
 
 [whisper]
 model = "small"
-language = "auto"              # replaced per hub choice: auto | ru | uk | en (auto-detect misfires on short clips)
+language = "ru"                # default; replaced by the remembered choice: ru | uk | en | auto | a comma list like en,ru,uk (auto-detect misfires on short clips)
 
 [output]
 mode = "type"

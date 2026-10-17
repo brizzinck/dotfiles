@@ -16,8 +16,8 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Desktop | [Notifications](#notifications) | 4 |
 | Desktop | [System, power, bar](#system-power-bar) | 12 |
 | Desktop | [Pointer from the keyboard](#pointer-from-the-keyboard) | 21 |
-| Desktop | [Other Hyprland binds](#other-hyprland-binds) | 14 |
-| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 147 |
+| Desktop | [Other Hyprland binds](#other-hyprland-binds) | 15 |
+| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 149 |
 | Terminal | [tmux: this setup](#tmux-this-setup) | 55 |
 | Terminal | [tmux: stock prefix keys](#tmux-stock-prefix-keys) | 80 |
 | Terminal | [zsh line editor](#zsh-line-editor) | 34 |
@@ -302,6 +302,7 @@ Hyprland binds that no classification rule claims yet (add a rule to rules.tsv).
 |---|---|
 | `F9` | Dictation: hold F9 to dictate |
 | `Super+Alt+D` | Dictation on or off (Voxtype) |
+| `Super+Alt+Shift+D` | Dictation: next language (ru uk en) |
 | `Super+Alt+T` | New reminder (25 tea or 14:30 standup) |
 | `Super+Ctrl+Alt+T` | Reminders: list and cancel |
 | `Super+Ctrl+A` | AI: ask about the focused window |
@@ -353,6 +354,8 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; c w` | Capture: Window |
 | `Super+; c x` | Capture: Frozen annotate |
 | `Super+; c z` | Capture: Frozen region |
+| `Super+; a b` | Audio: Dictation menu and backend |
+| `Super+; a c` | Audio: Dictation next language |
 | `Super+; a d` | Audio: App volume down |
 | `Super+; a l` | Audio: Dictation language |
 | `Super+; a m` | Audio: Mute mics |
