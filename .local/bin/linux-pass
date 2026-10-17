@@ -1,0 +1,257 @@
+#!/usr/bin/env bash
+# linux-pass: fill the Bitwarden folder `Linux` that SUPER+CTRL+U (vault.sh user-pass) types from.
+# One login per Linux user: item name = user name, Username = user name, Password = that user's Linux password.
+# Usable on a fresh install too: if `bw` is not logged in yet it offers to run bw-setup first.
+#
+#   linux-pass                 setup: for every human user of this machine (uid 1000-59999 with a login shell)
+#                              plus root, ask for the Linux password (no echo, asked twice, Enter = skip) and create
+#                              the missing items; users that already have an item are skipped
+#   linux-pass --update NAME   replace the stored password of NAME (after `passwd`), create the item if missing
+#   linux-pass --list          names stored in the folder and local users without an item (no passwords)
+#   linux-pass --help          this text
+#
+# Needs a terminal (the passwords are typed here). The bw CLI session is opened with vault-bw.py (themed pinentry)
+# or, with no graphical session, with `bw unlock` on this terminal; when this command unlocked it, it locks bw
+# again at the end (rbw is left alone). Passwords never reach argv, the environment of this shell, a file, the
+# screen or a log: each one lives in a shell variable and goes to ONE jq process through its environment.
+# Test hooks: BW_BIN, RBW_BIN, VAULT_BW (path of vault-bw.py), LINUX_PASS_FOLDER.
+set -euo pipefail
+
+BW=${BW_BIN:-bw}
+RBW=${RBW_BIN:-rbw}
+FOLDER=${LINUX_PASS_FOLDER:-Linux}
+VAULT_BW=${VAULT_BW:-${XDG_CONFIG_HOME:-$HOME/.config}/hypr/scripts/vault-bw.py}
+SESSION_FILE="${XDG_RUNTIME_DIR:-/tmp}/vault/bw-session"
+
+SESSION=''
+UNLOCKED_BY_US=0
+VIA_VAULT_BW=0
+FOLDER_ID=''
+
+die() { echo "linux-pass: $*" >&2; exit 1; }
+say() { printf '%s\n' "$*"; }
+
+usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; }
+
+bwc() { BW_SESSION=$SESSION BW_NOINTERACTION=true NODE_NO_WARNINGS=1 "$BW" "$@"; }
+
+bw_status() {
+  local key=$SESSION
+  if [[ -z $key && -r $SESSION_FILE ]]; then key=$(<"$SESSION_FILE"); fi
+  BW_SESSION=$key BW_NOINTERACTION=true NODE_NO_WARNINGS=1 "$BW" status 2>/dev/null | jq -r '.status // empty' 2>/dev/null || true
+}
+
+cleanup() {
+  local rc=$?
+  trap - EXIT
+  unset pw pw2 PW 2>/dev/null || true
+  if ((UNLOCKED_BY_US)); then
+    if ((VIA_VAULT_BW)) && [[ -r $VAULT_BW ]]; then
+      BW_BIN=$BW RBW_BIN=$RBW python3 "$VAULT_BW" lock >/dev/null 2>&1 || true
+    else
+      bwc lock >/dev/null 2>&1 || true
+    fi
+    say "bw locked again."
+  fi
+  SESSION=''
+  exit "$rc"
+}
+
+# make sure bw is logged in and unlocked, then sync
+ensure_session() {
+  command -v "$BW" >/dev/null 2>&1 || die "bw is not installed (sudo ~/dotfiles/apply-system.sh --only install)"
+  command -v jq >/dev/null 2>&1 || die "jq is not installed"
+  local st ans key
+  st=$(bw_status)
+  if [[ $st == unauthenticated ]]; then
+    say "bw is not logged in yet. bw-setup does that (server URL, e-mail, master password)."
+    if command -v bw-setup >/dev/null 2>&1; then
+      read -r -p "Run bw-setup now? [Y/n] " ans
+      [[ ${ans:-y} =~ ^[Yy] ]] || die "run bw-setup first, then linux-pass again"
+      bw-setup || die "bw-setup failed"
+      st=$(bw_status)
+    else
+      die "run bw-setup first, then linux-pass again"
+    fi
+  fi
+  case $st in
+    unauthenticated) die "bw is still not logged in: run bw-setup, then linux-pass again" ;;
+    '') die "bw does not answer (bw status)" ;;
+  esac
+  if [[ $st == unlocked ]]; then
+    [[ -r $SESSION_FILE ]] && SESSION=$(<"$SESSION_FILE")
+  else
+    UNLOCKED_BY_US=1
+    if [[ -n ${WAYLAND_DISPLAY:-}${DISPLAY:-} && -r $VAULT_BW ]] && command -v python3 >/dev/null 2>&1; then
+      VIA_VAULT_BW=1
+      BW_BIN=$BW RBW_BIN=$RBW python3 "$VAULT_BW" unlock || die "could not unlock bw"
+      [[ -r $SESSION_FILE ]] && SESSION=$(<"$SESSION_FILE")
+    else
+      say "Unlock bw: it asks for the master password here."
+      key=$(NODE_NO_WARNINGS=1 "$BW" unlock --raw) || die "could not unlock bw"
+      SESSION=$key
+    fi
+    [[ -n $SESSION ]] || die "no bw session after unlock"
+  fi
+  bwc sync >/dev/null || die "bw sync failed"
+}
+
+# set FOLDER_ID (create the folder when asked to)
+resolve_folder() {
+  local create=$1 json
+  json=$(bwc list folders) || die "bw list folders failed"
+  FOLDER_ID=$(jq -r --arg n "$FOLDER" '[.[] | select(.name == $n)][0].id // empty' <<<"$json")
+  if [[ -z $FOLDER_ID && $create == 1 ]]; then
+    FOLDER_ID=$(jq -nc --arg n "$FOLDER" '{name: $n}' | base64 -w0 | bwc create folder | jq -r '.id // empty') \
+      || die "could not create the folder $FOLDER"
+    [[ -n $FOLDER_ID ]] || die "could not create the folder $FOLDER"
+    say "Created the Bitwarden folder $FOLDER."
+  fi
+  return 0
+}
+
+folder_items() { # JSON array of the items in the folder
+  [[ -n $FOLDER_ID ]] || { echo '[]'; return 0; }
+  bwc list items --folderid "$FOLDER_ID" || die "bw list items failed"
+}
+
+folder_names() { jq -r '.[].name' <<<"$(folder_items)" | sort; }
+
+local_users() { # root first, then the human users
+  echo root
+  getent passwd | awk -F: '$3 >= 1000 && $3 <= 59999 && $7 != "" && $7 !~ /(nologin|false|sync|halt|shutdown)$/ {print $1}' | sort -u
+}
+
+valid_name() { [[ $1 =~ ^[a-z_][a-z0-9_.-]*\$?$ ]]; }
+
+# read a password twice into the global pw; return 1 = skipped (empty)
+ask_password() {
+  local user=$1 tries=0
+  pw=''
+  while ((tries < 3)); do
+    read -rs -p "Linux password of $user (Enter = skip): " pw || true
+    echo >&2
+    [[ -n $pw ]] || return 1
+    read -rs -p "Again to confirm: " pw2 || true
+    echo >&2
+    if [[ $pw == "$pw2" ]]; then pw2=''; return 0; fi
+    echo "The two entries differ, try again." >&2
+    pw='' pw2=''
+    tries=$((tries + 1))
+  done
+  pw=''
+  return 1
+}
+
+create_item() { # NAME, password in the global pw
+  local name=$1 out
+  out=$(PW=$pw jq -nc --arg n "$name" --arg f "$FOLDER_ID" \
+    '{type: 1, name: $n, notes: null, favorite: false, folderId: $f, fields: [], reprompt: 0,
+      login: {username: $n, password: env.PW, totp: null, uris: []}}' \
+    | base64 -w0 | bwc create item) || return 1
+  jq -e '.id' >/dev/null <<<"$out"
+}
+
+update_item() { # NAME, password in the global pw
+  local name=$1 id item
+  id=$(folder_items | jq -r --arg n "$name" '[.[] | select(.name == $n)][0].id // empty')
+  [[ -n $id ]] || return 2
+  item=$(bwc get item "$id") || return 1
+  PW=$pw jq -c '.login.password = env.PW' <<<"$item" | base64 -w0 | bwc edit item "$id" >/dev/null
+}
+
+finish_sync() {
+  bwc sync >/dev/null || true
+  if command -v "$RBW" >/dev/null 2>&1; then "$RBW" sync >/dev/null 2>&1 || say "(rbw sync failed: SUPER+CTRL+U may see the new items after the next vault sync)"; fi
+}
+
+show_list() {
+  say "Folder $FOLDER:"
+  folder_names | sed 's/^/  /'
+}
+
+cmd_setup() {
+  local u made=0 skipped=0 existing
+  ensure_session
+  resolve_folder 1
+  existing=$(folder_names)
+  say "Folder $FOLDER is ready ($(grep -c . <<<"$existing" || true) item(s))."
+  while IFS= read -r -u 3 u; do
+    if grep -Fxq -- "$u" <<<"$existing"; then
+      say "  $u: already stored, skipped (linux-pass --update $u replaces it)"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    if ask_password "$u"; then
+      if create_item "$u"; then say "  $u: stored"; made=$((made + 1)); else say "  $u: bw could not create the item" >&2; fi
+    else
+      say "  $u: skipped"
+    fi
+    pw=''
+  done 3< <(local_users) # fd 3: the password prompts read from the terminal
+  unset pw pw2
+  finish_sync
+  say "Created $made item(s), $skipped already there."
+  show_list
+}
+
+cmd_update() {
+  local name=$1 rc
+  valid_name "$name" || die "'$name' is not a valid user name"
+  getent passwd "$name" >/dev/null || say "note: there is no local user '$name'."
+  ensure_session
+  resolve_folder 1
+  ask_password "$name" || die "no password given, nothing changed"
+  rc=0
+  update_item "$name" || rc=$?
+  case $rc in
+    0) say "$name: password replaced." ;;
+    2) create_item "$name" || die "bw could not create the item"
+       say "$name: no item yet, created." ;;
+    *) pw=''; die "bw could not update the item" ;;
+  esac
+  pw=''
+  unset pw pw2
+  finish_sync
+  show_list
+}
+
+cmd_list() {
+  local names u
+  ensure_session
+  resolve_folder 0
+  if [[ -z $FOLDER_ID ]]; then
+    say "The folder $FOLDER does not exist yet: run linux-pass."
+    names=''
+  else
+    show_list
+    names=$(folder_names)
+  fi
+  say "Local users without an item:"
+  local any=0
+  while IFS= read -r u; do
+    grep -Fxq -- "$u" <<<"$names" && continue
+    say "  $u"; any=1
+  done < <(local_users)
+  ((any)) || say "  (none)"
+}
+
+mode=setup name=''
+while (($#)); do
+  case $1 in
+    -h | --help) usage; exit 0 ;;
+    --list) mode=list; shift ;;
+    --update) name=${2:-}; [[ -n $name ]] || die "--update needs a user name"; mode=update; shift 2 ;;
+    *) echo "linux-pass: unknown option $1 (see --help)" >&2; exit 2 ;;
+  esac
+done
+
+if [[ $mode != list ]]; then
+  [[ -t 0 ]] || die "needs a terminal: the passwords are typed here"
+fi
+trap cleanup EXIT
+case $mode in
+  setup) cmd_setup ;;
+  update) cmd_update "$name" ;;
+  list) cmd_list ;;
+esac
