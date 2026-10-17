@@ -291,6 +291,35 @@ swap_shellcheck() {
   fi
 }
 
+# aur_import_pgp_keys SRCINFO PKG: makepkg verifies detached signatures with the OWNER's gpg keyring and fails on an unknown
+# key ("unknown public key ..."). Import every fingerprint of `validpgpkeys` that is not there yet (keyserver.ubuntu.com, then
+# keys.openpgp.org). A failed import only warns; the build then reports the signature error itself.
+aur_import_pgp_keys() {
+  local srcinfo="$1" pkg="$2" fp
+  while read -r fp; do
+    [ -n "$fp" ] || continue
+    if run_as_owner gpg --list-keys "$fp" >/dev/null 2>&1; then
+      log "unchanged: PGP key $fp ($pkg) is already in the keyring of $OWNER"
+      continue
+    fi
+    if run_as_owner gpg --keyserver hkps://keyserver.ubuntu.com --recv-keys "$fp" >/dev/null 2>&1 \
+      || run_as_owner gpg --keyserver hkps://keys.openpgp.org --recv-keys "$fp" >/dev/null 2>&1; then
+      changed "imported PGP key $fp for the AUR package $pkg into the keyring of $OWNER"
+    else
+      warn "could not import PGP key $fp for $pkg (keyservers unreachable?); the build may fail with an unknown public key"
+    fi
+  done < <(sed -nE 's/^[[:space:]]*validpgpkeys = ([0-9A-Fa-f]{16,40}).*/\1/p' "$srcinfo" | sort -u)
+}
+
+# aur_build_error LOG: the most telling line of a failed makepkg run (error/signature line), one line
+aur_build_error() {
+  local log_file="$1" line=""
+  if [ -r "$log_file" ]; then
+    line="$(grep -iE 'unknown public key|FAILED|error:|==> ERROR' "$log_file" | tail -n 1 | sed 's/^[[:space:]]*//')"
+  fi
+  printf '%s' "${line:-no makepkg error line captured}"
+}
+
 # install_aur_package PKG: clone and build as the owner, install the dependencies the build needs, install the result
 # as root. Skips installed packages. Never aborts the run.
 install_aur_package() {
@@ -321,6 +350,7 @@ install_aur_package() {
     rm -rf -- "$build_dir"
     return 0
   fi
+  aur_import_pgp_keys "$build_dir/srcinfo" "$pkg"
   mapfile -t unmet < <(aur_unmet_deps "$build_dir/srcinfo")
   if [ "${#unmet[@]}" -gt 0 ]; then
     log "$pkg needs from the repositories: ${unmet[*]}"
@@ -331,7 +361,7 @@ install_aur_package() {
     fi
   fi
   # shellcheck disable=SC2016  # the script runs in the owner's shell, $1 must stay literal here
-  if run_as_owner bash -c 'cd "$1/src" && PKGDEST="$1/out" makepkg --noconfirm' _ "$build_dir"; then
+  if run_as_owner bash -c 'cd "$1/src" && PKGDEST="$1/out" makepkg --noconfirm 2>&1 | tee "$1/makepkg.log"; exit "${PIPESTATUS[0]}"' _ "$build_dir"; then
     built="$(find "$build_dir/out" -maxdepth 1 -name "$pkg-*.pkg.tar.*" ! -name '*.sig' -print -quit)"
     if [ -z "$built" ]; then
       warn "build of $pkg produced no package file, continuing without it"
@@ -343,7 +373,7 @@ install_aur_package() {
       warn "built $pkg but pacman -U failed"
     fi
   else
-    warn "building $pkg failed, continuing without it"
+    warn "AUR build of $pkg FAILED ($(aur_build_error "$build_dir/makepkg.log")); continuing without it. Rerun: sudo $0 --only install"
   fi
   rm -rf -- "$build_dir"
 }
