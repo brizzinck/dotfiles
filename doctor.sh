@@ -191,6 +191,30 @@ if [ -x "$DOTFILES/.config/hub/leader" ]; then
 else
   bad leader-menu ".config/hub/leader missing or not executable"
 fi
+# U8: SUPER+CTRL+U types the Linux password of the user the focused window asks for (vault.sh user-pass + vault-who.py)
+if [ -x "$DOTFILES/.config/hypr/scripts/vault.sh" ] && [ -r "$DOTFILES/.config/hypr/scripts/vault-who.py" ]; then
+  if python3 -I "$DOTFILES/.config/hypr/scripts/vault-who.py" --pid "$$" --class doctor | jq -e '.kind == "other" and (.user | length > 0)' >/dev/null 2>&1; then
+    ok vault-userpass "vault-who.py answers (offline probe on this shell)"
+  else
+    bad vault-userpass "vault-who.py does not answer (python3 -I .config/hypr/scripts/vault-who.py --pid \$\$ --class doctor)"
+  fi
+  if [ -n "${binds_json:-}" ]; then
+    if printf '%s' "$binds_json" | jq -e 'any(.[]; .submap == "" and .modmask == 68 and (.key | ascii_downcase) == "u" and .has_description)' >/dev/null 2>&1; then
+      ok vault-userpass-bind "SUPER+CTRL+U is bound (user-pass)"
+    else
+      bad vault-userpass-bind "SUPER+CTRL+U is not in the live bind table (hyprctl reload)"
+    fi
+  fi
+  if "$DOTFILES/.config/hub/hub" --list --all 2>/dev/null | grep -q 'vault-user-pass'; then ok vault-userpass-row "hub row vault-user-pass exists"; else bad vault-userpass-row "hub row vault-user-pass missing (.config/hub/actions.d/u5.tsv)"; fi
+  if command -v rbw >/dev/null 2>&1 && rbw unlocked >/dev/null 2>&1; then
+    n_linux="$(rbw list --fields folder 2>/dev/null | grep -cx Linux || true)"
+    if [ "${n_linux:-0}" -gt 0 ]; then info vault-linux "folder Linux: $n_linux login(s)"; else info vault-linux "no Bitwarden folder Linux yet (one login per Linux user, item name = user name)"; fi
+  else
+    info vault-linux "not checked (vault locked or rbw missing); the folder is Linux, one login per Linux user"
+  fi
+else
+  bad vault-userpass "vault.sh or vault-who.py missing"
+fi
 # ── V1b: the shared modal fzf (vim keys in every menu) ──────────────────────────────────────────────────────────
 if [ -x "$HOME/.local/bin/fzf-menu" ] && [ -r "$HOME/.config/fzf/vimfzf.sh" ]; then
   if out="$("$HOME/.local/bin/fzf-menu" --self-test 2>&1)"; then ok fzf-menu "modal self-test passed ($(printf '%s\n' "$out" | grep -c '^ok') cases)"; else bad fzf-menu "$(printf '%s\n' "$out" | grep -m1 'FAIL\|self-test')"; fi
