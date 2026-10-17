@@ -310,7 +310,8 @@ by physical key, so everything below works on the ua and ru layouts too (Caps sw
 | `Ctrl+H` / `Ctrl+L`, `Left` / `Right` (empty field), `Tab` / `Shift+Tab` (empty password) | previous / next entry (skalse, Other user...) |
 | `Ctrl+J` / `Ctrl+K`, `Down` / `Up`, `Tab` | user name field / password field (Other user...) |
 | `Enter` | next field, then log in |
-| `Esc` | clear the password; empty: cancel a pending PAM question, then back from Other user... to the main user |
+| `Ctrl+E` | show / hide the password (eye button in the field and the "hidden / shown" pill do the same; hidden again after a login, on a user switch and after 30 s without typing) |
+| `Esc` | clear the password (a wrong password is kept in the field so it can be fixed); empty: cancel a pending PAM question, then back from Other user... to the main user |
 | `F2` | session menu (Hyprland, Shell = a login shell on this console, `exit` returns here; root gets that shell for either session) |
 | `F12` | power menu (suspend, reboot, power off) |
 | `j` / `k`, arrows, `Enter` / `l`, `Esc` / `h` (open menu) | move, pick, close |

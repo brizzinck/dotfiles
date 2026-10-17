@@ -46,6 +46,7 @@ Scope {
             check("form on the first output", Greeter.formScreen === "DEMO-1");
             check("sessions loaded", Greeter.sessions.length === 2 && Greeter.sessions[0].id === "hyprland");
             Greeter.password = "";
+            Greeter.layoutName = "";   // the real hyprctl answer (the live session may be on ua/ru) must not win
             Greeter.parseDevices('{"keyboards":[{"name":"video-bus","main":false,"active_keymap":"English (US)"},{"name":"kbd","main":true,"active_keymap":"English (US)"}]}');
             check("layout from hyprctl devices (main keyboard)", Greeter.layoutCode === "US" && !Greeter.layoutWarn);
             shot("main");
@@ -74,7 +75,7 @@ Scope {
         case 4:
             check("wrong password: failed state", !Greeter.busy && Greeter.failed && Greeter.attempts === 1);
             check("wrong password: status text", Greeter.statusText === "Wrong user or password (1)" && Greeter.statusKind === 2);
-            check("wrong password: field cleared", Greeter.password === "");
+            check("wrong password: password kept in the field", Greeter.password === "bad");
             check("PAM service error text", Greeter.errorText("authentication error: pam_authenticate: SERVICE_ERR") === "Login failed: PAM service error (see journalctl -u greetd)");
             check("lost connection text", Greeter.errorText("failed to send").indexOf("lost the connection to greetd") >= 0);
             check("other error text", Greeter.errorText("boom") === "Login failed: boom (see journalctl -u greetd)");
@@ -93,8 +94,28 @@ Scope {
             check("Esc (password field, user typed) goes to the user field", Greeter.field === "user");
             key(Qt.Key_Escape, 9, 0);
             check("Esc leaves Other user for the main user", Greeter.selected === 0 && !Greeter.otherSelected);
-            return 200;
+            // show / hide password: Ctrl+E by physical key (scan 26; a Cyrillic key code, as on ua/ru)
+            check("password hidden by default", !Greeter.revealed);
+            check("plain E (no Ctrl) is not the shortcut", !key(Qt.Key_E, 26, 0) && !Greeter.revealed);
+            check("ctrl+E (Cyrillic key, scan 26) shows the password", key(Qt.Key_Cyrillic_u, 26, Qt.ControlModifier) && Greeter.revealed);
+            check("ctrl+E hides it again", key(Qt.Key_E, 26, Qt.ControlModifier) && !Greeter.revealed);
+            Greeter.toggleReveal();
+            Greeter.password = "abc";
+            Greeter.selectEntry(1);
+            check("switching the user hides the password", !Greeter.revealed && Greeter.password === "");
+            Greeter.selectEntry(0);
+            shot("reveal-off");
+            Greeter.revealTimeoutMs = 120;
+            Greeter.password = "secret";
+            Greeter.toggleReveal();
+            shot("reveal-on");
+            return 400;
         case 6:
+            check("the timeout hides the shown password", !Greeter.revealed && Greeter.password === "secret");
+            Greeter.revealTimeoutMs = 30000;
+            Greeter.password = "";
+            return 100;
+        case 7:
             Greeter.pointerEntered("DEMO-2");
             check("the form follows the pointer", Greeter.formScreen === "DEMO-2");
             Greeter.pointerEntered("elsewhere");
@@ -104,7 +125,7 @@ Scope {
             check("activelayout event: English (US) -> US", Greeter.layoutCode === "US" && !Greeter.layoutWarn);
             shot("form-moved");
             return 400;
-        case 7:
+        case 8:
             check("F2 opens the session menu", key(Qt.Key_F2, 68, 0) && Greeter.menu === "session");
             check("j moves down", key(Qt.Key_J, 44, 0) && Greeter.menuIndex === 1);
             check("Enter picks the Shell session", key(Qt.Key_Return, 36, 0) && Greeter.sessionIndex === 1 && Greeter.menu === "");
@@ -115,14 +136,32 @@ Scope {
             check("F12 opens the power menu", key(Qt.Key_F12, 96, 0) && Greeter.menu === "power");
             shot("menu");
             return 400;
-        case 8:
+        case 9:
             key(Qt.Key_Escape, 9, 0);
             check("Esc closes the menu", Greeter.menu === "");
             Greeter.pointerEntered("DEMO-1");
+            // test mode (greetd test instance): the login works, the session is not started and the screen says so
+            Greeter.testSession = true;
+            Greeter.password = "demo";
+            Greeter.toggleReveal();
+            check("Enter with the right password (test mode)", key(Qt.Key_Return, 36, 0) && Greeter.busy);
+            return 1500;
+        case 10:
+            check("test mode: status says login OK, session not started", Greeter.statusText === "Test mode: login OK, session not started" && Greeter.statusKind === 3);
+            check("test mode: no fade, no launch, form usable again", !Greeter.fading && !Greeter.fakeLaunched && !Greeter.busy);
+            check("test mode: password cleared and hidden after the login", Greeter.password === "" && !Greeter.revealed);
+            return 500;
+        case 11:
+            shot("test-mode");
+            return 500;
+        case 12:
+            Greeter.password = "x";
+            check("typing clears the test-mode status", Greeter.statusText === "");
+            Greeter.testSession = false;
             Greeter.password = "demo";
             check("Enter with the right password", key(Qt.Key_Return, 36, 0) && Greeter.busy);
             return 1500;
-        case 9:
+        case 13:
             check("launch fades the screen", Greeter.fading);
             check("the fake backend reached the launch step", Greeter.fakeLaunched);
             shot("fading");

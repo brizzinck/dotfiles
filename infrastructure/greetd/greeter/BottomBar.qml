@@ -1,4 +1,5 @@
-// Bottom bar of the form output: host name, session / layout / power pills (with their popup menus), battery.
+// Bottom bar of the form output: host name (and the TEST MODE marker), session / password-reveal / layout / power pills (with
+// their popup menus), battery.
 import QtQuick
 
 Item {
@@ -9,6 +10,7 @@ Item {
     height: 46
 
     Text {
+        id: hostLabel
         anchors.left: parent.left
         anchors.leftMargin: 24
         anchors.verticalCenter: parent.verticalCenter
@@ -16,6 +18,30 @@ Item {
         color: Theme.muted
         font.family: Theme.font
         font.pixelSize: 13
+    }
+
+    // greetd test instance (GREETER_TEST_SESSION=1): a successful login does not start a session
+    Rectangle {
+        visible: bar.ctrl.testSession
+        anchors.left: parent.left
+        anchors.leftMargin: 24 + hostLabel.width + 12
+        anchors.verticalCenter: parent.verticalCenter
+        width: testLabel.implicitWidth + 14
+        height: 20
+        radius: 6
+        color: "transparent"
+        border.width: 1
+        border.color: Theme.yellow
+
+        Text {
+            id: testLabel
+            anchors.centerIn: parent
+            text: "TEST MODE"
+            color: Theme.yellow
+            font.family: Theme.font
+            font.pixelSize: 10
+            font.letterSpacing: 1
+        }
     }
 
     Row {
@@ -38,6 +64,15 @@ Item {
                 anchors.bottomMargin: 10
                 anchors.horizontalCenter: parent.horizontalCenter
             }
+        }
+
+        // the password field's eye, as a state: hidden (dim) or shown (yellow); Ctrl+E toggles
+        Pill {
+            id: revealPill
+            text: (bar.ctrl.revealed ? "󰈈  shown" : "󰈉  hidden")
+            hint: "Ctrl+E"
+            tint: bar.ctrl.revealed ? Theme.yellow : Theme.muted
+            onClicked: bar.ctrl.toggleReveal()
         }
 
         // switched with Caps by the compositor; the pill only shows it (yellow while it is not US)

@@ -1,8 +1,9 @@
 # Owner-run test instance of greetd on VT3 (installed as /etc/greetd/config-test.toml). Not a service: it does not touch
 # greetd.service or getty@tty1. Run from a terminal of the live session:
 #   sudo greetd --config /etc/greetd/config-test.toml
-# greetd switches to VT3 and shows the greeter; the session it starts is /usr/bin/true (a PAM-path dry run), after which the
-# greeter returns. The Shell session is real (a console shell on VT3; `exit` returns to the greeter), and root can log in
+# greetd switches to VT3 and shows the greeter (a small TEST MODE marker in the bottom bar); a successful login does NOT start
+# the Hyprland session: the greeter ends the greetd session and shows "Test mode: login OK, session not started" (a PAM-path
+# dry run). The Shell session is real (a console shell on VT3; `exit` returns to the greeter), and root can log in
 # under "Other user...". Ctrl+Alt+F1 goes back to the live session; Ctrl+C in the terminal stops this greetd.
 [terminal]
 vt = 3

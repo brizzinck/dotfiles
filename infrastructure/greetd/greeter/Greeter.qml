@@ -14,11 +14,12 @@ Singleton {
     // ---- modes (environment) --------------------------------------------------------------------------------------
     // GREETER_DEMO=1: a floating window with two virtual outputs inside a running session (no layer shell, no dpms,
     // no marker file). Without a greetd socket the fake backend is used as well: the password "demo" succeeds and the
-    // launch only quits. GREETER_TEST_SESSION=1: launch /usr/bin/true instead of the session (greetd PAM dry run); the Shell
-    // session stays real (a console shell on the test VT).
+    // launch only quits. GREETER_TEST_SESSION=1: a successful login does not start the session (a PAM dry run): the greeter
+    // cancels the greetd session and says "Test mode: login OK, session not started"; the Shell session stays real (a console
+    // shell on the test VT).
     readonly property bool demoWindow: Quickshell.env("GREETER_DEMO") === "1"
     readonly property bool fakeAuth: demoWindow || !Greetd.available
-    readonly property bool testSession: Quickshell.env("GREETER_TEST_SESSION") === "1"
+    property bool testSession: Quickshell.env("GREETER_TEST_SESSION") === "1"
     readonly property var demoScreens: ["DEMO-1", "DEMO-2"]
 
     // ---- configuration (users.json) -------------------------------------------------------------------------------
@@ -62,6 +63,23 @@ Singleton {
     readonly property string loginUser: otherSelected ? typedUser.trim() : current.name
     property int sessionIndex: 0
 
+    // Show / hide password (eye button, pill, Ctrl+E). Always starts hidden and goes back to hidden after a login, when the
+    // user entry changes and after revealTimeoutMs without typing, so the password is never left on screen by accident.
+    property bool revealed: false
+    property int revealTimeoutMs: 30000
+
+    function toggleReveal() {
+        revealed = !revealed;
+        focusRequested();
+    }
+
+    Timer {
+        id: revealTimer
+        interval: ctrl.revealTimeoutMs
+        running: ctrl.revealed
+        onTriggered: ctrl.revealed = false
+    }
+
     signal focusRequested
     signal shake
 
@@ -72,6 +90,7 @@ Singleton {
         selected = ((index % n) + n) % n;
         field = otherSelected ? "user" : "password";
         password = "";
+        revealed = false;
         clearStatus();
         focusRequested();
     }
@@ -85,7 +104,7 @@ Singleton {
 
     // ---- status line ----------------------------------------------------------------------------------------------
     property string statusText: ""
-    property int statusKind: 0              // 0 none, 1 info, 2 error
+    property int statusKind: 0              // 0 none, 1 info, 2 error, 3 ok
     property int attempts: 0
     property bool failed: false             // the last attempt failed and nothing was typed since
 
@@ -96,8 +115,10 @@ Singleton {
     }
 
     onPasswordChanged: {
-        if (password !== "" && failed)
+        if (password !== "" && (failed || statusKind === 3))
             clearStatus();
+        if (revealed)
+            revealTimer.restart();      // typing keeps the password shown; the timeout counts from the last edit
     }
 
     function showStatus(text: string, kind: int) {
@@ -209,7 +230,7 @@ Singleton {
         busy = false;
         attempts += 1;
         pendingPassword = "";
-        password = "";
+        // the password stays in the field (cursor at its end, see Field.focusInput) so it can be inspected and fixed; Esc clears it
         showStatus((otherSelected ? "Wrong user or password (" : "Wrong password (") + attempts + ")", 2);
         failed = true;
         shake();
@@ -218,13 +239,30 @@ Singleton {
 
     function beginLaunch() {
         pendingPassword = "";
+        revealed = false;
+        if (testSession && sessions[sessionIndex].id !== "shell") {
+            testLoginDone();
+            return;
+        }
         fading = true;
         launchTimer.start();
     }
 
+    // Test mode (GREETER_TEST_SESSION=1, a non-Shell session): the login worked, but the session is not started, because
+    // greetd stops the greeter once a session starts and the screen would just come back empty. End the greetd session and say so.
+    function testLoginDone() {
+        busy = false;
+        demoTimer.stop();
+        if (!fakeAuth && Greetd.state !== GreetdState.Inactive)
+            Greetd.cancelSession();
+        password = "";
+        showStatus("Test mode: login OK, session not started", 3);
+        focusRequested();
+    }
+
     function doLaunch() {
         const s = sessions[sessionIndex];
-        const cmd = (testSession && s.id !== "shell") ? ["/usr/bin/true"] : s.cmd;
+        const cmd = s.cmd;
         if (fakeAuth) {
             console.log("greeter: fake backend, would launch " + JSON.stringify(cmd) + " with " + JSON.stringify(s.env));
             fakeLaunched = true;
@@ -287,7 +325,7 @@ Singleton {
 
         function onError(error: string) {
             ctrl.busy = false;
-            ctrl.password = "";
+            ctrl.pendingPassword = "";
             ctrl.showStatus(ctrl.errorText(error), 2);
             if (Greetd.state !== GreetdState.Inactive)
                 Greetd.cancelSession();
@@ -497,7 +535,7 @@ Singleton {
     }
 
     // ---- keys -----------------------------------------------------------------------------------------------------
-    // Letters are matched by physical key (xkb keycode = evdev + 8: H 43, J 44, K 45, L 46), so the vim keys work on
+    // Letters are matched by physical key (xkb keycode = evdev + 8: H 43, J 44, K 45, L 46, E 26), so the vim keys work on
     // the ua and ru layouts too. The Qt key code is only the fallback when no scan code arrives.
     function physical(event): string {
         switch (event.nativeScanCode) {
@@ -505,12 +543,14 @@ Singleton {
         case 44: return "j";
         case 45: return "k";
         case 46: return "l";
+        case 26: return "e";
         case 0:
             switch (event.key) {
             case Qt.Key_H: return "h";
             case Qt.Key_J: return "j";
             case Qt.Key_K: return "k";
             case Qt.Key_L: return "l";
+            case Qt.Key_E: return "e";
             }
         }
         return "";
@@ -553,6 +593,8 @@ Singleton {
             setField("password");
         } else if (ctrlMod && letter === "k") {
             setField("user");
+        } else if (ctrlMod && letter === "e") {
+            toggleReveal();
         } else if (key === Qt.Key_Left && activeFieldEmpty()) {
             selectEntry(selected - 1);
         } else if (key === Qt.Key_Right && activeFieldEmpty()) {

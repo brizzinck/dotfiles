@@ -109,7 +109,9 @@ Item {
             ctrl: form.ctrl
             x: (parent.width - width) / 2
             y: form.ctrl.otherSelected ? 84 : 24
-            secret: !(form.ctrl.awaitingExtra && form.ctrl.extraEcho)
+            // a one-time code that PAM wants echoed is plain text anyway; otherwise the eye decides
+            secret: !(form.ctrl.revealed || (form.ctrl.awaitingExtra && form.ctrl.extraEcho))
+            revealable: !(form.ctrl.awaitingExtra && form.ctrl.extraEcho)
             placeholder: form.ctrl.awaitingExtra ? form.ctrl.extraPrompt.replace(/:\s*$/, "")
                 : (form.ctrl.layoutCode !== "" ? form.ctrl.layoutCode + " · password" : "password")
             active: form.ctrl.field === "password"
@@ -128,7 +130,7 @@ Item {
             horizontalAlignment: Text.AlignHCenter
             elide: Text.ElideRight
             text: form.ctrl.busy && form.ctrl.statusText === "" ? "checking..." : form.ctrl.statusText
-            color: form.ctrl.statusKind === 2 ? Theme.red : Theme.subtext
+            color: form.ctrl.statusKind === 2 ? Theme.red : (form.ctrl.statusKind === 3 ? Theme.green : Theme.subtext)
             font.family: Theme.font
             font.pixelSize: 13
         }
