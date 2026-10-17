@@ -8,6 +8,9 @@
                              destroys 1 when closing the window destroys the session (destroy-unattached on, last client)
                              summary  the foreground commands that are not an idle shell, e.g. "claude (2), nvim, go test"
   term-procs.py --label ARGV...   print the label of one command line (tests)
+  term-procs.py --detached   one line per unattached term-* tmux session (a window that closed before destroy-unattached
+                             worked): name <TAB> created (epoch) <TAB> windows <TAB> summary (empty = only idle shells).
+                             kill-session.sh --detached and the hub row "Clean up detached terminal sessions" list them.
 
 Foreground = the process group that owns the pane's terminal (tcgetpgrp), read from /proc: nested shells, a pager or a
 `go test` run in the shell count, an idle zsh/bash does not. TERMPROCS_TMUX overrides the tmux command (tests use `tmux -L x`).
@@ -133,14 +136,30 @@ def summarize(labels):
     return ", ".join(f"{k} ({v})" if v > 1 else k for k, v in counts.items())
 
 
+def detached():
+    """unattached term-* sessions: name, created, windows, summary of their foreground commands"""
+    procs = snapshot()
+    fmt = "#{session_name}\t#{session_attached}\t#{session_created}\t#{session_windows}"
+    for line in tmux("list-sessions", "-F", fmt).splitlines():
+        name, attached, created, windows = (line.split("\t") + ["", "", "", ""])[:4]
+        if not name.startswith("term-") or attached != "0":
+            continue
+        panes = tmux("list-panes", "-s", "-t", "=" + name, "-F", "#{pane_tty}").split()
+        ttys = {tty_nr(p) for p in panes} - {None}
+        print(f"{name}\t{created}\t{windows}\t{summarize(foreground_labels(procs, ttys))}")
+
+
 def main():
     if len(sys.argv) >= 2 and sys.argv[1] == "--label":
         print(label(sys.argv[2:]))
         return 0
+    if len(sys.argv) >= 2 and sys.argv[1] == "--detached":
+        detached()
+        return 0
     try:
         win = int(sys.argv[1])
     except (IndexError, ValueError):
-        print("usage: term-procs.py PID | --label ARGV...", file=sys.stderr)
+        print("usage: term-procs.py PID | --label ARGV... | --detached", file=sys.stderr)
         return 2
     procs = snapshot()
     below = descendants(procs, win)

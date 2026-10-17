@@ -736,6 +736,11 @@ if [ -x "$DOTFILES/.config/hypr/scripts/safe-close.sh" ] && [ -f "$DOTFILES/.con
 else
   bad safe-close "safe-close.sh / term-procs.py missing"
 fi
+if [ -x "$DOTFILES/infrastructure/tests/tmux-destroy/run.sh" ] && command -v tmux >/dev/null 2>&1; then
+  if td_out="$("$DOTFILES/infrastructure/tests/tmux-destroy/run.sh" 2>&1)"; then ok tmux-destroy "session-created hook sets destroy-unattached on term-* only (private tmux server), detached-terminal cleanup: $(printf '%s' "$td_out" | tail -1)"; else bad tmux-destroy "$(printf '%s' "$td_out" | grep -m1 '^FAIL') (infrastructure/tests/tmux-destroy/run.sh)"; fi
+else
+  bad tmux-destroy "infrastructure/tests/tmux-destroy/run.sh or tmux missing"
+fi
 if o1_out="$("$DOTFILES/infrastructure/tests/o1/run.sh" 2>&1)"; then ok o1-tests "desktop helpers (displays, zoom, brightness, restart, lock, media, transcode): $(printf '%s' "$o1_out" | tail -1)"; else bad o1-tests "$(printf '%s' "$o1_out" | grep -m1 '^FAIL') (infrastructure/tests/o1/run.sh)"; fi
 if [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && command -v hyprctl >/dev/null 2>&1; then
   o1_rate="$(hyprctl getoption input:repeat_rate -j 2>/dev/null | jq -r '.int // empty')"

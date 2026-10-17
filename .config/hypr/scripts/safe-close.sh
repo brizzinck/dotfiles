@@ -3,8 +3,9 @@
 # Telegram) the first press only shows a dunst hint; a second press on the same window within 1 s closes it.
 # A ghostty window says what its close takes with it (term-procs.py reads the tmux session and the foreground commands of its
 # panes): "Closes term-17...: claude (2), nvim, go test" when the session is destroyed with the window (destroy-unattached),
-# "Detaches term-17... (keeps running): ..." when it only detaches; idle shells alone give the plain hint. The warning stays
-# 2.5 s, so the second press has that long.
+# "Detaches term-17... (keeps running): ..." when it only detaches (new term-* sessions always get destroy-unattached from the
+# tmux session-created hook; only a session that predates the hook fix, or a named one, still detaches); idle shells alone give
+# the plain hint. The warning stays 2.5 s, so the second press has that long.
 #   safe-close.sh              close (or arm) the active window
 #   safe-close.sh --check [C]  print whether class C (default: the active window's) is protected
 #   safe-close.sh --what       print the warning text for the active window (no close, no notification)

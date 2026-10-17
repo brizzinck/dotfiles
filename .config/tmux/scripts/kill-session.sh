@@ -8,6 +8,7 @@
 #   kill-session.sh <session_name>     # kill specific session safely (with confirmation)
 #   kill-session.sh -f <session_name>  # force kill session without confirmation
 #   kill-session.sh -u / --unnamed     # kill all unnamed/temporary sessions (numbers or term-*)
+#   kill-session.sh -d / --detached    # pick (multi-select, confirm) unattached term-* sessions to kill; each row shows what runs in it
 #   kill-session.sh -o / --others      # kill all sessions except the current one
 #   kill-session.sh -c / --current     # kill current session safely
 set -euo pipefail
@@ -16,21 +17,33 @@ current_session() {
   tmux display-message -p '#{session_name}' 2>/dev/null || echo ""
 }
 
+TERM_PROCS="$HOME/.config/hypr/scripts/term-procs.py"
+
+# unattached term-* sessions as "name<TAB>created<TAB>windows<TAB>foreground commands" (term-procs.py reads /proc)
+detached_terms() {
+  timeout 5 python3 "$TERM_PROCS" --detached 2>/dev/null || true
+}
+
 list_sessions() {
-  local curr
+  local curr name created nwin attached mark att extra
   curr="$(current_session)"
-  tmux list-sessions -F "#{session_name}	#{session_windows}	#{session_created}	#{session_attached}" 2>/dev/null | \
-    awk -F'\t' -v curr="$curr" '
-      {
-        sname = $1
-        nwin = $2
-        created = strftime("%Y-%m-%d %H:%M", $3)
-        att = ($4 > 0) ? "attached" : "detached"
-        mark = (sname == curr) ? "*" : " "
-        if (sname == curr) att = "current"
-        printf "%s\t%s %-16s (%d win)  %s  [%s]\n", sname, mark, sname, nwin, created, att
-      }
-    '
+  declare -A cmds=()
+  while IFS=$'\t' read -r name _ _ extra; do
+    [ -n "$name" ] && cmds[$name]="$extra"
+  done < <(detached_terms)
+  while IFS=$'\t' read -r name nwin created attached; do
+    mark=" "
+    [ "$name" = "$curr" ] && mark="*"
+    att="detached"
+    [ "$attached" -gt 0 ] && att="attached"
+    [ "$name" = "$curr" ] && att="current"
+    extra=""
+    if [[ -v "cmds[$name]" ]]; then
+      extra="  runs: ${cmds[$name]:-only idle shells}"
+    fi
+    printf '%s\t%s %-16s (%d win)  %s  [%s]%s\n' "$name" "$mark" "$name" "$nwin" \
+      "$(date -d "@$created" '+%Y-%m-%d %H:%M')" "$att" "$extra"
+  done < <(tmux list-sessions -F "#{session_name}	#{session_windows}	#{session_created}	#{session_attached}" 2>/dev/null)
 }
 
 preview_session() {
@@ -195,6 +208,46 @@ kill_unnamed() {
   fi
 }
 
+# Unattached term-* sessions piled up (a closed ghostty window used to only detach): list them with what runs in each,
+# kill only the picked ones. Nothing is killed without the final confirmation.
+kill_detached() {
+  local rows chosen pick name created nwin cmds when
+  local -a targets=()
+  rows="$(detached_terms)"
+  if [ -z "$rows" ]; then
+    echo "No detached terminal sessions (term-*)."
+    sleep 0.8
+    return 0
+  fi
+  local list=""
+  while IFS=$'\t' read -r name created nwin cmds; do
+    when="$(date -d "@$created" '+%m-%d %H:%M')"
+    list+="$name"$'\t'"$(printf '%-26s %s  %s win  runs: %s' "$name" "$when" "$nwin" "${cmds:-only idle shells}")"$'\n'
+  done <<<"$rows"
+  local menu="${KILL_SESSION_MENU:-$HOME/.local/bin/fzf-menu}" here=()  # KILL_SESSION_MENU: tests
+  [ -t 0 ] && here=(--here)
+  chosen="$(printf '%s' "$list" | "$menu" "${here[@]}" -m -p detached --delimiter=$'\t' --with-nth=2.. \
+    --header='Tab select (Ctrl-a all)   Enter: review and kill   Esc: normal mode   q quit' \
+    --bind='ctrl-a:select-all' --preview="bash '$0' --preview {1}" --preview-window='right,50%,wrap')" || return 0
+  [ -n "$chosen" ] || return 0
+  while IFS= read -r pick; do
+    name="${pick%%$'\t'*}"
+    [ -n "$name" ] && targets+=("$name")
+  done <<<"$chosen"
+  printf '\nKill %d detached terminal session(s) and everything running in them?\n' "${#targets[@]}"
+  printf '  %s\n' "${targets[@]}"
+  printf 'Continue? [y/N]: '
+  read -r ans
+  if [[ "$ans" =~ ^[Yy]$ ]]; then
+    safe_kill "${targets[@]}"
+    echo "Killed ${#targets[@]} detached session(s)."
+    sleep 0.6
+  else
+    echo "Cancelled."
+    sleep 0.3
+  fi
+}
+
 kill_others() {
   local force="${1:-false}"
   local curr
@@ -254,6 +307,10 @@ while [[ $# -gt 0 ]]; do
       kill_unnamed "$force"
       exit 0
       ;;
+    -d|--detached)
+      kill_detached
+      exit 0
+      ;;
     -o|--others)
       kill_others "$force"
       exit 0
@@ -296,6 +353,7 @@ while [[ $# -gt 0 ]]; do
       echo ""
       echo "Options:"
       echo "  -u, --unnamed          Kill all unnamed/temporary sessions (numbers or term-*)"
+      echo "  -d, --detached         Pick unattached term-* sessions to kill (shows what runs in each)"
       echo "  -o, --others           Kill all sessions except the current one"
       echo "  -c, --current          Kill current session safely"
       echo "  -k, --kill <session>   Kill specified session(s)"
@@ -340,7 +398,7 @@ if [ -z "$initial" ]; then
   exit 0
 fi
 
-# The list is the shared modal fzf (INSERT opens, Esc = NORMAL with j/k g/G, d/x kill, U kill unnamed, O kill others,
+# The list is the shared modal fzf (INSERT opens, Esc = NORMAL with j/k g/G, d/x kill, U kill unnamed, D pick detached terminals, O kill others,
 # q quit; ua/ru twins come from the library). NORMAL-mode extras travel in FZF_MENU_NORMAL_BINDS.
 FZF_MENU="$HOME/.local/bin/fzf-menu"
 if [ ! -x "$FZF_MENU" ]; then
@@ -352,9 +410,10 @@ reload="reload(bash '$0' --list)"
 export FZF_MENU_NORMAL_BINDS="d:execute(bash '$0' --confirm-kill {1})+$reload
 x:execute(bash '$0' --confirm-kill {1})+$reload
 U:execute(bash '$0' --unnamed)+$reload
+D:execute(bash '$0' --detached)+$reload
 O:execute(bash '$0' --others)+$reload"
 chosen="$(printf "%s\n" "$initial" | "$FZF_MENU" --here -m -p sessions --delimiter=$'\t' --with-nth=2.. \
-  --header='Tab select   Enter kill   Esc: normal mode   NORMAL: j/k g/G move   d kill   U kill unnamed   O kill others   q quit' \
+  --header='Tab select   Enter kill   Esc: normal mode   NORMAL: j/k g/G move   d kill   U kill unnamed   D detached terminals   O kill others   q quit' \
   --preview="bash '$0' --preview {1}" \
   --preview-window='right,50%,wrap')" || exit 0
 
