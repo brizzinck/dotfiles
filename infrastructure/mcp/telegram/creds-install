@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""/usr/local/lib/telegram-mcp/creds-install - root helper of mcp-telegram-setup (run with `sudo`, which asks for the password).
+
+Reads ONE JSON object on stdin (never argv) with any of: api_id, api_hash, session, allowlist, token, and stores each value as
+an encrypted systemd credential /etc/credstore.encrypted/telegram-mcp.<key>, sealed to this machine's TPM2 and host key
+(`systemd-creds encrypt --with-key=tpm2+host`). telegram-mcp.service loads them with LoadCredentialEncrypted=, so nothing is
+readable as a plain file; only root can read the credstore directory.
+
+  creds-install            apply stdin, then enable the whisper socket + telegram-mcp.service and (re)start the service
+  creds-install --no-start apply stdin only
+  creds-install --status   which of the five credentials exist (names only)
+
+The service only starts when all five exist (ConditionPathExists= in the unit). Test hooks: CREDSTORE_DIR, SYSTEMD_CREDS_BIN,
+SYSTEMCTL_BIN, CREDS_INSTALL_ALLOW_NONROOT=1.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
+STORE = os.environ.get("CREDSTORE_DIR", "/etc/credstore.encrypted")
+CREDS = os.environ.get("SYSTEMD_CREDS_BIN", "systemd-creds")
+SYSTEMCTL = os.environ.get("SYSTEMCTL_BIN", "systemctl")
+KEYS = ("api_id", "api_hash", "session", "allowlist", "token")
+RULES = {
+    "api_id": re.compile(r"^[0-9]{3,12}$"),
+    "api_hash": re.compile(r"^[0-9a-fA-F]{32}$"),
+    "session": re.compile(r"^1[A-Za-z0-9_=+/-]{100,}$"),
+    "allowlist": re.compile(r"^-?[0-9]+(,-?[0-9]+)*$"),
+    "token": re.compile(r"^[A-Za-z0-9_-]{32,}$"),
+}
+
+
+def die(msg, code=1):
+    print(f"creds-install: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def path(key):
+    return os.path.join(STORE, f"telegram-mcp.{key}")
+
+
+def store(key, value):
+    tmp_fd, tmp = tempfile.mkstemp(dir=STORE, prefix=f".{key}.")
+    os.close(tmp_fd)
+    try:
+        p = subprocess.run([CREDS, "encrypt", "--with-key=tpm2+host", f"--name={key}", "-", tmp],
+                           input=value.encode(), capture_output=True)
+        if p.returncode != 0:
+            die(f"systemd-creds encrypt failed for {key}: {p.stderr.decode(errors='replace').strip()[:200]}")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path(key))
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def main(argv):
+    if "-h" in argv or "--help" in argv:
+        print(__doc__.strip())
+        return 0
+    if os.geteuid() != 0 and os.environ.get("CREDS_INSTALL_ALLOW_NONROOT") != "1":
+        die("must run as root (sudo)")
+    os.makedirs(STORE, mode=0o700, exist_ok=True)
+    os.chmod(STORE, 0o700)
+    if "--status" in argv:
+        for k in KEYS:
+            print(f"{k}: {'present' if os.path.exists(path(k)) else 'missing'}")
+        return 0
+    try:
+        data = json.load(sys.stdin)
+    except ValueError:
+        die("stdin is not valid JSON")
+    if not isinstance(data, dict) or not data:
+        die("stdin must be a JSON object with at least one of: " + ", ".join(KEYS))
+    unknown = [k for k in data if k not in KEYS]
+    if unknown:
+        die(f"unknown key(s): {', '.join(unknown)}")
+    for k, v in data.items():
+        if not isinstance(v, str) or not RULES[k].match(v.strip()):
+            die(f"value for {k} has the wrong shape (the value is not shown)")
+    for k, v in data.items():
+        store(k, v.strip())
+        print(f"stored {k} (TPM2 + host key)")
+    if "--no-start" in argv:
+        return 0
+    missing = [k for k in KEYS if not os.path.exists(path(k))]
+    subprocess.run([SYSTEMCTL, "daemon-reload"], check=False)
+    subprocess.run([SYSTEMCTL, "enable", "--now", "telegram-whisper-proxy.socket"], check=False)
+    subprocess.run([SYSTEMCTL, "enable", "telegram-mcp.service"], check=False)
+    if missing:
+        print(f"telegram-mcp.service not started: credentials missing: {', '.join(missing)}")
+        return 0
+    r = subprocess.run([SYSTEMCTL, "restart", "telegram-mcp.service"], check=False)
+    print("telegram-mcp.service (re)started" if r.returncode == 0 else "telegram-mcp.service failed to start: systemctl status telegram-mcp")
+    return r.returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

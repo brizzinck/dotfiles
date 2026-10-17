@@ -3,11 +3,13 @@
 #
 #   sudo ./apply-system.sh                 run every section in order
 #   sudo ./apply-system.sh --dry-run       print what each section would do, change nothing
-#   sudo ./apply-system.sh --only cleanup  run a single section
+#   sudo ./apply-system.sh --only cleanup  run a single section (several: --only users,mcp, always in the order below)
 #
-# Section order: cleanup -> upgrade -> install -> remove -> config -> services -> greeter -> users -> disk -> boot -> flatpak -> summary
+# Section order: cleanup -> upgrade -> install -> remove -> config -> services -> greeter -> users -> mcp -> disk -> boot -> flatpak -> summary
 #   (greeter = the login screen, see infrastructure/greetd; also runnable alone: sudo ./apply-system.sh --only greeter)
 #   (users = managed child users, see infrastructure/users; also runnable alone: sudo ./apply-system.sh --only users)
+#   (mcp = Telegram MCP service user setup, Chromium, whisper.cpp, see infrastructure/mcp; needs the users section for aimcp:
+#    sudo ./apply-system.sh --only users,mcp)
 # System config files live in infrastructure/<area>/ and are installed from there (see apply-memory.sh).
 set -euo pipefail
 
@@ -15,7 +17,7 @@ ORIG_ARGS=("$@")
 DRY_RUN=0
 ONLY=""
 STAMP="20261016"
-SECTIONS=(cleanup upgrade install remove config services greeter users disk boot flatpak summary)
+SECTIONS=(cleanup upgrade install remove config services greeter users mcp disk boot flatpak summary)
 
 usage() {
   cat <<EOF
@@ -39,10 +41,12 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -n "$ONLY" ]; then
-  case " ${SECTIONS[*]} " in
-    *" $ONLY "*) ;;
-    *) echo "unknown section: $ONLY (valid: ${SECTIONS[*]})" >&2; exit 2 ;;
-  esac
+  for only_one in ${ONLY//,/ }; do
+    case " ${SECTIONS[*]} " in
+      *" $only_one "*) ;;
+      *) echo "unknown section: $only_one (valid: ${SECTIONS[*]})" >&2; exit 2 ;;
+    esac
+  done
 fi
 
 # --- privileges / owner ------------------------------------------------------
@@ -1111,6 +1115,196 @@ section_users() {
   followup "rollback of the users section: sudo $USERS_DIR/rollback.sh"
 }
 
+# --- mcp ---------------------------------------------------------------------
+# Root part of the MCP stage (M1); the gateway itself is a user service (mcp-install, no root). What this section sets up, every
+# step idempotent and pinned (infrastructure/mcp/telegram/pins.env):
+#   * packages: chromium (the clean automation browser of the chrome-devtools gateway server; a flatpak Chrome cannot be
+#     driven over the CDP pipe) and whisper-cpp (whisper-server for voice messages);
+#   * retires mcp-hub: removes /srv/mcphub (the last servers.json is kept in ~/.local/share/workstation-overhaul/mcphub-backup);
+#   * /srv/models/ggml-small.bin: the Whisper model Voxtype dictation uses (copied from the owner's home when its sha256
+#     matches, else downloaded and checked), shared through a readable path because aimcp cannot read /home;
+#   * /opt/telegram-mcp: chigwell/telegram-mcp at the pinned commit + a hash-pinned venv (root-owned, world-readable);
+#   * the service user aimcp comes from the users section (managed.tsv row: service, noacl, nobecome, create), so run
+#     `--only users,mcp`; the owner reaches it only with a sudo password;
+#   * units: telegram-mcp.service (user aimcp, 127.0.0.1:8765, LoadCredentialEncrypted= from /etc/credstore.encrypted, sandboxed;
+#     only starts once mcp-telegram-setup stored the credentials), telegram-whisper-proxy.socket (127.0.0.1:8766) which starts
+#     telegram-whisper.service (whisper.cpp server) on demand and stops it after 5 idle minutes;
+#   * /usr/local/lib/telegram-mcp/{run,serve.py,creds-install,login.py}: the wrapper, the fail-closed entry point, the root helper
+#     that mcp-telegram-setup calls through sudo, and the QR login / chat lister.
+# Nothing is logged in to Telegram here: the owner runs `mcp-telegram-setup` (QR + sudo password + master password).
+MCP_DIR="$INFRA/mcp/telegram"
+TG_OPT=/opt/telegram-mcp
+TG_LIB=/usr/local/lib/telegram-mcp
+MODELS_DIR=/srv/models
+CREDSTORE=/etc/credstore.encrypted
+
+mcp_retire_hub() {
+  if [ -d /srv/mcphub ]; then
+    run rm -rf -- /srv/mcphub
+    changed "removed /srv/mcphub (mcp-hub is retired; backup of servers.json: ~/.local/share/workstation-overhaul/mcphub-backup)"
+  else
+    log "unchanged: /srv/mcphub is already gone"
+  fi
+  if pgrep -f 'mcp-hub --port' >/dev/null 2>&1; then
+    run pkill -f 'mcp-hub --port'
+    changed "stopped a running mcp-hub"
+  fi
+}
+
+mcp_whisper_model() {
+  local f want src part got
+  # shellcheck source=/dev/null
+  . "$MCP_DIR/pins.env"
+  f="$MODELS_DIR/$WHISPER_MODEL_FILE" want="$WHISPER_MODEL_SHA256"
+  if [ -s "$f" ] && [ -e "$MODELS_DIR/.verified-$want" ]; then
+    log "unchanged: $f (sha256 verified before)"
+    return 0
+  fi
+  if [ -s "$f" ] && [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$want" ]; then
+    run touch "$MODELS_DIR/.verified-$want"
+    log "unchanged: $f matches the pinned sha256"
+    return 0
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "[dry-run] would put $WHISPER_MODEL_FILE (sha256 $want) into $MODELS_DIR: copy from $OWNER_HOME/.local/share/voxtype/models if it matches, else download $WHISPER_MODEL_URL"
+    return 0
+  fi
+  install -d -m 755 "$MODELS_DIR"
+  src="$OWNER_HOME/.local/share/voxtype/models/$WHISPER_MODEL_FILE"
+  part="$f.part"
+  if [ -s "$src" ] && [ "$(sha256sum "$src" | cut -d' ' -f1)" = "$want" ]; then
+    cp -- "$src" "$part"
+    log "copied the Voxtype model from $src"
+  else
+    log "downloading $WHISPER_MODEL_FILE (about 466 MB, once)"
+    if ! curl -fL --retry 3 -C - -o "$part" "$WHISPER_MODEL_URL"; then
+      warn "mcp: downloading the Whisper model failed; voice messages cannot be transcribed until: sudo $0 --only mcp"
+      return 0
+    fi
+  fi
+  got="$(sha256sum "$part" | cut -d' ' -f1)"
+  if [ "$got" != "$want" ]; then
+    warn "mcp: the Whisper model has the wrong sha256 ($got, expected $want); NOT installed"
+    rm -f -- "$part"
+    return 0
+  fi
+  chmod 644 "$part"
+  mv -f -- "$part" "$f"
+  touch "$MODELS_DIR/.verified-$want"
+  changed "installed $f (sha256 verified, shared with aimcp)"
+}
+
+mcp_telegram_source() {
+  local commit="$TELEGRAM_MCP_COMMIT" head stamp want_stamp was_active=0
+  if [ -d "$TG_OPT/src/.git" ] && [ "$(git -C "$TG_OPT/src" rev-parse HEAD 2>/dev/null)" = "$commit" ]; then
+    log "unchanged: $TG_OPT/src is at $commit"
+  elif [ "$DRY_RUN" -eq 1 ]; then
+    log "[dry-run] would fetch $TELEGRAM_MCP_REPO at commit $commit into $TG_OPT/src (shallow, verified with git rev-parse)"
+  else
+    install -d -m 755 "$TG_OPT"
+    rm -rf -- "$TG_OPT/src"
+    if git init -q "$TG_OPT/src" && git -C "$TG_OPT/src" fetch -q --depth 1 "$TELEGRAM_MCP_REPO" "$commit" \
+      && git -C "$TG_OPT/src" -c advice.detachedHead=false checkout -q FETCH_HEAD; then
+      head="$(git -C "$TG_OPT/src" rev-parse HEAD)"
+      if [ "$head" != "$commit" ]; then
+        warn "mcp: fetched commit $head is not the pinned $commit; removed"
+        rm -rf -- "$TG_OPT/src"
+        return 1
+      fi
+      chown -R root:root "$TG_OPT/src"
+      chmod -R go-w,a+rX "$TG_OPT/src"
+      changed "telegram-mcp source at the pinned commit $commit in $TG_OPT/src"
+    else
+      warn "mcp: could not fetch telegram-mcp ($TELEGRAM_MCP_REPO @ $commit); the service cannot be set up"
+      rm -rf -- "$TG_OPT/src"
+      return 1
+    fi
+  fi
+  want_stamp="$(cat "$MCP_DIR/requirements.txt" | sha256sum | cut -d' ' -f1)-$commit-$(python3 -c 'import sys; print(sys.version_info[:2])')"
+  stamp="$(cat "$TG_OPT/venv/.stamp" 2>/dev/null || true)"
+  if [ -x "$TG_OPT/venv/bin/python" ] && [ "$stamp" = "$want_stamp" ]; then
+    log "unchanged: $TG_OPT/venv is current"
+    return 0
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "[dry-run] would build $TG_OPT/venv with pip install --require-hashes --no-deps -r infrastructure/mcp/telegram/requirements.txt"
+    return 0
+  fi
+  systemctl is-active --quiet telegram-mcp.service && was_active=1
+  [ "$was_active" -eq 1 ] && systemctl stop telegram-mcp.service
+  rm -rf -- "$TG_OPT/venv"
+  if python3 -m venv "$TG_OPT/venv" \
+    && "$TG_OPT/venv/bin/python" -m pip install --quiet --no-cache-dir --disable-pip-version-check --require-hashes --no-deps -r "$MCP_DIR/requirements.txt" \
+    && "$TG_OPT/venv/bin/python" -c 'import telethon, mcp, httpx, qrcode'; then
+    printf '%s\n' "$want_stamp" >"$TG_OPT/venv/.stamp"
+    chmod -R go-w,a+rX "$TG_OPT/venv"
+    changed "built $TG_OPT/venv (hash-pinned requirements, telegram-mcp $commit)"
+  else
+    warn "mcp: building the telegram-mcp venv failed"
+    rm -rf -- "$TG_OPT/venv"
+  fi
+  [ "$was_active" -eq 1 ] && systemctl start telegram-mcp.service
+  return 0
+}
+
+section_mcp() {
+  header "mcp"
+  local p pkgs=(chromium whisper-cpp) f unit all_creds=1 k
+  if [ ! -r "$MCP_DIR/pins.env" ]; then
+    warn "mcp: $MCP_DIR/pins.env is missing, nothing to do"
+    return 0
+  fi
+  # shellcheck source=/dev/null
+  . "$MCP_DIR/pins.env"
+
+  # 1. packages
+  for p in "${pkgs[@]}"; do
+    if pkg_installed_exact "$p"; then log "unchanged: $p is installed"; else try pacman -S --needed --noconfirm "$p"; fi
+  done
+  mcp_retire_hub
+
+  # 2. Telegram MCP needs the service user from the users section
+  if ! getent passwd aimcp >/dev/null; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+      log "[dry-run] aimcp does not exist yet: the users section creates it (service, noacl, nobecome); a real run of --only users,mcp does both"
+    else
+      warn "mcp: the service user aimcp does not exist; run: sudo $0 --only users,mcp (nothing of the Telegram service was set up)"
+      return 0
+    fi
+  fi
+
+  mcp_whisper_model
+  mcp_telegram_source || return 0
+
+  # 3. runtime scripts and units
+  for f in run serve.py creds-install login.py; do
+    install_file "$MCP_DIR/$f" "$TG_LIB/$f" 755
+  done
+  run install -d -m 700 "$CREDSTORE"
+  for unit in telegram-mcp.service telegram-whisper.service telegram-whisper-proxy.service telegram-whisper-proxy.socket; do
+    install_file "$MCP_DIR/$unit" "/etc/systemd/system/$unit"
+  done
+  run systemctl daemon-reload
+  if [ "$DRY_RUN" -eq 0 ] && command -v systemd-analyze >/dev/null; then
+    systemd-analyze verify /etc/systemd/system/telegram-mcp.service >/dev/null 2>&1 || warn "mcp: systemd-analyze verify reports a problem in telegram-mcp.service"
+  fi
+  try systemctl enable --now telegram-whisper-proxy.socket
+  try systemctl enable telegram-mcp.service
+  for k in api_id api_hash session allowlist token; do
+    [ -e "$CREDSTORE/telegram-mcp.$k" ] || all_creds=0
+  done
+  if [ "$DRY_RUN" -eq 0 ] && [ "$all_creds" -eq 1 ]; then
+    try systemctl restart telegram-mcp.service
+    changed "telegram-mcp.service (re)started (credentials present)"
+  else
+    log "telegram-mcp.service enabled but not started: the credentials are stored by mcp-telegram-setup"
+  fi
+  changed "telegram-mcp units, scripts and credstore directory installed"
+  followup "mcp-telegram-setup    # one time, in a terminal: QR login, tick the chats, sudo password; stores the session in Bitwarden + the TPM2 credstore and starts the service"
+  followup "mcp-add               # once: registers the gateway servers (desktop-ro, chrome-devtools, telegram, ...) in Claude Code and Codex"
+  followup "systemctl status telegram-mcp telegram-whisper-proxy.socket; mcp-gateway status"
+}
+
 # --- disk --------------------------------------------------------------------
 section_disk() {
   header "disk"
@@ -1264,13 +1458,13 @@ section_summary() {
 main() {
   local s
   for s in "${SECTIONS[@]}"; do
-    if [ -n "$ONLY" ] && [ "$s" != "$ONLY" ]; then
+    if [ -n "$ONLY" ] && [[ ",$ONLY," != *",$s,"* ]]; then
       continue
     fi
     "section_$s"
   done
   # a single-section run has no summary: print the login screen note here
-  if [ -n "$ONLY" ] && [ "$ONLY" != summary ] && [ "$GREETER_BANNER" -eq 1 ]; then
+  if [ -n "$ONLY" ] && [[ ",$ONLY," != *",summary,"* ]] && [ "$GREETER_BANNER" -eq 1 ]; then
     greeter_banner
   fi
 }

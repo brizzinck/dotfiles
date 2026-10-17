@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# /usr/local/lib/telegram-mcp/run - ExecStart of telegram-mcp.service (user aimcp). Turns the systemd credentials (decrypted by
+# systemd from /etc/credstore.encrypted with the TPM2 + host key, see LoadCredentialEncrypted=) into the environment of
+# serve.py: the secrets exist only in this process tree's environment and in the tmpfs $CREDENTIALS_DIRECTORY, never in a unit
+# file, an argument list or a plain file on disk.
+#   credentials: api_id api_hash session (a Telethon session STRING, no .session file) allowlist (comma separated chat ids)
+#                token (bearer token the gateway sends)
+# Fails closed (exit 78) when any is missing or the allowlist is empty. Test hooks: TELEGRAM_MCP_PYTHON, TELEGRAM_MCP_SERVE.
+set -eu
+cred=${CREDENTIALS_DIRECTORY:?CREDENTIALS_DIRECTORY is not set (start this through telegram-mcp.service)}
+for f in api_id api_hash session allowlist token; do
+  [[ -s $cred/$f ]] || { echo "telegram-mcp: credential '$f' is missing (run mcp-telegram-setup)" >&2; exit 78; }
+done
+allow=$(tr -d ' \r\n' <"$cred/allowlist")
+[[ -n $allow ]] || { echo "telegram-mcp: the chat allowlist is empty, refusing to start (mcp-telegram-setup chats)" >&2; exit 78; }
+
+TELEGRAM_API_ID=$(tr -d ' \r\n' <"$cred/api_id")
+TELEGRAM_API_HASH=$(tr -d ' \r\n' <"$cred/api_hash")
+TELEGRAM_SESSION_STRING=$(tr -d ' \r\n' <"$cred/session")
+TELEGRAM_MCP_TOKEN=$(tr -d ' \r\n' <"$cred/token")
+export TELEGRAM_API_ID TELEGRAM_API_HASH TELEGRAM_SESSION_STRING TELEGRAM_MCP_TOKEN
+export TELEGRAM_ALLOWED_CHAT_IDS=$allow
+# read-only: upstream registers only tools annotated readOnlyHint (no send, edit, delete, forward, mark-read, drafts, admin)
+export TELEGRAM_EXPOSED_TOOLS=read-only
+# voice messages: a LOCAL whisper.cpp server (telegram-whisper-proxy.socket on 127.0.0.1:8766, model /srv/models/ggml-small.bin);
+# no GROQ_API_KEY exists, so the cloud engine cannot run; engine=telegram is Telegram's own and stays inside Telegram
+export TELEGRAM_TRANSCRIBE=on-demand TELEGRAM_TRANSCRIBE_ENGINE=openai
+export TELEGRAM_TRANSCRIBE_OPENAI_URL=http://127.0.0.1:8766 TELEGRAM_TRANSCRIBE_OPENAI_MODEL=whisper-1
+export TELEGRAM_TRANSCRIPT_CACHE_DIR=${STATE_DIRECTORY:-/var/lib/telegram-mcp}/transcripts
+export TELEGRAM_FLOOD_SLEEP_THRESHOLD=60 TELEGRAM_CONTACT_FUZZY=false
+export MCP_TRANSPORT=http MCP_HOST=127.0.0.1 MCP_PORT=8765
+export MCP_ALLOWED_HOSTS=127.0.0.1:8765,localhost:8765,127.0.0.1,localhost
+export XDG_STATE_HOME=${STATE_DIRECTORY:-/var/lib/telegram-mcp} PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+exec "${TELEGRAM_MCP_PYTHON:-/opt/telegram-mcp/venv/bin/python}" "${TELEGRAM_MCP_SERVE:-/usr/local/lib/telegram-mcp/serve.py}"

@@ -209,7 +209,7 @@ sudo "$DOTFILES/apply-memory.sh" || warn "memory safety net not applied"
 log "System layer (earlyoom, docker GC cap, pacman hooks, TLP, coredump limits, timers, GRUB)"
 # apply-system.sh is idempotent; here only the sections that are safe on a fresh machine run.
 # Not run here: upgrade/install/remove (handled above or by the owner), disk (tune2fs + fstab).
-for section in config services users boot; do
+for section in config services users mcp boot; do
   sudo "$DOTFILES/apply-system.sh" --only "$section" || warn "apply-system.sh --only $section failed"
 done
 later "optional: sudo $DOTFILES/apply-system.sh --only disk   (reserved blocks 1%, noatime,lazytime on /), --only remove (snap stack, unused toolchains, orphans)"

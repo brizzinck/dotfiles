@@ -1,0 +1,9 @@
+[Unit]
+Description=Telegram voice transcription endpoint (127.0.0.1:8766, starts whisper-server on the first request)
+
+[Socket]
+ListenStream=127.0.0.1:8766
+FreeBind=yes
+
+[Install]
+WantedBy=sockets.target

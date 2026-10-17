@@ -21,6 +21,4 @@
 # user	profile	flags	accent	note
 td	cli	interactive,clipboard	orange	AI agents; terminals only by hand (SUPER+SHIFT+T), the window owns its processes
 yc	cli	interactive	blue	work account, dormant since 2026-04-19
-#
-# M1 adds the Telegram MCP service user the same way, with no new code (the owner reaches it only with a sudo password):
-# aimcp	-	service,noacl,nobecome,create	purple	Telegram MCP, 127.0.0.1 only
+aimcp	-	service,noacl,nobecome,create	purple	Telegram MCP service (127.0.0.1:8765), read-only; the owner reaches it only with a sudo password

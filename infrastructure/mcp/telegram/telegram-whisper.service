@@ -1,0 +1,30 @@
+[Unit]
+Description=whisper.cpp server for Telegram voice messages (127.0.0.1:8767, started on demand by telegram-whisper-proxy.socket)
+ConditionPathExists=/srv/models/ggml-small.bin
+# stopped again when nothing needs it (the proxy exits after 5 idle minutes): the model is only in RAM while voice is transcribed
+StopWhenUnneeded=yes
+
+[Service]
+Type=simple
+DynamicUser=yes
+# no GPU, language auto-detect (the server default is English), ffmpeg converts the ogg/opus voice notes
+ExecStart=/usr/bin/whisper-server -m /srv/models/ggml-small.bin --host 127.0.0.1 --port 8767 --inference-path /audio/transcriptions --convert --tmp-dir /tmp -l auto -ng -t 4
+# the unit counts as started when the port answers, so the proxy never connects too early
+ExecStartPost=/usr/bin/timeout 90 /usr/bin/bash -c 'until (exec 3<>/dev/tcp/127.0.0.1/8767) 2>/dev/null; do sleep 0.3; done'
+Restart=no
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadOnlyPaths=/srv/models
+MemoryMax=2G
+
+[Install]
+# no WantedBy: only the socket starts it

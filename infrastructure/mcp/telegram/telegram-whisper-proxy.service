@@ -1,0 +1,16 @@
+[Unit]
+Description=Proxy from 127.0.0.1:8766 to the on-demand whisper-server (exits after 5 idle minutes, which stops whisper-server)
+Requires=telegram-whisper.service
+After=telegram-whisper.service
+ConditionPathExists=/srv/models/ggml-small.bin
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd --exit-idle-time=5min 127.0.0.1:8767
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
