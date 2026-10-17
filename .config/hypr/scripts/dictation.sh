@@ -51,9 +51,12 @@ poke() { pkill -o -u "$UID" -RTMIN+18 -x waybar 2>/dev/null || true; }
 
 # --- chosen language and model (state files; defaults ru and small) ---
 valid_lang() { [[ $1 == auto || $1 =~ ^(ru|uk|en)(,(ru|uk|en))*$ ]]; }
-lang() { local l=""; [[ -r $LANGF ]] && read -r l <"$LANGF"; if valid_lang "$l"; then echo "$l"; else echo "$DEFAULT_LANG"; fi; }
+# _lang / _model set LANG_V / MODEL_V without a subshell (the --follow loop calls them every tick, so they must not fork)
+_lang() { LANG_V=""; [[ -r $LANGF ]] && read -r LANG_V <"$LANGF"; valid_lang "$LANG_V" || LANG_V=$DEFAULT_LANG; }
+lang() { _lang; echo "$LANG_V"; }
 valid_model() { [[ $1 =~ ^[a-z0-9][a-z0-9.-]*$ ]]; }
-model_name() { local m=""; [[ -r $MODELF ]] && read -r m <"$MODELF"; if valid_model "$m"; then echo "$m"; else echo "$DEFAULT_MODEL"; fi; }
+_model() { MODEL_V=""; [[ -r $MODELF ]] && read -r MODEL_V <"$MODELF"; valid_model "$MODEL_V" || MODEL_V=$DEFAULT_MODEL; }
+model_name() { _model; echo "$MODEL_V"; }
 model_path() { echo "$MODEL_DIR/ggml-${1:-$(model_name)}.bin"; }
 model_ok() { [[ -s $(model_path) ]]; }
 
@@ -315,18 +318,50 @@ cmd_run() {
   exec "$BK_BIN" -c "$conf" daemon
 }
 
+# cmd_follow: the idle loop forks nothing (builtins only: read, [[ ]], command -v). It ticks every 0.5 s because a continuous
+# waybar script has no other way to learn that a state file changed; `jq` runs only when the output changes. `installed` is
+# checked again every 10 s, `systemctl is-active` only when the state file is missing or unknown (at most every 10 s), the
+# backend cache only when it appeared, vanished or is newer than the stamp of the last read.
 cmd_follow() {
-  local last="" s l m text cls tip head
+  local last="" key s l m st act="" text cls tip head inst=1 tick=0 act_tick=-100 ref="$RT/dictation-follow.$$" have=0
   exec {TICKFD}<> <(:)
+  trap 'rm -f "$ref"' EXIT
+  trap 'exit 0' TERM INT HUP
+  BK_BACKEND="" BK_DEVICE=""
   while :; do
-    s=$(status_text)
-    l=$(lang)
-    m=$(model_name)
-    BK_BACKEND="" BK_BIN="" BK_DEVICE="" BK_REASON=""
-    read_cache && BK_BACKEND=$C_BACKEND BK_DEVICE=$C_DEVICE
-    if [[ "$s|$l|$m|$BK_BACKEND|$BK_DEVICE" != "$last" ]]; then
-      last="$s|$l|$m|$BK_BACKEND|$BK_DEVICE"
-      if ! installed; then
+    ((tick % 20 == 0)) && { installed && inst=1 || inst=0; }
+    st=""
+    if ((inst)); then
+      [[ -r $STATE_FILE ]] && IFS= read -r st <"$STATE_FILE"
+      case $st in
+        recording | transcribing | idle) s=$st; act_tick=-100 ;;
+        *)
+          if ((tick - act_tick >= 20)); then
+            systemctl --user is-active -q voxtype.service && act=idle || act=off
+            act_tick=$tick
+          fi
+          s=$act ;;
+      esac
+    else
+      s=off
+    fi
+    _lang; l=$LANG_V
+    _model; m=$MODEL_V
+    # the backend cache: re-read when it appeared, vanished or is newer than the reference stamp of the last read
+    if [[ -e $BACKF ]]; then
+      if ((! have)) || [[ $BACKF -nt $ref ]]; then
+        : >"$ref"
+        have=1
+        BK_BACKEND="" BK_DEVICE=""
+        read_cache && BK_BACKEND=$C_BACKEND BK_DEVICE=$C_DEVICE
+      fi
+    elif ((have)); then
+      have=0 BK_BACKEND="" BK_DEVICE=""
+    fi
+    key="$s|$l|$m|$BK_BACKEND|$BK_DEVICE"
+    if [[ $key != "$last" ]]; then
+      last=$key
+      if ((! inst)); then
         echo '{"text":""}'
       else
         case $s in
@@ -334,10 +369,12 @@ cmd_follow() {
           transcribing) text="$G_BUSY ${l^^}"; cls=warning; head="Transcribing what you said" ;;
           *) text="$G_MIC ${l^^}"; cls=dim; head="Dictation is idle: SUPER+ALT+D or hold F9 to dictate" ;;
         esac
+        BK_BIN="" BK_REASON=""
         tip="$head"$'\n\n'"Language: ${l^^}"$'\n'"Model: $m"$'\n'"Backend: $(backend_label)"
         jq -cn --arg t "$text" --arg c "$cls" --arg tip "$tip"$'\n\n'"L: dictate · M: next language · R: menu" '{text: $t, class: $c, tooltip: $tip}'
       fi
     fi
+    ((tick++))
     read -r -t 0.5 -u "$TICKFD" _ || true
   done
 }
