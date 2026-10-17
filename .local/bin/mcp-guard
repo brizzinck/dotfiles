@@ -8,24 +8,47 @@
 #
 # Why: the popup of the owner-confirmed Telegram sending (tgconfirm) asks for a random two-key code. Any Wayland client can inject
 # keys, so an agent could in principle press that code itself; the popup window is hidden from screen capture and the code is
-# per message, and these rules stop the agents' own Bash tool from the obvious injectors and capture tools: wtype, wlrctl, ydotool,
-# dotool (virtual keyboard / pointer), hyprd, `hyprctl eval` and `hyprctl dispatch` (send_shortcut and any Lua dispatcher) and grim
-# (screenshots). Our own scripts keep calling them; only the agent's Bash tool is blocked. Claude Code only: Codex runs with its
-# sandbox and approvals bypassed and cannot be restricted, which is why telegram-send is never registered for Codex (mcp-add).
-# Rules are best effort (a determined agent can still wrap a command); see CLAUDE.md, "Telegram sending (M1-send)".
+# per message, and these rules stop the agents' own Bash tool from the obvious injectors, recorders and capture tools:
+#   * key / pointer injection: wtype, wlrctl, ydotool, dotool
+#   * compositor control: hyprd, `hyprctl eval|dispatch` (also with flags: -j, -r, --batch, -i/--instance, -q ...)
+#   * screen capture: grim, wf-recorder, wl-screenrec
+#   * the repo's own scripts that call those tools (capture, freeze shot, paste, emoji/snippet/vault typing, pointer, window menu,
+#     AI ask, 2fa-import), by `~/` path, expanded $HOME path and ~/dotfiles path
+# each also by absolute path (/usr/bin, /usr/local/bin, ~/.local/bin). Our own scripts keep calling the tools; only the agent's Bash
+# tool is blocked. Claude Code only: Codex runs with its sandbox and approvals bypassed and cannot be restricted, which is why
+# telegram-send is never registered for Codex (mcp-add).
+# This is BEST EFFORT, not a defence layer: Claude Code matches command prefixes, so a determined agent can still wrap a command
+# (bash -c, env, a script it writes, python with a Wayland library, a differently spelled flag). What actually protects a message
+# is the popup (per-message random code, the guard, the verified compositor socket, no_screen_share) and the owner reading the
+# recipient and the text; see CLAUDE.md, "Telegram sending (M1-send)".
 # Settings file: $MCP_GUARD_SETTINGS, else $CLAUDE_CONFIG_DIR/settings.json, else ~/.claude/settings.json.
 set -u
 
-RULES=(
-  'Bash(wtype:*)' 'Bash(wlrctl:*)' 'Bash(ydotool:*)' 'Bash(dotool:*)'
-  'Bash(hyprd:*)' 'Bash(hyprctl eval:*)' 'Bash(hyprctl dispatch:*)'
-  'Bash(grim:*)'
-)
+RULES=()
+add() { RULES+=("Bash($1:*)"); }
+# a command by bare name and by the usual absolute paths
+for t in wtype wlrctl ydotool dotool hyprd grim wf-recorder wl-screenrec; do
+  add "$t"
+  for dir in /usr/bin /usr/local/bin '~/.local/bin' "$HOME/.local/bin" '~/dotfiles/.local/bin' "$HOME/dotfiles/.local/bin"; do add "$dir/$t"; done
+done
+# hyprctl eval / dispatch, with and without its flags, bare and by path; flags that can precede the subcommand are denied whole
+for h in hyprctl /usr/bin/hyprctl; do
+  for flag in "" "-j " "-r " "-j -r " "-r -j " "-q " "--quiet " "-j -q "; do add "$h ${flag}eval"; add "$h ${flag}dispatch"; done
+  for flag in -i --instance -b --batch -c --config; do add "$h $flag"; done
+done
+# the repo's scripts that call grim / wtype / send_shortcut / wlrctl (every spelling of the path)
+for dir in '~/.config/hypr/scripts' "$HOME/.config/hypr/scripts" '~/dotfiles/.config/hypr/scripts' "$HOME/dotfiles/.config/hypr/scripts"; do
+  for script in capture freeze-shot paste-lib emoji snippets type-guard pointer vault window-menu ai-ask edit-anywhere; do add "$dir/$script.sh"; done
+  add "$dir/vault-browse.py"
+done
+for dir in '~/.local/bin' "$HOME/.local/bin" '~/dotfiles/.local/bin' "$HOME/dotfiles/.local/bin"; do add "$dir/2fa-import"; done
+add 2fa-import
 SETTINGS=${MCP_GUARD_SETTINGS:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json}
 DRY=0 MODE=add
 
 die() { echo "mcp-guard: $*" >&2; exit 1; }
-rules_json() { printf '%s\n' "${RULES[@]}" | jq -R . | jq -sc .; }
+rules_json() { printf '%s\n' "${RULES[@]}" | jq -R . | jq -sc 'unique'; }
+rules_count() { rules_json | jq 'length'; }
 
 for a in "$@"; do
   case $a in
@@ -49,7 +72,7 @@ RJ=$(rules_json)
 
 if [[ $MODE == check ]]; then
   missing=$(jq -r --argjson r "$RJ" '($r - (.permissions.deny // []))[]' <<<"$current")
-  if [[ -z $missing ]]; then echo "all ${#RULES[@]} deny rules are present in $SETTINGS"; exit 0; fi
+  if [[ -z $missing ]]; then echo "all $(rules_count) deny rules are present in $SETTINGS"; exit 0; fi
   echo "missing deny rules: $(paste -sd' ' <<<"$missing")"
   exit 1
 fi
@@ -66,7 +89,8 @@ jq -e 'type == "object"' <<<"$new" >/dev/null || die "the edited settings do not
 if [[ $(jq -S . <<<"$current") == "$(jq -S . <<<"$new")" ]]; then echo "already up to date ($SETTINGS)"; exit 0; fi
 
 echo "$([[ $MODE == add ]] && echo 'adding to' || echo 'removing from') permissions.deny in $SETTINGS:"
-printf '  %s\n' "${RULES[@]}"
+echo "  $(rules_count) rules: key/pointer injectors (wtype wlrctl ydotool dotool), hyprd, hyprctl eval/dispatch (with flags), grim, wf-recorder,"
+echo "  wl-screenrec and the repo's capture/paste/typing scripts, each by bare name and by path (best effort, see --help)"
 ((DRY)) && { echo "(dry run, nothing written)"; exit 0; }
 
 mkdir -p "$(dirname "$SETTINGS")"
