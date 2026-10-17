@@ -17,6 +17,12 @@
 #                               invoking user, su NAME -> NAME, polkit agent -> the owner). Typed only into terminals
 #                               and the polkit agent; any other window gets a 30 s clipboard copy instead. An unknown
 #                               user or a missing item opens an fzf-menu picker over the folder.
+#   vault.sh browse [--here] [FOLDER]
+#                               SUPER+CTRL+SHIFT+P: the vault browser (vault-browse.py). One modal list of every item (login,
+#                               card, identity, note, SSH key) over rbw, Tab cycles the folders and the Trash, the preview
+#                               masks every secret and ticks the TOTP code; letters / Alt keys copy, type, edit, create,
+#                               trash, restore, attach, send, sync and lock (keys: header of vault-browse.py). rbw lists,
+#                               previews, copies and types; bw (vault-bw.py) does Trash, attachments, edit, new, delete
 #   vault.sh lock               lock the vault now: rbw lock and the official CLI session (bw lock)
 #   vault.sh sync               rbw sync (asks for the master password when locked) and, when its session is open, bw sync
 #   vault.sh status             print locked|unlocked|unconfigured|missing, exit 0 only when unlocked
@@ -44,6 +50,7 @@ SELF="$HERE/vault.sh"
 TYPE_PREV=''   # the window the menu was opened over: the only one text is typed into (type-guard.sh)
 TOTP_PY="$HERE/vault-totp.py"
 BW_PY="$HERE/vault-bw.py"
+BROWSE_PY="$HERE/vault-browse.py"
 WHO_PY="$HERE/vault-who.py"
 LINUX_FOLDER=Linux
 RUN="${XDG_RUNTIME_DIR:-/tmp}/vault"
@@ -64,7 +71,7 @@ set -- "${args[@]+"${args[@]}"}"
 have() { command -v "$1" >/dev/null 2>&1; }
 note() { notify-send -a vault -u "${3:-low}" -t 4000 -h string:x-dunst-stack-tag:vault "$1" "${2:-}"; }
 poke_bar() { pkill -o -u "$UID" -RTMIN+15 -x waybar 2>/dev/null || true; }
-forget_index() { rm -f "$RUN/totp-index.tsv" "$RUN/totp-index.tmp"; }
+forget_index() { rm -f "$RUN/totp-index.tsv" "$RUN/totp-index.tmp" "$RUN/browse-index.json" "$RUN/browse-index.tmp"; }
 
 configured() { [[ -s $RBW_CONF ]] && jq -e '.email != null' "$RBW_CONF" >/dev/null 2>&1; }
 
@@ -295,6 +302,14 @@ totp_menu() {
   return 0
 }
 
+# the vault browser: all the logic is in vault-browse.py (this only checks that rbw is ready)
+browse() {
+  if ((DRY)); then echo "python3 vault-browse.py $*   # fzf-menu list over rbw (bw for Trash, files, edit)"; return 0; fi
+  need_ready || return 1
+  have fzf-menu || { note "Vault" "fzf-menu is not installed" critical; return 1; }
+  python3 -I "$BROWSE_PY" "$@"
+}
+
 lock() {
   local did=0
   if ((DRY)); then echo "rbw lock; python3 vault-bw.py lock   # both, when installed"; return 0; fi
@@ -419,6 +434,7 @@ case ${1:-passwords} in
   pw-preview) pw_preview "${2:?id}" ;;
   totp) totp_menu ;;
   totp-tui) totp_menu --here ;;
+  browse) shift; browse "$@" ;;
   user-pass) user_pass ;;
   lock) lock ;;
   sync) sync_vault ;;
@@ -430,5 +446,5 @@ case ${1:-passwords} in
   app) app ;;
   web) web ;;
   ssh-agent) shift; ssh_agent "$@" ;;
-  *) echo "usage: vault.sh passwords|pw-preview ID|totp|totp-tui|user-pass|lock|sync|status|waybar|session-start|arm-clear|bw CMD|app|web|ssh-agent on|off|toggle|status [--dry-run]" >&2; exit 2 ;;
+  *) echo "usage: vault.sh passwords|pw-preview ID|totp|totp-tui|browse [--here] [FOLDER]|user-pass|lock|sync|status|waybar|session-start|arm-clear|bw CMD|app|web|ssh-agent on|off|toggle|status [--dry-run]" >&2; exit 2 ;;
 esac

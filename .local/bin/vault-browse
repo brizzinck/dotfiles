@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# vault-browse: the Bitwarden vault browser (SUPER+CTRL+SHIFT+P). `vault-browse` opens the float.tui menu,
+# `vault-browse --here` runs it in this terminal, `vault-browse Linux` starts in that folder. See vault-browse.py --help.
+exec "${XDG_CONFIG_HOME:-$HOME/.config}/hypr/scripts/vault.sh" browse "$@"

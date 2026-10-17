@@ -25,7 +25,9 @@ Secrets: the master password only travels pinentry -> this process -> the enviro
 and reaches `bw` as BW_SESSION in that child's environment. Item JSON (with the new password) and the Send password
 go to bw on stdin, never argv. Generated and old passwords are copied with `wl-copy --sensitive` and cleared in 30 s.
 A Send link is meant to be shared, so it is copied plainly.
-Test hooks: BW_BIN, RBW_BIN, PINENTRY_BIN, BW_DOWNLOAD_DIR, EDITOR.
+Test hooks: BW_BIN, RBW_BIN, PINENTRY_BIN, VAULT_RBW_CONF, BW_DOWNLOAD_DIR, EDITOR.
+vault-browse.py (the vault browser, SUPER+CTRL+SHIFT+P) imports this file for the bw session, the pickers and the
+actions above; run directly it is the command line behind the u6 hub rows.
 """
 import base64
 import getpass
@@ -46,7 +48,7 @@ TOTP_PY = HERE / "vault-totp.py"
 RUN = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp") / "vault"
 SESSION = RUN / "bw-session"
 CONF_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-RBW_CONF = CONF_HOME / "rbw" / "config.json"
+RBW_CONF = Path(os.environ.get("VAULT_RBW_CONF") or CONF_HOME / "rbw" / "config.json")
 DOWNLOADS = Path(os.environ.get("BW_DOWNLOAD_DIR") or Path.home() / "Downloads")
 os.umask(0o077)
 
@@ -411,9 +413,32 @@ def cmd_generate():
     finish("Generated and copied", "sensitive clipboard, cleared in 30 s")
 
 
+# ───────────────────────────── folders ─────────────────────────────
+
+def folder_map():
+    """{folder id: name} from `bw list folders`."""
+    return {f["id"]: f.get("name") or "" for f in bw_json("list", "folders") if f.get("id")}
+
+
+def folder_id(name, create=True):
+    """The id of the folder called NAME (None for an empty name); a missing folder is created when asked to."""
+    if not name:
+        return None
+    for fid, fname in folder_map().items():
+        if fname == name:
+            return fid
+    if not create:
+        return None
+    p = bw("create", "folder", stdin=b64({"name": name}))
+    try:
+        return json.loads(p.stdout)["id"]
+    except (ValueError, KeyError, TypeError):
+        die(f"could not create the folder {name}: {first_line(p.stderr or p.stdout)}")
+
+
 # ───────────────────────────── new login ─────────────────────────────
 
-def cmd_new_login():
+def cmd_new_login(folder=None):
     ensure()
     name = ask("Name")
     if not name:
@@ -436,7 +461,7 @@ def cmd_new_login():
     login = bw_json("get", "template", "item.login")
     login.update(username=username or None, password=pw, totp=None,
                  uris=[{"match": None, "uri": uri}] if uri else [])
-    item.update(type=1, name=name, notes=None, favorite=False, folderId=None, fields=[],
+    item.update(type=1, name=name, notes=None, favorite=False, folderId=folder_id(folder), fields=[],
                 login=login, secureNote=None, card=None, identity=None)
     p = bw("create", "item", stdin=b64(item))
     item = login = None
