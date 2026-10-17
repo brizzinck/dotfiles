@@ -180,6 +180,30 @@ check "clean: MCP_CHROME_HEADED=1 drops --headless" bash -c '! MCP_CHROME_HEADED
 check "clean: without Chromium a stub explains how to install it" bash -c 'out=$(MCP_CHROME_DEVTOOLS_BIN="$2" MCP_STUB_PYTHON="$3" MCP_CHROMIUM=/nonexistent "$1" clean); grep -q "^stub" <<<"$out" && grep -q "apply-system.sh --only mcp" <<<"$out"' _ "$CH" "$SCRATCH/fake-cdt" "$SCRATCH/fake-py"
 check "mine: OFF by default -> stub, no autoConnect" bash -c 'out=$(MCP_STATE_DIR="$5" MCP_CHROME_DEVTOOLS_BIN="$2" MCP_STUB_PYTHON="$3" "$1" mine); grep -q "^stub" <<<"$out" && ! grep -q autoConnect <<<"$out"' _ "$CH" "$SCRATCH/fake-cdt" "$SCRATCH/fake-py" x "$SCRATCH/state"
 check "mine: ON -> --autoConnect with the owner's Chrome profile" bash -c 'mkdir -p "$5"; touch "$5/chrome-mine.enabled"; out=$(MCP_STATE_DIR="$5" MCP_CHROME_DEVTOOLS_BIN="$2" MCP_STUB_PYTHON="$3" "$1" mine); grep -q -- "--autoConnect" <<<"$out" && grep -q "com.google.Chrome" <<<"$out"; rc=$?; rm -f "$5/chrome-mine.enabled"; exit $rc' _ "$CH" "$SCRATCH/fake-cdt" "$SCRATCH/fake-py" x "$SCRATCH/state"
+# the placeholder server is standard library only (no FastMCP import, ~9 MB instead of ~45 MB): it must still speak MCP like the FastMCP one did
+check "stub server: initialize / tools/list / tools/call status / unknown tool / unknown method over stdio, standard library only" python3 -I - "$REPO/.config/mcp/stub-server.py" <<'PYEOF'
+import json, subprocess, sys
+p = subprocess.Popen(["python3", "-I", "-S", sys.argv[1], "chrome-devtools-mine", "switched off"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+def ask(i, method, params=None):
+    m = {"jsonrpc": "2.0", "id": i, "method": method}
+    if params is not None:
+        m["params"] = params
+    p.stdin.write(json.dumps(m) + "\n"); p.stdin.flush()
+    return json.loads(p.stdout.readline())
+r = ask(1, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}})["result"]
+assert r["protocolVersion"] == "2025-06-18" and r["serverInfo"]["name"] == "chrome-devtools-mine" and "tools" in r["capabilities"]
+assert ask(2, "initialize", {"protocolVersion": "1999-01-01"})["result"]["protocolVersion"] == "2025-11-25"
+p.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n'); p.stdin.flush()     # a notification gets no answer
+t = ask(3, "tools/list")["result"]["tools"]
+assert [x["name"] for x in t] == ["status"] and t[0]["annotations"]["readOnlyHint"] is True and t[0]["inputSchema"]["type"] == "object"
+c = ask(4, "tools/call", {"name": "status", "arguments": {}})["result"]
+assert c["isError"] is False and c["content"][0]["text"] == "switched off" and c["structuredContent"] == {"result": "switched off"}
+assert ask(5, "tools/call", {"name": "nope", "arguments": {}})["result"]["isError"] is True
+assert ask(6, "foo/bar")["error"]["code"] == -32601
+assert ask(7, "prompts/list")["result"] == {"prompts": []} and ask(8, "resources/list")["result"] == {"resources": []}
+assert ask(9, "ping")["result"] == {}
+p.stdin.close(); assert p.wait(timeout=5) == 0
+PYEOF
 MC="$REPO/.local/bin/mcp-chrome"
 check "mcp-chrome status is OFF (exit 1) by default" bash -c '! "$1" mine status' _ "$MC"
 check "mcp-chrome mine on sets the flag" bash -c '"$1" mine on --ttl 5 >/dev/null && [ -e "$2/chrome-mine.enabled" ] && "$1" mine status >/dev/null' _ "$MC" "$MCP_STATE_DIR"

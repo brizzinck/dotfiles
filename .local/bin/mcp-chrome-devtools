@@ -12,12 +12,12 @@ MCP_HOME=${MCP_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/mcp}
 STATE_DIR=${MCP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/mcp}
 CONFIG_DIR=${MCP_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/mcp}
 BIN=${MCP_CHROME_DEVTOOLS_BIN:-$MCP_HOME/node/node_modules/.bin/chrome-devtools-mcp}
-PY=${MCP_STUB_PYTHON:-$MCP_HOME/venv/bin/python}
+PY=${MCP_STUB_PYTHON:-python3}   # the stub is standard library only: the system python, not the FastMCP venv (45 MB vs 9 MB)
 CHROMIUM=${MCP_CHROMIUM:-/usr/bin/chromium}
 MINE_PROFILE=${MCP_CHROME_PROFILE:-$HOME/.var/app/com.google.Chrome/config/google-chrome}
 COMMON=(--no-usage-statistics --no-performance-crux)
 
-stub() { exec "$PY" "$CONFIG_DIR/stub-server.py" "$1" "$2"; }
+stub() { exec "$PY" -I -S "$CONFIG_DIR/stub-server.py" "$1" "$2"; }
 [[ -x $BIN ]] || stub "chrome-devtools" "chrome-devtools-mcp is not installed. Run: mcp-install"
 
 case ${1:-} in

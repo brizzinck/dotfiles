@@ -11,7 +11,7 @@
       "authTokens": ["${MCP_GATEWAY_TOKEN}"],
       "autoReconnect": true,
       "reconnectInterval": "15s",
-      "pingInterval": "30s"
+      "pingInterval": "120s"
     }
   },
   "mcpServers": {
