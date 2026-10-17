@@ -32,6 +32,27 @@ X
 cat >"$T/bin/notify-send" <<'X'
 #!/bin/sh
 echo "notify $*" >>"$FAKE_LOG"
+case "$*" in *" -A "*) [ -n "${FAKE_ACTION:-}" ] && echo "$FAKE_ACTION" ;; esac
+exit 0
+X
+cat >"$T/bin/satty" <<'X'
+#!/bin/sh
+echo "satty $*" >>"$FAKE_LOG"
+X
+cat >"$T/bin/mpv" <<'X'
+#!/bin/sh
+echo "mpv $*" >>"$FAKE_LOG"
+X
+cat >"$T/bin/ghostty" <<'X'
+#!/bin/sh
+echo "ghostty $*" >>"$FAKE_LOG"
+X
+cat >"$T/bin/hyprshot" <<'X'
+#!/bin/sh
+echo "hyprshot $*" >>"$FAKE_LOG"
+out=""; name=""
+while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift ;; -f) name=$2; shift ;; esac; shift; done
+[ -n "$out" ] && [ -n "$name" ] && printf 'png' >"$out/$name"
 X
 cat >"$T/bin/playerctl" <<'X'
 #!/bin/sh
@@ -158,6 +179,41 @@ rm -rf "$HUBDIR"
 expect "hub json: installable row is listed with its package" bash -c "jq -e 'any(.[]; .id == \"r1\" and .available == false and .install == \"fake-pkg\")' <<<'$json'"
 expect "hub json: a missing tool without a hint is hidden" bash -c "jq -e 'all(.[]; .id != \"r2\")' <<<'$json'"
 expect "hub json: an available row" bash -c "jq -e 'any(.[]; .id == \"r3\" and .available == true)' <<<'$json'"
+
+# ── D3 capture endings ──
+export HOME="$T/home"
+mkdir -p "$HOME/pics/screenshots"
+reset; "$SC/shot.sh" region
+expect "shot.sh silences hyprshot and names the file" grep -q 'hyprshot -m region -o .*pics/screenshots -f .*_hyprshot.png --silent' "$T/log"
+f=$(ls "$HOME/pics/screenshots"/*_hyprshot.png | head -1)
+reset; FAKE_ACTION=default bash -c ". '$SC/capture-lib.sh'; SHOTS='$HOME/pics/screenshots'; cap_shot_worker '$f'"
+expect "screenshot toast: default action opens satty on the file" grep -q "satty -f $f" "$T/log"
+reset; FAKE_ACTION=folder bash -c ". '$SC/capture-lib.sh'; cap_shot_worker '$f'"
+expect "screenshot toast: folder action opens yazi" grep -q "ghostty --class=float.tui -e yazi $f" "$T/log"
+reset; FAKE_ACTION="" bash -c ". '$SC/capture-lib.sh'; cap_shot_worker '$f'"
+expect "screenshot toast: no click does nothing" bash -c "! grep -q -e '^satty' -e '^ghostty' '$T/log'"
+reset; "$SC/freeze-shot.sh" save --dry-run >/dev/null
+expect "freeze-shot has an image mode for OCR and QR" bash -c "'$SC/freeze-shot.sh' image /tmp/x.png --dry-run | grep -q 'grim -g .* /tmp/x.png'"
+expect "OCR region selects on the frozen screen" bash -c "grep -q 'freeze-shot.sh\" image' '$SC/capture.sh'"
+
+if command -v ffmpeg >/dev/null 2>&1; then
+  v="$T/media/rec.mp4"
+  ffmpeg -loglevel error -y -f lavfi -i testsrc=size=640x360:rate=30:duration=3 -f lavfi -i "sine=frequency=440:duration=3" \
+    -f lavfi -i "sine=frequency=220:duration=3" -map 0:v -map 1:a -map 2:a -c:v libx264 -c:a aac "$v"
+  before=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$v")
+  bash -c ". '$SC/capture-lib.sh'; cap_process_recording '$v'"
+  after=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$v")
+  expect "processing trims the start (shorter than the raw file)" awk -v a="$after" -v b="$before" 'BEGIN { exit !(a < b) }'
+  expect "processing keeps both audio tracks at 48 kHz" bash -c "[ \"\$(ffprobe -v error -select_streams a -show_entries stream=sample_rate -of csv=p=0 '$v' | tr '\n' ' ')\" = '48000 48000 ' ]"
+  expect "processing leaves no temp file" bash -c "! ls '$T'/media/*.processing.mp4"
+  printf 'not a video' >"$T/media/bad.mp4"
+  expect "a broken file stays as it is (raw kept)" bash -c ". '$SC/capture-lib.sh'; ! cap_process_recording '$T/media/bad.mp4'; [ \"\$(cat '$T/media/bad.mp4')\" = 'not a video' ]"
+  reset; FAKE_ACTION=default bash -c ". '$SC/capture-lib.sh'; cap_recording_worker '$v'"
+  expect "recording toast: thumbnail, play action starts mpv" bash -c "grep -q 'notify .* -i .*capture-thumbs/rec.png' '$T/log' && grep -q \"mpv $v\" '$T/log' || { sleep 0.5; grep -q \"mpv $v\" '$T/log'; }"
+  expect "recording toast: the thumbnail exists" test -s "$T/run/capture-thumbs/rec.png"
+else
+  echo "ffmpeg missing: recording tests skipped"
+fi
 
 echo "o1 tests: $fails failure(s)"
 exit $((fails > 0))

@@ -14,9 +14,9 @@ lock	Session	Lock screen (password)	SUPER+Escape	run	lock-screen	-	hyprlock lock
 powermenu	Session	Power menu	SUPER+SHIFT+Escape	run	~/.config/hypr/scripts/powermenu.sh	-	fzf-menu	Lock, suspend, logout, reboot, poweroff.	p m;Power menu
 screensaver	Session	Screensaver test (clock, any input dismisses)	-	run	~/.config/hypr/scripts/screensaver.sh start	-	hyprlock	-	p s;Screensaver
 wallpaper	Session	Reload wallpaper	SUPER+O	run	pgrep swaybg && killall swaybg; swaybg -i ~/pics/walls/lol.jpg	-	swaybg	-
-shot-region	Capture	Screenshot: region	Print	run	hyprshot -m region -o ~/pics/screenshots	-	hyprshot	Saved to ~/pics/screenshots and copied.	c r;Region
-shot-monitor	Capture	Screenshot: active monitor	SHIFT+Print	run	hyprshot -m output -m active -o ~/pics/screenshots	-	hyprshot	-	c o;Output
-shot-window	Capture	Screenshot: active window	SUPER+Print	run	hyprshot -m window -m active -o ~/pics/screenshots	-	hyprshot	Targets the window that was focused before the hub opened.	c w;Window
+shot-region	Capture	Screenshot: region	Print	run	~/.config/hypr/scripts/shot.sh region	-	hyprshot ~/.config/hypr/scripts/shot.sh	Saved to ~/pics/screenshots and copied; the toast opens satty on a click.	c r;Region
+shot-monitor	Capture	Screenshot: active monitor	SHIFT+Print	run	~/.config/hypr/scripts/shot.sh monitor	-	hyprshot ~/.config/hypr/scripts/shot.sh	Saved and copied; the toast opens satty on a click.	c o;Output
+shot-window	Capture	Screenshot: active window	SUPER+Print	run	~/.config/hypr/scripts/shot.sh window	-	hyprshot ~/.config/hypr/scripts/shot.sh	Targets the window that was focused before the hub opened.	c w;Window
 shot-annotate	Capture	Screenshot: region, then annotate (satty)	SUPER+SHIFT+S	run	grim -g "$(slurp)" - | satty -f - --copy-command wl-copy --output-filename ~/pics/screenshots/%F_%T.png	-	grim slurp satty	-	c a;Annotate
 shot-frozen	Capture	Screenshot: frozen screen, region	CTRL+ALT+S	run	~/.config/hypr/scripts/freeze-shot.sh save	-	hyprpicker grim slurp	The screen freezes at the key press; select the region on the frozen image (Esc cancels and unfreezes). Saved to ~/pics/screenshots and copied.	c z;Frozen region
 shot-frozen-annotate	Capture	Screenshot: frozen screen, region, then annotate (satty)	CTRL+SHIFT+ALT+S	run	~/.config/hypr/scripts/freeze-shot.sh annotate	-	hyprpicker grim slurp satty	-	c x;Frozen annotate

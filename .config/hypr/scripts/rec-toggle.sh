@@ -9,7 +9,9 @@
 #                      track 1 = default output (system sound), track 2 = default input (mic)
 #   --dry-run          print the gpu-screen-recorder command line instead of recording (also for stop)
 # A running recording is stopped by any invocation except --dry-run.
-# Output: ~/Videos/screencaptures/<date>.mp4. Waybar can test for a recording with
+# Output: ~/Videos/screencaptures/<date>.mp4. When it stops, the first 0.1 s are dropped (encoder first frame, PipeWire pop),
+# every audio track is loudness-normalised (loudnorm -14 LUFS, 48 kHz) and a toast with a thumbnail offers play / folder
+# (capture-lib.sh; the raw file stays when ffmpeg fails). Waybar can test for a recording with
 # `pgrep -x gpu-screen-reco` (the kernel truncates the process name to 15 chars);
 # the recording flavour (mic or not) is left in $XDG_RUNTIME_DIR/rec-mic and the pid plus start time in
 # $XDG_RUNTIME_DIR/rec-pid for the waybar module.
@@ -19,6 +21,10 @@ proc=gpu-screen-reco
 outdir="$HOME/Videos/screencaptures"
 micflag="${XDG_RUNTIME_DIR:-/tmp}/rec-mic"
 pidfile="${XDG_RUNTIME_DIR:-/tmp}/rec-pid"   # "<pid> <start epoch>", read by the waybar recording module (elapsed time)
+filefile="${XDG_RUNTIME_DIR:-/tmp}/rec-file" # the output path of the running recording (the stop path post-processes it)
+HERE=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+# shellcheck source=capture-lib.sh
+. "$HERE/capture-lib.sh"
 
 mode=monitor
 addr=""
@@ -50,7 +56,14 @@ if ((!dry)) && pgrep -x "$proc" >/dev/null; then
     sleep 0.1
   done
   rm -f "$micflag" "$pidfile"
-  notify-send -a recorder -t 2500 "Recording saved" "$outdir"
+  lastfile=$(cat "$filefile" 2>/dev/null || true)
+  rm -f "$filefile"
+  if [[ -n $lastfile && -s $lastfile ]]; then
+    notify-send -a recorder -t 4000 -h string:x-dunst-stack-tag:recording-saved "Recording stopped" "$(basename "$lastfile"): trimming and normalising the sound ..."
+    cap_finish_recording "$lastfile"
+  else
+    notify-send -a recorder -t 2500 "Recording saved" "$outdir"
+  fi
   exit 0
 fi
 
@@ -93,6 +106,7 @@ if ((dry)); then
   exit 0
 fi
 
+printf '%s\n' "$out" >"$filefile"
 if ((mic)); then : >"$micflag"; else rm -f "$micflag"; fi
 gpu-screen-recorder "${args[@]}" -f 60 "${audio[@]}" -o "$out" &
 printf '%s %s\n' "$!" "$(date +%s)" >"$pidfile"

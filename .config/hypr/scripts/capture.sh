@@ -10,7 +10,8 @@
 #
 # Missing tools are never a crash: the entry shows "(not installed)" and a critical notification says what to
 # install (the root script apply-system.sh installs tesseract, zbar, qrencode, gifski and wayscrollshot-bin).
-# Screenshots land in ~/pics/screenshots (and the clipboard), recordings in ~/Videos/screencaptures.
+# Screenshots land in ~/pics/screenshots (and the clipboard), recordings in ~/Videos/screencaptures. Screenshot toasts
+# open satty on a click; OCR and QR scan select on the frozen screen (freeze-shot.sh image).
 set -u
 
 SCRIPTS=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
@@ -111,9 +112,9 @@ region_geo() {
 
 # ───────────────────────────── OCR ─────────────────────────────
 
-do_ocr() { # GEO
-  local geo=$1 img langs text
-  img="$RT/capture-ocr-$$.png"
+do_ocr() { # GEO [IMAGE]: IMAGE (a frozen-screen cut from freeze-shot.sh) replaces the grim capture of GEO
+  local geo=$1 img=${2:-} langs text
+  [[ -n $img ]] || img="$RT/capture-ocr-$$.png"
   langs=rus+eng
   if ((DRY)); then
     echo "grim -g \"$geo\" $img"
@@ -126,7 +127,7 @@ do_ocr() { # GEO
     langs=eng
     note "OCR" "Russian data (tesseract-data-rus) is missing, using English only"
   fi
-  grim -g "$geo" "$img" || { note "OCR failed" "could not capture the screen"; return 1; }
+  [[ -s $img ]] || grim -g "$geo" "$img" || { note "OCR failed" "could not capture the screen"; return 1; }
   text=$(tesseract "$img" - -l "$langs" --psm 6 2>/dev/null | sed -e 's/[[:space:]]*$//')
   rm -f "$img"
   if [[ -z ${text//[[:space:]]/} ]]; then
@@ -138,9 +139,15 @@ do_ocr() { # GEO
 }
 
 cmd_ocr() { # [window [ADDR]]
-  local geo
+  local geo img
   if [[ ${1:-} == window ]]; then
     geo=$(window_geo "${2:-}") || { note "OCR" "no such window"; return 1; }
+  elif command -v hyprpicker >/dev/null 2>&1 && ((!DRY)); then
+    # the region is picked on the frozen screen and read from the frozen pixels (moving text stays readable)
+    img="$RT/capture-ocr-$$.png"
+    "$SCRIPTS/freeze-shot.sh" image "$img" || { rm -f "$img"; return 0; }
+    do_ocr "" "$img"
+    return
   else
     geo=$(region_geo) || return 0
     [[ -n $geo ]] || return 0
@@ -160,8 +167,12 @@ do_qr_scan() {
     return 0
   fi
   need grim zbarimg wl-copy || return 1
-  geo=$(slurp) || return 0
-  grim -g "$geo" "$img" || { note "QR" "could not capture the screen"; return 1; }
+  if command -v hyprpicker >/dev/null 2>&1; then
+    "$SCRIPTS/freeze-shot.sh" image "$img" || { rm -f "$img"; return 0; }
+  else
+    geo=$(slurp) || return 0
+    grim -g "$geo" "$img" || { note "QR" "could not capture the screen"; return 1; }
+  fi
   out=$(zbarimg -q --raw -Sdisable -Sqrcode.enable "$img" 2>/dev/null)
   rm -f "$img"
   if [[ -z $out ]]; then
@@ -271,9 +282,9 @@ run_action() { # ID [ADDRESS]
   mkdir -p "$SHOTS"
   # shellcheck disable=SC2086 # $addr is empty or one word
   case $id in
-    shot-region) x hyprshot -m region -o "$SHOTS" ;;
-    shot-window) x hyprshot -m window -m active -o "$SHOTS" ;;
-    shot-monitor) x hyprshot -m output -m active -o "$SHOTS" ;;
+    shot-region) x "$SCRIPTS/shot.sh" region ;;
+    shot-window) x "$SCRIPTS/shot.sh" window ;;
+    shot-monitor) x "$SCRIPTS/shot.sh" monitor ;;
     annotate)
       # shellcheck disable=SC2016
       if ((DRY)); then echo 'grim -g "$(slurp)" - | satty -f - --copy-command wl-copy --output-filename ~/pics/screenshots/%F_%T.png'; else

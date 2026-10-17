@@ -4,6 +4,8 @@
 #
 #   freeze-shot.sh save        region -> ~/pics/screenshots + clipboard   (CTRL+ALT+S)
 #   freeze-shot.sh annotate    region -> satty (copy to clipboard, save)  (CTRL+ALT+SHIFT+S)
+#   freeze-shot.sh image FILE  region -> FILE (png) and nothing else; exit 1 when cancelled (OCR and QR scan use it, so the
+#                              region is picked on the frozen screen and read from the same frozen pixels)
 #   --dry-run                  print the commands, freeze nothing
 #
 # Why not `hyprshot -z`: it kills hyprpicker the moment slurp exits and grims afterwards, so the saved pixels come from
@@ -13,16 +15,23 @@
 set -u
 
 SHOTS="$HOME/pics/screenshots"
+HERE=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+# shellcheck source=capture-lib.sh
+. "$HERE/capture-lib.sh"
 RT="${XDG_RUNTIME_DIR:-/tmp}"
 DRY=0
 mode=
-for a in "$@"; do
-  case $a in
+imgfile=
+while (($#)); do
+  case $1 in
     --dry-run) DRY=1 ;;
-    save | annotate) mode=$a ;;
+    save | annotate) mode=$1 ;;
+    image) mode=image; shift; imgfile=${1:-} ;;
   esac
+  shift
 done
-[[ -n $mode ]] || { echo "usage: freeze-shot.sh save|annotate [--dry-run]" >&2; exit 2; }
+[[ -n $mode ]] || { echo "usage: freeze-shot.sh save|annotate|image FILE [--dry-run]" >&2; exit 2; }
+[[ $mode != image || -n $imgfile ]] || { echo "freeze-shot.sh image needs a file" >&2; exit 2; }
 
 SATTY=(satty --copy-command wl-copy --output-filename "$SHOTS/%F_%T.png")
 
@@ -30,7 +39,9 @@ if ((DRY)); then
   echo "hyprpicker -r -z &    # freeze now"
   echo "geo=\$(slurp -d)      # Esc = cancel, the trap kills hyprpicker"
   if [[ $mode == save ]]; then
-    echo "grim -g \"\$geo\" $SHOTS/<date>_hyprshot.png && wl-copy --type image/png < <file>"
+    echo "grim -g \"\$geo\" $SHOTS/<date>_hyprshot.png && wl-copy --type image/png < <file>   # then the toast: click = edit in satty"
+  elif [[ $mode == image ]]; then
+    echo "grim -g \"\$geo\" $imgfile; kill hyprpicker"
   else
     echo "grim -g \"\$geo\" <tmp.png>; kill hyprpicker; ${SATTY[*]} -f <tmp.png>"
   fi
@@ -40,7 +51,7 @@ fi
 for c in hyprpicker slurp grim wl-copy; do
   command -v "$c" >/dev/null 2>&1 || { notify-send -a capture -u critical "Frozen screenshot: $c is missing" "install $c"; exit 1; }
 done
-[[ $mode == save ]] || command -v satty >/dev/null 2>&1 || { notify-send -a capture -u critical "Frozen screenshot: satty is missing" "install satty"; exit 1; }
+[[ $mode != annotate ]] || command -v satty >/dev/null 2>&1 || { notify-send -a capture -u critical "Frozen screenshot: satty is missing" "install satty"; exit 1; }
 
 # one instance: a second press cancels the running selection instead of stacking a second freeze
 exec 9>"$RT/freeze-shot.lock"
@@ -62,6 +73,9 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP
 
+# a cancelled selection: nothing happens (exit 0), except in `image` mode where the caller must know (exit 1)
+cancel() { [[ $mode == image ]] && exit 1; exit 0; }
+
 mkdir -p "$SHOTS"
 hyprpicker -r -z >/dev/null 2>&1 9>&- &
 HP=$!
@@ -82,20 +96,23 @@ for attempt in 1 2; do
   t0=$EPOCHREALTIME
   geo=$(slurp -d) && break
   geo=
-  ((attempt == 1)) || exit 0
+  ((attempt == 1)) || cancel
   # elapsed in ms (EPOCHREALTIME is s.us; drop the dot -> us)
   el=$(((${EPOCHREALTIME/./} - ${t0/./}) / 1000))
-  ((el < 150)) || exit 0
+  ((el < 150)) || cancel
   sleep 0.2
 done
-[[ -n $geo ]] || exit 0
+[[ -n $geo ]] || cancel
 
 if [[ $mode == save ]]; then
   file="$SHOTS/$(date +'%Y-%m-%d-%H%M%S_hyprshot.png')"
   grim -g "$geo" "$file" || { notify-send -a capture -u critical "Frozen screenshot failed" "grim could not capture"; exit 1; }
   cleanup
   wl-copy --type image/png <"$file"
-  notify-send -a Hyprshot -i "$file" "Screenshot saved" "Image saved in <i>$file</i> and copied to the clipboard."
+  cap_toast_shot "$file"
+elif [[ $mode == image ]]; then
+  grim -g "$geo" "$imgfile" || exit 1
+  cleanup
 else
   tmp=$(mktemp "$RT/freeze-shot-XXXXXX.png")
   grim -g "$geo" "$tmp" || { notify-send -a capture -u critical "Frozen screenshot failed" "grim could not capture"; exit 1; }

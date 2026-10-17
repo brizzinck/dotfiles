@@ -496,13 +496,13 @@ hl.bind(mainMod .. " + M", hl.dsp.exec_cmd("~/.config/hub/hub open"), { descript
 hl.bind(mainMod .. " + semicolon", hl.dsp.exec_cmd("~/.config/hub/leader"), { description = "Leader menu (which-key)" })
 
 -- --- capture ---
-hl.bind("Print", hl.dsp.exec_cmd("hyprshot -m region -o ~/pics/screenshots"), { description = "Screenshot region" })
-hl.bind("SHIFT + Print", hl.dsp.exec_cmd("hyprshot -m output -m active -o ~/pics/screenshots"), { description = "Screenshot active monitor" })
-hl.bind(mainMod .. " + Print", hl.dsp.exec_cmd("hyprshot -m window -m active -o ~/pics/screenshots"), { description = "Screenshot active window" })
+hl.bind("Print", hl.dsp.exec_cmd(scripts .. "/shot.sh region"), { description = "Screenshot region" })
+hl.bind("SHIFT + Print", hl.dsp.exec_cmd(scripts .. "/shot.sh monitor"), { description = "Screenshot active monitor" })
+hl.bind(mainMod .. " + Print", hl.dsp.exec_cmd(scripts .. "/shot.sh window"), { description = "Screenshot active window" })
 hl.bind(mainMod .. " + CTRL + S", hl.dsp.exec_cmd(scripts .. "/capture.sh"), { description = "Capture menu (screenshot - OCR - QR - record - GIF)" })
 hl.bind(mainMod .. " + SHIFT + O", hl.dsp.exec_cmd(scripts .. "/capture.sh ocr"), { description = "OCR region to clipboard (rus+eng)" })
 hl.bind(mainMod .. " + SHIFT + S", hl.dsp.exec_cmd("grim -g \"$(slurp)\" - | satty -f - --copy-command wl-copy --output-filename ~/pics/screenshots/%F_%T.png"), { description = "Screenshot region then annotate" })
-hl.bind("ALT + S", hl.dsp.exec_cmd("hyprshot -m region -o ~/pics/screenshots"), { description = "Screenshot region (clipboard + file)" })
+hl.bind("ALT + S", hl.dsp.exec_cmd(scripts .. "/shot.sh region"), { description = "Screenshot region (clipboard + file)" })
 hl.bind("SHIFT + ALT + S", hl.dsp.exec_cmd("grim -g \"$(slurp)\" - | satty -f - --copy-command wl-copy --output-filename ~/pics/screenshots/%F_%T.png"), { description = "Screenshot region then annotate (satty)" })
 hl.bind(mainMod .. " + R", hl.dsp.exec_cmd(scripts .. "/rec-toggle.sh"), { description = "Record screen (toggle)" })
 hl.bind(mainMod .. " + SHIFT + R", hl.dsp.exec_cmd(scripts .. "/rec-toggle.sh region"), { description = "Record region (toggle)" })
