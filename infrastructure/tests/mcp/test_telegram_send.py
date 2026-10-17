@@ -23,6 +23,10 @@ def check(name, cond):
 
 
 TMP = tempfile.mkdtemp(prefix="tgsend-test.")
+os.makedirs(f"{TMP}/bin")
+with open(f"{TMP}/bin/notify-send", "w") as f:       # the fake notification daemon client: nothing reaches the real desktop
+    f.write(f'#!/bin/sh\necho "$@" >>{TMP}/notify.log\n')
+os.chmod(f"{TMP}/bin/notify-send", 0o755)
 SOCK = f"{TMP}/req.sock"
 seen = []
 answer = {}
@@ -41,7 +45,7 @@ async def handle(reader, writer):
 
 @contextlib.asynccontextmanager
 async def session(sock=SOCK, **extra):
-    env = {"PATH": os.environ["PATH"], "TGSEND_SOCK": sock, **extra}
+    env = {"PATH": f"{TMP}/bin:" + os.environ["PATH"], "TGSEND_SOCK": sock, **extra}
     params = StdioServerParameters(command=sys.executable, args=[server], env=env)
     async with stdio_client(params) as (r, w):
         async with ClientSession(r, w) as s:
@@ -67,6 +71,8 @@ async def main():
         answer["resp"] = {"ok": True, "status": "sent", "message_id": 4242, "name": "Work chat", "chat_id": -1001}
         err, text = await call(s, "send_message", {"chat": "Work chat", "text": "hi\nthere"})
         check("sent: the agent sees the id and the recipient", not err and "sent (id 4242)" in text and "Work chat" in text)
+        log = open(f"{TMP}/notify.log").read() if os.path.exists(f"{TMP}/notify.log") else ""
+        check("sent: the owner gets a 'Sent to NAME' notification from the app telegram-send", "-a telegram-send" in log and "Sent to Work chat" in log)
         check("the request on the socket is op send with account main and exactly the given fields",
               seen[-1] == {"op": "send", "account": "main", "chat": "Work chat", "text": "hi\nthere", "reply_to": None})
         err, text = await call(s, "send_message", {"chat": -1001, "text": "x", "reply_to": 7, "account": "work"})
@@ -86,6 +92,8 @@ async def main():
         answer["resp"] = {"ok": False, "status": "sent-ish"}
         err, text = await call(s, "send_message", {"chat": "x", "text": "y"})
         check("an unknown status is never reported as sent", text.startswith("rejected") and "sent (id" not in text)
+        log = open(f"{TMP}/notify.log").read()
+        check("no notification for anything but a sent message", log.count("Sent to") == 2)
 
         answer["resp"] = {"ok": True, "enabled": False, "until": 0, "accounts": ["main"], "configured": True}
         err, text = await call(s, "status")
@@ -106,7 +114,17 @@ async def main():
     answer.update(hang=True, resp={})
     async with session(TGSEND_WAIT="0.5") as s:
         err, text = await call(s, "send_message", {"chat": "x", "text": "y"})
-        check("a broker that never answers ends as a timeout, not a hang", text.startswith("timeout") and "Nothing was sent" in text)
+        check("a broker that never answers ends as 'outcome unknown' (the message may have left), not a hang, not 'nothing was sent'",
+              text.startswith("outcome unknown") and "check the chat" in text and "Nothing was sent" not in text)
+        answer["resp"] = {"ok": False, "status": "timeout", "reason": "the broker gave up (outcome unknown, check the chat before retrying)"}
+        answer["hang"] = False
+        err, text = await call(s, "send_message", {"chat": "x", "text": "y"})
+        check("the broker's own 'gave up' answer is also 'outcome unknown'", text.startswith("outcome unknown") and "Nothing was sent" not in text)
+    async with session(TGSEND_NO_NOTIFY="1") as s:
+        answer["resp"] = {"ok": True, "status": "sent", "message_id": 1, "name": "Q", "chat_id": 5}
+        n0 = open(f"{TMP}/notify.log").read().count("Sent to")
+        await call(s, "send_message", {"chat": "x", "text": "y"})
+        check("TGSEND_NO_NOTIFY=1 silences the notification", open(f"{TMP}/notify.log").read().count("Sent to") == n0)
     srv.close()
 
 

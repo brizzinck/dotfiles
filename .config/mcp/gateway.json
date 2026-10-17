@@ -48,7 +48,7 @@
     "telegram-send": {
       "command": "${HOME}/.local/share/mcp/venv/bin/python",
       "args": ["${HOME}/.config/mcp/telegram-send.py"],
-      "timeout": "90s",
+      "timeout": "150s",
       "options": {
         "toolFilter": { "mode": "allow", "list": ["send_message", "status"] }
       }

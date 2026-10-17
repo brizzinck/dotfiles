@@ -27,7 +27,7 @@ SOCK = os.environ.get("MCP_TGSEND_SOCK", "/run/tgconfirm/req.sock")
 STATE = os.environ.get("MCP_TGSEND_STATE", "/run/tgconfirm/state.json")
 SELF = os.path.realpath(__file__)
 UNIT = "mcp-telegram-send-off"
-WAIT = 80   # the broker's popup allows 60 s
+WAIT = 125   # the broker bounds an enable request to 115 s (lock 10 + popup 65)
 
 
 def notify(title: str, body: str, urgency: str = "normal") -> None:
@@ -96,7 +96,7 @@ def cmd_on(minutes: int) -> int:
         print("mcp-telegram-send: the confirmation broker is not running (owner: sudo apply-system.sh --only users,mcp, then mcp-telegram-setup send-chats)", file=sys.stderr)
         notify("Telegram sending is not set up", "Run mcp-telegram-setup send-chats (hub: Telegram: choose the chats the AI may write to).", "critical")
         return 1
-    print("A confirmation popup is open: press its key code to allow sending (Esc cancels) ...", file=sys.stderr)
+    print("Asking the broker (it shows the confirmation popup; press its key code to allow sending, Esc cancels) ...", file=sys.stderr)
     out = ask({"op": "enable", "minutes": minutes})
     poke_bar()
     if out is None:

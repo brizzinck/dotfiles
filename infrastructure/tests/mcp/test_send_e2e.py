@@ -18,6 +18,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 repo = sys.argv[1]
 here = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, here)
+import fake_session as fs  # noqa: E402
+
 spec = importlib.util.spec_from_file_location("broker", os.path.join(repo, "infrastructure/mcp/confirm/broker.py"))
 broker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(broker)
@@ -34,7 +37,11 @@ SEND_TOKEN = "S" * 40
 os.makedirs(f"{TMP}/cred")
 with open(f"{TMP}/cred/send_token", "w") as f:
     f.write(SEND_TOKEN)
-open(f"{TMP}/wayland-test", "w").close()
+os.makedirs(f"{TMP}/wl")
+os.makedirs(f"{TMP}/proc")
+fs.logind(f"{TMP}/logind", os.getuid())
+fs.login_chain(f"{TMP}/proc", os.getuid(), os.getpid())
+COMPOSITOR = fs.Server(f"{TMP}/wl/wayland-1")
 POPUP_LOG = f"{TMP}/popup.log"
 os.makedirs(f"{TMP}/fakebin")
 with open(f"{TMP}/fakebin/systemd-run", "w") as f:
@@ -108,7 +115,8 @@ SWITCH = [sys.executable, os.path.join(repo, ".local/bin/mcp-telegram-send")]
 
 async def main():
     env = {"TGCONFIRM_OWNER_UID": str(os.getuid()), "TGCONFIRM_RUNTIME": f"{TMP}/run", "TGCONFIRM_LIB": f"{TMP}/lib", "CREDENTIALS_DIRECTORY": f"{TMP}/cred",
-           "TGCONFIRM_ACCOUNTS": "main=8765", "TGCONFIRM_URL": URL, "TGCONFIRM_WAYLAND": f"{TMP}/wayland-test", "TGCONFIRM_NO_LOCK_CHECK": "1",
+           "TGCONFIRM_ACCOUNTS": "main=8765", "TGCONFIRM_URL": URL, "TGCONFIRM_WAYLAND_DIR": f"{TMP}/wl", "TGCONFIRM_PROC": f"{TMP}/proc", "TGCONFIRM_LOGIND": f"{TMP}/logind",
+           "TGCONFIRM_NO_LOCK_CHECK": "1",
            "TGCONFIRM_POPUP_CMD": f"{sys.executable} {here}/fake_popup.py --req {{req}}", "TGCONFIRM_FAKE": "confirm", "TGCONFIRM_FAKE_LOG": POPUP_LOG,
            "TGCONFIRM_HOME": f"{TMP}/home"}
 
@@ -173,7 +181,7 @@ async def main():
     @contextlib.asynccontextmanager
     async def agent():
         params = StdioServerParameters(command=sys.executable, args=[os.path.join(repo, ".config/mcp/telegram-send.py")],
-                                       env={"PATH": os.environ["PATH"], "TGSEND_SOCK": f"{TMP}/run/req.sock", "TGSEND_WAIT": "20"})
+                                       env={"PATH": os.environ["PATH"], "TGSEND_SOCK": f"{TMP}/run/req.sock", "TGSEND_WAIT": "20", "TGSEND_NO_NOTIFY": "1"})
         async with stdio_client(params, errlog=open(os.devnull, "w")) as (r, w):
             async with ClientSession(r, w) as s:
                 await s.initialize()

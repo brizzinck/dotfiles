@@ -17,6 +17,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 repo = sys.argv[1]
 here = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, here)
+import fake_session as fs  # noqa: E402
+
 spec = importlib.util.spec_from_file_location("broker", os.path.join(repo, "infrastructure/mcp/confirm/broker.py"))
 broker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(broker)
@@ -33,7 +36,12 @@ SEND_TOKEN = "T" * 40
 os.makedirs(f"{TMP}/cred")
 with open(f"{TMP}/cred/send_token", "w") as f:
     f.write(SEND_TOKEN + "\n")
-open(f"{TMP}/wayland-test", "w").close()
+# a fake desktop: this process is the "compositor" (it listens on wayland-1), /proc and logind are fake trees describing the login chain
+os.makedirs(f"{TMP}/wl")
+os.makedirs(f"{TMP}/proc")
+fs.logind(f"{TMP}/logind", os.getuid())
+fs.login_chain(f"{TMP}/proc", os.getuid(), os.getpid())
+COMPOSITOR = fs.Server(f"{TMP}/wl/wayland-1")
 POPUP_LOG = f"{TMP}/popup.log"
 
 # --- fake telegram-mcp: records every /x-send call -------------------------------------------------------------------------
@@ -74,7 +82,7 @@ URL = f"http://127.0.0.1:{srv.server_address[1]}"
 def make_env(**extra):
     env = {"TGCONFIRM_OWNER_UID": str(os.getuid()), "TGCONFIRM_RUNTIME": f"{TMP}/run", "TGCONFIRM_LIB": f"{TMP}/lib",
            "CREDENTIALS_DIRECTORY": f"{TMP}/cred", "TGCONFIRM_ACCOUNTS": "main=8765,work=8766", "TGCONFIRM_URL": URL,
-           "TGCONFIRM_WAYLAND": f"{TMP}/wayland-test", "TGCONFIRM_NO_LOCK_CHECK": "1",
+           "TGCONFIRM_WAYLAND_DIR": f"{TMP}/wl", "TGCONFIRM_PROC": f"{TMP}/proc", "TGCONFIRM_LOGIND": f"{TMP}/logind", "TGCONFIRM_NO_LOCK_CHECK": "1",
            "TGCONFIRM_POPUP_CMD": f"{sys.executable} {here}/fake_popup.py --req {{req}}", "TGCONFIRM_FAKE": "confirm",
            "TGCONFIRM_FAKE_LOG": POPUP_LOG, "TGCONFIRM_HOME": f"{TMP}/home"}
     env.update(extra)
@@ -104,6 +112,8 @@ def n_sends():
 def reset():
     if CURRENT:
         CURRENT[0].popup_rate = broker.RateLimit(*broker.RATE)
+        CURRENT[0].request_rate = broker.RateLimit(*broker.REQUEST_RATE)
+        CURRENT[0].enable_rate = broker.RateLimit(*broker.RATE)
     calls.clear()
     open(POPUP_LOG, "w").close()
     xmode.update(resolve="ok", send="ok")
@@ -165,7 +175,7 @@ async def main():
           and pop["req"]["username"] == "work" and pop["req"]["text"] == SEND["text"] and pop["req"]["kind"] == "send")
     check("send: the broker never puts a code in the request (the popup draws it itself)", "code" not in json.dumps(pop["req"]).lower().replace("chat_id", ""))
     check("send: the request file is 0600 and the popup env is minimal and private",
-          pop["req_mode"] == "0o600" and pop["env"]["WAYLAND_DISPLAY"] == f"{TMP}/wayland-test" and pop["env"]["XDG_RUNTIME_DIR"] == f"{b.runtime}/rt"
+          pop["req_mode"] == "0o600" and pop["env"]["WAYLAND_DISPLAY"] is None and pop["env"]["WAYLAND_SOCKET"] and pop["wl_fd"] == "socket" and pop["env"]["XDG_RUNTIME_DIR"] == f"{b.runtime}/rt"
           and pop["env"]["DBUS_SESSION_BUS_ADDRESS"] is None and pop["env"]["HOME"] == f"{TMP}/home")
     check("send: the request and result files are removed afterwards", not [f for f in os.listdir(f"{b.runtime}/rt")])
     check("send: resolve used the send token (not an MCP token) and the account's route", calls[0]["auth"] == f"Bearer {SEND_TOKEN}" and calls[0]["path"] == "/x-send")
@@ -222,10 +232,10 @@ async def main():
     r = await ask(b, SEND)
     check("send: a locked screen = rejected (no popup can be shown over hyprlock)", r["status"] == "rejected" and "locked" in r["reason"] and n_sends() == 0)
     b.screen_locked = lambda: False
-    b.env["TGCONFIRM_WAYLAND"] = f"{TMP}/nonexistent"
+    b.env["TGCONFIRM_WAYLAND_DIR"] = f"{TMP}/nonexistent"
     r = await ask(b, SEND)
     check("send: no reachable Wayland socket = rejected, nothing sent", r["status"] == "rejected" and "desktop" in r["reason"] and n_sends() == 0)
-    b.env["TGCONFIRM_WAYLAND"] = f"{TMP}/wayland-test"
+    b.env["TGCONFIRM_WAYLAND_DIR"] = f"{TMP}/wl"
 
     # --- timeout kills the popup process ---
     reset()
@@ -256,6 +266,115 @@ async def main():
     check("rate limit: the 6th popup within 10 minutes is rejected, and no 6th popup opens", out == ["cancelled"] * 5 + ["rejected"] * 2 and len(popups()) == 5)
     r = await ask(b, SEND)
     check("rate limit: the reason names the limit", "rate limit" in r["reason"])
+
+
+    # --- the client hangs up: the popup is closed and nothing is sent ---
+    def alive(pid):
+        try:
+            os.kill(pid, 0)
+            with open(f"/proc/{pid}/stat") as f:
+                return f.read().split(") ")[-1].split()[0] != "Z"
+        except OSError:
+            return False
+
+    async def hang_up_after_popup(b, msg):
+        r, w = await asyncio.open_unix_connection(f"{b.runtime}/req.sock")
+        w.write(json.dumps(msg).encode() + b"\n")
+        await w.drain()
+        for _ in range(60):
+            if popups():
+                break
+            await asyncio.sleep(0.1)
+        pid = popups()[0]["pid"] if popups() else None
+        w.close()
+        return pid
+
+    reset()
+    b.env["TGCONFIRM_FAKE"] = "hang"
+    pid = await hang_up_after_popup(b, SEND)
+    await asyncio.sleep(1.0)
+    check("hang-up: a send request whose client left while the popup was open closes the popup and sends nothing",
+          pid is not None and not alive(pid) and n_sends() == 0 and not os.listdir(f"{b.runtime}/rt"))
+    b.env["TGCONFIRM_FAKE"] = "confirm"
+    r = await ask(b, SEND)
+    check("hang-up: the popup lock is free again afterwards (the next request works)", r["status"] == "sent")
+
+    reset()
+    b.env["TGCONFIRM_FAKE"] = "hang"
+    b.until = 0.0
+    pid = await hang_up_after_popup(b, {"op": "enable", "minutes": 60})
+    await asyncio.sleep(1.0)
+    check("hang-up: an enable request whose client left closes its popup and does not enable", pid is not None and not alive(pid) and not b.enabled())
+    b.until = time.time() + 600
+
+    # --- bounded waits ---
+    reset()
+    b.env["TGCONFIRM_FAKE"] = "hang"
+    old_lock = broker.LOCK_WAIT
+    broker.LOCK_WAIT = 0.4
+    first = asyncio.create_task(ask(b, SEND))            # holds the lock inside a popup that never answers
+    for _ in range(60):
+        if popups():
+            break
+        await asyncio.sleep(0.1)
+    t0 = time.time()
+    r = await ask(b, {"op": "send", "account": "main", "chat": "Work chat", "text": "second"})
+    check("lock wait: a second send request gives up after LOCK_WAIT instead of waiting for ever", r["status"] == "rejected" and "another confirmation popup" in r["reason"] and time.time() - t0 < 3)
+    b.until = time.time() + 600
+    t0 = time.time()
+    b.until = 0.0
+    r = await ask(b, {"op": "enable", "minutes": 5})
+    check("lock wait: an enable request is bounded the same way (it used to wait without limit)", r["status"] == "rejected" and "another confirmation popup" in r["reason"] and time.time() - t0 < 3)
+    broker.LOCK_WAIT = old_lock
+    b.until = time.time() + 600
+    first.cancel()
+    await asyncio.gather(first, return_exceptions=True)
+    await asyncio.sleep(1.0)
+    for line in popups():       # clean up the hanging popup of the first request
+        try:
+            os.kill(line["pid"], 9)
+        except OSError:
+            pass
+
+    reset()
+    b.env["TGCONFIRM_FAKE"] = "hang"
+    old_budget = broker.REQUEST_BUDGET
+    broker.REQUEST_BUDGET = 0.6
+    t0 = time.time()
+    r = await ask(b, SEND)
+    broker.REQUEST_BUDGET = old_budget
+    check("budget: a request that outlives REQUEST_BUDGET ends as 'outcome unknown', its popup is closed", r["status"] == "timeout" and "outcome unknown" in r["reason"] and time.time() - t0 < 4 and n_sends() == 0)
+    await asyncio.sleep(0.5)
+    pid = popups()[0]["pid"]
+    check("budget: ... and the popup process of that request is gone", not alive(pid))
+    b.env["TGCONFIRM_FAKE"] = "confirm"
+
+    # --- request rate limit (every request, not only popups) ---
+    reset()
+    b.request_rate = broker.RateLimit(3, 600)
+    b.env["TGCONFIRM_FAKE"] = "cancel"
+    out = [(await ask(b, SEND))["status"] for _ in range(5)]
+    n_resolve = len([c for c in calls if c["body"]["action"] == "resolve"])
+    check("request rate: the 4th send request in the window is rejected before any resolve call", out == ["cancelled"] * 3 + ["rejected"] * 2 and n_resolve == 3)
+    r = await ask(b, SEND)
+    check("request rate: the reason says too many requests", "too many send requests" in r["reason"])
+    reset()
+    xmode["resolve"] = "denied"
+    b.request_rate = broker.RateLimit(3, 600)
+    out = [(await ask(b, SEND))["reason"] for _ in range(5)]
+    check("request rate: requests for chats that do not resolve count too (no free probing)", sum("too many" in x for x in out) == 2 and len([c for c in calls]) == 3)
+    xmode["resolve"] = "ok"
+    b.env["TGCONFIRM_FAKE"] = "confirm"
+
+    # --- the budget is a real ordering: parts < budget < what the clients wait ---
+    parts = broker.LOCK_WAIT + broker.RESOLVE_WAIT + broker.POPUP_TIMEOUT + broker.EXEC_GRACE + broker.SEND_WAIT
+    import re
+    cl_wait = float(re.search(r'"TGSEND_WAIT", "([0-9.]+)"', open(os.path.join(repo, ".config/mcp/telegram-send.py")).read()).group(1))
+    sw = float(re.search(r"^WAIT = ([0-9.]+)", open(os.path.join(repo, ".local/bin/mcp-telegram-send")).read(), re.M).group(1))
+    gw = float(json.load(open(os.path.join(repo, ".config/mcp/gateway.json")))["mcpServers"]["telegram-send"]["timeout"].rstrip("s"))
+    check("timeouts: all steps together < REQUEST_BUDGET < the telegram-send wait < the gateway timeout", parts < broker.REQUEST_BUDGET < cl_wait < gw)
+    check("timeouts: the owner's enable switch waits longer than the broker's budget", sw > broker.REQUEST_BUDGET)
+    check("timeouts: REPLY_WAIT (unused) is gone", not hasattr(broker, "REPLY_WAIT"))
 
     # --- expiry and disable ---
     reset()
@@ -305,9 +424,9 @@ check("popup command: ghostty with the class the window rule matches, no user co
       "--class=float.confirm" in argv and "--config-default-files=false" in argv and "--gtk-single-instance=false" in argv
       and argv[-4:] == ["/usr/bin/python3", "/usr/local/lib/tgconfirm/popup.py", "--req", "/run/tgconfirm/rt/x.req"] and "-e" in argv)
 check("popup command: wrapped in dbus-run-session (GTK needs a bus for the application id, which is the window class)", argv[:2] == ["/usr/bin/dbus-run-session", "--"])
-env = rb.popup_env("/run/user/1000/wayland-1")
-check("popup env: the absolute Wayland socket, its own runtime dir, software GL, no session bus, nothing inherited",
-      env["WAYLAND_DISPLAY"] == "/run/user/1000/wayland-1" and env["XDG_RUNTIME_DIR"] == f"{TMP}/rr/rt" and env["LIBGL_ALWAYS_SOFTWARE"] == "1"
+env = rb.popup_env(7)
+check("popup env: the verified connection as WAYLAND_SOCKET (no WAYLAND_DISPLAY path), its own runtime dir, software GL, no session bus, nothing inherited",
+      env["WAYLAND_SOCKET"] == "7" and "WAYLAND_DISPLAY" not in env and env["XDG_RUNTIME_DIR"] == f"{TMP}/rr/rt" and env["LIBGL_ALWAYS_SOFTWARE"] == "1"
       and "DBUS_SESSION_BUS_ADDRESS" not in env and "SUDO_USER" not in env and len(env) < 20)
 check("broker source: the send token is never put in an environment variable, argv or the popup request",
       "send_token" in open(os.path.join(repo, "infrastructure/mcp/confirm/broker.py")).read() and "TELEGRAM_SEND_TOKEN" not in open(os.path.join(repo, "infrastructure/mcp/confirm/broker.py")).read())

@@ -85,7 +85,7 @@ check "telegram-send is held back while the tgconfirm broker is not installed" b
 check "telegram-send appears once the broker unit exists" bash -c ': >"$2"; MCP_TGCONFIRM_UNIT="$2" "$1" servers | grep -qx telegram-send' _ "$GW" "$SCRATCH/tgc.service"
 check "telegram-send appears while the broker socket exists" bash -c 'python3 -c "import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); import time; time.sleep(3)" "$2" & sleep 0.5; MCP_TGCONFIRM_SOCK="$2" "$1" servers | grep -qx telegram-send; rc=$?; kill %1 2>/dev/null; exit $rc' _ "$GW" "$SCRATCH/tgc.sock"
 check "telegram-send toolFilter: an allow list of exactly send_message and status" jq -e '.mcpServers["telegram-send"].options.toolFilter | .mode == "allow" and (.list | sort) == ["send_message","status"]' "$MCP_CONFIG_DIR/gateway.json"
-check "telegram-send: stdio server from the pinned venv, no secret and no URL in its entry, timeout 90s" jq -e '.mcpServers["telegram-send"] | .timeout == "90s" and (.command | endswith("/venv/bin/python")) and (.args[0] | endswith("/telegram-send.py")) and (has("env") | not) and (has("headers") | not) and (has("url") | not)' "$MCP_CONFIG_DIR/gateway.json"
+check "telegram-send: stdio server from the pinned venv, no secret and no URL in its entry, timeout 150s" jq -e '.mcpServers["telegram-send"] | .timeout == "150s" and (.command | endswith("/venv/bin/python")) and (.args[0] | endswith("/telegram-send.py")) and (has("env") | not) and (has("headers") | not) and (has("url") | not)' "$MCP_CONFIG_DIR/gateway.json"
 check "the effective config with the broker installed passes mcp-proxy's own check" bash -c 'p="$2"; [ -x "$p" ] || exit 0; : >"$3"; MCP_TGCONFIRM_UNIT="$3" MCP_PROXY_BIN="$p" "$1" check' _ "$GW" "$PROXY" "$SCRATCH/tgc.service"
 check "no toolFilter lists a send/edit/delete tool for telegram" bash -c '! jq -r ".mcpServers.telegram.options.toolFilter.list[]" "$1" | grep -E "^(send|reply|edit|delete|forward|mark|save|upload|download|press|join|leave|invite|ban|pin|set_|create|update|promote|demote|add_|remove|block|mute|archive|import|export)"' _ "$MCP_CONFIG_DIR/gateway.json"
 check "telegram toolFilter is still exactly the 16 read tools (sending lives only in telegram-send)" jq -e '.mcpServers.telegram.options.toolFilter.list | length == 16 and (map(select(test("send|post|reply|forward|edit|delete"))) | length == 0)' "$MCP_CONFIG_DIR/gateway.json"
@@ -526,6 +526,7 @@ check "window rule float-confirm: float, center, pin, stay_focused, no_screen_sh
 check "popup ghostty config: no keybinds, no clipboard access, no shell integration, nothing from the owner's config" bash -c 'grep -q "^keybind = clear" "$1" && grep -q "^clipboard-read = deny" "$1" && grep -q "^clipboard-write = deny" "$1" && grep -q "^shell-integration = none" "$1" && ! grep -q "config-file" "$1"' _ "$CFD/ghostty-popup.conf"
 check "popup.py: the code comes from the system RNG and is never written or logged" bash -c 'grep -q "SystemRandom" "$1" && ! grep -n "print(.*code\|write.*code\|json.dump.*code" "$1"' _ "$CFD/popup.py"
 count_py python3 -I "$HERE/test_confirm.py" "$REPO"
+count_py python3 -I "$HERE/test_wayland.py" "$REPO"
 count_py python3 -I "$HERE/test_popup.py" "$REPO"
 
 # --- mcp-guard: deny rules in a throwaway settings.json -----------------------------------------------------------------------

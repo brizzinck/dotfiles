@@ -7,8 +7,18 @@ log. An agent never talks to telegram-mcp's send route: it can only ask this bro
 owner has pressed the per-message random key code in a popup it shows itself.
 
   agent -> telegram-send MCP (stdio, owner uid, no secrets) -> /run/tgconfirm/req.sock (mode 0666, SO_PEERCRED uid must be the
-  owner) -> enabled? -> resolve the chat (POST /x-send action=resolve) -> rate limit -> popup (ghostty as tgconfirm on the owner's
-  Wayland socket, class float.confirm, popup.py inside) -> confirmed -> POST /x-send action=send -> reply.
+  owner) -> enabled? -> request rate limit -> resolve the chat (POST /x-send action=resolve, answered from the send allowlist
+  without a Telegram lookup for any other chat) -> popup rate limit -> popup (ghostty as tgconfirm on the VERIFIED Wayland socket of
+  the owner's session compositor, class float.confirm, popup.py inside) -> confirmed -> POST /x-send action=send -> reply.
+
+The Wayland socket is never trusted by name: tgconfirm may only traverse /run/user/UID (the owner, and so any agent, can plant a
+wayland-N there or take the ACL off the real one), so the broker connects to wayland-0..9 and keeps a socket only when its server
+(SO_PEERCRED pid) is the compositor of the ACTIVE seat0 session: uid = owner, comm Hyprland, parent chain
+start-hyprland [login shell] -> the session leader that logind names in /run/systemd/sessions/ID. The connected socket itself is
+handed to ghostty as WAYLAND_SOCKET, so nothing can be swapped between the check and the use.
+
+A request is bounded: REQUEST_BUDGET seconds in all (lock + resolve + popup + send, every step has its own limit), always below
+what the clients wait. When the client hangs up, a pending popup is closed and nothing is sent.
 
 Protocol: one JSON line in, one JSON line out per connection.
   {"op":"status"}                                    -> {"ok":true,"enabled":bool,"until":epoch,"accounts":[...]}
@@ -22,15 +32,15 @@ Audit (journald, stderr): action, account, chat id, length, sha256 prefix of the
 Env (unit and tests): TGCONFIRM_OWNER_UID (required: the only uid that may ask), TGCONFIRM_RUNTIME (default /run/tgconfirm),
 TGCONFIRM_ACCOUNTS (default main=8765: account name -> telegram-mcp port), TGCONFIRM_LIB (default /usr/local/lib/tgconfirm),
 CREDENTIALS_DIRECTORY (send_token), TGCONFIRM_TTL_MAX (minutes, default 120). Test hooks: TGCONFIRM_POPUP_CMD (replaces the
-ghostty command; `{req}` is the request file), TGCONFIRM_WAYLAND (socket path instead of the search), TGCONFIRM_URL (base URL of
-the route instead of http://127.0.0.1:PORT), TGCONFIRM_NO_LOCK_CHECK=1, TGCONFIRM_ALLOW_UID (extra accepted uid).
+ghostty command; `{req}` is the request file), TGCONFIRM_WAYLAND_DIR (where wayland-N live, default /run/user/UID), TGCONFIRM_PROC
+(default /proc), TGCONFIRM_LOGIND (default /run/systemd), TGCONFIRM_URL (base URL of the route instead of http://127.0.0.1:PORT),
+TGCONFIRM_NO_LOCK_CHECK=1, TGCONFIRM_ALLOW_UID (extra accepted uid).
 """
 
 from __future__ import annotations
 
 import asyncio
 import collections
-import glob
 import hashlib
 import json
 import os
@@ -38,7 +48,6 @@ import re
 import secrets
 import signal
 import socket
-import stat
 import struct
 import sys
 import time
@@ -47,9 +56,18 @@ import urllib.request
 
 MAX_TEXT = 4096
 POPUP_TIMEOUT = 60            # seconds the owner has to press the code
-REPLY_WAIT = 65               # seconds an agent call may block (popup + the send itself)
+EXEC_GRACE = 5                # seconds after the popup timeout before the process is killed
+LOCK_WAIT = 10                # waiting for another popup to finish
+RESOLVE_WAIT = 12             # the resolve call (local allowlist match, at most a few cached lookups)
+SEND_WAIT = 25                # the send call itself
+# worst case of one send request: 10 + 12 + (60 + 5) + 25 = 112 s. REQUEST_BUDGET is the hard cap; the clients wait longer
+# (telegram-send.py 130 s, the gateway 150 s), so an agent never hears "timeout" for a message that is still on its way.
+REQUEST_BUDGET = 115
 RATE = (5, 600)               # popups per window
-EXEC_GRACE = 8                # seconds after the popup timeout before the process is killed
+REQUEST_RATE = (20, 600)      # send requests per window (every one counts, with or without a popup)
+SOCKET_CANDIDATES = range(10) # wayland-0 .. wayland-9
+# processes that may sit between the session leader and the compositor (comm names): the wrapper, the login shell hypr-login execs
+LOGIN_CHAIN = {"start-hyprland", "hypr-login", "sh", "bash", "zsh", "dash", "fish"}
 ACCOUNT_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
 
@@ -106,6 +124,7 @@ class Broker:
         self.until = 0.0
         self.popup_rate = RateLimit(*RATE, clock=mono)
         self.enable_rate = RateLimit(*RATE, clock=mono)
+        self.request_rate = RateLimit(*REQUEST_RATE, clock=mono)
         self.lock = asyncio.Lock()          # one popup at a time
         self.last_state = None
 
@@ -132,26 +151,144 @@ class Broker:
             await asyncio.sleep(5)
 
     # --- Wayland / popup --------------------------------------------------------------------------------------------------
-    def wayland_socket(self) -> str | None:
-        forced = self.env.get("TGCONFIRM_WAYLAND")
-        if forced:
-            return forced if os.path.exists(forced) else None
-        for p in sorted(glob.glob(f"/run/user/{self.owner_uid}/wayland-[0-9]*")):
-            if p.endswith(".lock"):
-                continue
+    @property
+    def proc(self) -> str:
+        return self.env.get("TGCONFIRM_PROC", "/proc")
+
+    def proc_status(self, pid: int) -> dict | None:
+        """Name, parent pid and the four uids of a process from <proc>/PID/status; None when it is gone or unreadable."""
+        try:
+            with open(os.path.join(self.proc, str(pid), "status")) as f:
+                text = f.read()
+        except (OSError, ValueError):
+            return None
+        out: dict = {}
+        for line in text.splitlines():
+            k, _, v = line.partition(":")
+            if k == "Name":
+                out["name"] = v.strip()
+            elif k == "PPid" and v.strip().isdigit():
+                out["ppid"] = int(v)
+            elif k == "Uid":
+                try:
+                    out["uids"] = [int(x) for x in v.split()]
+                except ValueError:
+                    return None
+        return out if {"name", "ppid", "uids"} <= out.keys() else None
+
+    def session_leader(self) -> tuple[int | None, str]:
+        """(leader pid, why not) of the ACTIVE session on seat0, from logind's runtime files (root-owned: nobody else can edit them)."""
+        logind = self.env.get("TGCONFIRM_LOGIND", "/run/systemd")
+
+        def fields(path: str) -> dict:
+            out = {}
             try:
-                if stat.S_ISSOCK(os.stat(p).st_mode) and os.access(p, os.R_OK | os.W_OK):
-                    return p
+                with open(path) as f:
+                    for line in f:
+                        k, sep, v = line.rstrip("\n").partition("=")
+                        if sep:
+                            out[k] = v
             except OSError:
+                pass
+            return out
+
+        seat = fields(os.path.join(logind, "seats", "seat0"))
+        sid = seat.get("ACTIVE", "")
+        if not re.fullmatch(r"[A-Za-z0-9]{1,16}", sid):
+            return None, "logind reports no active session on seat0"
+        if seat.get("ACTIVE_UID", "") != str(self.owner_uid):
+            return None, "the active session on seat0 is not the owner's"
+        sess = fields(os.path.join(logind, "sessions", sid))
+        if sess.get("UID") != str(self.owner_uid) or sess.get("SEAT") != "seat0" or sess.get("STATE") not in ("active", "online"):
+            return None, "the active session on seat0 does not look like the owner's graphical session"
+        if not sess.get("LEADER", "").isdigit() or int(sess["LEADER"]) <= 1:
+            return None, "the active session has no leader process"
+        return int(sess["LEADER"]), ""
+
+    def check_compositor(self, pid: int, leader: int) -> str:
+        """"" when pid is the owner's Hyprland started by the login chain of the session leader, else the reason it is not."""
+        st = self.proc_status(pid)
+        if st is None:
+            return "its process is gone"
+        if st["name"] != "Hyprland":
+            return f"the server is {st['name']!r}, not Hyprland"
+        if set(st["uids"]) != {self.owner_uid}:
+            return "the server does not run as the owner"
+        node, hops = st, 0
+        while node["ppid"] != leader:
+            hops += 1
+            if hops > 4 or node["ppid"] <= 1:
+                return "it is not a child of the login session's leader"
+            parent = self.proc_status(node["ppid"])
+            if parent is None:
+                return "its parent is gone"
+            if parent["name"] not in LOGIN_CHAIN:
+                return f"it descends from {parent['name']!r}, not from the login chain"
+            if set(parent["uids"]) != {self.owner_uid}:
+                return "its parent does not run as the owner"
+            node = parent
+        return ""
+
+    def open_wayland(self) -> tuple[socket.socket | None, str]:
+        """(connected socket to the session compositor, "") or (None, reason).
+
+        Connects to wayland-0..9 in the runtime directory (it cannot be listed: tgconfirm only has x on it) and keeps the socket whose
+        server passes check_compositor. Two different compositors passing = refuse. The returned socket is the verified connection
+        itself: ghostty gets it as WAYLAND_SOCKET, so the path is never used again."""
+        leader, why = self.session_leader()
+        if leader is None:
+            return None, why
+        base = self.env.get("TGCONFIRM_WAYLAND_DIR") or f"/run/user/{self.owner_uid}"
+        good: dict[int, socket.socket] = {}
+        seen = 0
+        for n in SOCKET_CANDIDATES:
+            path = os.path.join(base, f"wayland-{n}")
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(1.5)
+            try:
+                s.connect(path)
+            except OSError:
+                s.close()
                 continue
-        return None
+            seen += 1
+            try:
+                pid, uid, _gid = struct.unpack("3i", s.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))
+            except OSError:
+                s.close()
+                continue
+            bad = "" if uid == self.owner_uid else "the server does not run as the owner"
+            bad = bad or self.check_compositor(pid, leader)
+            if bad:
+                log(f"wayland-{n}: refused ({bad}; peer pid {pid})")
+                s.close()
+            elif pid in good:       # a second path to the same compositor (a symlink): not a second candidate
+                s.close()
+            else:
+                good[pid] = s
+        if len(good) > 1:
+            for s in good.values():
+                s.close()
+            log(f"{len(good)} different compositors claim to be the session: refusing")
+            return None, "several Wayland servers claim to be the session compositor"
+        if not good:
+            return None, ("no Wayland socket belongs to the session compositor" + (f" ({seen} refused)" if seen else
+                          " (none reachable: usr clipboard-acl gives tgconfirm the Wayland socket)"))
+        sock = next(iter(good.values()))
+        sock.setblocking(True)
+        return sock, ""
 
     def screen_locked(self) -> bool:
         if self.env.get("TGCONFIRM_NO_LOCK_CHECK") == "1":
             return False
-        for comm in glob.glob("/proc/[0-9]*/comm"):
+        try:
+            names = os.listdir(self.proc)
+        except OSError:
+            return False
+        for name in names:
+            if not name.isdigit():
+                continue
             try:
-                with open(comm) as f:
+                with open(os.path.join(self.proc, name, "comm")) as f:
                     if f.read().strip() == "hyprlock":
                         return True
             except OSError:
@@ -168,11 +305,11 @@ class Broker:
                 "--class=float.confirm", "--gtk-single-instance=false", "--title=Telegram: confirm",
                 "-e", "/usr/bin/python3", f"{self.lib}/popup.py", "--req", req_file]
 
-    def popup_env(self, wayland: str) -> dict:
+    def popup_env(self, wayland_fd: int) -> dict:
         rt = os.path.join(self.runtime, "rt")
         env = {"PATH": "/usr/local/bin:/usr/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
                "HOME": self.env.get("TGCONFIRM_HOME", "/var/lib/tgconfirm"), "XDG_RUNTIME_DIR": rt,
-               "WAYLAND_DISPLAY": wayland, "GDK_BACKEND": "wayland", "LIBGL_ALWAYS_SOFTWARE": "1", "GSK_RENDERER": "cairo",
+               "WAYLAND_SOCKET": str(wayland_fd), "GDK_BACKEND": "wayland", "LIBGL_ALWAYS_SOFTWARE": "1", "GSK_RENDERER": "cairo",
                "GSETTINGS_BACKEND": "memory", "GTK_A11Y": "none", "NO_AT_BRIDGE": "1", "TGCONFIRM_LIB": self.lib}
         for k, v in self.env.items():      # test hooks only (the unit never sets them): the keymap and the fake popup's switches
             if k == "TGCONFIRM_KEYMAP" or k.startswith("TGCONFIRM_FAKE"):
@@ -181,11 +318,11 @@ class Broker:
 
     async def popup(self, req: dict) -> str:
         """Show one popup and return "confirmed" | "cancelled" | "timeout" | "error: <why>". The broker never learns the code."""
-        wl = self.wayland_socket()
-        if wl is None:
-            return "error: no desktop session reachable (the Wayland socket is not accessible: usr clipboard-acl)"
         if self.screen_locked():
             return "error: the screen is locked"
+        wl, why = self.open_wayland()
+        if wl is None:
+            return f"error: no desktop session reachable ({why})"
         rt = os.path.join(self.runtime, "rt")
         os.makedirs(rt, mode=0o700, exist_ok=True)
         os.chmod(rt, 0o700)
@@ -193,15 +330,16 @@ class Broker:
         req_file = os.path.join(rt, f"{nonce}.req")
         res_file = os.path.join(rt, f"{nonce}.res")
         payload = {**req, "nonce": nonce, "timeout": POPUP_TIMEOUT, "result_file": res_file}
-        fd = os.open(req_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump(payload, f)
         proc = None
         try:
+            fd = os.open(req_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump(payload, f)
             argv = self.popup_argv(req_file)
-            proc = await asyncio.create_subprocess_exec(*argv, env=self.popup_env(wl), stdin=asyncio.subprocess.DEVNULL,
+            proc = await asyncio.create_subprocess_exec(*argv, env=self.popup_env(wl.fileno()), stdin=asyncio.subprocess.DEVNULL,
                                                         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-                                                        start_new_session=True)
+                                                        start_new_session=True, pass_fds=(wl.fileno(),))
+            wl.close()      # the child has its own copy of the verified connection
             try:
                 await asyncio.wait_for(proc.wait(), POPUP_TIMEOUT + EXEC_GRACE)
             except asyncio.TimeoutError:
@@ -218,6 +356,7 @@ class Broker:
         except OSError as e:
             return f"error: cannot start the popup ({e.strerror})"
         finally:
+            wl.close()
             if proc is not None and proc.returncode is None:
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)
@@ -247,13 +386,21 @@ class Broker:
         except (urllib.error.URLError, OSError, ValueError, TimeoutError) as e:
             return 0, {"error": f"telegram-mcp is not reachable ({type(e).__name__})"}
 
-    async def x_send(self, account: str, body: dict, timeout: float = 25) -> tuple[int, dict]:
+    async def x_send(self, account: str, body: dict, timeout: float) -> tuple[int, dict]:
         return await asyncio.get_running_loop().run_in_executor(None, self.x_send_sync, account, body, timeout)
 
     # --- operations -----------------------------------------------------------------------------------------------------
     def status(self) -> dict:
         return {"ok": True, "enabled": self.enabled(), "until": int(self.until) if self.enabled() else 0,
                 "accounts": sorted(self.accounts), "configured": bool(self.token)}
+
+    async def acquire(self) -> bool:
+        """The popup lock, waited for at most LOCK_WAIT seconds (a cancelled request never keeps it)."""
+        try:
+            await asyncio.wait_for(self.lock.acquire(), LOCK_WAIT)
+            return True
+        except asyncio.TimeoutError:
+            return False
 
     async def op_enable(self, msg: dict) -> dict:
         if self.enabled():
@@ -268,10 +415,14 @@ class Broker:
         if not self.enable_rate.take():
             log("enable result=refused(rate)")
             return {"ok": False, "status": "rejected", "reason": "too many confirmation popups, try again later"}
-        async with self.lock:
+        if not await self.acquire():
+            return {"ok": False, "status": "rejected", "reason": "another confirmation popup is open, try again"}
+        try:
             res = await self.popup({"kind": "enable", "title": "Allow AI agents to send Telegram messages?",
                                     "text": f"For {minutes} minutes. Every single message will still ask you again, with its full "
                                             f"text and recipient. Turning it off later needs no confirmation.", "minutes": minutes})
+        finally:
+            self.lock.release()
         log(f"enable result={res}")
         if res == "confirmed":
             self.until = self.clock() + minutes * 60
@@ -305,12 +456,14 @@ class Broker:
         if reply_to is not None and (isinstance(reply_to, bool) or not isinstance(reply_to, int) or reply_to < 0):
             return {"ok": False, "status": "rejected", "reason": "reply_to must be a message id"}
         n, h = digest(text)
-        try:
-            await asyncio.wait_for(self.lock.acquire(), 20)
-        except asyncio.TimeoutError:
+        if not self.request_rate.take():     # every request counts, popup or not
+            log(f"send account={account} len={n} sha256={h} result=rejected(request rate)")
+            return {"ok": False, "status": "rejected",
+                    "reason": f"too many send requests ({REQUEST_RATE[0]} per {REQUEST_RATE[1] // 60} minutes), try later"}
+        if not await self.acquire():
             return {"ok": False, "status": "rejected", "reason": "another confirmation popup is open, try again"}
         try:
-            code, info = await self.x_send(account, {"action": "resolve", "chat": chat, "reply_to": reply_to})
+            code, info = await self.x_send(account, {"action": "resolve", "chat": chat, "reply_to": reply_to}, RESOLVE_WAIT)
             if code != 200 or not info.get("ok"):
                 why = clean_line(info.get("error") or f"telegram-mcp answered {code}")
                 log(f"send account={account} chat={clean_line(chat, 40)} len={n} sha256={h} result=rejected({why})")
@@ -332,8 +485,10 @@ class Broker:
                 return {"ok": False, "status": res, "name": name}
             if not self.enabled():
                 return {"ok": False, "status": "disabled", "reason": "sending was switched off"}
-            code, out = await self.x_send(account, {"action": "send", "chat_id": chat_id, "text": text, "reply_to": reply_to,
-                                                    "request_id": secrets.token_hex(12)}, 40)
+            # shielded: once the owner confirmed, a hang-up of the client must not tear the call down half way; the log line
+            # below is written either way. (A client that left DURING the popup never gets here: the popup is cancelled.)
+            code, out = await asyncio.shield(self.x_send(account, {"action": "send", "chat_id": chat_id, "text": text, "reply_to": reply_to,
+                                                                   "request_id": secrets.token_hex(12)}, SEND_WAIT))
             if code == 200 and out.get("ok"):
                 log(f"send account={account} chat={chat_id} len={n} sha256={h} result=sent id={out.get('message_id')}")
                 return {"ok": True, "status": "sent", "message_id": out.get("message_id"), "name": name, "chat_id": chat_id}
@@ -349,6 +504,40 @@ class Broker:
         sock = writer.get_extra_info("socket")
         pid, uid, gid = struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))
         return uid
+
+    async def dispatch(self, msg: dict) -> dict:
+        op = msg.get("op")
+        if op == "status":
+            return self.status()
+        if op == "disable":
+            return self.op_disable()
+        if op in ("enable", "send"):
+            try:
+                return await asyncio.wait_for(self.op_enable(msg) if op == "enable" else self.op_send(msg), REQUEST_BUDGET)
+            except asyncio.TimeoutError:
+                log(f"{op} result=budget exceeded")
+                return {"ok": False, "status": "timeout", "reason": "the broker gave up (outcome unknown, check the chat before retrying)"}
+        return {"ok": False, "status": "rejected", "reason": "unknown op"}
+
+    async def run_op(self, msg: dict, reader) -> dict | None:
+        """Run one operation; when the client closes its end first, cancel it (this closes an open popup) and return None."""
+        task = asyncio.ensure_future(self.dispatch(msg))
+        watch = asyncio.ensure_future(reader.read(1))
+        try:
+            while True:
+                done, _ = await asyncio.wait({task, watch}, return_when=asyncio.FIRST_COMPLETED)
+                if task in done:
+                    return task.result()
+                if watch.result():                       # stray byte: a client sends nothing after its request line
+                    watch = asyncio.ensure_future(reader.read(1))
+                    continue
+                log(f"{msg.get('op')} client hung up: request cancelled")
+                return None
+        finally:
+            for t in (task, watch):
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(task, watch, return_exceptions=True)
 
     async def handle(self, reader, writer) -> None:
         try:
@@ -368,17 +557,9 @@ class Broker:
                 if msg is None:
                     resp = {"ok": False, "status": "rejected", "reason": "bad request"}
                 else:
-                    op = msg.get("op")
-                    if op == "status":
-                        resp = self.status()
-                    elif op == "disable":
-                        resp = self.op_disable()
-                    elif op == "enable":
-                        resp = await self.op_enable(msg)
-                    elif op == "send":
-                        resp = await self.op_send(msg)
-                    else:
-                        resp = {"ok": False, "status": "rejected", "reason": "unknown op"}
+                    resp = await self.run_op(msg, reader)
+                    if resp is None:         # the client hung up while we worked: nobody to answer
+                        return
             writer.write(json.dumps(resp).encode() + b"\n")
             await writer.drain()
         except (ConnectionError, OSError):
