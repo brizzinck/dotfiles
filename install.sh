@@ -268,6 +268,9 @@ fc-cache -f 2>/dev/null || true
 log "Browser settings (Zen user.js memory prefs, Chrome disk-cache flag; copied into the flatpak sandboxes)"
 "$DOTFILES/browsers/apply.sh" || warn "browsers/apply.sh failed"
 
+log "Obsidian vim keys (vault app.json vimMode + .obsidian.vimrc for the Vimrc Support plugin; the plugin is installed by hand)"
+"$DOTFILES/apps/obsidian/apply.sh" || warn "apps/obsidian/apply.sh failed"
+
 log "User timers: cache aging (user tmpfiles), Codex release pruning and the sysalert health check"
 systemctl --user daemon-reload 2>/dev/null || true
 systemctl --user enable --now systemd-tmpfiles-clean.timer codex-prune-releases.timer sysalert.timer 2>/dev/null \

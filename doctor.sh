@@ -264,6 +264,15 @@ if [ -r "$DOTFILES/.config/hypr/scripts/vault-browse.py" ]; then
 else
   bad vault-browse ".config/hypr/scripts/vault-browse.py missing"
 fi
+# V1c: generated layout twins are current (tmux/rofi depend on running tools and are skipped by `layout.py check`), and the
+# Obsidian vault carries the vimrc + vimMode (apps/obsidian/apply.sh); the Vimrc Support plugin itself is the owner's install
+if lay_out="$(PYTHONPYCACHEPREFIX=/tmp/pycache python3 "$DOTFILES/.config/layout/layout.py" check 2>&1)"; then ok layout-gen "generated ua/ru twins are current (layout.py check)"; else bad layout-gen "stale: $(printf '%s' "$lay_out" | head -1) (layout.py gen)"; fi
+if [ -x "$DOTFILES/apps/obsidian/apply.sh" ]; then
+  obs_dry="$("$DOTFILES/apps/obsidian/apply.sh" --dry-run 2>&1)"
+  if printf '%s' "$obs_dry" | grep -q 'no vault found'; then info obsidian-vim "no Obsidian vault registered yet"
+  elif printf '%s' "$obs_dry" | grep -q 'would'; then bad obsidian-vim "vault vimrc/app.json out of date (apps/obsidian/apply.sh)"
+  else ok obsidian-vim "vault has vimMode and the current .obsidian.vimrc"; fi
+fi
 # V1c: OBS control (obs-ctl over obs-cmd): hub rows, leader group o and the offline test with a fake obs-cmd
 if [ -x "$HOME/.local/bin/obs-ctl" ]; then
   obs_rows="$("$DOTFILES/.config/hub/hub" --list --all 2>/dev/null | grep -c '^OBS ')"
