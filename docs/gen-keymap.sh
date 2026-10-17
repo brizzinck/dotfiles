@@ -187,9 +187,14 @@ feeds `.config/layout/layout.py`, which writes the per-tool files (committed): `
 | Hyprland | `input:resolve_binds_by_sym = false`: binds match the first layout (us) whatever is active, nothing to do |
 | ghostty | Ctrl+letter arrives as the C0 byte on any layout; Alt+Cyrillic would lose its Alt, so `alt+<physical key>` sends `ESC` + the us letter |
 | tmux | Cyrillic twins of every letter / `M-` bind in the prefix and copy-mode tables |
-| nvim | `langmap` (built-in commands) + langmapper.nvim (every mapping, `<leader>`, `<C-x>`, `<M-x>`) |
+| nvim | `langmap` (built-in commands) + langmapper.nvim (every mapping, `<leader>`, `<C-x>`, `<M-x>`); on top of that automatic layout switching (below) |
 | zsh | `layout_dup_meta` (Alt widgets) now, `layout_dup_keys` for the vi keymaps (V1) |
 | rofi / fzf | the rofi launcher's key lists get Cyrillic keysyms (generated, `ROFI_OVERRIDES` in `layout.py`); fzf letter binds get twin characters (`lk_fzf_bind`, used by `vimfzf.sh` for the whole NORMAL mode) |
+
+nvim switches the layout itself (`nvim/lua/configs/layout_switch.lua`, Hyprland only): leaving INSERT remembers the
+buffer's layout and switches to us, `:` is always us, entering INSERT / replace restores the buffer's layout, `/` and `?`
+search in the buffer's layout, terminal buffers are left alone, leaving the terminal for another app puts back the layout
+nvim displaced. `:LayoutAutoswitch [on|off|toggle]` or `<leader>uk` toggles it, `vim.g.layout_autoswitch = false` disables it.
 
 Known gaps: ASCII characters that sit on other physical keys in ru/ua (ru `.` on the us `/` key) are not remapped.
 

@@ -412,6 +412,8 @@ if [ -z "$missing" ]; then ok theme-desktop "waybar, wofi, swayosd, gtk, dunst, 
 old_hex='#(d3c6aa|e7dabe|b8ae96|859289|7fbbb3|a7c080|2a3530|1f2a24|141a17|0b0e0d|222a27|3a4440|6b7770|5f875f|83c092|dbbc7f|e69875|e67e80|d699b6|272e33|374145|f85552)'
 stray="$(git -C "$DOTFILES" grep -IiE "$old_hex" -- .config ':!.config/nvim' ':!themes' ':!docs' 2>/dev/null | head -3)"
 if [ -z "$stray" ]; then ok theme-stray "no old-palette hex in the tracked configs"; else bad theme-stray "$(printf '%s' "$stray" | head -1)"; fi
+nvim_ls="$(nvim --headless -u NONE --cmd "set rtp^=$DOTFILES/.config/nvim" +'lua assert(type(require("configs.layout_switch").setup) == "function")' +qa 2>&1)"
+if [ -z "$nvim_ls" ]; then ok nvim-layout "nvim layout autoswitch module loads"; else bad nvim-layout "$(printf '%s' "$nvim_ls" | head -1)"; fi
 lit="$(PYTHONPYCACHEPREFIX=/tmp/pycache python3 -I - "$DOTFILES" <<'PY' 2>&1
 import json, re, sys
 root = sys.argv[1]
