@@ -245,7 +245,11 @@ hl.animation({ leaf = "border",           enabled = true, speed = 2,   bezier = 
 hl.animation({ leaf = "fade",             enabled = true, speed = 1.5, bezier = "snap" })
 hl.animation({ leaf = "layers",           enabled = true, speed = 1.2, bezier = "snap", style = "fade" })
 hl.animation({ leaf = "workspaces",       enabled = true, speed = 1.8, bezier = "snap", style = "slide" })
-hl.animation({ leaf = "specialWorkspace", enabled = true, speed = 1.8, bezier = "snap", style = "slidevert" })
+-- Special workspaces (fzf-menu server, scratch windows): plain in-place fade, no
+-- movement. "slidevert" slid the floating menu up while it faded out on every close.
+-- 1.3 ds in (~130 ms) / 1.0 ds out (~100 ms); the snap curve has no overshoot (y <= 1).
+hl.animation({ leaf = "specialWorkspaceIn",  enabled = true, speed = 1.3, bezier = "snap", style = "fade" })
+hl.animation({ leaf = "specialWorkspaceOut", enabled = true, speed = 1.0, bezier = "snap", style = "fade" })
 
 -- ───────────────────────────── workspaces and rules ─────────────────
 -- Smart borders: no frame and no gaps for a lone tiled window
