@@ -2,6 +2,19 @@
 # Columns: block <TAB> keys <TAB> description <TAB> context <TAB> note. Keys: `+` joins a chord, a space a sequence, ` / ` an
 # alternative; a leading `=` means plain text, not keys. Keep these in step with the menu scripts (the headers of the scripts
 # are the reference) and infrastructure/greetd/greeter/Greeter.qml.
+ghostty	Ctrl+Shift+C / Ctrl+Shift+V	Copy / paste the clipboard	ghostty (us, ua, ru)
+ghostty	Ctrl+Shift+N	New window	ghostty (us, ua, ru)
+ghostty	Ctrl+Shift+T	New tab	ghostty (us, ua, ru)
+ghostty	Ctrl+Shift+W	Close the tab	ghostty (us, ua, ru)
+ghostty	Ctrl+Shift+Q	Quit ghostty (all windows)	ghostty (us, ua, ru)
+ghostty	Ctrl+Shift+O / Ctrl+Shift+E	Split right / down	ghostty (us, ua, ru)
+ghostty	Ctrl+Shift+F	Search the scrollback	ghostty (us, ua, ru)
+ghostty	Ctrl+Shift+A	Select all	ghostty (us, ua, ru)
+ghostty	Ctrl+Shift+P	Command palette	ghostty (us, ua, ru)
+ghostty	Ctrl+Shift+I	Inspector	ghostty (us, ua, ru)
+ghostty	Ctrl+Shift+J	Write the screen to a file and paste its path (Ctrl+Alt+Shift+J opens it, Super+Ctrl+Shift+J copies it)	ghostty (us, ua, ru)
+ghostty	Ctrl+Shift+, / Ctrl+,	Reload / open the ghostty config	ghostty (us, ua, ru)
+ghostty	Super+Ctrl+[ / Super+Ctrl+]	Previous / next split	ghostty (us, ua, ru)
 menu-modal	typing	Filter the list	INSERT (opens here)
 menu-modal	Ctrl+J / Ctrl+K / Ctrl+N / Ctrl+P	Move down / up	INSERT
 menu-modal	Ctrl+D / Ctrl+U	Half page down / up	INSERT
@@ -105,7 +118,7 @@ login	F12	Power menu (suspend, reboot, power off)
 login	j / k / arrows / Enter / l / Esc / h	In an open menu: move, pick, close
 login	Ctrl+Alt+F2	Text login on TTY2 (rescue; also a Hyprland bind through logind, in the greeter and in the session; Ctrl+Alt+F1 returns)
 layout	=Hyprland	input:resolve_binds_by_sym = false: binds match the first layout (us) whatever is active, nothing to do
-layout	=ghostty	Ctrl+letter arrives as the C0 byte on any layout; alt+<physical key> sends ESC + the us letter (Alt would be lost on Cyrillic)
+layout	=ghostty	Ctrl+letter arrives as the C0 byte on any layout; alt+<physical key> sends ESC + the us letter (Alt would be lost on Cyrillic); every ghostty keybind on a letter (Ctrl+Shift+C/V/N/T/W/Q/O/E/F/A/P/I/J ...) has a physical-key twin
 layout	=tmux	Cyrillic twins of every letter and M- bind in the prefix and copy-mode tables (tmux-layout.conf)
 layout	=nvim	langmap for built-in commands and langmapper.nvim for every mapping; automatic layout switching on top (<leader>uk toggles it)
 layout	=zsh	layout_dup_meta for Alt widgets, layout_dup_keys for the vi keymaps

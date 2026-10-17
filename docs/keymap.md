@@ -20,6 +20,7 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 150 |
 | Terminal | [tmux: this setup](#tmux-this-setup) | 55 |
 | Terminal | [tmux: stock prefix keys](#tmux-stock-prefix-keys) | 80 |
+| Terminal | [Terminal: ghostty](#terminal-ghostty) | 13 |
 | Terminal | [zsh line editor](#zsh-line-editor) | 34 |
 | Terminal | [zsh helpers](#zsh-helpers) | 8 |
 | Terminal | [zsh aliases](#zsh-aliases) | 42 |
@@ -305,11 +306,11 @@ Hyprland binds that no classification rule claims yet (add a rule to rules.tsv).
 | `Super+Alt+Shift+D` | Dictation: next language (ru uk en) |
 | `Super+Alt+T` | New reminder (25 tea or 14:30 standup) |
 | `Super+Ctrl+Alt+T` | Reminders: list and cancel |
+| `Super+Ctrl+.` | Transcode a picture or video for sharing |
+| `Super+Ctrl+E` | Edit anywhere: nvim at the pointer then paste (Ctrl+S) |
 | `Super+Ctrl+A` | AI: ask about the focused window |
 | `Super+Alt+A` | AI: question about the selected text |
 | `Super+Ctrl+T` | AI: Telegram digest (unread allowlisted chats) |
-| `Super+Ctrl+.` | Transcode a picture or video for sharing |
-| `Super+Ctrl+E` | Edit anywhere: nvim at the pointer then paste (Ctrl+S) |
 | `Super+Ctrl+Delete` | Laptop panel on or off (needs an external monitor) |
 | `Super+Ctrl+Alt+Delete` | Mirror the laptop panel to the external monitor |
 | `Super+Ctrl+Z` | Zoom the screen in around the pointer |
@@ -624,6 +625,26 @@ The unchanged default prefix keys that tmux documents (list-keys -N). Everything
 | `Prefix Shift+Down` | Move the visible part of the window down |
 | `Prefix Shift+Left` | Move the visible part of the window left |
 | `Prefix Shift+Right` | Move the visible part of the window right |
+
+### Terminal: ghostty
+
+Ghostty's own keys (the defaults of its keybind list). Ctrl+Shift chords are matched by physical key, so they also work while the ua or ru layout is active (generated twins in ghostty/layout-keys.conf).
+
+| Keys | Action | Context |
+|---|---|---|
+| `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy / paste the clipboard | ghostty (us, ua, ru) |
+| `Ctrl+Shift+N` | New window | ghostty (us, ua, ru) |
+| `Ctrl+Shift+T` | New tab | ghostty (us, ua, ru) |
+| `Ctrl+Shift+W` | Close the tab | ghostty (us, ua, ru) |
+| `Ctrl+Shift+Q` | Quit ghostty (all windows) | ghostty (us, ua, ru) |
+| `Ctrl+Shift+O` / `Ctrl+Shift+E` | Split right / down | ghostty (us, ua, ru) |
+| `Ctrl+Shift+F` | Search the scrollback | ghostty (us, ua, ru) |
+| `Ctrl+Shift+A` | Select all | ghostty (us, ua, ru) |
+| `Ctrl+Shift+P` | Command palette | ghostty (us, ua, ru) |
+| `Ctrl+Shift+I` | Inspector | ghostty (us, ua, ru) |
+| `Ctrl+Shift+J` | Write the screen to a file and paste its path (Ctrl+Alt+Shift+J opens it, Super+Ctrl+Shift+J copies it) | ghostty (us, ua, ru) |
+| `Ctrl+Shift+,` / `Ctrl+,` | Reload / open the ghostty config | ghostty (us, ua, ru) |
+| `Super+Ctrl+[` / `Super+Ctrl+]` | Previous / next split | ghostty (us, ua, ru) |
 
 ### zsh line editor
 
@@ -1301,7 +1322,7 @@ Every bind works while the Ukrainian or Russian layout is active. One physical-k
 | Keys | Action |
 |---|---|
 | Hyprland | input:resolve_binds_by_sym = false: binds match the first layout (us) whatever is active, nothing to do |
-| ghostty | Ctrl+letter arrives as the C0 byte on any layout; alt+<physical key> sends ESC + the us letter (Alt would be lost on Cyrillic) |
+| ghostty | Ctrl+letter arrives as the C0 byte on any layout; alt+<physical key> sends ESC + the us letter (Alt would be lost on Cyrillic); every ghostty keybind on a letter (Ctrl+Shift+C/V/N/T/W/Q/O/E/F/A/P/I/J ...) has a physical-key twin |
 | tmux | Cyrillic twins of every letter and M- bind in the prefix and copy-mode tables (tmux-layout.conf) |
 | nvim | langmap for built-in commands and langmapper.nvim for every mapping; automatic layout switching on top (<leader>uk toggles it) |
 | zsh | layout_dup_meta for Alt widgets, layout_dup_keys for the vi keymaps |

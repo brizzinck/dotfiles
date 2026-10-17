@@ -4,8 +4,11 @@
 The map is keymap.tsv (next to this file): one row per printable physical key with the characters (and xkb keysym
 names) that key produces in the us, ua and ru layouts, unshifted and shifted. Everything else is generated from it:
 
-  ghostty  ~/dotfiles/.config/ghostty/layout-keys.conf   Alt+<physical key> always sends ESC + the us character
-  tmux     ~/dotfiles/.config/tmux/tmux-layout.conf      Cyrillic twins of every letter / M- binding (from `tmux list-keys`)
+  ghostty  ~/dotfiles/.config/ghostty/layout-keys.conf   Alt+<physical key> always sends ESC + the us character; every
+                                                         ghostty keybind on a letter / punctuation key (defaults from
+                                                         `ghostty +list-keybinds --default` + the config) gets a physical twin
+  tmux     ~/dotfiles/.config/tmux/tmux-layout.conf      Cyrillic twins of every letter / M- binding (`tmux list-keys` of a private
+                                                         server that loads the repo tmux.conf)
   zsh      ~/dotfiles/.config/zsh/layout-keys.zsh        Cyrillic -> us table + widget-twin helpers (Alt widgets, vi-mode)
   shell    ~/dotfiles/.config/layout/layout-keys.sh      bash helpers: rofi key lists, fzf bind twins
   nvim     ~/dotfiles/.config/nvim/lua/configs/layout_data.lua   langmap + langmapper layout strings
@@ -15,7 +18,8 @@ names) that key produces in the us, ua and ru layouts, unshifted and shifted. Ev
                                                          apps/obsidian/obsidian.vimrc; apps/obsidian/apply.sh appends them to the vault's vimrc
 
 Usage (stdlib only; run with PYTHONPYCACHEPREFIX=/tmp/pycache):
-  layout.py gen [ghostty tmux zsh shell nvim rofi vimium obsidian]   regenerate (default: all); tmux needs a running tmux server
+  layout.py gen [ghostty tmux zsh shell nvim rofi vimium obsidian]   regenerate (default: all); tmux starts a private server,
+                                                ghostty and rofi need their binaries (default keybinds / default config)
   layout.py check                               exit 1 when a generated file differs from a fresh render
   layout.py dump-map                            rebuild keymap.tsv from the system xkb data (libxkbcommon via ctypes)
 
@@ -35,6 +39,7 @@ ROOT = HERE.parent.parent
 TSV = HERE / "keymap.tsv"
 COLS = ["xkb", "w3c", "us", "us_shift", "ua", "ua_shift", "ru", "ru_shift",
         "us_sym", "us_shift_sym", "ua_sym", "ua_shift_sym", "ru_sym", "ru_shift_sym"]
+GHOSTTY_CONFIG = ROOT / ".config/ghostty/config"
 OUT = {
     "ghostty": ROOT / ".config/ghostty/layout-keys.conf",
     "tmux": ROOT / ".config/tmux/tmux-layout.conf",
@@ -174,10 +179,96 @@ def header(comment):
 
 
 # --------------------------------------------------------------------------------------------------------------
-def gen_ghostty(L):
-    """Ghostty (legacy key encoding) drops Alt for a non-ASCII character: Alt+в arrives as a bare в, because the
-    ESC prefix is only written for a one-byte character. A keybind on the PHYSICAL key makes Alt+letter send
-    ESC + the us letter whatever layout is active (identical to what the us layout sends already)."""
+GHOSTTY_MODS = {"shift": "shift", "ctrl": "ctrl", "control": "ctrl", "alt": "alt", "option": "alt", "super": "super",
+                "cmd": "super", "command": "super", "win": "super"}
+GHOSTTY_FLAGS = ("all:", "global:", "unconsumed:", "performable:")
+
+
+def ghostty_parse(line):
+    """`keybind = [flags]mod+mod+key[>step...]=action` -> (flags, [(mods, key), ...], action) or None. The key may be
+    `=` or `+` itself (`ctrl+==increase_font_size:1`, `ctrl++=...`), so the mods are matched first and the key lazily."""
+    m = re.match(r"^\s*keybind\s*=\s*(.*)$", line)
+    if not m:
+        return None
+    body, flags = m.group(1), ""
+    while body.startswith(GHOSTTY_FLAGS):
+        f, body = body.split(":", 1)
+        flags += f + ":"
+    steps, rest = [], body
+    while True:
+        sm = re.match(r"^((?:[A-Za-z]+\+)*)(.+?)(?:(>)|=)(.*)$", rest)
+        if not sm:
+            return None
+        mods, key, more, tail = sm.groups()
+        steps.append(([GHOSTTY_MODS.get(x.lower(), x.lower()) for x in mods.split("+") if x], key))
+        if more:
+            rest = tail
+            continue
+        return flags, steps, tail
+
+
+def ghostty_effective(defaults, config_text):
+    """The keybinds ghostty really uses: the built-in defaults, then the `keybind` lines of the config in order
+    (a later line for the same trigger replaces the earlier one, `unbind` removes it, `clear` drops everything)."""
+    eff = {}
+    for src in (defaults, config_text):
+        for line in src.splitlines():
+            if re.match(r"^\s*keybind\s*=\s*clear\s*$", line):
+                eff.clear()
+                continue
+            p = ghostty_parse(line)
+            if not p:
+                continue
+            flags, steps, action = p
+            ident = (flags, tuple((frozenset(m), k) for m, k in steps))
+            if action == "unbind":
+                eff.pop(ident, None)
+            else:
+                eff[ident] = (flags, steps, action)
+    return eff
+
+
+def ghostty_twin_step(L, mods, key):
+    """One trigger step -> the same step on the PHYSICAL key (`ctrl+shift+a` -> `ctrl+shift+key_a`), or None when no twin
+    is needed: not a single printable key, the key already is a physical name, the character is the same ASCII
+    character on every layout (digits, - = +), or the step is a bare / Shift-only key (a twin would swallow typing)."""
+    if len(key) != 1:
+        return None
+    for r in L.rows:
+        for suf in ("", "_shift"):
+            if r["us" + suf] != key:
+                continue
+            if not any(r[lay + suf] and not is_ascii(r[lay + suf]) for lay in ("ua", "ru")):
+                return None
+            new = list(mods) + (["shift"] if suf and "shift" not in mods else [])
+            if not set(new) - {"shift"}:
+                return None
+            return new, ghostty_key(r["w3c"])
+    return None
+
+
+def ghostty_defaults():
+    try:
+        return subprocess.run(["ghostty", "+list-keybinds", "--default"], capture_output=True, text=True,
+                              check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def gen_ghostty(L, defaults=None, config_text=None):
+    """Ghostty matches a keybind written with a character (`ctrl+shift+a`, every default of that kind) against the
+    character the active layout produces, so on ua / ru none of them fires. Ghostty (legacy key encoding) also drops Alt
+    for a non-ASCII character: Alt+в arrives as a bare в, because the ESC prefix is only written for a one-byte
+    character. A keybind on the PHYSICAL key (`key_a`, W3C KeyA, the name `ghostty +list-keybinds` prints for it) matches
+    whatever layout is active, and ghostty tries the physical trigger before the character one, so on us it is the same
+    key with the same action.
+      1. Alt+<physical key> sends ESC + the us character (the shell / tmux / fzf / nvim M- bindings work on ua and ru).
+      2. Every effective ghostty keybind on a letter or punctuation key gets a physical twin with the same action:
+         the defaults (`ghostty +list-keybinds --default`) plus the `keybind` lines of ghostty/config; unbound ones get none."""
+    defaults = defaults if defaults is not None else ghostty_defaults()
+    if defaults is None:
+        sys.exit("ghostty: cannot list the default keybinds (ghostty not installed?)")
+    config_text = config_text if config_text is not None else (GHOSTTY_CONFIG.read_text() if GHOSTTY_CONFIG.exists() else "")
     out = [header("#"), "# Included from ghostty/config (config-file = ?layout-keys.conf).\n",
            "# Alt+<physical key> -> ESC + us character, so zsh/tmux/fzf/nvim M- bindings work on ua and ru too.\n"]
     for r in L.rows:
@@ -188,15 +279,47 @@ def gen_ghostty(L):
         out.append(f"keybind = alt+{ghostty_key(w3c)}=text:\\x1b{lit(us)}\n")
         if us.isalpha():
             out.append(f"keybind = alt+shift+{ghostty_key(w3c)}=text:\\x1b{r['us_shift']}\n")
+    # Ctrl+/ is the C0 byte 0x1f (readline undo, Claude Code undo) only where the Slash key types "/": ua and ru type "." there
+    # and ghostty then sends the plain "." / CSI u, so the physical Ctrl+Slash gets the byte itself (the same byte as on us)
+    eff = ghostty_effective(defaults, config_text)
+    if not any(k == "slash" and set(m) == {"ctrl"} for _, s, _ in eff.values() for m, k in s):
+        out.append("\n# Ctrl+/ -> 0x1f on every layout (the Slash key types a dot on ua and ru)\n")
+        out.append("keybind = ctrl+slash=text:\\x1f\n")
+    taken = {(f, tuple((frozenset(m), k) for m, k in s)) for f, s, _ in eff.values()}
+    twins = []
+    for flags, steps, action in eff.values():
+        new = [ghostty_twin_step(L, m, k) for m, k in steps]
+        if all(n is None for n in new):
+            continue
+        phys = [n if n else (m, k) for n, (m, k) in zip(new, steps)]
+        if (flags, tuple((frozenset(m), k) for m, k in phys)) in taken:
+            continue  # the owner (or ghostty) already binds that physical trigger: never override it
+        trig = ">".join("+".join(list(m) + [k]) for m, k in phys)
+        twins.append(f"keybind = {flags}{trig}={action}\n")
+    out.append("\n# Physical-key twins of the ghostty keybinds on letter / punctuation keys (defaults + ghostty/config), so\n"
+               "# Ctrl+Shift+A, Ctrl+Shift+N, Ctrl+Shift+T ... also work on ua and ru. Same action as the original.\n")
+    out.extend(sorted(set(twins)))
     return "".join(out)
 
 
 def tmux_live():
+    """`tmux list-keys` of a PRIVATE server that loaded the repo's tmux.conf (plugins and tmux-fingers tables included),
+    so the result does not depend on what the running tmux server has loaded or which binds were added by hand there.
+    The conf already sources tmux-layout.conf (the twins of the last run); twin keys are Cyrillic and never get twins."""
+    sock = f"layout-gen-{os.getpid()}"
     env = {k: v for k, v in os.environ.items() if k != "TMUX"}
+    conf = ROOT / ".config/tmux/tmux.conf"
     try:
-        res = subprocess.run(["tmux", "list-keys"], capture_output=True, text=True, env=env, check=True)
-    except (OSError, subprocess.CalledProcessError):
-        sys.exit("tmux: no running server to read the bindings from (start tmux first)")
+        subprocess.run(["tmux", "-L", sock, "-f", str(conf), "new-session", "-d", "-s", "layout-gen", "-x", "200", "-y", "50"],
+                       capture_output=True, text=True, env=env, check=True, timeout=60)
+        res = subprocess.run(["tmux", "-L", sock, "list-keys"], capture_output=True, text=True, env=env, check=True)
+    except (OSError, subprocess.SubprocessError):
+        sys.exit("tmux: cannot start a private server with " + str(conf))
+    finally:
+        try:
+            subprocess.run(["tmux", "-L", sock, "kill-server"], capture_output=True, env=env, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            pass
     return res.stdout
 
 
@@ -219,6 +342,8 @@ def gen_tmux(L, listing=None):
             continue
         rep, table, tok, cmd = m.groups()
         key = re.sub(r"\\(.)", r"\1", tok)
+        if len(key) > 2 and key[0] == key[-1] == '"':
+            key = key[1:-1]  # list-keys quotes a key that holds a brace or a space: "M-{"
         twins = []
         if len(key) == 1 and key in L.twins:
             twins = L.twins[key]
@@ -535,6 +660,8 @@ def main(argv):
         for name in want:
             if name in ("tmux", "rofi"):
                 continue  # depend on the running tmux server / the installed rofi
+            if name == "ghostty" and ghostty_defaults() is None:
+                continue  # the default keybinds come from the installed ghostty
             if not OUT[name].exists() or OUT[name].read_text() != GENS[name](L):
                 print("stale:", OUT[name])
                 bad = 1

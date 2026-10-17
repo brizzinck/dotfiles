@@ -15,6 +15,7 @@ hypr-other	Desktop	Other Hyprland binds	Hyprland binds that no classification ru
 leader	Desktop	Leader menu (SUPER+;)	One-shot which-key popup generated from the hub rows: press SUPER+; then the group key, then the item key. The popup lists every option, so you can read as you go. Keys work on the ua and ru layouts.
 tmux-custom	Terminal	tmux: this setup	tmux, read from a private server that loads tmux.conf (notes are the -N text of each bind). The prefix is Ctrl+Space. Status badges: PREFIX yellow, COPY blue, ZOOM purple, SYNC red; a red bell marks a background window that needs attention.
 tmux-default	Terminal	tmux: stock prefix keys	The unchanged default prefix keys that tmux documents (list-keys -N). Everything in the block above overrides or extends them.
+ghostty	Terminal	Terminal: ghostty	Ghostty's own keys (the defaults of its keybind list). Ctrl+Shift chords are matched by physical key, so they also work while the ua or ru layout is active (generated twins in ghostty/layout-keys.conf).
 zsh-keys	Terminal	zsh line editor	zsh vi-mode (Esc = NORMAL, cursor beam = INSERT, block = NORMAL; [I] [N] [V] in the prompt). Read with bindkey from an interactive zsh; vi motions and operators are the standard ones.
 zsh-helpers	Terminal	zsh helpers	Functions of .zshrc that carry a comment, plus the commands of this setup.
 zsh-aliases	Terminal	zsh aliases	Every alias of .zshrc with what it expands to.
