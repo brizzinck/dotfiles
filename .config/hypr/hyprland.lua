@@ -336,6 +336,14 @@ hl.window_rule({
     stay_focused = true,
 })
 
+-- Camoufox (skw anti-detect browser): keep the persona window size so the page fills the window
+hl.window_rule({
+    name = "float-camoufox",
+    match = { class = "^(camoufox)$" },
+    float = true,
+    center = true,
+})
+
 -- Bitwarden desktop app (Electron, class Bitwarden): a centered floating window instead of a full-width tile.
 -- It is started silently (no focus) at login when the SSH agent flag is on; vault.sh app opens it on demand.
 hl.window_rule({
@@ -541,6 +549,8 @@ hl.bind(mainMod .. " + SHIFT + O", hl.dsp.exec_cmd(scripts .. "/capture.sh ocr")
 hl.bind(mainMod .. " + SHIFT + S", hl.dsp.exec_cmd("grim -g \"$(slurp)\" - | satty -f - --copy-command wl-copy --output-filename ~/pics/screenshots/%F_%T.png"), { description = "Screenshot region then annotate" })
 hl.bind("ALT + S", hl.dsp.exec_cmd(scripts .. "/shot.sh region"), { description = "Screenshot region (clipboard + file)" })
 hl.bind("SHIFT + ALT + S", hl.dsp.exec_cmd("grim -g \"$(slurp)\" - | satty -f - --copy-command wl-copy --output-filename ~/pics/screenshots/%F_%T.png"), { description = "Screenshot region then annotate (satty)" })
+hl.bind("CTRL + ALT + S", hl.dsp.exec_cmd(scripts .. "/freeze-shot.sh save"), { description = "Frozen screen region screenshot (clipboard + file)" })
+hl.bind("CTRL + SHIFT + ALT + S", hl.dsp.exec_cmd(scripts .. "/freeze-shot.sh annotate"), { description = "Frozen screen region screenshot then annotate (satty)" })
 hl.bind(mainMod .. " + R", hl.dsp.exec_cmd(scripts .. "/rec-toggle.sh"), { description = "Record screen (toggle)" })
 hl.bind(mainMod .. " + SHIFT + R", hl.dsp.exec_cmd(scripts .. "/rec-toggle.sh region"), { description = "Record region (toggle)" })
 hl.bind(mainMod .. " + ALT + R", hl.dsp.exec_cmd(scripts .. "/rec-toggle.sh --mic"), { description = "Record screen with system sound and mic (toggle)" })
@@ -549,8 +559,6 @@ hl.bind(mainMod .. " + ALT + R", hl.dsp.exec_cmd(scripts .. "/rec-toggle.sh --mi
 hl.bind(mainMod .. " + W", hl.dsp.exec_cmd(scripts .. "/safe-close.sh"), { description = "Close window (twice for browsers and terminals)" })
 hl.bind(mainMod .. " + SHIFT + W", hl.dsp.exec_cmd(scripts .. "/window-menu.sh"), { description = "Window action menu" })
 hl.bind(mainMod .. " + SHIFT + space", hl.dsp.exec_cmd(scripts .. "/window-switcher.sh"), { description = "Window switcher" })
-hl.bind("CTRL + ALT + S", hl.dsp.exec_cmd(scripts .. "/freeze-shot.sh save"), { description = "Frozen screen region screenshot (clipboard + file)" })
-hl.bind("CTRL + SHIFT + ALT + S", hl.dsp.exec_cmd(scripts .. "/freeze-shot.sh annotate"), { description = "Frozen screen region screenshot then annotate (satty)" })
 hl.bind(mainMod .. " + V", hl.dsp.window.float({ action = "toggle" }), { description = "Toggle floating" })
 hl.bind(mainMod .. " + F", hl.dsp.window.fullscreen({ mode = "fullscreen" }), { description = "Fullscreen" })
 hl.bind(mainMod .. " + SHIFT + F", hl.dsp.window.fullscreen({ mode = "maximized" }), { description = "Maximize (keep bar)" })
