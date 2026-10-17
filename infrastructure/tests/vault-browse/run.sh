@@ -273,6 +273,32 @@ PY' _ "$V"
   quick_no_core
   quick_idle_limit
   quick_lock_order
+  quick_slow_first_server
+}
+
+# BW1-fix 8: a first server that was too slow to answer is stopped before the next start (it used to be orphaned)
+quick_slow_first_server() {
+  local V="$SCRIPTS/vault-bw.py" out
+  reset unlocked
+  # shellcheck disable=SC1091
+  . "$FAKE/env.sh"
+  out=$(FAKE_BW_DELAY=2.5 python3 -I - "$V" <<'PY'
+import importlib.util, sys, time
+spec = importlib.util.spec_from_file_location("vb", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+import os
+print("first", m.start_serve(wait=0.8))
+p1 = m.read_pid(); print("pid1", p1)
+os.environ.pop("FAKE_BW_DELAY")
+m._start_failed = False
+print("second", m.start_serve(wait=10))
+print("pid2", m.read_pid())
+time.sleep(0.5)
+print("pid1alive", os.path.exists(f"/proc/{p1}") and b"_serve" in open(f"/proc/{p1}/cmdline", "rb").read())
+PY
+)
+  check "slow first server: the first start times out, the second works" bash -c 'grep -qx "first False" <<<"$1" && grep -qx "second True" <<<"$1"' _ "$out"
+  check "  the slow first supervisor is gone (not orphaned) and only the new one is left" bash -c 'grep -qx "pid1alive False" <<<"$1" && [ "$(pgrep -fc "[v]ault-bw.py _serve")" = 1 ]' _ "$out"
+  stop_bw_servers
 }
 
 # BW1-fix 5: lock drops the session file first, stops the server under the start flock, then runs bw lock with the key it held

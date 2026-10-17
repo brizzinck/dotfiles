@@ -370,7 +370,7 @@ def start_serve(wait=20.0):
             return False
         if serve_up():
             return True
-        SOCK.unlink(missing_ok=True)
+        stop_serve()   # a slow first server (still starting, no socket yet) must not be orphaned by the new one
         try:
             child = launch_serve()
         except OSError:
