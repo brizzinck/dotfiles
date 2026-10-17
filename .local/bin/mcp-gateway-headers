@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Headers helper for Claude Code (`headersHelper`) and Codex (`http_headers_helper`): prints {"Authorization":"Bearer <token>"}
+# for the local MCP gateway. The token lives only in ~/.local/state/mcp/gateway.token (0600), never in a client config.
+exec "$(dirname "$(readlink -f "$0")")/mcp-gateway" headers

@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# mcp-install - install the pinned user-level pieces of the MCP stack. No root, idempotent, every download is hash-checked.
+#
+#   mcp-install                 install what is missing or out of date (proxy, venv, node), then the gateway token
+#   mcp-install --check         read-only: exit 0 when everything is installed and current, print one line per piece
+#   mcp-install --only PIECE    proxy | venv | node
+#
+# Pieces (pins in ~/.config/mcp/pins.env, requirements-desktop-ro.txt, node/package-lock.json):
+#   proxy  ~/.local/share/mcp/bin/mcp-proxy   TBXark/mcp-proxy release tarball, sha256 compared before it is unpacked
+#   venv   ~/.local/share/mcp/venv            python venv for desktop-ro, pip --require-hashes --no-deps
+#   node   ~/.local/share/mcp/node            chrome-devtools-mcp, npm ci --ignore-scripts (integrity hashes of the lockfile)
+# Test hooks: MCP_HOME (default ~/.local/share/mcp), MCP_CONFIG_DIR, MCP_PROXY_URL_BASE (release download base).
+set -u
+
+HOME_DIR=${MCP_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/mcp}
+CONFIG_DIR=${MCP_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/mcp}
+PINS=$CONFIG_DIR/pins.env
+BASE_URL=${MCP_PROXY_URL_BASE:-https://github.com/TBXark/mcp-proxy/releases/download}
+CHECK=0
+ONLY=""
+
+say() { printf '%s\n' "$*"; }
+die() { echo "mcp-install: $*" >&2; exit 1; }
+
+while (($#)); do
+  case $1 in
+    --check) CHECK=1 ;;
+    --only) shift; ONLY=${1:-}; [[ $ONLY =~ ^(proxy|venv|node)$ ]] || die "--only needs proxy, venv or node" ;;
+    -h | --help) sed -n '2,/^set -u/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+  shift
+done
+[[ -r $PINS ]] || die "$PINS is missing (stow the dotfiles first)"
+set -a
+# shellcheck source=/dev/null
+. "$PINS"
+set +a
+
+want() { [[ -z $ONLY || $ONLY == "$1" ]]; }
+stamp_of() { cat "$@" | sha256sum | cut -d' ' -f1; }
+RC=0
+fail() { RC=1; }
+
+# --- proxy ---------------------------------------------------------------------------------------------------------
+proxy_current() { [[ -x $HOME_DIR/bin/mcp-proxy && $(cat "$HOME_DIR/bin/.version" 2>/dev/null) == "$MCP_PROXY_VERSION" ]]; }
+do_proxy() {
+  local arch var want_sum tmp got url
+  case $(uname -m) in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; *) say "proxy: unsupported CPU $(uname -m)"; fail; return ;; esac
+  var=MCP_PROXY_SHA256_linux_$arch
+  want_sum=${!var:-}
+  [[ -n $want_sum ]] || { say "proxy: no pinned sha256 for linux_$arch"; fail; return; }
+  if proxy_current; then say "proxy: mcp-proxy $MCP_PROXY_VERSION installed"; return; fi
+  if ((CHECK)); then say "proxy: mcp-proxy $MCP_PROXY_VERSION NOT installed (mcp-install)"; fail; return; fi
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/mcp-install.XXXXXX") || { fail; return; }
+  url="$BASE_URL/v$MCP_PROXY_VERSION/mcp-proxy_${MCP_PROXY_VERSION}_linux_$arch.tar.gz"
+  if ! curl -fsSL --retry 2 -o "$tmp/mp.tgz" "$url"; then say "proxy: download failed: $url"; rm -rf "$tmp"; fail; return; fi
+  got=$(sha256sum "$tmp/mp.tgz" | cut -d' ' -f1)
+  if [[ $got != "$want_sum" ]]; then
+    say "proxy: CHECKSUM MISMATCH for $url (expected $want_sum, got $got); nothing installed"
+    rm -rf "$tmp"; fail; return
+  fi
+  mkdir -p "$HOME_DIR/bin"
+  if ! tar -xzf "$tmp/mp.tgz" -C "$tmp" mcp-proxy; then say "proxy: unpacking failed"; rm -rf "$tmp"; fail; return; fi
+  install -m 755 "$tmp/mcp-proxy" "$HOME_DIR/bin/mcp-proxy.new" && mv -f "$HOME_DIR/bin/mcp-proxy.new" "$HOME_DIR/bin/mcp-proxy"
+  printf '%s\n' "$MCP_PROXY_VERSION" >"$HOME_DIR/bin/.version"
+  rm -rf "$tmp"
+  say "proxy: installed mcp-proxy $MCP_PROXY_VERSION (sha256 verified)"
+}
+
+# --- venv ----------------------------------------------------------------------------------------------------------
+venv_stamp() { stamp_of "$CONFIG_DIR/requirements-desktop-ro.txt"; }
+venv_current() { [[ -x $HOME_DIR/venv/bin/python && $(cat "$HOME_DIR/venv/.requirements-stamp" 2>/dev/null) == "$(venv_stamp)" ]]; }
+do_venv() {
+  if venv_current; then say "venv: desktop-ro environment current"; return; fi
+  if ((CHECK)); then say "venv: desktop-ro environment NOT installed (mcp-install)"; fail; return; fi
+  command -v python3 >/dev/null || { say "venv: python3 missing"; fail; return; }
+  mkdir -p "$HOME_DIR"
+  rm -rf "$HOME_DIR/venv"   # a venv embeds its own path, so it is rebuilt in place (the gateway restarts the server on demand)
+  if python3 -m venv "$HOME_DIR/venv" \
+    && "$HOME_DIR/venv/bin/python" -m pip install --quiet --disable-pip-version-check --require-hashes --no-deps \
+      -r "$CONFIG_DIR/requirements-desktop-ro.txt"; then
+    venv_stamp >"$HOME_DIR/venv/.requirements-stamp"
+    say "venv: desktop-ro environment installed (hashes verified)"
+  else
+    rm -rf "$HOME_DIR/venv"
+    say "venv: pip install failed"; fail
+  fi
+}
+
+# --- node ----------------------------------------------------------------------------------------------------------
+node_stamp() { stamp_of "$CONFIG_DIR/node/package.json" "$CONFIG_DIR/node/package-lock.json"; }
+node_current() { [[ -x $HOME_DIR/node/node_modules/.bin/chrome-devtools-mcp && $(cat "$HOME_DIR/node/.lock-stamp" 2>/dev/null) == "$(node_stamp)" ]]; }
+do_node() {
+  if node_current; then say "node: chrome-devtools-mcp $(jq -r .dependencies.\"chrome-devtools-mcp\" "$CONFIG_DIR/node/package.json") installed"; return; fi
+  if ((CHECK)); then say "node: chrome-devtools-mcp NOT installed (mcp-install)"; fail; return; fi
+  command -v npm >/dev/null || { say "node: npm missing"; fail; return; }
+  mkdir -p "$HOME_DIR/node"
+  cp "$CONFIG_DIR/node/package.json" "$CONFIG_DIR/node/package-lock.json" "$HOME_DIR/node/"
+  if (cd "$HOME_DIR/node" && npm ci --ignore-scripts --no-audit --no-fund --loglevel=error); then
+    node_stamp >"$HOME_DIR/node/.lock-stamp"
+    say "node: chrome-devtools-mcp installed (lockfile integrity verified)"
+  else
+    say "node: npm ci failed"; fail
+  fi
+}
+
+want proxy && do_proxy
+want venv && do_venv
+want node && do_node
+if [[ -z $ONLY && $CHECK -eq 0 && $RC -eq 0 ]]; then
+  "$(dirname "$(readlink -f "$0")")/mcp-gateway" token ensure >/dev/null && say "token: gateway token present"
+fi
+exit "$RC"

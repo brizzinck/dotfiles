@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# mcp-gateway - control of the local MCP gateway (TBXark/mcp-proxy, a user service, 127.0.0.1 only, bearer token).
+#
+#   mcp-gateway run              service entry (mcp-gateway.service): token files, effective config, exec mcp-proxy
+#   mcp-gateway status           service state, health endpoint, served servers; exit 0 when healthy
+#   mcp-gateway servers          names of the servers the gateway serves (config minus servers that are not set up yet)
+#   mcp-gateway url NAME         endpoint of one server, http://127.0.0.1:PORT/NAME/mcp
+#   mcp-gateway headers          {"Authorization":"Bearer <token>"} (the clients' headers helper; also: mcp-gateway-headers)
+#   mcp-gateway token ensure     create the token file once (0600); `token path` prints where it is; `token rotate` makes a new one
+#   mcp-gateway restart | logs [N] | check
+#
+# Config (repo, stowed): ~/.config/mcp/gateway.json in mcp-proxy's own format. It holds ${ENV} placeholders only; the tokens come
+# from 0600 files in ~/.local/state/mcp/ and reach mcp-proxy through its environment (never argv, never a config file, never a
+# client config: Claude Code and Codex call `mcp-gateway-headers` at connect time). The effective config is written to
+# $XDG_RUNTIME_DIR/mcp-gateway/config.json (tmpfs) without the servers that are not set up yet (telegram until its token exists).
+# Test hooks: MCP_STATE_DIR, MCP_CONFIG_DIR, MCP_RUNTIME_DIR, MCP_PROXY_BIN, MCP_GATEWAY_UNIT.
+set -u
+
+STATE_DIR=${MCP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/mcp}
+CONFIG_DIR=${MCP_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/mcp}
+RUNTIME_DIR=${MCP_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/mcp-gateway}
+UNIT=${MCP_GATEWAY_UNIT:-mcp-gateway.service}
+GATEWAY_TOKEN=$STATE_DIR/gateway.token
+TELEGRAM_TOKEN=$STATE_DIR/telegram.token
+SRC_CONFIG=$CONFIG_DIR/gateway.json
+
+die() { echo "mcp-gateway: $*" >&2; exit 1; }
+proxy_bin() {
+  local c
+  for c in "${MCP_PROXY_BIN:-}" "$HOME/.local/share/mcp/bin/mcp-proxy" /usr/local/bin/mcp-proxy /usr/bin/mcp-proxy; do
+    [[ -n $c && -x $c ]] && { printf '%s\n' "$c"; return 0; }
+  done
+  return 1
+}
+addr() { jq -r '.mcpProxy.addr' "$SRC_CONFIG"; }
+
+new_token() { head -c 32 /dev/urandom | base64 | tr -d '=+/\n'; }
+
+# ensure_token FILE: create FILE (0600, directory 0700) with a random token when it does not exist
+ensure_token() {
+  local f=$1 tmp
+  [[ -s $f ]] && return 0
+  (umask 077; mkdir -p "$STATE_DIR") || die "cannot create $STATE_DIR"
+  chmod 700 "$STATE_DIR"
+  tmp=$(umask 077; mktemp "$f.XXXXXX") || die "cannot write $f"
+  new_token >"$tmp"
+  mv -f "$tmp" "$f"
+  chmod 600 "$f"
+}
+
+# render_config: effective config on stdout (jq): the telegram server only exists once its token file does
+render_config() {
+  local have_tg=0
+  [[ -s $TELEGRAM_TOKEN ]] && have_tg=1
+  HAVE_TG=$have_tg jq 'if env.HAVE_TG == "1" then . else del(.mcpServers.telegram) end' "$SRC_CONFIG"
+}
+
+cmd_run() {
+  local bin out
+  bin=$(proxy_bin) || die "mcp-proxy is not installed (run: mcp-install)"
+  [[ -r $SRC_CONFIG ]] || die "$SRC_CONFIG is missing (stow the dotfiles)"
+  ensure_token "$GATEWAY_TOKEN"
+  MCP_GATEWAY_TOKEN=$(<"$GATEWAY_TOKEN")
+  export MCP_GATEWAY_TOKEN
+  if [[ -s $TELEGRAM_TOKEN ]]; then MCP_TELEGRAM_TOKEN=$(<"$TELEGRAM_TOKEN"); export MCP_TELEGRAM_TOKEN; fi
+  (umask 077; mkdir -p "$RUNTIME_DIR") || die "cannot create $RUNTIME_DIR"
+  out=$RUNTIME_DIR/config.json
+  (umask 077; render_config >"$out.tmp") || die "cannot render the gateway config"
+  mv -f "$out.tmp" "$out"
+  "$bin" -check-config -config "$out" >/dev/null 2>&1 || die "mcp-proxy rejects the config (mcp-gateway check shows why)"
+  exec "$bin" -config "$out"
+}
+
+cmd_check() {
+  local bin
+  bin=$(proxy_bin) || die "mcp-proxy is not installed (run: mcp-install)"
+  ensure_token "$GATEWAY_TOKEN"
+  MCP_GATEWAY_TOKEN=$(<"$GATEWAY_TOKEN") MCP_TELEGRAM_TOKEN=check-only \
+    "$bin" -check-config -config <(render_config)
+}
+
+cmd_servers() { render_config | jq -r '.mcpServers | keys[]'; }
+
+cmd_url() {
+  local name=${1:-}
+  [[ -n $name ]] || die "usage: mcp-gateway url NAME"
+  cmd_servers | grep -qx -- "$name" || die "unknown or not set up server: $name (served: $(cmd_servers | paste -sd' ' -))"
+  printf 'http://%s/%s/mcp\n' "$(addr)" "$name"
+}
+
+cmd_headers() {
+  [[ -s $GATEWAY_TOKEN ]] || die "no token yet (run: mcp-gateway token ensure)"
+  jq -cn --rawfile t "$GATEWAY_TOKEN" '{Authorization: ("Bearer " + ($t | rtrimstr("\n")))}'
+}
+
+cmd_token() {
+  case ${1:-} in
+    ensure) ensure_token "$GATEWAY_TOKEN"; echo "$GATEWAY_TOKEN" ;;
+    path) echo "$GATEWAY_TOKEN" ;;
+    rotate)
+      rm -f -- "$GATEWAY_TOKEN"
+      ensure_token "$GATEWAY_TOKEN"
+      systemctl --user try-restart "$UNIT" 2>/dev/null
+      echo "new token written to $GATEWAY_TOKEN (the clients read it on every connect)" ;;
+    *) die "usage: mcp-gateway token ensure|path|rotate" ;;
+  esac
+}
+
+cmd_status() {
+  local state ready rc=0
+  state=$(systemctl --user is-active "$UNIT" 2>/dev/null || true)
+  echo "service:  $UNIT is ${state:-unknown}"
+  if [[ -r $SRC_CONFIG ]]; then
+    ready=$(curl -fsS --max-time 3 "http://$(addr)/_readyz" 2>/dev/null) || ready=""
+  else
+    ready=""
+  fi
+  if [[ -n $ready ]]; then
+    echo "health:   $(jq -r '"\(.status), \(.serverCount) servers"' <<<"$ready" 2>/dev/null || echo "$ready")"
+  else
+    echo "health:   no answer on $( [[ -r $SRC_CONFIG ]] && addr)"
+    rc=1
+  fi
+  echo "served:   $(cmd_servers 2>/dev/null | paste -sd' ' -)"
+  if [[ -e $GATEWAY_TOKEN ]]; then echo "token:    $GATEWAY_TOKEN (mode $(stat -c %a "$GATEWAY_TOKEN"))"; else echo "token:    none yet"; fi
+  [[ $state == active ]] || rc=1
+  return $rc
+}
+
+case ${1:-} in
+  run) cmd_run ;;
+  status) cmd_status ;;
+  servers) cmd_servers ;;
+  url) shift; cmd_url "$@" ;;
+  headers) cmd_headers ;;
+  token) shift; cmd_token "$@" ;;
+  check) cmd_check ;;
+  restart) systemctl --user restart "$UNIT" && echo "restarted $UNIT" ;;
+  logs) journalctl --user -u "$UNIT" -n "${2:-60}" --no-pager ;;
+  -h | --help | help | "") sed -n '2,/^set -u/p' "$0" | sed '$d;s/^# \{0,1\}//' ;;
+  *) die "unknown command: $1 (try --help)" ;;
+esac

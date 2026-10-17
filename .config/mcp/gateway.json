@@ -1,0 +1,64 @@
+{
+  "mcpProxy": {
+    "baseURL": "http://127.0.0.1:37411",
+    "addr": "127.0.0.1:37411",
+    "name": "dotfiles-mcp-gateway",
+    "version": "1.0.0",
+    "type": "streamable-http",
+    "options": {
+      "panicIfInvalid": false,
+      "logEnabled": false,
+      "authTokens": ["${MCP_GATEWAY_TOKEN}"],
+      "autoReconnect": true,
+      "reconnectInterval": "15s",
+      "pingInterval": "30s"
+    }
+  },
+  "mcpServers": {
+    "desktop-ro": {
+      "command": "${HOME}/.local/share/mcp/venv/bin/python",
+      "args": ["${HOME}/.config/mcp/desktop-ro/server.py"],
+      "timeout": "30s",
+      "options": {
+        "toolFilter": {
+          "mode": "allow",
+          "list": [
+            "hypr_clients", "hypr_activewindow", "hypr_monitors", "hypr_workspaces", "media_status",
+            "notifications_history", "journal_user", "user_units_failed", "clipboard_text"
+          ]
+        }
+      }
+    },
+    "telegram": {
+      "url": "http://127.0.0.1:8765/mcp",
+      "transportType": "streamable-http",
+      "headers": { "Authorization": "Bearer ${MCP_TELEGRAM_TOKEN}" },
+      "timeout": "120s",
+      "options": {
+        "toolFilter": {
+          "mode": "allow",
+          "list": [
+            "get_me", "list_chats", "get_chats", "get_chat", "get_full_chat", "get_history", "get_messages",
+            "list_messages", "search_messages", "get_message_context", "get_message_link", "get_pinned_messages",
+            "get_message_reactions", "list_topics", "get_media_info", "transcribe_voice"
+          ]
+        }
+      }
+    },
+    "chrome-devtools": {
+      "command": "${HOME}/.local/bin/mcp-chrome-devtools",
+      "args": ["clean"],
+      "timeout": "120s"
+    },
+    "chrome-devtools-mine": {
+      "command": "${HOME}/.local/bin/mcp-chrome-devtools",
+      "args": ["mine"],
+      "timeout": "120s"
+    },
+    "context7": {
+      "url": "https://mcp.context7.com/mcp",
+      "transportType": "streamable-http",
+      "timeout": "60s"
+    }
+  }
+}

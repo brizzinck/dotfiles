@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# mcp-chrome - switch for agent access to the owner's own, logged-in Chrome (gateway server `chrome-devtools-mine`).
+#
+#   mcp-chrome mine on [--ttl MIN]   enable (default: switches itself off after 60 minutes), restart the gateway, notify
+#   mcp-chrome mine off              disable, restart the gateway
+#   mcp-chrome mine toggle | status  (status exits 0 when ON; used by the hub toggle row)
+#
+# ON only means the gateway starts chrome-devtools-mcp with --autoConnect; Chrome itself still asks before it lets anything
+# attach (chrome://inspect/#remote-debugging: the owner's authorization). The default clean-profile server `chrome-devtools`
+# is unaffected. Test hooks: MCP_STATE_DIR, MCP_CHROME_NO_RESTART=1, MCP_CHROME_NO_TIMER=1.
+set -u
+STATE_DIR=${MCP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/mcp}
+FLAG=$STATE_DIR/chrome-mine.enabled
+SELF=$(readlink -f "$0")
+TTL=60
+
+notify() { command -v notify-send >/dev/null && notify-send -a mcp-chrome -u "${3:-normal}" "$1" "$2" 2>/dev/null; return 0; }
+restart_gateway() { [[ ${MCP_CHROME_NO_RESTART:-0} == 1 ]] || systemctl --user restart mcp-gateway.service 2>/dev/null; }
+is_on() { [[ -e $FLAG ]]; }
+
+on() {
+  mkdir -p "$STATE_DIR" && chmod 700 "$STATE_DIR"
+  date +%s >"$FLAG"
+  if [[ ${MCP_CHROME_NO_TIMER:-0} != 1 ]] && command -v systemd-run >/dev/null; then
+    systemctl --user stop mcp-chrome-mine-off.timer 2>/dev/null
+    systemd-run --user --quiet --collect --unit=mcp-chrome-mine-off --on-active="${TTL}m" "$SELF" mine off >/dev/null 2>&1
+  fi
+  restart_gateway
+  notify "Agents can reach your Chrome" "chrome-devtools-mine is ON for $TTL min. Allow the connection in Chrome: chrome://inspect/#remote-debugging"
+  echo "chrome-devtools-mine: ON (auto-off in $TTL min)"
+}
+off() {
+  rm -f "$FLAG"
+  systemctl --user stop mcp-chrome-mine-off.timer 2>/dev/null
+  restart_gateway
+  notify "Agents no longer reach your Chrome" "chrome-devtools-mine is OFF" low
+  echo "chrome-devtools-mine: OFF"
+}
+
+[[ ${1:-} == mine ]] || { sed -n '2,/^set -u/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 2; }
+shift
+action=${1:-status}
+shift || true
+while (($#)); do
+  case $1 in --ttl) shift; TTL=${1:-60}; [[ $TTL =~ ^[0-9]{1,4}$ ]] || { echo "--ttl needs minutes" >&2; exit 2; } ;; *) echo "unknown argument: $1" >&2; exit 2 ;; esac
+  shift
+done
+case $action in
+  on) on ;;
+  off) off ;;
+  toggle) if is_on; then off; else on; fi ;;
+  status) if is_on; then echo "ON"; exit 0; else echo "OFF"; exit 1; fi ;;
+  *) echo "usage: mcp-chrome mine on|off|toggle|status" >&2; exit 2 ;;
+esac

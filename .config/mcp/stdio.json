@@ -1,0 +1,4 @@
+{
+  "_doc": "User-launched stdio MCP servers that need secrets. mcp-run NAME starts one: it fetches each secret with `rbw get` (Bitwarden folder MCP, item = secret.item or NAME, custom field = secret.field) and puts it into the CHILD's environment only, never argv, a file or a log. mcp-add registers every entry in Claude Code and Codex as `mcp-run NAME`. Entry shape: NAME: {command, args, env (plain values), secrets: {ENV_VAR: {item, field, folder?}}}",
+  "servers": {}
+}

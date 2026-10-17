@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# mcp-chrome-devtools clean|mine - stdio entry of the two chrome-devtools gateway servers (see ~/.config/mcp/gateway.json).
+#
+#   clean   `chrome-devtools`: a throwaway automation Chromium (/usr/bin/chromium, installed by apply-system.sh --only mcp),
+#           own temporary profile (--isolated), headless unless MCP_CHROME_HEADED=1. Never touches the owner's browser.
+#   mine    `chrome-devtools-mine`: attaches to the owner's own Chrome (--autoConnect; Chrome asks for permission at
+#           chrome://inspect/#remote-debugging). Switched OFF until `mcp-chrome mine on` (hub row "Agents: Chrome with my
+#           profile"): while off, a placeholder server with one `status` tool answers instead.
+# Both use the pinned chrome-devtools-mcp from ~/.local/share/mcp/node (mcp-install). Telemetry and CrUX lookups are off.
+set -u
+MCP_HOME=${MCP_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/mcp}
+STATE_DIR=${MCP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/mcp}
+CONFIG_DIR=${MCP_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/mcp}
+BIN=${MCP_CHROME_DEVTOOLS_BIN:-$MCP_HOME/node/node_modules/.bin/chrome-devtools-mcp}
+PY=${MCP_STUB_PYTHON:-$MCP_HOME/venv/bin/python}
+CHROMIUM=${MCP_CHROMIUM:-/usr/bin/chromium}
+MINE_PROFILE=${MCP_CHROME_PROFILE:-$HOME/.var/app/com.google.Chrome/config/google-chrome}
+COMMON=(--no-usage-statistics --no-performance-crux)
+
+stub() { exec "$PY" "$CONFIG_DIR/stub-server.py" "$1" "$2"; }
+[[ -x $BIN ]] || stub "chrome-devtools" "chrome-devtools-mcp is not installed. Run: mcp-install"
+
+case ${1:-} in
+  clean)
+    [[ -x $CHROMIUM ]] || stub "chrome-devtools" "Chromium is not installed ($CHROMIUM). Run: sudo ~/dotfiles/apply-system.sh --only mcp"
+    headless=(--headless)
+    [[ ${MCP_CHROME_HEADED:-0} == 1 ]] && headless=()
+    exec "$BIN" --isolated --executablePath "$CHROMIUM" "${headless[@]}" "${COMMON[@]}"
+    ;;
+  mine)
+    [[ -e $STATE_DIR/chrome-mine.enabled ]] ||
+      stub "chrome-devtools-mine" "Access to the owner's own Chrome is switched OFF. The owner enables it for one task with: mcp-chrome mine on (hub row 'Agents: Chrome with my profile', leader x c), then allows the connection in Chrome at chrome://inspect/#remote-debugging."
+    exec "$BIN" --autoConnect --userDataDir "$MINE_PROFILE" "${COMMON[@]}"
+    ;;
+  *) echo "usage: mcp-chrome-devtools clean|mine" >&2; exit 2 ;;
+esac

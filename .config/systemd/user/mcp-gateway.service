@@ -1,0 +1,17 @@
+[Unit]
+Description=MCP gateway (mcp-proxy on 127.0.0.1:37411, bearer token, per-server tool filters)
+Documentation=file://%h/dotfiles/CLAUDE.md
+# started at boot through linger; the servers behind it are started lazily by their own wrappers
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/mcp-gateway run
+Restart=on-failure
+RestartSec=5
+# children (chrome-devtools-mcp, python) find node and the pinned venv here
+Environment=PATH=%h/.local/share/mcp/node/node_modules/.bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target
