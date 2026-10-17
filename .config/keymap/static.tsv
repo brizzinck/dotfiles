@@ -50,7 +50,7 @@ menu-keys	h / Alt+H	Password history (Enter copies an old password)	Vault browse
 menu-keys	F / Alt+A	Attachments: download or upload	Vault browser (SUPER+CTRL+SHIFT+P)
 menu-keys	w / Alt+W	Password and passphrase generator	Vault browser (SUPER+CTRL+SHIFT+P)
 menu-keys	S / Alt+M	Bitwarden Send: text or file	Vault browser (SUPER+CTRL+SHIFT+P)
-menu-keys	s / Alt+S	Sync (rbw and bw)	Vault browser (SUPER+CTRL+SHIFT+P)
+menu-keys	s	Sync (rbw and bw; Alt+S is grabbed by Hyprland's screenshot bind)	Vault browser (SUPER+CTRL+SHIFT+P)
 menu-keys	L / Alt+L	Lock the vault	Vault browser (SUPER+CTRL+SHIFT+P)
 menu-keys	b / Alt+B	Unlock the bw CLI session (Trash, attachments, edit need it)	Vault browser (SUPER+CTRL+SHIFT+P)
 menu-keys	O / Alt+V	Open the Bitwarden desktop app (account, emergency access, organisations)	Vault browser (SUPER+CTRL+SHIFT+P)
@@ -61,7 +61,7 @@ menu-keys	Enter	Focus the window (and its workspace)	Window switcher (SUPER+SHIF
 menu-keys	Enter	Connect	Wi-Fi (SUPER+I)
 menu-keys	Alt+D / d	Forget the saved network	Wi-Fi (SUPER+I)
 menu-keys	Alt+R / r	Radio on or off	Wi-Fi (SUPER+I)
-menu-keys	Alt+S / s	Rescan	Wi-Fi (SUPER+I)
+menu-keys	s	Rescan (Alt+S is grabbed by Hyprland's screenshot bind)	Wi-Fi (SUPER+I)
 menu-keys	Enter	Show again	Notification history (SUPER+SHIFT+X)
 menu-keys	Alt+D / d	Remove from the history	Notification history (SUPER+SHIFT+X)
 menu-keys	Enter	Set default and move the running streams	Audio picker (SUPER+SHIFT+A)
@@ -105,4 +105,22 @@ layout	=tmux	Cyrillic twins of every letter and M- bind in the prefix and copy-m
 layout	=nvim	langmap for built-in commands and langmapper.nvim for every mapping; automatic layout switching on top (<leader>uk toggles it)
 layout	=zsh	layout_dup_meta for Alt widgets, layout_dup_keys for the vi keymaps
 layout	=rofi / fzf	Cyrillic keysyms for rofi key lists and twin characters for fzf letter binds (lk_fzf_bind)
+layout	=obsidian	nmap/vmap twins of every key and of the nmap lines of obsidian.vimrc (apps/obsidian/vimrc-twins.txt); no INSERT twin of jj, Cyrillic words contain oo
 layout	=Regenerate	layout.py gen (hub row Regenerate layout-independent keys); known gap: ASCII characters on other physical keys in ru/ua (ru . on the us / key)
+# Audit (V1c): every interactive surface without vim keys or without ua/ru twins. Keys = surface, Action = what to use instead, Context = what is missing, note = why.
+audit	=GTK file chooser (Open / Save dialogs of Zen, Chrome, Telegram, Obsidian)	Ctrl+L types a path, `/` or typing searches; find the file in yazi first (SUPER+E)	no vim keys, no ua/ru	GTK ships no vim key theme (only Default and Emacs) and the portal dialog is not scriptable
+audit	=Polkit prompt (hyprpolkitagent) and pinentry (Bitwarden, rbw, gpg)	Enter / Esc; SUPER+CTRL+U types the Linux password	nothing to navigate	a password field and two buttons: there is no list or text to move through
+audit	=satty (annotation editor)	Pointer and toolbar; Esc leaves; use Ctrl+Alt+S (frozen region, no annotation) when no drawing is needed	no vim keys, no ua/ru	a pointer-driven drawing tool; its tool shortcuts are fixed accelerators of the GTK4 app and are not configurable to vim motions
+audit	=slurp, hyprpicker, freeze-shot region selector	Esc cancels; SUPER+ALT+M (mouse submap) or SUPER+' (hint click) drive the pointer from the keyboard	no vim keys, no ua/ru	layer surfaces that take pointer input only, there is no keyboard navigation to extend
+audit	=imv (image viewer)	h j k l pan, gg / G, q quit, n / p next / previous (imv defaults)	vim keys yes, ua/ru no	no imv config in the repo yet; imv binds characters, so twins would have to be generated into its config like the Vimium C mapKey block
+audit	=mpv	Arrows, Space, q; speed [ ] and seek with the arrows	no vim keys, no ua/ru	no mpv input.conf in the repo yet (mpv has no vim defaults); a generated input.conf could add h j k l
+audit	=nemo (GUI file manager, SUPER+SHIFT+E)	yazi (SUPER+E) has vim keys	no vim keys, no ua/ru	GTK file manager, same limit as the file chooser
+audit	=pavucontrol	Audio picker (SUPER+SHIFT+A), wiremix (vim keys) and the volume binds	no vim keys, no ua/ru	GTK mixer window with no keymap
+audit	=OBS Studio (GUI)	Hub rows and the leader group o (SUPER+; o): record, pause, scene, mute, replay, status	no vim keys in the window	Qt app whose hotkeys are bound per function in OBS itself; obs-ctl drives it through obs-websocket instead
+audit	=Telegram Desktop, YouTube Music Desktop, Bitwarden desktop	Custom shortcuts (Telegram), pinned-app binds SUPER+T / S, vault browser (SUPER+CTRL+SHIFT+P)	no vim motions, no ua/ru	Qt / Electron apps with fixed shortcut sets; the text field is always an insert field. Telegram's shortcuts-custom.json adds Alt and Ctrl chords only
+audit	=Browser pages Vimium C cannot run on (about: pages, the browser UI and URL bar, the PDF viewer, Web Store, Gmail / Docs / Outlook / Proton, the keymap page)	F7 caret browsing, pdf.js keys (j / k, n / p, Ctrl+F), the site's own shortcuts	no Vimium C	browsers do not let extensions run there; the sites have their own key sets, so Vimium C is switched off by exclusion rules
+audit	=Obsidian outside the editor (file explorer, settings, modal dialogs, graph)	Space f f (quick switcher), Space f w (search), Space e (sidebar), command palette	vim keys only in the editor	Obsidian's Vim mode (and Vimrc Support) only covers the CodeMirror editor; INSERT-mode typing has no Cyrillic twins by design (typing must stay untouched)
+audit	=TUIs: btop, yazi, lazygit, lazydocker, wiremix, bluetui, pacseek, pik	their own vim keys; switch to the US layout (Caps) for them	vim keys yes, no ua/ru	they read characters themselves, so a Cyrillic layout sends letters they do not know (see TUIs and viewers)
+audit	=Rofi app launcher (SUPER+Space)	Ctrl+J / Ctrl+K, Ctrl+D / Ctrl+U, Esc (ua/ru twins generated)	list keys only, no modes	rofi has no modal editing; every other menu is the modal fzf list
+audit	=Waybar modules	every click action also exists as a hub row or leader item (SUPER+M, SUPER+;)	pointer only	waybar takes no keyboard focus; the keyboard route is the hub and the leader menu
+audit	=GRUB menu and the text console login (before the greeter)	Arrow keys, Enter; Ctrl+Alt+F1..F6 switch consoles	no vim keys	firmware and boot loader level, no configurable keymap

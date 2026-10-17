@@ -16,10 +16,10 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Desktop | [Notifications](#notifications) | 4 |
 | Desktop | [System, power, bar](#system-power-bar) | 12 |
 | Desktop | [Pointer from the keyboard](#pointer-from-the-keyboard) | 21 |
-| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 86 |
+| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 93 |
 | Terminal | [tmux: this setup](#tmux-this-setup) | 55 |
 | Terminal | [tmux: stock prefix keys](#tmux-stock-prefix-keys) | 80 |
-| Terminal | [zsh line editor](#zsh-line-editor) | 33 |
+| Terminal | [zsh line editor](#zsh-line-editor) | 34 |
 | Terminal | [zsh helpers](#zsh-helpers) | 9 |
 | Terminal | [zsh aliases](#zsh-aliases) | 42 |
 | Editor | [Neovim: AI agents](#neovim-ai-agents) | 26 |
@@ -40,8 +40,10 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Menus and bar | [Bar (waybar)](#bar-waybar) | 45 |
 | Apps and login | [Telegram](#telegram) | 6 |
 | Apps and login | [Browser (Vimium C)](#browser-vimium-c) | 32 |
+| Apps and login | [Obsidian (Vim mode)](#obsidian-vim-mode) | 23 |
 | Apps and login | [Login screen](#login-screen) | 9 |
-| Apps and login | [Layout-independent keys (us, ua, ru)](#layout-independent-keys-us-ua-ru) | 7 |
+| Apps and login | [Layout-independent keys (us, ua, ru)](#layout-independent-keys-us-ua-ru) | 8 |
+| Apps and login | [Audit: surfaces without vim keys or ua/ru twins](#audit-surfaces-without-vim-keys-or-uaru-twins) | 16 |
 
 - **Windows**: The modifier picks the layer, h j k l the direction: Super focuses, Super+Shift moves, Super+Ctrl resizes, Super+Alt switches tabs and workspaces.
 - **Menus**: Every menu except the app launcher is one modal list. It opens in INSERT (type to filter). Esc goes to NORMAL (j k g G, q quits). A second press of the bind closes it.
@@ -377,6 +379,13 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; s u` | System: Update |
 | `Super+; s w` | System: Bar compact/full |
 | `Super+; s x` | System: Removable drives |
+| `Super+; o b` | OBS: Save replay buffer |
+| `Super+; o i` | OBS: OBS status |
+| `Super+; o m` | OBS: Mute or unmute an input |
+| `Super+; o o` | OBS: OBS menu |
+| `Super+; o p` | OBS: Recording pause or resume |
+| `Super+; o r` | OBS: Recording start or stop |
+| `Super+; o s` | OBS: Switch scene |
 
 ## Terminal
 
@@ -549,17 +558,18 @@ zsh vi-mode (Esc = NORMAL, cursor beam = INSERT, block = NORMAL; [I] [N] [V] in 
 | `Ctrl+T` | Insert a file path (fzf) | INSERT, NORMAL |
 | `Ctrl+U` | Delete to the start of the line | INSERT |
 | `Ctrl+W` | Delete the word before the cursor | INSERT |
+| `Ctrl+X s` | Put sudo in front of the command line | INSERT |
 | `Ctrl+Y` | Accept the autosuggestion | INSERT, NORMAL |
 | `Esc` | NORMAL mode | INSERT |
 | `Up` | History entries that start like the typed text (up) | INSERT, NORMAL |
 | `Down` | History entries that start like the typed text (down) | INSERT, NORMAL |
 | `Shift+Tab` | Previous completion | INSERT, NORMAL |
 | `Alt+C` | cd into a directory (fzf) | INSERT, NORMAL |
-| `Alt+S` | Put sudo in front of the command line | INSERT, NORMAL |
 | `Ctrl+V` | Visual selection | NORMAL |
 | `V` | Visual selection by line | NORMAL |
 | `v` | Edit the whole line in nvim | NORMAL |
 | `y` | Yank (copies to the Wayland clipboard) | NORMAL |
+| `g s` | Put sudo in front of the command line | NORMAL |
 | `Ctrl+[` | NORMAL mode (same as Esc) (KEYTIMEOUT is 1, so Esc switches at once) | INSERT |
 | `i` / `a` / `I` / `A` / `o` / `O` | Back to INSERT (at / after the cursor, line start or end, new line) | NORMAL |
 | `h l w b e 0 ^ $ f t F T ; ,` | Move by character, word, line position or find | NORMAL |
@@ -1003,7 +1013,7 @@ Menu-specific keys keep the Alt+ form (works in both modes) and get a NORMAL let
 | `F` / `Alt+A` | Attachments: download or upload | Vault browser (SUPER+CTRL+SHIFT+P) |
 | `w` / `Alt+W` | Password and passphrase generator | Vault browser (SUPER+CTRL+SHIFT+P) |
 | `S` / `Alt+M` | Bitwarden Send: text or file | Vault browser (SUPER+CTRL+SHIFT+P) |
-| `s` / `Alt+S` | Sync (rbw and bw) | Vault browser (SUPER+CTRL+SHIFT+P) |
+| `s` | Sync (rbw and bw; Alt+S is grabbed by Hyprland's screenshot bind) | Vault browser (SUPER+CTRL+SHIFT+P) |
 | `L` / `Alt+L` | Lock the vault | Vault browser (SUPER+CTRL+SHIFT+P) |
 | `b` / `Alt+B` | Unlock the bw CLI session (Trash, attachments, edit need it) | Vault browser (SUPER+CTRL+SHIFT+P) |
 | `O` / `Alt+V` | Open the Bitwarden desktop app (account, emergency access, organisations) | Vault browser (SUPER+CTRL+SHIFT+P) |
@@ -1014,7 +1024,7 @@ Menu-specific keys keep the Alt+ form (works in both modes) and get a NORMAL let
 | `Enter` | Connect | Wi-Fi (SUPER+I) |
 | `Alt+D` / `d` | Forget the saved network | Wi-Fi (SUPER+I) |
 | `Alt+R` / `r` | Radio on or off | Wi-Fi (SUPER+I) |
-| `Alt+S` / `s` | Rescan | Wi-Fi (SUPER+I) |
+| `s` | Rescan (Alt+S is grabbed by Hyprland's screenshot bind) | Wi-Fi (SUPER+I) |
 | `Enter` | Show again | Notification history (SUPER+SHIFT+X) |
 | `Alt+D` / `d` | Remove from the history | Notification history (SUPER+SHIFT+X) |
 | `Enter` | Set default and move the running streams | Audio picker (SUPER+SHIFT+A) |
@@ -1110,7 +1120,7 @@ apps/telegram/shortcuts-custom.json (needs one Telegram restart).
 
 ### Browser (Vimium C)
 
-Vimium C defaults stay; the ua/ru layouts get the same keys through mapKey. Import browsers/vimium-c.json once. Vimium C is switched off on mail.google.com, docs.google.com, outlook.live.com, outlook.office.com, outlook.office365.com, mail.proton.me. On www.youtube.com it passes the keys f m k j l c t i <space> to the page.
+Vimium C defaults stay; the ua/ru layouts get the same keys through mapKey. Import browsers/vimium-c.json once. Vimium C is switched off on mail.google.com, docs.google.com, outlook.live.com, outlook.office.com, outlook.office365.com, mail.proton.me, the generated keymap page (file:// ... /.cache/keymap/). On www.youtube.com it passes the keys f m k j l c t i <space> to the page.
 
 | Keys | Action |
 |---|---|
@@ -1147,6 +1157,36 @@ Vimium C defaults stay; the ua/ru layouts get the same keys through mapKey. Impo
 | `v` | Visual mode |
 | `V` | Visual line mode |
 
+### Obsidian (Vim mode)
+
+Obsidian's Vim key bindings plus the community plugin Vimrc Support reading apps/obsidian/obsidian.vimrc (Space is the leader, habits of the nvim config). The ua/ru layouts get explicit nmap/vmap twins (layout.py gen obsidian). The plugin is installed by hand once (Settings > Community plugins > Browse > Vimrc Support); apps/obsidian/apply.sh sets vimMode and copies the vimrc into the vault; restart Obsidian.
+
+| Keys | Action | Context |
+|---|---|---|
+| `j j` | Leave INSERT | INSERT |
+| `j` | Down by display line (wrapped lines) | NORMAL |
+| `k` | Up by display line (wrapped lines) | NORMAL |
+| `Y` | Yank to the end of the line | NORMAL |
+| `Space f f` | Find a file (quick switcher) | NORMAL |
+| `Space f w` | Search the vault | NORMAL |
+| `Space f C` | Command palette | NORMAL |
+| `Space f l` | Backlinks pane | NORMAL |
+| `Space f o` | Outline pane | NORMAL |
+| `Space e` | Show or hide the left sidebar | NORMAL |
+| `Space E` | Reveal the note in the file explorer | NORMAL |
+| `Space w` | Save | NORMAL |
+| `Space q` | Close the tab | NORMAL |
+| `Space n` | New note | NORMAL |
+| `Space p` | Toggle reading and editing view | NORMAL |
+| `g d` | Follow the link under the cursor | NORMAL |
+| `] b` | Next tab | NORMAL |
+| `[ b` | Previous tab | NORMAL |
+| `Ctrl+o` | Go back | NORMAL |
+| `Ctrl+i` | Go forward | NORMAL |
+| `z a` | Toggle fold | NORMAL |
+| `z M` | Fold all | NORMAL |
+| `z R` | Unfold all | NORMAL |
+
 ### Login screen
 
 greetd + Quickshell greeter. Letters are matched by physical key, so everything works on the ua and ru layouts (Caps switches us / ua / ru; the layout pill turns yellow when it is not US).
@@ -1169,10 +1209,34 @@ Every bind works while the Ukrainian or Russian layout is active. One physical-k
 
 | Keys | Action |
 |---|---|
-| =Hyprland | input:resolve_binds_by_sym = false: binds match the first layout (us) whatever is active, nothing to do |
-| =ghostty | Ctrl+letter arrives as the C0 byte on any layout; alt+<physical key> sends ESC + the us letter (Alt would be lost on Cyrillic) |
-| =tmux | Cyrillic twins of every letter and M- bind in the prefix and copy-mode tables (tmux-layout.conf) |
-| =nvim | langmap for built-in commands and langmapper.nvim for every mapping; automatic layout switching on top (<leader>uk toggles it) |
-| =zsh | layout_dup_meta for Alt widgets, layout_dup_keys for the vi keymaps |
-| =rofi / fzf | Cyrillic keysyms for rofi key lists and twin characters for fzf letter binds (lk_fzf_bind) |
-| =Regenerate | layout.py gen (hub row Regenerate layout-independent keys); known gap: ASCII characters on other physical keys in ru/ua (ru . on the us / key) |
+| Hyprland | input:resolve_binds_by_sym = false: binds match the first layout (us) whatever is active, nothing to do |
+| ghostty | Ctrl+letter arrives as the C0 byte on any layout; alt+<physical key> sends ESC + the us letter (Alt would be lost on Cyrillic) |
+| tmux | Cyrillic twins of every letter and M- bind in the prefix and copy-mode tables (tmux-layout.conf) |
+| nvim | langmap for built-in commands and langmapper.nvim for every mapping; automatic layout switching on top (<leader>uk toggles it) |
+| zsh | layout_dup_meta for Alt widgets, layout_dup_keys for the vi keymaps |
+| rofi / fzf | Cyrillic keysyms for rofi key lists and twin characters for fzf letter binds (lk_fzf_bind) |
+| obsidian | nmap/vmap twins of every key and of the nmap lines of obsidian.vimrc (apps/obsidian/vimrc-twins.txt); no INSERT twin of jj, Cyrillic words contain oo |
+| Regenerate | layout.py gen (hub row Regenerate layout-independent keys); known gap: ASCII characters on other physical keys in ru/ua (ru . on the us / key) |
+
+### Audit: surfaces without vim keys or ua/ru twins
+
+Every interactive surface that still lacks vim keys or Cyrillic twins, and why. Keys = the surface, Action = what to use instead, Context = what is missing. Everything else in this document has both.
+
+| Keys | Action | Context |
+|---|---|---|
+| GTK file chooser (Open / Save dialogs of Zen, Chrome, Telegram, Obsidian) | Ctrl+L types a path, `/` or typing searches; find the file in yazi first (SUPER+E) (GTK ships no vim key theme (only Default and Emacs) and the portal dialog is not scriptable) | no vim keys, no ua/ru |
+| Polkit prompt (hyprpolkitagent) and pinentry (Bitwarden, rbw, gpg) | Enter / Esc; SUPER+CTRL+U types the Linux password (a password field and two buttons: there is no list or text to move through) | nothing to navigate |
+| satty (annotation editor) | Pointer and toolbar; Esc leaves; use Ctrl+Alt+S (frozen region, no annotation) when no drawing is needed (a pointer-driven drawing tool; its tool shortcuts are fixed accelerators of the GTK4 app and are not configurable to vim motions) | no vim keys, no ua/ru |
+| slurp, hyprpicker, freeze-shot region selector | Esc cancels; SUPER+ALT+M (mouse submap) or SUPER+' (hint click) drive the pointer from the keyboard (layer surfaces that take pointer input only, there is no keyboard navigation to extend) | no vim keys, no ua/ru |
+| imv (image viewer) | h j k l pan, gg / G, q quit, n / p next / previous (imv defaults) (no imv config in the repo yet; imv binds characters, so twins would have to be generated into its config like the Vimium C mapKey block) | vim keys yes, ua/ru no |
+| mpv | Arrows, Space, q; speed [ ] and seek with the arrows (no mpv input.conf in the repo yet (mpv has no vim defaults); a generated input.conf could add h j k l) | no vim keys, no ua/ru |
+| nemo (GUI file manager, SUPER+SHIFT+E) | yazi (SUPER+E) has vim keys (GTK file manager, same limit as the file chooser) | no vim keys, no ua/ru |
+| pavucontrol | Audio picker (SUPER+SHIFT+A), wiremix (vim keys) and the volume binds (GTK mixer window with no keymap) | no vim keys, no ua/ru |
+| OBS Studio (GUI) | Hub rows and the leader group o (SUPER+; o): record, pause, scene, mute, replay, status (Qt app whose hotkeys are bound per function in OBS itself; obs-ctl drives it through obs-websocket instead) | no vim keys in the window |
+| Telegram Desktop, YouTube Music Desktop, Bitwarden desktop | Custom shortcuts (Telegram), pinned-app binds SUPER+T / S, vault browser (SUPER+CTRL+SHIFT+P) (Qt / Electron apps with fixed shortcut sets; the text field is always an insert field. Telegram's shortcuts-custom.json adds Alt and Ctrl chords only) | no vim motions, no ua/ru |
+| Browser pages Vimium C cannot run on (about: pages, the browser UI and URL bar, the PDF viewer, Web Store, Gmail / Docs / Outlook / Proton, the keymap page) | F7 caret browsing, pdf.js keys (j / k, n / p, Ctrl+F), the site's own shortcuts (browsers do not let extensions run there; the sites have their own key sets, so Vimium C is switched off by exclusion rules) | no Vimium C |
+| Obsidian outside the editor (file explorer, settings, modal dialogs, graph) | Space f f (quick switcher), Space f w (search), Space e (sidebar), command palette (Obsidian's Vim mode (and Vimrc Support) only covers the CodeMirror editor; INSERT-mode typing has no Cyrillic twins by design (typing must stay untouched)) | vim keys only in the editor |
+| TUIs: btop, yazi, lazygit, lazydocker, wiremix, bluetui, pacseek, pik | their own vim keys; switch to the US layout (Caps) for them (they read characters themselves, so a Cyrillic layout sends letters they do not know (see TUIs and viewers)) | vim keys yes, no ua/ru |
+| Rofi app launcher (SUPER+Space) | Ctrl+J / Ctrl+K, Ctrl+D / Ctrl+U, Esc (ua/ru twins generated) (rofi has no modal editing; every other menu is the modal fzf list) | list keys only, no modes |
+| Waybar modules | every click action also exists as a hub row or leader item (SUPER+M, SUPER+;) (waybar takes no keyboard focus; the keyboard route is the hub and the leader menu) | pointer only |
+| GRUB menu and the text console login (before the greeter) | Arrow keys, Enter; Ctrl+Alt+F1..F6 switch consoles (firmware and boot loader level, no configurable keymap) | no vim keys |

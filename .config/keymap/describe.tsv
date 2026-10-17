@@ -141,3 +141,26 @@ vimium	n	Next find match
 vimium	N	Previous find match
 vimium	v	Visual mode
 vimium	V	Visual line mode
+obsidian	jj	Leave INSERT
+obsidian	j	Down by display line (wrapped lines)
+obsidian	k	Up by display line (wrapped lines)
+obsidian	Y	Yank to the end of the line
+obsidian	findfile	Find a file (quick switcher)
+obsidian	grepvault	Search the vault
+obsidian	cmdpalette	Command palette
+obsidian	backlinks	Backlinks pane
+obsidian	outline	Outline pane
+obsidian	togglesidebar	Show or hide the left sidebar
+obsidian	revealfile	Reveal the note in the file explorer
+obsidian	savefile	Save
+obsidian	closetab	Close the tab
+obsidian	newnote	New note
+obsidian	preview	Toggle reading and editing view
+obsidian	followlink	Follow the link under the cursor
+obsidian	nexttab	Next tab
+obsidian	prevtab	Previous tab
+obsidian	goback	Go back
+obsidian	goforward	Go forward
+obsidian	togglefold	Toggle fold
+obsidian	foldall	Fold all
+obsidian	unfoldall	Unfold all

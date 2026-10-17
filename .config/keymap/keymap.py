@@ -20,6 +20,7 @@ opening is fast and `keymap gen` is only needed to force a rebuild):
   nvim       a headless dump of every mapping that has a desc (nvim-dump.lua), grouped by the <leader> prefix
   bar        the L / M / R / Scroll tooltip hints of waybar modules.jsonc and the bar scripts
   telegram   apps/telegram/shortcuts-custom.json;  vimium  browsers/vimium-c.json (+ defaults table)
+  obsidian   apps/obsidian/obsidian.vimrc (the nmap lines; ex commands are described in describe.tsv)
   committed  static.tsv: menu key lists, login screen, layout rules, zsh vi grammar (not reliably parseable)
 Tables next to this file: blocks.tsv (block order and text), rules.tsv (Hyprland -> block), describe.tsv, pins.tsv, intro.tsv.
 """
@@ -113,7 +114,7 @@ class Db:
 
     def add_text(self, block, keys, desc, source, **kw):
         alts, raw = parse_keys(keys)
-        self.add(block, alts, desc, source, raw=raw, key_text=keys if raw else None, **kw)
+        self.add(block, alts, desc, source, raw=raw, key_text=keys[1:] if raw else None, **kw)  # `=text`: plain text without the marker
 
 
 # ── Hyprland ─────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -746,14 +747,50 @@ def collect_vimium(db):
         desc = table.get(k, "Vimium C default")
         db.add("vimium", [[[c] for c in k]] if len(k) > 1 else [[[k]]], desc, "vimium")
     notes = []
-    off = [r["pattern"].split("//")[1].split("/")[0] for r in data.get("exclusionRules", []) if r.get("passKeys") == ""]
+
+    def site_of(pattern):  # a ':' URL prefix names a host; a '^' regex is shown as what it matches
+        if pattern.startswith("^"):
+            return "the generated keymap page (file:// ... /.cache/keymap/)" if "keymap" in pattern else pattern
+        return pattern.split("//")[1].split("/")[0]
+
+    off = [site_of(r["pattern"]) for r in data.get("exclusionRules", []) if r.get("passKeys") == ""]
     if off:
         notes.append("Vimium C is switched off on " + ", ".join(off) + ".")
     for r in data.get("exclusionRules", []):
         if r.get("passKeys"):
-            site = r["pattern"].split("//")[1].split("/")[0]
-            notes.append(f"On {site} it passes the keys {r['passKeys']} to the page.")
+            notes.append(f"On {site_of(r['pattern'])} it passes the keys {r['passKeys']} to the page.")
     return {"vimium": " ".join(notes)} if notes else {}
+
+
+def obsidian_chords(lhs):
+    """vimrc lhs (`<Space>ff`, `<C-o>`, `gd`, `jj`) -> sequence of chords of key names."""
+    out = []
+    for tok in re.findall(r"<[^>]+>|.", lhs):
+        m = re.fullmatch(r"<C-(.)>", tok)
+        if m:
+            out.append(["Ctrl", m.group(1)])
+        elif tok.lower() == "<space>":
+            out.append(["Space"])
+        else:
+            out.append([tok])
+    return out
+
+
+def collect_obsidian(db):
+    path = REPO / "apps/obsidian/obsidian.vimrc"
+    if not path.is_file():
+        return
+    desc = {k: v for kind, k, v in read_tsv(HERE / "describe.tsv", 3) if kind == "obsidian"}
+    cmds = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        t = line.split()
+        if len(t) == 4 and t[0] == "exmap" and t[2] == "obcommand":
+            cmds[t[1]] = t[3]
+        elif len(t) >= 3 and t[0] in ("nmap", "imap", "vmap"):
+            ex = t[2][1:] if t[2].startswith(":") else ""
+            text = desc.get(ex) or desc.get(t[1]) or (f"Obsidian command {cmds[ex]}" if ex in cmds else f"{t[1]} -> {t[2]}")
+            ctx = {"nmap": "NORMAL", "imap": "INSERT", "vmap": "VISUAL"}[t[0]]
+            db.add("obsidian", [obsidian_chords(t[1])], text, "obsidian", ctx=ctx)
 
 
 def collect_static(db):
@@ -770,7 +807,8 @@ def source_files():
              CFG / "tmux/tmux.conf", CFG / "tmux/tmux-layout.conf",
              HOME / ".zshrc", CFG / "zsh/vi-mode.zsh", CFG / "zsh/layout-keys.zsh",
              CFG / "waybar/modules.jsonc", *sorted((CFG / "waybar/scripts").glob("*")),
-             REPO / "apps/telegram/shortcuts-custom.json", REPO / "browsers/vimium-c.json"]
+             REPO / "apps/telegram/shortcuts-custom.json", REPO / "browsers/vimium-c.json",
+             REPO / "apps/obsidian/obsidian.vimrc"]
     nvim = CFG / "nvim"
     if nvim.exists():
         root = nvim.resolve()
@@ -814,7 +852,8 @@ def build(binds, old=None, quiet=False):
     else:
         warn.append("Hyprland is not reachable and there is no earlier build: no Hyprland rows")
     for name, fn in (("leader", collect_leader), ("tmux", collect_tmux), ("zsh", collect_zsh), ("zsh text", collect_zsh_text),
-                     ("nvim", collect_nvim), ("bar", collect_bar), ("telegram", collect_telegram)):
+                     ("nvim", collect_nvim), ("bar", collect_bar), ("telegram", collect_telegram),
+                     ("obsidian", collect_obsidian)):
         try:
             ok = fn(db)
         except Exception as exc:  # a broken source must not take the others down
