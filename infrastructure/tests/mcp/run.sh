@@ -19,6 +19,14 @@ export FAKE_DIR="$SCRATCH/fake" MCP_STATE_DIR="$SCRATCH/state" MCP_RUNTIME_DIR="
 export XDG_RUNTIME_DIR="$SCRATCH/xdg-run"
 export MCP_TGCONFIRM_UNIT="$SCRATCH/no-tgconfirm.service" MCP_TGCONFIRM_SOCK="$SCRATCH/no-tgconfirm.sock"   # a real broker on this machine must not change the results
 mkdir -p "$FAKE_DIR/vault" "$XDG_RUNTIME_DIR"
+# nothing in this suite may reach the owner's desktop, systemd user manager or waybar: fakes come first on PATH for every check
+# (notify-send logs to $FAKE_DIR/notify.log), and every script's own no-notify / no-restart / no-timer hook is set as well
+SAFEBIN="$SCRATCH/safebin"; mkdir -p "$SAFEBIN"
+for f in notify-send systemctl pkill; do ln -s "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bin/$f" "$SAFEBIN/$f"; done
+printf '#!/usr/bin/env bash\necho "systemd-run $*" >>"${FAKE_DIR:-/tmp}/argv.log"\n' >"$SAFEBIN/systemd-run"; chmod +x "$SAFEBIN/systemd-run"
+export PATH="$SAFEBIN:$PATH"
+export MCP_CHROME_NO_NOTIFY=1 MCP_CHROME_NO_RESTART=1 MCP_CHROME_NO_TIMER=1 AI_ASK_NO_NOTIFY=1
+export MCP_GATEWAY_UNIT=mcp-gateway-test.service
 : >"$FAKE_DIR/argv.log"
 PASS=0 FAILS=0 SKIPS=0
 check() { # check NAME CMD...
@@ -159,13 +167,11 @@ check "clean: without Chromium a stub explains how to install it" bash -c 'out=$
 check "mine: OFF by default -> stub, no autoConnect" bash -c 'out=$(MCP_STATE_DIR="$5" MCP_CHROME_DEVTOOLS_BIN="$2" MCP_STUB_PYTHON="$3" "$1" mine); grep -q "^stub" <<<"$out" && ! grep -q autoConnect <<<"$out"' _ "$CH" "$SCRATCH/fake-cdt" "$SCRATCH/fake-py" x "$SCRATCH/state"
 check "mine: ON -> --autoConnect with the owner's Chrome profile" bash -c 'mkdir -p "$5"; touch "$5/chrome-mine.enabled"; out=$(MCP_STATE_DIR="$5" MCP_CHROME_DEVTOOLS_BIN="$2" MCP_STUB_PYTHON="$3" "$1" mine); grep -q -- "--autoConnect" <<<"$out" && grep -q "com.google.Chrome" <<<"$out"; rc=$?; rm -f "$5/chrome-mine.enabled"; exit $rc' _ "$CH" "$SCRATCH/fake-cdt" "$SCRATCH/fake-py" x "$SCRATCH/state"
 MC="$REPO/.local/bin/mcp-chrome"
-export MCP_CHROME_NO_RESTART=1 MCP_CHROME_NO_TIMER=1
 check "mcp-chrome status is OFF (exit 1) by default" bash -c '! "$1" mine status' _ "$MC"
 check "mcp-chrome mine on sets the flag" bash -c '"$1" mine on --ttl 5 >/dev/null && [ -e "$2/chrome-mine.enabled" ] && "$1" mine status >/dev/null' _ "$MC" "$MCP_STATE_DIR"
 check "mcp-chrome mine off clears it" bash -c '"$1" mine off >/dev/null && [ ! -e "$2/chrome-mine.enabled" ]' _ "$MC" "$MCP_STATE_DIR"
 check "mcp-chrome toggle flips" bash -c '"$1" mine toggle >/dev/null; "$1" mine status >/dev/null && "$1" mine toggle >/dev/null; ! "$1" mine status >/dev/null' _ "$MC"
 check "mcp-chrome rejects a bad ttl" bash -c '! "$1" mine on --ttl abc' _ "$MC"
-unset MCP_CHROME_NO_RESTART MCP_CHROME_NO_TIMER
 
 # --- mcp-add against throwaway Claude / Codex homes ----------------------------------------------------------------
 cat >"$SCRATCH/fake-gw" <<'EOF'

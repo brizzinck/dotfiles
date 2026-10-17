@@ -7,14 +7,14 @@
 #
 # ON only means the gateway starts chrome-devtools-mcp with --autoConnect; Chrome itself still asks before it lets anything
 # attach (chrome://inspect/#remote-debugging: the owner's authorization). The default clean-profile server `chrome-devtools`
-# is unaffected. Test hooks: MCP_STATE_DIR, MCP_CHROME_NO_RESTART=1, MCP_CHROME_NO_TIMER=1.
+# is unaffected. Test hooks: MCP_STATE_DIR, MCP_CHROME_NO_RESTART=1, MCP_CHROME_NO_TIMER=1, MCP_CHROME_NO_NOTIFY=1.
 set -u
 STATE_DIR=${MCP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/mcp}
 FLAG=$STATE_DIR/chrome-mine.enabled
 SELF=$(readlink -f "$0")
 TTL=60
 
-notify() { command -v notify-send >/dev/null && notify-send -a mcp-chrome -u "${3:-normal}" "$1" "$2" 2>/dev/null; return 0; }
+notify() { [[ ${MCP_CHROME_NO_NOTIFY:-0} == 1 ]] && return 0; command -v notify-send >/dev/null && notify-send -a mcp-chrome -u "${3:-normal}" "$1" "$2" 2>/dev/null; return 0; }
 restart_gateway() { [[ ${MCP_CHROME_NO_RESTART:-0} == 1 ]] || systemctl --user restart mcp-gateway.service 2>/dev/null; }
 is_on() { [[ -e $FLAG ]]; }
 
