@@ -34,6 +34,8 @@
 #                            and then exits: the window closes like any window (the hub closes the same way, no jerk), and a
 #                            standby terminal of the other slot, started 250 ms after a menu opened, takes the next request
 #                            (~40 ms instead of a 0.4 s cold ghostty)
+#                            A request is claimed with an atomic `mkdir req/owner` and `req/started` holds the serving pid, which the
+#                            client watches (a closed menu window ends the call as cancelled); one terminal per slot (slot-a.lock)
 #   --server-start           start the server unless one runs or waits (Hyprland autostart)
 #   --self-test              headless check of the modal (private tmux server), exit 0 = every case passed
 #   --cold                   force the cold path for this call (latency comparison)
@@ -162,6 +164,10 @@ serve_request() {
   local req=$1 rc=0 kv
   [[ -d $req && -r $req/cfg ]] || die "bad request $req"
   (
+    # fzf and every execute / preview child it starts inherit the open descriptors: the fifo (3), the slot lock (5), the standby and
+    # server locks (6, 7), the request pipe (8) and the client's menu lock (9). A detached app started from a menu action must not
+    # keep any of them (it would hold server.lock for ever: the standby never gets its turn and every later menu goes cold)
+    exec 3>&- 5>&- 6>&- 7>&- 8>&- 9>&-
     echo "$BASHPID" >"$RUN/active.pid"
     # the caller's environment (CLIP_*, preview helpers, ...) without the terminal identity of the caller
     while IFS= read -r -d '' kv; do
@@ -215,8 +221,12 @@ close_active_menu() {
   [[ -n $p ]] && kill -0 "$p" 2>/dev/null && pkill -TERM -P "$p" -x fzf 2>/dev/null
 }
 
-hot_request() { # REQ -> 0 when answered, 1 when the server did not take it
-  local req=$1 i
+# A one-shot server claims a request with an atomic `mkdir $req/owner` and then writes its OWN pid into `$req/started`. The client
+# gives up on a request only by taking that claim itself, so a request is served by exactly one side (the late server skips it).
+# While the menu is open the client watches that pid: a window closed with SUPER+W (or a crash) must end the call, whoever else
+# serves the next request (the standby becomes a live server at that moment, so "a server is alive" says nothing about this menu).
+hot_request() { # REQ -> 0 when answered (also cancelled by a dead server), 1 when the server did not take it
+  local req=$1 i spid
   mkfifo "$req/done"
   exec 8<>"$req/done"
   if [[ -p $RUN/server.fifo ]]; then printf '%s\n' "$req" >"$RUN/server.fifo"; else exec 8>&-; return 1; fi
@@ -225,11 +235,24 @@ hot_request() { # REQ -> 0 when answered, 1 when the server did not take it
     [[ -e $req/started ]] && break
     read -r -t 0.01 -u 8 && return 0
   done
-  [[ -e $req/started ]] || { exec 8>&-; return 1; }
-  while ! read -r -t 2 -u 8; do
-    # a one-shot server removes its pid file just before it reports `finished`: a missing pid file with an rc file is done
-    server_alive && continue
+  if [[ ! -e $req/started ]]; then
+    # claim the request for the cold path; when the claim fails the server took it a moment ago: wait for its `started`
+    if mkdir "$req/owner" 2>/dev/null; then exec 8>&-; return 1; fi
+    for ((i = 0; i < 100; i++)); do [[ -e $req/started ]] && break; sleep 0.01; done
+    [[ -e $req/started ]] || { exec 8>&-; return 1; }
+  fi
+  spid=$(cat "$req/started" 2>/dev/null)
+  while ! read -r -t 0.5 -u 8; do
+    # a one-shot server writes `rc` before it reports `finished` and exits: an rc file is an answer
     [[ -e $req/rc ]] && break
+    if [[ -n $spid ]]; then
+      kill -0 "$spid" 2>/dev/null && continue
+      # the serving terminal died without an answer: the menu is gone, count it as cancelled (never run it again cold)
+      [[ -e $req/rc ]] || echo 1 >"$req/rc"
+      break
+    fi
+    # a server that does not write its pid (an older one): the old rule, any live server keeps the wait going
+    server_alive && continue
     exec 8>&-
     return 1
   done
@@ -239,7 +262,8 @@ hot_request() { # REQ -> 0 when answered, 1 when the server did not take it
 
 cold_request() { # REQ: a fresh ghostty that exits with the list
   local req=$1
-  env -u TMUX -u TMUX_PANE "$TERMINAL" --class=float.tui --title="$TITLE" -e "$SELF" --serve-request "$req" >/dev/null 2>&1
+  # 8 and 9 closed: a detached app started from the menu must not keep the client's menu.lock (it would swallow every later menu)
+  env -u TMUX -u TMUX_PANE "$TERMINAL" --class=float.tui --title="$TITLE" -e "$SELF" --serve-request "$req" 8>&- 9>&- >/dev/null 2>&1
 }
 
 REQ=""
@@ -296,7 +320,7 @@ spawn_slot() {
   local slot=${1:-a}
   # the lock descriptors of the caller must not leak into the new terminal (the active server's lock would never be released)
   env -u TMUX -u TMUX_PANE setsid -f "$TERMINAL" --class=float.tui --title="$SERVER_TITLE-$slot" -e "$SELF" --server "$slot" \
-    3>&- 6>&- 7>&- 8>&- 9>&- >/dev/null 2>&1 </dev/null
+    3>&- 5>&- 6>&- 7>&- 8>&- 9>&- >/dev/null 2>&1 </dev/null
 }
 
 # start the first hidden terminal: only when no server is running and none waits (a lock keeps two callers from starting two)
@@ -317,7 +341,8 @@ spawn_server() {
 # after a cold menu: make sure the next one is fast
 ensure_server() {
   [[ ${FZF_MENU_NO_SERVER:-} == 1 ]] && return 0
-  spawn_server >/dev/null 2>&1 &
+  # without 8 / 9 the background spawn (it sleeps 2 s) would keep the client's menu.lock and every menu in that time would exit 1
+  spawn_server >/dev/null 2>&1 8>&- 9>&- &
   disown 2>/dev/null || true
 }
 
@@ -338,6 +363,8 @@ window_state() {
 geometry_lua() {
   local addr=$1 size=$2 toggle=${3:-} st cw ch cmon fmon fw fh pw ph tw th w lua=""
   [[ -n $toggle ]] && lua="hl.dispatch(hl.dsp.workspace.toggle_special(\"$toggle\"))"
+  # window not found: only the toggle (every window dispatcher with `address:` and nothing after it is a no-op or an INFO error)
+  [[ -n $addr ]] || { printf '%s' "$lua"; return 0; }
   st=$(window_state "$addr") && [[ -n $st ]] || { printf '%s' "$lua"; return 0; }
   read -r cw ch cmon fmon fw fh <<<"$st"
   read -r pw ph <<<"$(size_pct "$size")"
@@ -375,13 +402,25 @@ server_show() {
   SHOWN=1
   in_hypr || return 0
   lua=$(geometry_lua "$addr" "$SIZE" "$SPECIAL")
-  hyprctl eval "$lua" >/dev/null 2>&1
+  [[ -n $lua ]] && hyprctl eval "$lua" >/dev/null 2>&1
+  return 0
+}
+
+# the window rule parks the window on its special workspace; do it by hand when the rule is missing
+park_window() { # ADDR
+  local addr=$1 ws
+  [[ -n $addr && -z ${FZF_MENU_SERVER_ADDR:-} ]] || return 0
+  ws=$(hyprctl clients -j 2>/dev/null | jq -r --arg a "$addr" '.[] | select(.address == $a) | .workspace.name')
+  [[ $ws == "special:$SPECIAL" ]] || hdispatch "hl.dsp.window.move({ window = \"address:$addr\", workspace = \"special:$SPECIAL\", follow = false })"
 }
 
 # only the active server owns the fifo and the pid file (a standby of the other slot may already have made its own)
 server_cleanup() {
-  [[ $(cat "$RUN/server.pid" 2>/dev/null) == "$$" ]] || return 0
-  rm -f "$RUN/server.fifo" "$RUN/server.pid"
+  if [[ $(cat "$RUN/server.pid" 2>/dev/null) == "$$" ]]; then rm -f "$RUN/server.fifo" "$RUN/server.pid"; fi
+  # after the files are gone (the standby that takes the lock makes its own), and also on SIGHUP: a copy of the descriptor in a
+  # child must not keep server.lock
+  flock -u 7 2>/dev/null
+  return 0
 }
 
 # One-shot server terminal of a slot (a or b): waits hidden, serves exactly ONE request, then exits. The window therefore
@@ -389,14 +428,23 @@ server_cleanup() {
 # the empty special workspace by itself (misc:close_special_on_empty). 250 ms after a menu opened a standby of the other slot
 # is started, so the next menu is hot again.
 server_main() {
-  local slot=${1:-a} req="" addr ws
+  local slot=${1:-a} req="" addr ws i
   case $slot in a | b) ;; *) slot=a ;; esac
   SPECIAL="menu-$slot"
   mkdir -p "$RUN" && chmod 700 "$RUN"
   SERVER_MODE=1
-  # at most one waiting standby; then wait (blocking) until the active server is done
+  # one terminal per slot for its whole life: a second one of the same slot (a cold menu spawning slot a while the standby a is still
+  # on its way) would put two windows on the same special workspace and its toggle would hide the menu instead of showing it
+  exec 5>"$RUN/slot-$slot.lock"
+  flock -w 0.5 5 || exit 0
+  # at most one waiting standby (a probe of standby_waiting takes the lock for a moment, hence the short wait); then wait
+  # (blocking) until the active server is done
   exec 6>"$RUN/standby.lock"
-  flock -n 6 || exit 0
+  flock -w 0.2 6 || exit 0
+  # the window lookup (hyprctl clients + jq, slow under load) is done now, while this terminal only waits: once it is the active
+  # server a client finds the fifo and `started` comes at once
+  addr=$(server_window)
+  park_window "$addr"
   exec 7>"$RUN/server.lock"
   flock 7
   flock -u 6
@@ -409,22 +457,21 @@ server_main() {
   trap 'exit 0' TERM INT HUP
   exec 3<>"$RUN/server.fifo"
   printf '\033]2;%s\007' "$SERVER_TITLE-$slot"
-  addr=$(server_window)
-  # the window rule parks the window on its special workspace; do it by hand when the rule is missing
-  if [[ -n $addr && -z ${FZF_MENU_SERVER_ADDR:-} ]]; then
-    ws=$(hyprctl clients -j 2>/dev/null | jq -r --arg a "$addr" '.[] | select(.address == $a) | .workspace.name')
-    [[ $ws == "special:$SPECIAL" ]] || hdispatch "hl.dsp.window.move({ window = \"address:$addr\", workspace = \"special:$SPECIAL\", follow = false })"
+  if [[ -z $addr ]]; then   # the window was not mapped yet at the first try (a fresh server): a few more tries
+    for ((i = 0; i < 5 && ${#addr} == 0; i++)); do sleep 0.1; addr=$(server_window); done
+    park_window "$addr"
   fi
   clear
+  # a request is ours only when the atomic claim works (a client that gave up took it first: skip, wait for the next one)
   while read -r -u 3 req; do
-    [[ $req == "$RUN"/req.* && -d $req ]] && break
+    [[ $req == "$RUN"/req.* && -d $req ]] && mkdir "$req/owner" 2>/dev/null && break
     req=""
   done
   if [[ -n $req ]]; then
-    : >"$req/started"
+    echo $$ >"$req/started.tmp" && mv -f "$req/started.tmp" "$req/started"   # our pid: the client watches it
     [[ -n ${FZF_MENU_TRACE:-} || -e $req/trace ]] && echo "server_got $(now_ms)" >>"$req/trace"
     # the standby of the other slot, detached (the window and this shell are gone by then)
-    setsid -f "$SELF" --spawn-standby "$(other_slot "$slot")" 3>&- 6>&- 7>&- >/dev/null 2>&1 </dev/null
+    setsid -f "$SELF" --spawn-standby "$(other_slot "$slot")" 3>&- 5>&- 6>&- 7>&- 8>&- 9>&- >/dev/null 2>&1 </dev/null
     # the size of THIS request (the cfg is bash `declare` output; only its SIZE line is read here)
     SIZE=$(sed -n 's/^declare -- SIZE="\(.*\)"$/\1/p' "$req/cfg")
     [[ $SIZE == large ]] || SIZE=normal
@@ -434,7 +481,6 @@ server_main() {
   fi
   server_cleanup
   trap - EXIT
-  flock -u 7
   [[ -n $req ]] && echo finished >"$req/done"
   exit 0
 }

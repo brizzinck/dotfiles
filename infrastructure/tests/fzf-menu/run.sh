@@ -4,7 +4,7 @@
 # the window (geometry only when it differs), --no-clear in window modes, Esc / Enter / toggle, and the modal self-test.
 # Fakes: hyprctl (canned JSON, logs every eval), the terminal (FZF_MENU_TERMINAL: starts the command in a window of a private tmux
 # server), fzf (case 4). The owner's Hyprland, menus and clipboard are never touched (XDG_RUNTIME_DIR is a scratch directory).
-#   run.sh [--quick]   --quick (doctor) = cases 1, 3 and 4
+#   run.sh [--quick]   --quick (doctor) = cases 1, 3, 4, 5a (dead serving window), 5e (window switcher) and 5g
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
@@ -16,9 +16,11 @@ for c in tmux fzf jq; do command -v "$c" >/dev/null || { echo "SKIP: tmux, fzf a
 T=$(mktemp -d "${TMPDIR:-/tmp}/fzfmenu-test.XXXXXX")
 S="fzfmenu-test-$$"
 fails=0 passes=0
+SOCKS=("$S")
 cleanup() {
+  local s
   [[ -r $T/xdg/fzf-menu/server.pid ]] && kill "$(cat "$T/xdg/fzf-menu/server.pid")" 2>/dev/null
-  tmux -L "$S" kill-server 2>/dev/null
+  for s in "${SOCKS[@]}"; do tmux -L "$s" kill-server 2>/dev/null; done
   rm -rf "$T"
 }
 trap cleanup EXIT
@@ -43,7 +45,7 @@ tmux -L "$S" -f /dev/null new-session -d -s main -x 110 -y 30 'sleep 600'
 
 # the window (tmux id) the last terminal with this title opened
 win_of() { awk -F'\t' -v t="$1" '$1 == t { id = $2 } END { print id }' "$FT_DIR/term.log"; }
-screen_of() { tmux -L "$S" capture-pane -p -t "$1" 2>/dev/null; }
+screen_of() { tmux -L "$S" capture-pane -p -t "${1:-}" 2>/dev/null; }
 count_log() { grep -c -- "$1" "$FT_DIR/hypr.log" 2>/dev/null; }
 count_term() { grep -c -- "^$1" "$FT_DIR/term.log" 2>/dev/null; }
 active_slot() { cat "$RUN/server.slot" 2>/dev/null; }
@@ -57,7 +59,8 @@ open_menu() { # NAME [fzf-menu args...]
   CLIENT_PID=$!
   wait_for '[[ -e $(ls -d '"$RUN"'/req.* 2>/dev/null | head -1)/started ]]' 60
   w=$(win_of "fzf-menu-server-$slot")
-  MENU_WIN=$w; [[ -n $w ]] || echo "# no window for slot $slot" >&2
+  MENU_WIN=$w
+  [[ -n $w ]] || { echo "# no window for slot $slot" >&2; return 1; }
   wait_for '[[ $(screen_of '"$w"') == *"[I]"* ]]' 100
 }
 close_menu() { # keys... ; waits for the client, sets RC
@@ -125,23 +128,194 @@ expect "cold window mode: fzf got --no-clear" bash -c 'awk "/^---\$/{n++} n==0" 
 expect "--here: fzf got no --no-clear" bash -c 'awk "/^---\$/{n++} n==1" "$1/fzf.log" | grep -qx -- "--no-clear" && exit 1; exit 0' _ "$T/ft"
 expect "--here ran in this terminal (two fzf runs logged)" test "$(grep -c '^---$' "$FT_DIR/fzf.log")" = 2
 
-# ── case 5: Esc cancels, toggle closes the open menu ──
+# ── fresh environment per case: a private tmux server (own socket, a killed server cannot be restarted on the same name at once),
+# an empty runtime directory, empty logs ──
+CASEN=0
+fresh() {
+  local old=$S
+  [[ -r $RUN/server.pid ]] && kill "$(cat "$RUN/server.pid")" 2>/dev/null
+  tmux -L "$old" kill-server 2>/dev/null
+  CASEN=$((CASEN + 1))
+  S="fzfmenu-test-$$-$CASEN"
+  SOCKS+=("$S")
+  export FT_SOCK=$S
+  tmux -L "$S" -f /dev/null new-session -d -s main -x 110 -y 30 'sleep 600'
+  rm -rf "$RUN"
+  reset_logs
+  echo '[{"address":"0xserver","size":[1152,780],"monitor":0,"pid":1,"class":"float.tui","workspace":{"id":-98,"name":"special:menu-a"}}]' >"$FT_DIR/clients.json"
+}
+# wait_client SECONDS: waits for CLIENT_PID, sets RC; returns 1 when it still runs after the time (and kills it)
+wait_client() {
+  local i
+  for ((i = 0; i < $1 * 20; i++)); do
+    kill -0 "$CLIENT_PID" 2>/dev/null || { wait "$CLIENT_PID"; RC=$?; return 0; }
+    sleep 0.05
+  done
+  kill "$CLIENT_PID" 2>/dev/null
+  wait "$CLIENT_PID" 2>/dev/null
+  RC=-1
+  return 1
+}
+standby_held() { ! ( exec 6>"$RUN/standby.lock"; flock -n 6 ); }
+new_server() { # SLOT: a hidden server terminal of that slot, started the way spawn_slot does
+  ( cd "$T" && "$FZF_MENU_TERMINAL" --class=float.tui --title="fzf-menu-server-$1" -e "$FM" --server "$1" >/dev/null 2>&1 & )
+}
+
+# ── case 5: Esc cancels, toggle closes the open menu (every check also proves the menu really opened on the hot path) ──
 if ((!QUICK)); then
   echo "== case 5: Esc and toggle =="
-  tmux -L "$S" kill-server 2>/dev/null
-  tmux -L "$S" -f /dev/null new-session -d -s main -x 110 -y 30 'sleep 600'
-  rm -rf "$RUN"; reset_logs
+  fresh
   "$FM" --server-start
   wait_for '[[ -p '"$RUN"'/server.fifo ]]' 100
+  expect "5: the server is up" test -p "$RUN/server.fifo"
   open_menu m5
+  expect "5: the menu window exists and shows the list" test -n "$MENU_WIN" -a "$(screen_of "$MENU_WIN" | grep -c '\[I\]')" -ge 1
   close_menu Escape Escape
   expect "Esc Esc: status 1, no output" test "$RC" = 1 -a -z "$(cat "$T/m5.out")"
+  expect "5: ... and the request was hot (the menu really ran in the server window)" grep -q 'hot=1' "$T/m5.trace"
   wait_for '[[ -r '"$RUN"'/server.pid ]]' 100
   open_menu m6
+  expect "5: the second menu opened too (window of the standby)" test -n "$MENU_WIN"
   # a second call while the menu is open closes it (the first caller gets status 1)
   "$FM" -p m6 < <(seq 2) >/dev/null 2>&1
   wait "$CLIENT_PID"
   expect "second call closes the open menu (first caller: status 1)" test "$?" = 1
+fi
+
+# ── case 5a (HIGH #1): the serving window is closed after the standby is up: the client must return, and the next menu works ──
+echo "== case 5a: the serving window dies while the standby waits =="
+fresh
+"$FM" --server-start
+wait_for '[[ -p '"$RUN"'/server.fifo ]]' 100
+open_menu m5a
+KILL_WIN=$MENU_WIN
+wait_for '[[ $(count_term fzf-menu-server-b) -ge 1 ]] && standby_held' 100
+expect "5a: the standby of slot b is waiting" standby_held
+tmux -L "$S" kill-window -t "$KILL_WIN"          # SUPER+W on the menu window
+wait_client 4
+expect "5a: the client returns within 4 s (old code: waits for ever)" test "$RC" != -1
+expect "5a: ... as cancelled (1), the request is not run again cold" test "$RC" = 1 -a "$(grep -c '^fzf-menu-server' "$FT_DIR/term.log")" -le 3
+wait_for '[[ -r '"$RUN"'/server.pid && $(active_slot) = b ]]' 100
+open_menu m5b
+close_menu Enter
+expect "5a: the next menu works at once (status 0, chosen row printed)" test "$RC" = 0 -a "$(cat "$T/m5b.out")" = 1
+expect "5a: ... served hot by the standby" grep -q 'hot=1' "$T/m5b.trace"
+
+if ((!QUICK)); then
+# ── case 5c (MED #3): the cold menu's background server spawn does not keep menu.lock; a detached app of the menu does not either ──
+echo "== case 5c: menu.lock is released =="
+fresh
+export FZF_MENU_NORMAL_BINDS='x:execute-silent(setsid sleep 31337 </dev/null >/dev/null 2>&1 &)'
+FZF_MENU_TRACE=1 "$FM" --cold -p c5c < <(seq 3) >"$T/c5c.out" 2>"$T/c5c.trace" &
+CLIENT_PID=$!
+wait_for '[[ -n $(win_of "menu: c5c") ]]' 100
+MENU_WIN=$(win_of "menu: c5c")
+wait_for '[[ $(screen_of '"$MENU_WIN"') == *"[I]"* ]]' 100
+tmux -L "$S" send-keys -t "$MENU_WIN" Escape; sleep 0.4     # NORMAL mode is switched by an fzf transform: give it time
+tmux -L "$S" send-keys -t "$MENU_WIN" x; sleep 0.5
+close_menu Escape
+unset FZF_MENU_NORMAL_BINDS
+SLEEPER=$(pgrep -f '^sleep 31337$' | head -1)
+expect "5c: the menu action started a detached process" test -n "$SLEEPER"
+expect "5c: a detached app of a cold menu does not hold menu.lock" bash -c 'exec 9>"$1/menu.lock"; flock -n 9' _ "$RUN"
+[[ -n $SLEEPER ]] && kill "$SLEEPER" 2>/dev/null
+# the spawn after a cold menu (sleeps 2 s) is in the background: the lock must be free while it runs
+expect "5c: the background server spawn does not hold menu.lock (a menu right after a cold one is not swallowed)" bash -c 'exec 9>"$1/menu.lock"; flock -n 9' _ "$RUN"
+expect "5c: ... and the spawn really is still running at that moment (it holds spawn.lock for 2 s)" bash -c '! { exec 9>"$1/spawn.lock"; flock -n 9; }' _ "$RUN"
+fi
+
+if ((!QUICK)); then
+# ── case 5i (LOW #9): a detached app started from a menu of the hidden server inherits none of the lock / fifo descriptors ──
+echo "== case 5i: descriptors of a server menu =="
+fresh
+"$FM" --server-start
+wait_for '[[ -p '"$RUN"'/server.fifo ]]' 100
+export FZF_MENU_NORMAL_BINDS='x:execute-silent(setsid sleep 31338 </dev/null >/dev/null 2>&1 &)'
+open_menu m5i
+unset FZF_MENU_NORMAL_BINDS
+tmux -L "$S" send-keys -t "$MENU_WIN" Escape; sleep 0.4
+tmux -L "$S" send-keys -t "$MENU_WIN" x; sleep 0.5
+close_menu Escape
+SLEEPER=$(pgrep -f '^sleep 31338$' | head -1)
+expect "5i: the menu action started a detached process" test -n "$SLEEPER"
+expect "5i: it holds no fifo, lock or request descriptor of fzf-menu (old code: server.lock, fifo, ...)" \
+  test "$(for f in /proc/"${SLEEPER:-0}"/fd/*; do readlink "$f"; done 2>/dev/null | grep -c 'fzf-menu/')" = 0
+[[ -n $SLEEPER ]] && kill "$SLEEPER" 2>/dev/null
+fi
+
+if ((!QUICK)); then
+# ── case 5d (MED #4): a second terminal of the same slot does not stay (one window per slot) ──
+echo "== case 5d: one terminal per slot =="
+fresh
+mkdir -p "$RUN" && chmod 700 "$RUN"
+new_server a
+wait_for '[[ -p '"$RUN"'/server.fifo ]]' 100
+new_server a
+sleep 1.2
+expect "5d: only one window of slot a is left (old code: the second one waits as a standby of the same slot)" \
+  test "$(tmux -L "$S" list-windows -F '#{window_name}' | grep -c '^fzf-menu-server-a$')" = 1
+fi
+
+# ── case 5e (MED #5): the window switcher does not list the hidden menu terminals ──
+echo "== case 5e: window switcher =="
+mkdir -p "$T/ft5"
+echo '[{"id":0,"name":"eDP-1","focused":true,"width":1920,"height":1200,"scale":1.0}]' >"$T/ft5/monitors.json"
+cat >"$T/ft5/clients.json" <<'JSON'
+[{"address":"0x1","mapped":true,"workspace":{"id":1,"name":"1"},"focusHistoryID":0,"monitor":0,"class":"ghostty","title":"term","pid":5},
+ {"address":"0x2","mapped":true,"workspace":{"id":-98,"name":"special:menu-a"},"focusHistoryID":1,"monitor":0,"class":"float.tui","title":"fzf-menu-server-a","pid":6},
+ {"address":"0x3","mapped":true,"workspace":{"id":-99,"name":"special:menu-b"},"focusHistoryID":2,"monitor":0,"class":"float.tui","title":"fzf-menu-server-b","pid":7},
+ {"address":"0x4","mapped":true,"workspace":{"id":-97,"name":"special:menu"},"focusHistoryID":3,"monitor":0,"class":"float.tui","title":"fzf-menu-server","pid":8},
+ {"address":"0x5","mapped":true,"workspace":{"id":2,"name":"2"},"focusHistoryID":4,"monitor":0,"class":"float.tui","title":"menu: pick","pid":9},
+ {"address":"0x6","mapped":true,"workspace":{"id":2,"name":"2"},"focusHistoryID":5,"monitor":0,"class":"float.tui","title":"hub","pid":10}]
+JSON
+SW=$(FT_DIR="$T/ft5" "$REPO/.config/hypr/scripts/window-switcher.sh" --list)
+expect "5e: only the real windows are listed (the terminal and the hub; no standby a / b, no old server, no open menu)" \
+  test "$(cut -f1 <<<"$SW" | sort | tr '\n' ' ')" = "0x1 0x6 "
+
+if ((!QUICK)); then
+# ── case 5f (MED #6): a request a client already gave up on is skipped by the server (no second menu); the next request works ──
+echo "== case 5f: abandoned request =="
+fresh
+"$FM" --server-start
+wait_for '[[ -p '"$RUN"'/server.fifo ]]' 100
+req=$(mktemp -d "$RUN/req.XXXXXX")
+seq 3 >"$req/in"
+printf 'PROMPT=x\nTITLE=x\nNORESTORE=1\nSIZE=normal\nFZF_ARGS=()\n' >"$req/cfg"
+: >"$req/env"
+mkdir "$req/owner"                                # the client's claim: it went cold with this request
+printf '%s\n' "$req" >"$RUN/server.fifo"
+sleep 0.6
+expect "5f: the server did not start the abandoned request (old code: started + a second menu)" test ! -e "$req/started" -a ! -e "$req/rc"
+expect "5f: the server is still waiting" test -p "$RUN/server.fifo" -a -r "$RUN/server.pid"
+open_menu m5f
+close_menu Enter
+expect "5f: the next request is served, status 0" test "$RC" = 0 -a "$(cat "$T/m5f.out")" = 1
+expect "5f: ... hot, by the same server" grep -q 'hot=1' "$T/m5f.trace"
+fi
+
+# ── case 5g (LOW #10): a standby that meets the probe lock for a moment waits for it instead of exiting ──
+echo "== case 5g: standby vs probe =="
+fresh
+mkdir -p "$RUN" && chmod 700 "$RUN"
+( exec 6>"$RUN/standby.lock"; flock 6; sleep 0.18 ) &
+new_server b
+wait_for '[[ -p '"$RUN"'/server.fifo ]]' 40
+expect "5g: the server came up (old code: it exited on the probe lock)" test -p "$RUN/server.fifo"
+wait
+
+if ((!QUICK)); then
+# ── case 5h (LOW #11): no window found = only the toggle, no `address:` dispatch ──
+echo "== case 5h: window not found =="
+fresh
+export FZF_MENU_SERVER_ADDR=
+echo '[]' >"$FT_DIR/clients.json"
+"$FM" --server-start
+wait_for '[[ -p '"$RUN"'/server.fifo ]]' 100
+open_menu m5h --size large
+close_menu Enter
+export FZF_MENU_SERVER_ADDR=0xserver
+expect "5h: toggle_special still happens" test "$(count_log 'toggle_special("menu-a")')" = 1
+expect "5h: no dispatcher with an empty address (old code: set_prop / resize / center on \"address:\")" test "$(count_log 'address:"')" = 0
 fi
 
 # ── case 6: the modal self-test ──
