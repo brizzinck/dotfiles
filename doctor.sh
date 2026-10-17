@@ -719,6 +719,24 @@ if [ -r "$users_lib" ]; then
   if [ -z "$users_clip" ]; then ok users-clipboard "clipboard users reach the Wayland socket only (dir x, socket rw, pipewire closed)"; else bad users-clipboard "ACL of the runtime dir is off:$users_clip (usr clipboard-acl)"; fi
 fi
 
+# ── O1: update tool (sysup), hub groups ─────────────────────────────────────────
+if [ -x "$DOTFILES/.local/bin/sysup" ] && bash -n "$DOTFILES/.local/bin/sysup" 2>/dev/null; then
+  if sysup_out="$("$DOTFILES/infrastructure/tests/sysup/run.sh" 2>&1)"; then ok sysup-tests "offline tests: $(printf '%s' "$sysup_out" | tail -1)"; else bad sysup-tests "$(printf '%s' "$sysup_out" | grep -m1 '^FAIL') (infrastructure/tests/sysup/run.sh)"; fi
+else
+  bad sysup "~/dotfiles/.local/bin/sysup missing or has a syntax error"
+fi
+if systemctl --user is-enabled sysup-check.timer >/dev/null 2>&1; then ok sysup-timer "user timer sysup-check.timer is enabled (background check)"; else bad sysup-timer "sysup-check.timer not enabled (stow ., then systemctl --user enable --now sysup-check.timer)"; fi
+if [ -r /var/lib/dotfiles-predownload/state ] && systemctl is-enabled dotfiles-predownload.timer >/dev/null 2>&1; then
+  info sysup-download "background download active, last run $(date -d @"$(sed -n 1p /var/lib/dotfiles-predownload/state)" '+%F %H:%M')"
+else
+  info sysup-download "background download not installed yet (sudo ./apply-system.sh --only services)"
+fi
+hub_groups="$("$DOTFILES/.config/hub/hub" groups 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"
+hub_missing=""
+for g in Setup Update Learn Fix; do case " $hub_groups " in *" $g "*) ;; *) hub_missing="$hub_missing $g" ;; esac; done
+if [ -z "$hub_missing" ]; then ok hub-groups "groups Setup/Update/Learn/Fix exist (hub groups)"; else bad hub-groups "hub groups lacks:$hub_missing"; fi
+if "$DOTFILES/.config/hub/hub" --json 2>/dev/null | jq -e 'length > 50 and all(.[]; has("id") and has("group") and has("available"))' >/dev/null 2>&1; then ok hub-json "hub --json lists the rows for agents"; else bad hub-json "hub --json is not valid JSON of rows"; fi
+
 # ── stow symlinks: every tracked config file must resolve to the repo copy ──────
 broken=""
 n_links=0

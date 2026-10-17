@@ -16,11 +16,11 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Desktop | [Notifications](#notifications) | 4 |
 | Desktop | [System, power, bar](#system-power-bar) | 12 |
 | Desktop | [Pointer from the keyboard](#pointer-from-the-keyboard) | 21 |
-| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 97 |
+| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 113 |
 | Terminal | [tmux: this setup](#tmux-this-setup) | 55 |
 | Terminal | [tmux: stock prefix keys](#tmux-stock-prefix-keys) | 80 |
 | Terminal | [zsh line editor](#zsh-line-editor) | 34 |
-| Terminal | [zsh helpers](#zsh-helpers) | 9 |
+| Terminal | [zsh helpers](#zsh-helpers) | 8 |
 | Terminal | [zsh aliases](#zsh-aliases) | 42 |
 | Editor | [Neovim: AI agents](#neovim-ai-agents) | 26 |
 | Editor | [Neovim: find](#neovim-find) | 23 |
@@ -37,7 +37,7 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Menus and bar | [Menus: list grammar](#menus-list-grammar) | 19 |
 | Menus and bar | [Menus: keys of each menu](#menus-keys-of-each-menu) | 61 |
 | Menus and bar | [TUIs and viewers](#tuis-and-viewers) | 3 |
-| Menus and bar | [Bar (waybar)](#bar-waybar) | 45 |
+| Menus and bar | [Bar (waybar)](#bar-waybar) | 46 |
 | Apps and login | [Telegram](#telegram) | 6 |
 | Apps and login | [Browser (Vimium C)](#browser-vimium-c) | 32 |
 | Apps and login | [Obsidian (Vim mode)](#obsidian-vim-mode) | 23 |
@@ -252,7 +252,7 @@ Hyprland. Lock, power, update, idle, night light, the bar and the network picker
 | `Super+Esc` | Lock screen (password) |
 | `Super+Shift+Esc` | Power menu |
 | `Power` | Power menu |
-| `Super+Shift+U` | System update (sysup) |
+| `Super+Shift+U` | System update (sysup: install everything now) |
 | `Super+Ctrl+I` | Toggle idle (hypridle) |
 | `Super+Shift+N` | Toggle night light |
 | `Super+Shift+B` | Bluetooth (bluetui) |
@@ -376,7 +376,6 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; s p` | System: Ports |
 | `Super+; s r` | System: Reload Hyprland |
 | `Super+; s t` | System: btop |
-| `Super+; s u` | System: Update |
 | `Super+; s w` | System: Bar compact/full |
 | `Super+; s x` | System: Removable drives |
 | `Super+; o b` | OBS: Save replay buffer |
@@ -390,6 +389,23 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; u n` | Users: Shared nvim install |
 | `Super+; u s` | Users: Publish dotfiles |
 | `Super+; u t` | Users: Terminal as a managed user |
+| `Super+; g c` | Update: Check now |
+| `Super+; g d` | Update: Download status |
+| `Super+; g f` | Update: Firmware check |
+| `Super+; g l` | Update: Last update log |
+| `Super+; g m` | Update: Mirrors |
+| `Super+; g p` | Update: Pacnew |
+| `Super+; g r` | Update: Rollback |
+| `Super+; g u` | Update: Install updates |
+| `Super+; g w` | Update: Firmware update |
+| `Super+; i b` | Setup: Bitwarden setup |
+| `Super+; i g` | Setup: GitHub login |
+| `Super+; i s` | Setup: Stow |
+| `Super+; i t` | Setup: Theme init |
+| `Super+; i w` | Setup: Browser settings |
+| `Super+; l a` | Learn: Arch wiki |
+| `Super+; l c` | Learn: Architecture notes |
+| `Super+; l h` | Learn: Hyprland wiki |
 
 ## Terminal
 
@@ -592,7 +608,6 @@ Functions of .zshrc that carry a comment, plus the commands of this setup.
 | `grun` | Go run for ./main.go, ./cmd/main.go or ./cmd/api/main.go |
 | `codex` | Codex CLI without approval prompts or sandboxing |
 | `ta` | Tmux: attach to the "main" session or create it |
-| `sysup` | One command for system upgrades: news first, then packages, flatpaks, pacnew, cache, status. |
 | `vpn` | Fzf-menu (shared modal fzf, vim keys) toggle for the VPN/proxy daemons that exist on this machine |
 | `hub` | Utility hub: fuzzy list of actions, toggles and keybinds (SUPER+M / tmux prefix+m). hub --help for the flags |
 | `jf` | Fuzzy journal: jf [journalctl args], e.g. jf -p err  /  jf -u docker  /  jf --user |
@@ -1100,7 +1115,8 @@ Two bars per monitor: compact and full (SUPER+B switches, SUPER+CTRL+B hides). C
 | `L` | VPN picker | Switch: VPN |
 | `L` | next profile | Switch: Power profile |
 | `R` | choose | Switch: Power profile |
-| `L` | sysup | Updates |
+| `L` | install everything | Updates |
+| `M` | check now | Updates |
 | `R` | pending list | Updates |
 | `L` | details | Health badge |
 | `R` | doctor | Health badge |

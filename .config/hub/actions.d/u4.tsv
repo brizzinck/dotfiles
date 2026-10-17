@@ -25,4 +25,4 @@ kondo	Cleanup	Clean dev build artefacts (kondo ~/job)	-	tui	+pause kondo ~/job	-
 lostfiles	Cleanup	Files not owned by any package (lostfiles)	-	tui	+pause lostfiles	-	lostfiles	-
 ai-today	AI	AI usage: ccusage daily	-	tui	~/.config/waybar/scripts/ai-usage.sh report daily	-	ccusage	-
 ai-blocks	AI	AI usage: Claude 5-hour blocks	-	tui	~/.config/waybar/scripts/ai-usage.sh report blocks	-	ccusage	-
-sysalert-now	System	Run sysalert now (dry run)	-	tui	+pause ~/.config/hypr/scripts/sysalert.sh --dry-run	-	-	Prints what the 3-minute sysalert timer would alert about.
+sysalert-now	Fix	Run sysalert now (dry run)	-	tui	+pause ~/.config/hypr/scripts/sysalert.sh --dry-run	-	-	Prints what the 3-minute sysalert timer would alert about.

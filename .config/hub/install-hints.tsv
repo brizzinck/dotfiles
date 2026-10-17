@@ -1,0 +1,19 @@
+# Missing tool -> package that provides it (command <TAB> package). The hub shows such rows dimmed ("+ title (install: pkg)")
+# and Enter runs ~/.config/hypr/scripts/pkg-install.sh PKG (yay -S --needed). Only commands listed here are offered.
+voxtype	voxtype-bin
+satty	satty
+mpv	mpv
+yt-dlp	yt-dlp
+qrencode	qrencode
+fwupdmgr	fwupd
+downgrade	downgrade
+nmcli	networkmanager
+pacseek	pacseek
+wl-kbptr	wl-kbptr
+wlrctl	wlrctl
+wlr-which-key	wlr-which-key
+obs-cmd	obs-cmd
+tmux	tmux
+magick	imagemagick
+notify-send	libnotify
+speedtest-cli	speedtest-cli

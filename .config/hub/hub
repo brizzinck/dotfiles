@@ -3,10 +3,14 @@
 #
 #   hub                      interactive fzf (default; also `hub --fzf`)
 #   hub open [GROUP]         SUPER+M: remember the focused window, open the hub in a float.tui ghostty
-#                            (a second press while the hub is focused closes it); GROUP (e.g. Toggles, Energy) starts the
-#                            list filtered to that group (the waybar toggles summary and battery use it)
+#                            (a second press while the hub is focused closes it); GROUP (Setup, Update, Learn, Fix, Toggles,
+#                            Capture, ... case does not matter, `hub groups` lists them) starts the list filtered to that
+#                            group (the waybar toggles summary and battery use it; leader menu: SUPER+; then the group key)
+#   hub groups [--json]      the groups in display order (groups.tsv) with the number of rows and a description
 #   hub --list [--all]       print the merged table (--all also shows actions whose command is missing)
-#   hub --raw                print the merged, evaluated records (fields below, then avail + state)
+#   hub --json [--all]       the same table as JSON for agents: id, group, title, keys, kind, command, needs, description,
+#                            available, state (true/false/null), install (package to install when the tool is missing)
+#   hub --raw                print the merged, evaluated records (fields below, then avail, state, install)
 #   hub --describe ID        description of one row (used by the fzf preview)
 #   hub --run ID             run one row without the UI
 #   hub --leader ID          run one row for the leader menu (SUPER+;): the focused window is the target and TUI rows open
@@ -37,6 +41,11 @@
 #   is appended as group "Keybinds"; rows that share a title or a key with an actions.tsv row are merged.
 #   Keybind rows are executable: they replay the bind through the Lua registry (hyprctl eval df_bind_run).
 #
+# Groups: groups.tsv fixes the order of the groups (name <TAB> description; unknown groups come before Keybinds). The groups
+# Setup / Update / Learn / Fix follow the Omarchy menu: first-time setup, updates and rollbacks, learning the system, repairs.
+# Missing tools: a row whose command is not installed is hidden, unless install-hints.tsv (command <TAB> package) knows the
+# package: then it is shown dimmed as "+ title (install: package)" and Enter installs it (yay -S --needed) in a terminal.
+#
 # Window/app actions target the window that was focused before the hub opened: its address is saved in
 # $XDG_RUNTIME_DIR/hub/prev-window, exported as HUB_TARGET=address:0x... to run/toggle commands, and the
 # window is refocused before every non-TUI action.
@@ -58,6 +67,7 @@ LOG="$RUN_DIR/last.log"
 US=$'\037'
 DRY=0
 ALL=0
+JSON=0
 LEADER=0
 mkdir -p "$RUN_DIR"
 
@@ -156,7 +166,46 @@ needs_ok() {
   return 0
 }
 
-# build the evaluated cache: 9 fields + avail (1/0) + state (on/off/-)
+# first command of "needs" (or of the command line) that is not installed; empty when everything is there
+missing_cmd() {
+  local kind=$1 cmd=$2 needs=$3 w
+  local -a words
+  if [[ -z $needs ]]; then
+    [[ $kind == bind ]] && return 0
+    read -r -a words <<<"$cmd"
+    for w in "${words[@]}"; do
+      [[ $w == +pause || $w == [A-Za-z_]*=* ]] && continue
+      needs=$w
+      break
+    done
+    [[ -z $needs || $needs == '$'* ]] && return 0
+  fi
+  for w in $needs; do
+    cmd_ok "$w" || { printf '%s' "$w"; return 0; }
+  done
+}
+
+# package that provides a missing command (install-hints.tsv: command <TAB> package), empty when unknown
+install_hint() {
+  [[ -n $1 ]] && awk -F'\t' -v c="$1" '$1 !~ /^#/ && $1 == c { print $2; exit }' "$HUB_DIR/install-hints.tsv" 2>/dev/null
+}
+
+# sort the cache by the group order of groups.tsv (stable inside a group; unknown groups before Keybinds, which is last)
+sort_by_group() {
+  awk -F"$US" -v order="$HUB_DIR/groups.tsv" '
+    BEGIN {
+      while ((getline line < order) > 0) {
+        if (line ~ /^#/ || line == "") continue
+        split(line, f, "\t")
+        idx[f[1]] = ++n
+      }
+      last = n + 1000
+    }
+    { g = $2; i = (g in idx) ? idx[g] : (g == "Keybinds" ? last : n + 1); printf "%d\t%d\t%s\n", i, NR, $0 }' "$1" |
+    sort -t$'\t' -k1,1n -k2,2n | cut -f3-
+}
+
+# build the evaluated cache: 9 fields + avail (1/0) + state (on/off/-) + install (package for a missing tool, else empty)
 build_cache() {
   local actions binds merged tmp
   actions=$(mktemp "$RUN_DIR/a.XXXXXX")
@@ -166,29 +215,35 @@ build_cache() {
   load_actions >"$actions"
   load_binds >"$binds"
   merge_rows "$actions" "$binds" >"$merged"
-  local id grp title keys kind cmd state needs desc avail st
+  local id grp title keys kind cmd state needs desc avail st inst miss
   while IFS=$US read -r id grp title keys kind cmd state needs desc; do
     [[ -n $id ]] || continue
-    avail=1
+    avail=1 inst=""
     needs_ok "$kind" "$cmd" "$needs" || avail=0
+    if [[ $avail == 0 ]]; then
+      miss=$(missing_cmd "$kind" "$cmd" "$needs")
+      inst=$(install_hint "$miss")
+    fi
     st=-
     if [[ $avail == 1 && -n $state ]]; then
       if timeout 1 bash -c "$state" >/dev/null 2>&1; then st=on; else st=off; fi
     fi
-    printf '%s\n' "$id$US$grp$US$title$US$keys$US$kind$US$cmd$US$state$US$needs$US$desc$US$avail$US$st"
+    printf '%s\n' "$id$US$grp$US$title$US$keys$US$kind$US$cmd$US$state$US$needs$US$desc$US$avail$US$st$US$inst"
   done <"$merged" >"$tmp"
-  mv "$tmp" "$CACHE"
-  rm -f "$actions" "$binds" "$merged"
+  sort_by_group "$tmp" >"$tmp.sorted"
+  mv "$tmp.sorted" "$CACHE"
+  rm -f "$actions" "$binds" "$merged" "$tmp"
 }
 
 # ───────────────────────────── presentation ─────────────────────────────
 
 list_table() {
-  local id grp title keys kind cmd state needs desc avail st mark
-  while IFS=$US read -r id grp title keys kind cmd state needs desc avail st; do
+  local id grp title keys kind cmd state needs desc avail st inst mark
+  while IFS=$US read -r id grp title keys kind cmd state needs desc avail st inst; do
     if [[ $avail == 0 ]]; then
-      ((ALL)) || continue
+      [[ -n $inst ]] || ((ALL)) || continue
       mark="missing"
+      [[ -n $inst ]] && mark="install"
     else
       case $st in on) mark="on" ;; off) mark="off" ;; *) mark="-" ;; esac
     fi
@@ -198,9 +253,14 @@ list_table() {
 
 # fzf input: id <US> coloured display text
 fzf_rows() {
-  local id grp title keys kind cmd state needs desc avail st mark
-  while IFS=$US read -r id grp title keys kind cmd state needs desc avail st; do
-    [[ $avail == 1 ]] || continue
+  local id grp title keys kind cmd state needs desc avail st inst mark
+  while IFS=$US read -r id grp title keys kind cmd state needs desc avail st inst; do
+    if [[ $avail != 1 ]]; then
+      # a missing tool with a known package: dimmed row, Enter installs it
+      [[ -n $inst ]] || continue
+      printf '%s%s%s\n' "$id" "$US" "$(printf '\e[2m%-9s + %-42s  (install: %s)\e[0m' "$grp" "$title" "$inst")"
+      continue
+    fi
     case $st in
       on) mark=$'\e[32m● \e[0m' ;;
       off) mark=$'\e[2m○ \e[0m' ;;
@@ -211,17 +271,20 @@ fzf_rows() {
 }
 
 describe() {
-  local rec id grp title keys kind cmd state needs desc avail st
+  local rec id grp title keys kind cmd state needs desc avail st inst
   rec=$(awk -F"$US" -v id="$1" '$1 == id { print; exit }' "$CACHE" 2>/dev/null)
   [[ -n $rec ]] || { echo "unknown row: $1"; return 1; }
-  IFS=$US read -r id grp title keys kind cmd state needs desc avail st <<<"$rec"
+  IFS=$US read -r id grp title keys kind cmd state needs desc avail st inst <<<"$rec"
   printf '\e[1m%s\e[0m\n' "$title"
   printf '\e[2m%s  ·  %s\e[0m\n\n' "$grp" "$id"
   [[ -n $desc ]] && printf '%s\n\n' "$desc"
   [[ -n $keys ]] && printf 'key      %s\n' "$keys"
   printf 'kind     %s\n' "$kind"
   case $st in on) printf 'state    ON\n' ;; off) printf 'state    OFF\n' ;; esac
-  [[ $avail == 1 ]] || printf 'status   unavailable (missing: %s)\n' "${needs:-${cmd%% *}}"
+  if [[ $avail != 1 ]]; then
+    printf 'status   unavailable (missing: %s)\n' "${needs:-${cmd%% *}}"
+    [[ -n $inst ]] && printf 'install  Enter installs the package "%s" (yay -S --needed)\n' "$inst"
+  fi
   printf '\ncommand\n  %s\n' "$cmd"
   [[ -n $state ]] && printf '\nstate check\n  %s\n' "$state"
 }
@@ -243,14 +306,21 @@ focus_prev() {
 
 # run one row by id; returns 10 for toggle rows so the UI can stay open
 run_row() {
-  local rec id grp title keys kind cmd state needs desc avail st target
+  local rec id grp title keys kind cmd state needs desc avail st inst target
   rec=$(awk -F"$US" -v id="$1" '$1 == id { print; exit }' "$CACHE")
   [[ -n $rec ]] || { echo "hub: unknown row: $1" >&2; return 1; }
-  IFS=$US read -r id grp title keys kind cmd state needs desc avail st <<<"$rec"
+  IFS=$US read -r id grp title keys kind cmd state needs desc avail st inst <<<"$rec"
   if [[ $avail != 1 ]]; then
-    ((DRY)) || notify-send -a hub -u low "hub" "$title is unavailable (missing: ${needs:-${cmd%% *}})" 2>/dev/null || true
-    echo "hub: $title is unavailable" >&2
-    return 1
+    if [[ -n $inst ]]; then
+      # missing tool with a known package: install it in a terminal, the row works afterwards
+      kind=tui
+      cmd="+pause $HOME/.config/hypr/scripts/pkg-install.sh $inst"
+      title="Install $inst"
+    else
+      ((DRY)) || notify-send -a hub -u low "hub" "$title is unavailable (missing: ${needs:-${cmd%% *}})" 2>/dev/null || true
+      echo "hub: $title is unavailable" >&2
+      return 1
+    fi
   fi
   target=$(prev_addr)
   case $kind in
@@ -325,9 +395,27 @@ interactive() {
   done
 }
 
+# canonical spelling of a group name (case-insensitive) from groups.tsv, else from the rows; empty when unknown
+canon_group() {
+  local g
+  g=$(awk -F'\t' -v w="$1" '$1 !~ /^#/ && tolower($1) == tolower(w) { print $1; exit }' "$HUB_DIR/groups.tsv" 2>/dev/null)
+  [[ -n $g ]] || g=$(awk -F"$US" -v w="$1" 'tolower($2) == tolower(w) { print $2; exit }' "$CACHE" 2>/dev/null)
+  printf '%s' "$g"
+}
+
 open_hub() {
   [[ ${1:-} =~ ^[A-Za-z]*$ ]] || { echo "hub: bad group '$1'" >&2; return 2; }
-  local aw cls title addr pid
+  local aw cls title addr pid grp=""
+  if [[ -n ${1:-} ]]; then
+    [[ -s $CACHE ]] || build_cache
+    grp=$(canon_group "$1")
+    if [[ -z $grp ]]; then
+      notify-send -a hub -u low "hub" "unknown group '$1' (hub groups lists them)" 2>/dev/null || true
+      echo "hub: unknown group '$1' (hub groups lists them)" >&2
+      return 2
+    fi
+    set -- "$grp"
+  fi
   aw=$(hyprctl activewindow -j 2>/dev/null) || aw="{}"
   cls=$(jq -r '.class // ""' <<<"$aw")
   title=$(jq -r '.title // ""' <<<"$aw")
@@ -348,6 +436,39 @@ open_hub() {
   HUB_FROM_OPEN=1 exec ghostty --class=float.tui --title=hub -e "$SELF" --fzf ${1:+"$1"}
 }
 
+# the groups in display order: name, rows (available or installable), description
+cmd_groups() {
+  build_cache
+  awk -F"$US" -v order="$HUB_DIR/groups.tsv" -v json="$JSON" '
+    BEGIN {
+      while ((getline line < order) > 0) {
+        if (line ~ /^#/ || line == "") continue
+        split(line, f, "\t")
+        names[++n] = f[1]; desc[f[1]] = f[2]
+      }
+    }
+    { if ($10 == 1 || $12 != "") cnt[$2]++; if (!($2 in seen) && !($2 in desc)) { seen[$2] = 1; names[++n] = $2 } }
+    END {
+      for (i = 1; i <= n; i++) {
+        g = names[i]; if (!(g in cnt)) continue
+        if (json == 1) printf "%s%s", (c++ ? "\n" : ""), "{\"group\":\"" g "\",\"rows\":" cnt[g] ",\"description\":\"" desc[g] "\"}"
+        else printf "%-10s %3d  %s\n", g, cnt[g], desc[g]
+      }
+      if (json == 1) printf "\n"
+    }' "$CACHE" | { if ((JSON)); then jq -s '.'; else cat; fi; }
+}
+
+# the merged table as JSON for agents (hub --json [--all])
+list_json() {
+  jq -Rn --arg us "$US" --argjson all "$ALL" '
+    [ inputs | split($us) as $f
+      | { id: $f[0], group: $f[1], title: $f[2], keys: ($f[3] | if . == "" then null else . end), kind: $f[4],
+          command: $f[5], needs: ($f[7] | if . == "" then null else . end), description: ($f[8] | if . == "" then null else . end),
+          available: ($f[9] == "1"), state: (if $f[10] == "on" then true elif $f[10] == "off" then false else null end),
+          install: (($f[11] // "") | if . == "" then null else . end) }
+      | select(.available or $all == 1 or .install != null) ]' <"$CACHE"
+}
+
 usage() { sed -n '2,/^set -u/p' "$SELF" | sed '$d; s/^# \{0,1\}//'; }
 
 # ───────────────────────────── main ─────────────────────────────
@@ -357,15 +478,18 @@ for a in "$@"; do
   case $a in
     --dry-run) DRY=1 ;;
     --all) ALL=1 ;;
+    --json) JSON=1 ;;
     *) args+=("$a") ;;
   esac
 done
 set -- "${args[@]}"
 
 case ${1:-} in
-  "" | --fzf) interactive "${2:-}" ;;
+  "" | --fzf) if ((JSON)); then build_cache; list_json; else interactive "${2:-}"; fi ;;
   open) open_hub "${2:-}" ;;
-  --list) build_cache; list_table | column -t -s $'\t' ;;
+  --list) build_cache; if ((JSON)); then list_json; else list_table | column -t -s $'\t'; fi ;;
+  --json) build_cache; list_json ;;
+  groups) cmd_groups ;;
   --raw) build_cache; cat "$CACHE" ;;
   --describe) shift; describe "${1:?row id}" ;;
   --run) shift; build_cache; run_row "${1:?row id}" || [[ $? == 10 ]] ;;

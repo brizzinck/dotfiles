@@ -1,0 +1,30 @@
+# Group order of the hub and its description (name <TAB> description). Groups not listed come before Keybinds (always last).
+# The first four follow the Omarchy menu taxonomy: Setup, Update, Learn, Fix.
+Toggles	Switches with a live state: idle, night light, DND, Wi-Fi, mic, recording
+Capture	Screenshots, recording, OCR, QR, colour picker, sharing
+Clipboard	Clipboard history, emoji, snippets
+Windows	Window menu, switcher, launcher
+Notify	Notification history and dismissal
+Sound	Volume, outputs, microphones, dictation
+Display	Brightness, panel on/off, mirroring, zoom
+Input	Keyboard layouts, pointer by keyboard, touchpad
+Energy	Power profiles, battery care, keep awake
+Network	Wi-Fi, speed test, QR of the current network
+Session	Lock, power menu, screensaver, wallpaper
+Reminders	Timers with a message
+Setup	First-time setup: logins, models, links, apply settings
+Update	Install updates, firmware, rollback, pacnew, logs
+Packages	Install and remove packages
+Fix	Restart a broken service, self-tests, health, config errors
+Learn	Shortcuts, key search, documentation
+System	Bar, ports, bandwidth and other system tools
+TUI	Terminal apps in a floating window
+Tools	Calculator, notes
+Vault	Bitwarden: passwords, 2FA, browser, send
+Users	Managed users (td, yc)
+OBS	OBS control
+AI	AI usage
+Drives	Removable drives
+Theme	black / night
+Cleanup	Disk and dev cleanups
+Hub	The hub itself
