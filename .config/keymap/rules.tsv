@@ -9,7 +9,7 @@ desc	(group|tab in group)	groups
 desc	^(Cycle windows|Close window|Window |Toggle floating|Fullscreen|Maximize|Pin floating|Focus (urgent|left|right|up|down)|Move window (left|right|up|down)$|Resize)	windows
 desc	^(Workspace|Move window to|Move workspace|Focus (previous|next) monitor|Toggle scratch|Send window to scratch|Next workspace|Previous workspace)	workspaces
 desc	^(Screenshot|Frozen|Capture menu|OCR|Record|Color picker)	capture
-desc	^(Clipboard|Emoji|Snippets|Paste|Passwords|2FA|Type the Linux password)	clipboard
+desc	^(Clipboard|Emoji|Snippets|Paste|Passwords|2FA|Vault browser|Type the Linux password)	clipboard
 desc	^(Audio|Mute|Volume|Focused app|Brightness|Play|Pause|Next track|Previous track|Prev track)	audio
 desc	(notification|do-not-disturb)	notify
 desc	^(Lock|Power|System update|Toggle idle|Toggle night|Bar |Hide or show the bar|Wi-Fi|Bluetooth|Reload wallpaper|Text console)	system

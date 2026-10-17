@@ -11,12 +11,12 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Desktop | [Groups (tabs)](#groups-tabs) | 9 |
 | Desktop | [Workspaces and monitors](#workspaces-and-monitors) | 17 |
 | Desktop | [Screenshots and recording](#screenshots-and-recording) | 14 |
-| Desktop | [Clipboard, text and secrets](#clipboard-text-and-secrets) | 8 |
+| Desktop | [Clipboard, text and secrets](#clipboard-text-and-secrets) | 9 |
 | Desktop | [Audio, media, brightness](#audio-media-brightness) | 16 |
 | Desktop | [Notifications](#notifications) | 4 |
 | Desktop | [System, power, bar](#system-power-bar) | 12 |
 | Desktop | [Pointer from the keyboard](#pointer-from-the-keyboard) | 21 |
-| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 85 |
+| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 86 |
 | Terminal | [tmux: this setup](#tmux-this-setup) | 55 |
 | Terminal | [tmux: stock prefix keys](#tmux-stock-prefix-keys) | 80 |
 | Terminal | [zsh line editor](#zsh-line-editor) | 33 |
@@ -35,7 +35,7 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Editor | [Neovim: files and misc](#neovim-files-and-misc) | 17 |
 | Editor | [Neovim: moving and editing](#neovim-moving-and-editing) | 62 |
 | Menus and bar | [Menus: list grammar](#menus-list-grammar) | 19 |
-| Menus and bar | [Menus: keys of each menu](#menus-keys-of-each-menu) | 36 |
+| Menus and bar | [Menus: keys of each menu](#menus-keys-of-each-menu) | 56 |
 | Menus and bar | [TUIs and viewers](#tuis-and-viewers) | 3 |
 | Menus and bar | [Bar (waybar)](#bar-waybar) | 45 |
 | Apps and login | [Telegram](#telegram) | 6 |
@@ -201,6 +201,7 @@ Hyprland. Clipboard history, emoji, snippets and the Bitwarden pickers (copied s
 | `Super+Alt+V` | Paste last screenshot or image |
 | `Super+Ctrl+P` | Passwords (Bitwarden via rbw and fzf) |
 | `Super+Ctrl+O` | 2FA codes (copy the current code) |
+| `Super+Ctrl+Shift+P` | Vault browser (every item, folders, trash) |
 | `Super+Ctrl+U` | Type the Linux password of the current user (terminal or polkit) |
 
 ### Audio, media, brightness
@@ -342,6 +343,7 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; p p` | Power: Power profile |
 | `Super+; p s` | Power: Screensaver |
 | `Super+; v a` | Vault: Bitwarden app |
+| `Super+; v b` | Vault: Browser |
 | `Super+; v e` | Vault: Edit login |
 | `Super+; v g` | Vault: Generator |
 | `Super+; v k` | Vault: Linux passwords |
@@ -986,6 +988,26 @@ Menu-specific keys keep the Alt+ form (works in both modes) and get a NORMAL let
 | `Enter` / `y` | Copy the code (cleared after 30 s) | 2FA codes (SUPER+CTRL+O) |
 | `Alt+T` / `t` | Type the code | 2FA codes (SUPER+CTRL+O) |
 | `Alt+R` / `r` | Rescan | 2FA codes (SUPER+CTRL+O) |
+| `Enter` | Type user, Tab, password (login); other item types: field picker | Vault browser (SUPER+CTRL+SHIFT+P) |
+| `y` / `Alt+Y` | Copy the password (card number, SSH private key, note text); sensitive, cleared after 30 s | Vault browser (SUPER+CTRL+SHIFT+P) |
+| `u` / `Alt+U` | Copy the user name | Vault browser (SUPER+CTRL+SHIFT+P) |
+| `o` / `Alt+O` | Copy the TOTP code | Vault browser (SUPER+CTRL+SHIFT+P) |
+| `f` / `Alt+F` | Copy any field (picker, secrets masked) | Vault browser (SUPER+CTRL+SHIFT+P) |
+| `t` / `Alt+T` | Type user, Tab, password into the previous window | Vault browser (SUPER+CTRL+SHIFT+P) |
+| `P` / `Alt+P` | Type the password only | Vault browser (SUPER+CTRL+SHIFT+P) |
+| `e` / `Alt+E` | Edit the item as JSON in the editor (600 file on tmpfs, shredded) | Vault browser (SUPER+CTRL+SHIFT+P) |
+| `n` / `Alt+N` | New item: login, card, identity, note or SSH key | Vault browser (SUPER+CTRL+SHIFT+P) |
+| `d` / `Alt+D` | Move to the trash (in the Trash: delete for good, asks first) | Vault browser (SUPER+CTRL+SHIFT+P) |
+| `r` / `Alt+R` | Restore from the trash | Vault browser (SUPER+CTRL+SHIFT+P) |
+| `h` / `Alt+H` | Password history (Enter copies an old password) | Vault browser (SUPER+CTRL+SHIFT+P) |
+| `F` / `Alt+A` | Attachments: download or upload | Vault browser (SUPER+CTRL+SHIFT+P) |
+| `w` / `Alt+W` | Password and passphrase generator | Vault browser (SUPER+CTRL+SHIFT+P) |
+| `S` / `Alt+M` | Bitwarden Send: text or file | Vault browser (SUPER+CTRL+SHIFT+P) |
+| `s` / `Alt+S` | Sync (rbw and bw) | Vault browser (SUPER+CTRL+SHIFT+P) |
+| `L` / `Alt+L` | Lock the vault | Vault browser (SUPER+CTRL+SHIFT+P) |
+| `b` / `Alt+B` | Unlock the bw CLI session (Trash, attachments, edit need it) | Vault browser (SUPER+CTRL+SHIFT+P) |
+| `O` / `Alt+V` | Open the Bitwarden desktop app (account, emergency access, organisations) | Vault browser (SUPER+CTRL+SHIFT+P) |
+| `Tab` / `Shift+Tab` | Next / previous folder (All, each folder, no folder, Trash) | Vault browser (SUPER+CTRL+SHIFT+P) |
 | `Enter` | Type into the previous window | Emoji and snippets (SUPER+. and SUPER+SHIFT+.) |
 | `Alt+Enter` / `y` | Copy only | Emoji and snippets (SUPER+. and SUPER+SHIFT+.) |
 | `Enter` | Focus the window (and its workspace) | Window switcher (SUPER+SHIFT+Space) |

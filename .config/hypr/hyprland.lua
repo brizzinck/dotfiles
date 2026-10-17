@@ -449,6 +449,7 @@ hl.bind(mainMod .. " + CTRL + V", hl.dsp.exec_cmd(scripts .. "/paste-plain.sh"),
 hl.bind(mainMod .. " + ALT + V", hl.dsp.exec_cmd(scripts .. "/clipboard.sh --paste-last-image"), { description = "Paste last screenshot or image" })
 hl.bind(mainMod .. " + CTRL + P", hl.dsp.exec_cmd(scripts .. "/vault.sh passwords"), { description = "Passwords (Bitwarden via rbw and fzf)" })
 hl.bind(mainMod .. " + CTRL + O", hl.dsp.exec_cmd(scripts .. "/vault.sh totp"), { description = "2FA codes (copy the current code)" })
+hl.bind(mainMod .. " + CTRL + SHIFT + P", hl.dsp.exec_cmd(scripts .. "/vault.sh browse"), { description = "Vault browser (every item, folders, trash)" })
 hl.bind(mainMod .. " + CTRL + U", function() exec_when_keys_up(scripts .. "/vault.sh user-pass", { "u" }) end, { description = "Type the Linux password of the current user (terminal or polkit)" })
 hl.bind(mainMod .. " + equal", hl.dsp.exec_cmd(scripts .. "/calc.sh"), { description = "Calculator (qalc)" })
 hl.bind(mainMod .. " + slash", hl.dsp.exec_cmd("~/.local/bin/keymap menu"), { description = "Shortcut search (every key of every tool)" })
