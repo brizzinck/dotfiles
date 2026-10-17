@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # brightness: brightness keys that follow the focused monitor.
 #
-#   brightness.sh up|down [--dry-run]
+#   brightness.sh up|down [--step N] [--dry-run]   step in percent (default 10; the ALT+brightness keys use 1)
+#   brightness.sh max|min [--dry-run]               100 % / the lowest useful level (1 %): SHIFT+brightness keys
 #
 # The laptop panel (eDP-*) keeps swayosd / brightnessctl exactly as before. Any other monitor is driven over DDC/CI
 # with ddcutil (`setvcp 10`): the monitor -> I2C bus map is detected once and cached, the new value is shown at
@@ -14,13 +15,15 @@ CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/brightness-ddc"
 RUN_DIR="${XDG_RUNTIME_DIR:-/tmp}/brightness-ddc"
 DRY=0
 DIR=""
-for a in "$@"; do
-  case $a in
+while (($#)); do
+  case $1 in
     --dry-run) DRY=1 ;;
-    up | down) DIR=$a ;;
+    --step) shift; STEP=${1:-10} ;;
+    up | down | max | min) DIR=$1 ;;
   esac
+  shift
 done
-[[ -n $DIR ]] || { echo "usage: brightness.sh up|down [--dry-run]" >&2; exit 2; }
+[[ -n $DIR && $STEP =~ ^[0-9]+$ ]] || { echo "usage: brightness.sh up|down [--step N] | max | min [--dry-run]" >&2; exit 2; }
 
 note() { notify-send -a brightness -h string:x-dunst-stack-tag:brightness-ddc -t 2500 "$@" 2>/dev/null || true; }
 osd() { # osd FRACTION TEXT
@@ -32,14 +35,25 @@ focused=$(hyprctl monitors -j 2>/dev/null | jq -r '.[] | select(.focused) | .nam
 focused=${focused:-eDP-1}
 
 if [[ $focused == eDP-* ]]; then
-  if [[ $DIR == up ]]; then
-    cmd=(swayosd-client --brightness raise)
-    fallback=(brightnessctl set "+${STEP}%")
-  else
-    cmd=(swayosd-client --brightness lower)
-    fallback=(brightnessctl set "${STEP}%-")
-  fi
+  case $DIR in
+    up)
+      cmd=(swayosd-client --brightness "+$STEP") # swayosd: (+-)number = percent step; the default step is its own
+      [[ $STEP == 10 ]] && cmd=(swayosd-client --brightness raise)
+      fallback=(brightnessctl set "+${STEP}%") ;;
+    down)
+      cmd=(swayosd-client --brightness "-$STEP")
+      [[ $STEP == 10 ]] && cmd=(swayosd-client --brightness lower)
+      fallback=(brightnessctl set "${STEP}%-") ;;
+    max) cmd=(brightnessctl set 100%) fallback=(true) ;;
+    min) cmd=(brightnessctl set 1%) fallback=(true) ;; # 1 % keeps the OLED readable; 0 % would switch the backlight off
+  esac
   if ((DRY)); then echo "panel $focused: ${cmd[*]} || ${fallback[*]}"; exit 0; fi
+  if [[ $DIR == max || $DIR == min ]]; then
+    "${cmd[@]}" >/dev/null 2>&1 || { notify-send -a brightness -u low "Brightness" "brightnessctl is missing"; exit 0; }
+    v=$([[ $DIR == max ]] && echo 100 || echo 1)
+    osd "$(awk -v p="$v" 'BEGIN { printf "%.2f", p / 100 }')" "$focused ${v}%" "$v"
+    exit 0
+  fi
   "${cmd[@]}" 2>/dev/null || "${fallback[@]}"
   exit 0
 fi
@@ -73,7 +87,7 @@ bus_for() { # cached lookup, re-detected when missing or the node vanished
 
 if ((DRY)); then
   bus=$(bus_for "$focused")
-  echo "external $focused: bus=${bus:-unknown} step=$STEP% -> ddcutil --bus ${bus:-?} --noverify setvcp 10 <value>"
+  echo "external $focused: $DIR bus=${bus:-unknown} step=$STEP% -> ddcutil --bus ${bus:-?} --noverify setvcp 10 <value>"
   exit 0
 fi
 
@@ -98,7 +112,12 @@ else
 fi
 max=$(cat "$RUN_DIR/$focused.max" 2>/dev/null || echo 100)
 [[ $cur =~ ^[0-9]+$ ]] || cur=50
-if [[ $DIR == up ]]; then new=$((cur + STEP)); else new=$((cur - STEP)); fi
+case $DIR in
+  up) new=$((cur + STEP)) ;;
+  down) new=$((cur - STEP)) ;;
+  max) new=$max ;;
+  min) new=1 ;;
+esac
 ((new > max)) && new=$max
 ((new < 0)) && new=0
 echo "$new" >"$want"

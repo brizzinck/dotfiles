@@ -38,6 +38,8 @@ rec-mic-window\tRecord with mic: active window\tgpu-screen-recorder
 rec-mic-monitor\tRecord with mic: monitor\tgpu-screen-recorder
 rec-stop\tRecord: stop recording\tgpu-screen-recorder
 gif\tGIF from the last recording (gifski)\tffmpeg
+transcode\tTranscode a picture or video for sharing\tffmpeg
+ytdl\tDownload the video from the clipboard URL\tyt-dlp wl-paste
 scroll\tScreenshot: scrolling (wayscrollshot)\twayscrollshot
 color\tColor picker (choose format)\thyprpicker'
 
@@ -292,6 +294,8 @@ run_action() { # ID [ADDRESS]
     rec-mic-monitor) x "$SCRIPTS/rec-toggle.sh" monitor --mic ;;
     rec-stop) x "$SCRIPTS/rec-toggle.sh" stop ;;
     gif) do_gif ;;
+    transcode) x "$SCRIPTS/transcode.sh" ;;
+    ytdl) x "$SCRIPTS/ytdl.sh" ;;
     scroll) do_scroll ;;
     color) do_color ;;
   esac

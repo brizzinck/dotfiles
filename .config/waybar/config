@@ -37,7 +37,7 @@
     "modules-left": ["hyprland/workspaces", "hyprland/submap"],
     "modules-center": ["clock"],
     "modules-right": [
-      "privacy", "custom/recording", "custom/health", "custom/updates",
+      "privacy", "custom/recording", "custom/health", "custom/updates", "custom/media",
       "group/toggles", "group/net", "group/audio", "group/system",
       "custom/ai", "custom/vault", "group/pinned", "hyprland/language", "group/trays",
       "battery", "custom/mode#full"

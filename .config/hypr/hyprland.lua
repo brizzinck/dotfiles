@@ -81,6 +81,11 @@ hl.on("monitor.added", function()
     hl.exec_cmd(wallpaper)
 end)
 
+-- The external monitor went away while the laptop panel was switched off (SUPER+CTRL+Delete): bring the panel back.
+hl.on("monitor.removed", function()
+    hl.exec_cmd(scripts .. "/lid.sh recover")
+end)
+
 -- ───────────────────────────── environment ──────────────────────────
 hl.env("XDG_CURRENT_DESKTOP", "Hyprland")
 hl.env("QT_QPA_PLATFORMTHEME", "qt6ct")
@@ -108,15 +113,21 @@ hl.env("HYPRCURSOR_SIZE", "32")
 -- resolve_binds_by_sym stays at its default (false): binds match layout 1 (us) on ua and ru too
 hl.config({
     input = {
-        touchpad = {
-            natural_scroll = true,
-        },
         kb_layout = "us,ua,ru",
         kb_options = "grp:caps_toggle",
         follow_mouse = 1,
         sensitivity = -0.1,
+        -- faster key repeat for hjkl and backspace: 40 per second after 250 ms (default 25 / 600)
+        repeat_rate = 40,
+        repeat_delay = 250,
+        touchpad = {
+            natural_scroll = true,
+            clickfinger_behavior = true, -- two-finger click = right click, three fingers = middle
+        },
     },
 })
+-- three-finger swipe changes the workspace
+hl.gesture({ fingers = 3, direction = "horizontal", action = "workspace" })
 
 -- ───────────────────────────── look ─────────────────────────────────
 -- Colours (borders, groups, background) come from the palette: the black fragment is always there as the
@@ -176,6 +187,10 @@ hl.config({
             rounding = 4,
             gradients = false,
         },
+    },
+
+    binds = {
+        hide_special_on_workspace_change = true, -- the drop-down terminal and the notes close when you switch workspace
     },
 
     misc = {
@@ -256,6 +271,26 @@ hl.window_rule({
     name = "fzf-menu-server",
     match = { class = "^(float\\.tui)$", title = "^(fzf-menu-server)$" },
     workspace = "special:menu silent",
+})
+
+-- Picture-in-picture (Zen/Firefox "Picture-in-Picture", Chromium "Picture in picture"): small, pinned, top right, 16:9
+hl.window_rule({
+    name = "pip",
+    match = { title = "^(Picture.?in.?[Pp]icture)$" },
+    float = true,
+    pin = true,
+    size = { 600, 338 },
+    keep_aspect_ratio = true,
+    border_size = 0,
+    move = { "monitor_w-window_w-40", "monitor_h*0.04" },
+})
+
+-- Portal file chooser (GTK) and similar dialogs: floating and centred instead of a tile that resizes everything
+hl.window_rule({
+    name = "float-portal-dialog",
+    match = { class = "^(xdg-desktop-portal-gtk)$" },
+    float = true,
+    center = true,
 })
 
 -- QR code viewer (imv): small floating window
@@ -425,7 +460,7 @@ hl.bind(mainMod .. " + B", hl.dsp.exec_cmd("~/.config/waybar/scripts/bar.sh mode
 hl.bind(mainMod .. " + CTRL + B", hl.dsp.exec_cmd("~/.config/waybar/scripts/bar.sh hide toggle"), { description = "Hide or show the bar" })
 
 -- --- session and system ---
-hl.bind(mainMod .. " + Escape", hl.dsp.exec_cmd("pidof hyprlock || hyprlock"), { description = "Lock screen (password)" })
+hl.bind(mainMod .. " + Escape", hl.dsp.exec_cmd("lock-screen"), { description = "Lock screen (password; layout reset to us)" })
 hl.bind(mainMod .. " + SHIFT + Escape", hl.dsp.exec_cmd(scripts .. "/powermenu.sh"), { description = "Power menu" })
 hl.bind("XF86PowerOff", hl.dsp.exec_cmd(scripts .. "/powermenu.sh"), { description = "Power menu" })
 hl.bind(mainMod .. " + SHIFT + U", hl.dsp.exec_cmd("~/.local/bin/sysup open"), { description = "System update (sysup: install everything now)" })
@@ -455,6 +490,7 @@ hl.bind(mainMod .. " + CTRL + SHIFT + P", hl.dsp.exec_cmd(scripts .. "/vault.sh 
 hl.bind(mainMod .. " + CTRL + U", function() exec_when_keys_up(scripts .. "/vault.sh user-pass", { "u" }) end, { description = "Type the Linux password of the current user (terminal or polkit)" })
 hl.bind(mainMod .. " + equal", hl.dsp.exec_cmd(scripts .. "/calc.sh"), { description = "Calculator (qalc)" })
 hl.bind(mainMod .. " + slash", hl.dsp.exec_cmd("~/.local/bin/keymap menu"), { description = "Shortcut search (every key of every tool)" })
+hl.bind(mainMod .. " + CTRL + period", hl.dsp.exec_cmd(scripts .. "/transcode.sh"), { description = "Transcode a picture or video for sharing" })
 hl.bind(mainMod .. " + SHIFT + slash", hl.dsp.exec_cmd("~/.local/bin/keymap page"), { description = "Shortcut reference page (browser window)" })
 hl.bind(mainMod .. " + M", hl.dsp.exec_cmd("~/.config/hub/hub open"), { description = "Utility hub (fzf)" })
 hl.bind(mainMod .. " + semicolon", hl.dsp.exec_cmd("~/.config/hub/leader"), { description = "Leader menu (which-key)" })
@@ -582,6 +618,11 @@ hl.bind(mainMod .. " + CTRL + bracketleft", hl.dsp.workspace.move({ monitor = "-
 hl.bind(mainMod .. " + CTRL + bracketright", hl.dsp.workspace.move({ monitor = "+1" }), { description = "Move workspace to next monitor" })
 
 -- Workspaces 1-10 on SUPER+digit, 11-20 on SUPER+ALT+digit; SHIFT moves the active window
+hl.bind(mainMod .. " + CTRL + Delete", hl.dsp.exec_cmd(scripts .. "/lid.sh panel toggle"), { description = "Laptop panel on or off (needs an external monitor)" })
+hl.bind(mainMod .. " + CTRL + ALT + Delete", hl.dsp.exec_cmd(scripts .. "/lid.sh mirror toggle"), { description = "Mirror the laptop panel to the external monitor" })
+hl.bind(mainMod .. " + CTRL + Z", hl.dsp.exec_cmd(scripts .. "/cursor-zoom.sh in"), { repeating = true, description = "Zoom the screen in around the pointer" })
+hl.bind(mainMod .. " + CTRL + SHIFT + Z", hl.dsp.exec_cmd(scripts .. "/cursor-zoom.sh out"), { repeating = true, description = "Zoom the screen out" })
+hl.bind(mainMod .. " + CTRL + ALT + Z", hl.dsp.exec_cmd(scripts .. "/cursor-zoom.sh reset"), { description = "Reset the screen zoom" })
 for ws = 1, 20 do
     local digit = tostring(ws % 10)
     local alt = ws > 10 and " + ALT" or ""
@@ -616,6 +657,14 @@ hl.bind("XF86AudioPrev", hl.dsp.exec_cmd("playerctl previous"), { locked = true,
 -- --- lid: with another monitor active only the laptop panel is switched off; "keep working with the lid closed"
 -- (hub / waybar toggle, lid.sh) holds a logind inhibitor so closing the lid does not suspend ---
 hl.bind("switch:on:Lid Switch", hl.dsp.exec_cmd(scripts .. "/lid.sh event close"), { locked = true })
+-- fine steps: ALT = 1 %, SHIFT on the brightness keys = 100 % / 1 %; SHIFT+Mute = next output device
+hl.bind("ALT + XF86AudioRaiseVolume", hl.dsp.exec_cmd("swayosd-client --output-volume +1 --max-volume 140 || wpctl set-volume -l 1.4 @DEFAULT_AUDIO_SINK@ 1%+"), { repeating = true, locked = true, description = "Volume up 1 percent" })
+hl.bind("ALT + XF86AudioLowerVolume", hl.dsp.exec_cmd("swayosd-client --output-volume -1 || wpctl set-volume @DEFAULT_AUDIO_SINK@ 1%-"), { repeating = true, locked = true, description = "Volume down 1 percent" })
+hl.bind("ALT + XF86MonBrightnessUp", hl.dsp.exec_cmd(scripts .. "/brightness.sh up --step 1"), { repeating = true, locked = true, description = "Brightness up 1 percent" })
+hl.bind("ALT + XF86MonBrightnessDown", hl.dsp.exec_cmd(scripts .. "/brightness.sh down --step 1"), { repeating = true, locked = true, description = "Brightness down 1 percent" })
+hl.bind("SHIFT + XF86MonBrightnessUp", hl.dsp.exec_cmd(scripts .. "/brightness.sh max"), { locked = true, description = "Brightness 100 percent" })
+hl.bind("SHIFT + XF86MonBrightnessDown", hl.dsp.exec_cmd(scripts .. "/brightness.sh min"), { locked = true, description = "Brightness minimum (1 percent)" })
+hl.bind("SHIFT + XF86AudioMute", hl.dsp.exec_cmd(scripts .. "/audio-picker.sh --next"), { locked = true, description = "Switch to the next audio output" })
 hl.bind("switch:off:Lid Switch", hl.dsp.exec_cmd(scripts .. "/lid.sh event open"), { locked = true })
 
 -- --- text consoles: Ctrl+Alt+F1..F6 ---

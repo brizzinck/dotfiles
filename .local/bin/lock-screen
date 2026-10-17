@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# lock-screen: the password lock (SUPER+Escape, power menu, hub, loginctl lock-session). The keyboard layout is reset to
+# layout 1 (us) first, so the password is always typed in us without an extra Caps press; hyprlock starts once.
+pidof hyprlock >/dev/null 2>&1 && exit 0
+hyprctl switchxkblayout all 0 >/dev/null 2>&1 || true
+exec hyprlock

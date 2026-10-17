@@ -4,6 +4,7 @@
 #   Alt+Enter  make it the default only (running streams stay where they are)
 #   audio-picker.sh --list              print the rows (index, kind, id, default marker, name)
 #   audio-picker.sh --pick N [--keep]   apply row N without the menu (--keep = Alt+Enter behaviour)
+#   audio-picker.sh --next              switch to the next output device and move the running streams (SHIFT+Mute)
 #   --dry-run                           print the commands instead of running them
 # Pattern after Omarchy omarchy-audio-output-switch (MIT).
 set -u
@@ -12,11 +13,13 @@ DRY=0
 KEEP=0
 PICK=""
 LIST=0
+NEXT=0
 while (($#)); do
   case $1 in
     --dry-run) DRY=1 ;;
     --keep) KEEP=1 ;;
     --list) LIST=1 ;;
+    --next) NEXT=1 ;;
     --pick) shift; PICK=${1:-} ;;
     *) echo "usage: audio-picker.sh [--list | --pick N [--keep]] [--dry-run]" >&2; exit 2 ;;
   esac
@@ -46,6 +49,24 @@ done
 if ((LIST)); then
   for i in "${!ROWS[@]}"; do printf '%s\t%s\n' "$i" "${labels[$i]}"; done
   exit 0
+fi
+
+if ((NEXT)); then
+  # the next Output row after the default one (wraps around)
+  outs=() cur=-1
+  for i in "${!ROWS[@]}"; do
+    IFS=$'\t' read -r kind id name desc <<<"${ROWS[$i]}"
+    [[ $kind == Output ]] || continue
+    outs+=("$i")
+    [[ $name == "$def_sink" ]] && cur=${#outs[@]}
+  done
+  if ((${#outs[@]} < 2)); then
+    ((DRY)) && echo "only one output device" || notify-send -a audio -u low -t 2500 "Audio output" "only one output device"
+    exit 0
+  fi
+  # cur is the 1-based position of the default; the next one is that index modulo the count (0-based)
+  PICK=${outs[$((cur % ${#outs[@]}))]}
+  ((cur < 0)) && PICK=${outs[0]}
 fi
 
 if [[ -z $PICK ]]; then

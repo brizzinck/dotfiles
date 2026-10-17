@@ -13,7 +13,7 @@ confirm() {
 }
 
 case $choice in
-  lock) pidof hyprlock >/dev/null || hyprlock ;;
+  lock) lock-screen ;;
   suspend) systemctl suspend ;;
   logout) confirm logout && hyprd exit ;;
   reboot) confirm reboot && systemctl reboot ;;

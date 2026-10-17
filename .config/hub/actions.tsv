@@ -10,7 +10,7 @@ bluetooth	Toggles	Bluetooth power	-	toggle	bluetoothctl power "$(bluetoothctl sh
 mic-mute	Toggles	All microphones muted	SUPER+SHIFT+M	toggle	~/.config/hypr/scripts/mic-mute-all.sh	~/.config/hypr/scripts/mic-mute-all.sh status >/dev/null	wpctl pw-dump	ON = every microphone is muted. Pressing again unmutes the default one only.	a m;Mute mics
 out-mute	Toggles	Speakers muted	XF86AudioMute	toggle	swayosd-client --output-volume mute-toggle || wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle	wpctl get-volume @DEFAULT_AUDIO_SINK@ | grep -q MUTED	wpctl	ON = the default output is muted.	a s;Mute speakers
 recording	Toggles	Screen recording	SUPER+R	toggle	~/.config/hypr/scripts/rec-toggle.sh	pgrep -x gpu-screen-reco	gpu-screen-recorder	Starts or stops a gpu-screen-recorder recording of the focused monitor.	c v;Record toggle
-lock	Session	Lock screen (password)	SUPER+Escape	run	pidof hyprlock || hyprlock	-	hyprlock	-	p l;Lock
+lock	Session	Lock screen (password)	SUPER+Escape	run	lock-screen	-	hyprlock lock-screen	Resets the keyboard layout to us first, then hyprlock.	p l;Lock
 powermenu	Session	Power menu	SUPER+SHIFT+Escape	run	~/.config/hypr/scripts/powermenu.sh	-	fzf-menu	Lock, suspend, logout, reboot, poweroff.	p m;Power menu
 screensaver	Session	Screensaver test (clock, any input dismisses)	-	run	~/.config/hypr/scripts/screensaver.sh start	-	hyprlock	-	p s;Screensaver
 wallpaper	Session	Reload wallpaper	SUPER+O	run	pgrep swaybg && killall swaybg; swaybg -i ~/pics/walls/lol.jpg	-	swaybg	-

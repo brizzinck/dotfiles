@@ -4,6 +4,9 @@
 #   lid.sh toggle | on | off     hold / release a `systemd-inhibit --what=handle-lid-switch` (user process, no sudo)
 #   lid.sh status                exit 0 + "on" while held, exit 1 + "off" otherwise
 #   lid.sh waybar                JSON for the custom/lid module (empty text while off)
+#   lid.sh panel [toggle|on|off] the laptop panel on/off (SUPER+CTRL+Delete); refuses to switch the only screen off
+#   lid.sh mirror [toggle|on|off] the external monitor mirrors the laptop panel (SUPER+CTRL+ALT+Delete) and back
+#   lid.sh recover               re-enable the laptop panel when no other monitor is left (monitor.removed hook)
 #   lid.sh event close|open      called by the Hyprland lid switch binds (hyprland.lua):
 #                                  close: another monitor active -> disable eDP-1 only;
 #                                         otherwise, while the toggle is on -> blank eDP-1 (dpms off);
@@ -29,7 +32,10 @@ for a in "$@"; do
 done
 set -- "${args[@]+"${args[@]}"}"
 
-note() { notify-send -a lid -h string:x-dunst-stack-tag:lid -t 2500 "$@" 2>/dev/null || true; }
+note() {
+  if ((DRY)); then echo "note: $*"; return 0; fi
+  notify-send -a lid -h string:x-dunst-stack-tag:lid -t 2500 "$@" 2>/dev/null || true
+}
 poke_bar() { pkill -o -u "$UID" -RTMIN+8 -x waybar 2>/dev/null || true; }   # signal 8 = waybar toggles drawer
 do_cmd() { if ((DRY)); then echo "would run: $*"; else "$@"; fi; }
 
@@ -90,6 +96,72 @@ panel_enable_lua() {
     "$(jq -Rn --arg v "$MONITORS" '$v')" "$(jq -Rn --arg v "$PANEL" '$v')"
 }
 
+# the first external monitor (name), empty when there is none
+external_name() {
+  hyprctl monitors -j 2>/dev/null | jq -r --arg p "$PANEL" '[.[] | select(.name != $p and (.disabled | not))][0].name // empty' 2>/dev/null
+}
+
+panel_disabled() {
+  hyprctl monitors all -j 2>/dev/null | jq -e --arg p "$PANEL" 'any(.[]; .name == $p and .disabled)' >/dev/null 2>&1
+}
+
+# Lua: re-apply the rule of monitors.lua for one output (the output-specific rule first, then the fallback rule with output "")
+monitor_rule_lua() {
+  printf 'for _, m in ipairs(dofile(%s)) do if m.output == %s or m.output == "" then local r = {}; for k, v in pairs(m) do r[k] = v end; r.output = %s; hl.monitor(r); break end end' \
+    "$(jq -Rn --arg v "$MONITORS" '$v')" "$(jq -Rn --arg v "$1" '$v')" "$(jq -Rn --arg v "$1" '$v')"
+}
+
+panel_cmd() { # on | off | toggle
+  local want=${1:-toggle} off=0 ext
+  panel_disabled && off=1
+  [[ $want == toggle ]] && { ((off)) && want=on || want=off; }
+  if [[ $want == off ]]; then
+    ((off)) && return 0
+    ext=$(external_name)
+    if [[ -z $ext ]]; then
+      note -u normal "Laptop panel stays on" "no external monitor is connected (the only screen is never switched off)"
+      ((DRY)) && echo "refused: no external monitor"
+      return 0
+    fi
+    do_cmd hyprctl eval "hl.monitor({ output = \"$PANEL\", disabled = true })"
+    note "Laptop panel off" "external monitor: $ext (SUPER+CTRL+Delete brings it back)"
+  else
+    ((off)) || return 0
+    do_cmd hyprctl eval "$(panel_enable_lua)"
+    note "Laptop panel on" ""
+  fi
+}
+
+mirror_cmd() { # on | off | toggle: the external monitor shows the laptop panel
+  local want=${1:-toggle} ext mirrored=0
+  ext=$(external_name)
+  if [[ -z $ext ]]; then
+    note -u normal "Mirroring needs a second monitor" "no external monitor is connected"
+    ((DRY)) && echo "refused: no external monitor"
+    return 0
+  fi
+  hyprctl monitors -j 2>/dev/null | jq -e --arg e "$ext" 'any(.[]; .name == $e and (.mirrorOf != "none"))' >/dev/null 2>&1 && mirrored=1
+  [[ $want == toggle ]] && { ((mirrored)) && want=off || want=on; }
+  if [[ $want == on ]]; then
+    ((mirrored)) && return 0
+    panel_disabled && do_cmd hyprctl eval "$(panel_enable_lua)"
+    do_cmd hyprctl eval "hl.monitor({ output = \"$ext\", mode = \"preferred\", position = \"auto\", scale = 1, mirror = \"$PANEL\" })"
+    note "Mirroring" "$ext shows the laptop panel (SUPER+CTRL+ALT+Delete to stop)"
+  else
+    ((mirrored)) || return 0
+    do_cmd hyprctl eval "$(monitor_rule_lua "$ext")"
+    note "Mirroring off" "$ext is a separate screen again"
+  fi
+}
+
+# the external monitor went away while the panel was switched off: bring the panel back (never end up with no screen)
+recover() {
+  if panel_disabled && [[ -z $(external_name) ]]; then
+    do_cmd hyprctl eval "$(panel_enable_lua)"
+    note "Laptop panel on" "the external monitor is gone"
+  fi
+}
+
 event() {
   case ${1:-} in
     close)
@@ -131,5 +203,8 @@ case ${1:-toggle} in
   status) if active; then echo on; else echo off; exit 1; fi ;;
   waybar) waybar ;;
   event) event "${2:-}" ;;
-  *) echo "usage: lid.sh toggle|on|off|status|waybar|event close|open [--dry-run]" >&2; exit 2 ;;
+  panel) panel_cmd "${2:-toggle}" ;;
+  mirror) mirror_cmd "${2:-toggle}" ;;
+  recover) recover ;;
+  *) echo "usage: lid.sh toggle|on|off|status|waybar|panel [toggle|on|off]|mirror [toggle|on|off]|recover|event close|open [--dry-run]" >&2; exit 2 ;;
 esac

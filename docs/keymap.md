@@ -12,11 +12,12 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Desktop | [Workspaces and monitors](#workspaces-and-monitors) | 17 |
 | Desktop | [Screenshots and recording](#screenshots-and-recording) | 14 |
 | Desktop | [Clipboard, text and secrets](#clipboard-text-and-secrets) | 9 |
-| Desktop | [Audio, media, brightness](#audio-media-brightness) | 16 |
+| Desktop | [Audio, media, brightness](#audio-media-brightness) | 22 |
 | Desktop | [Notifications](#notifications) | 4 |
 | Desktop | [System, power, bar](#system-power-bar) | 12 |
 | Desktop | [Pointer from the keyboard](#pointer-from-the-keyboard) | 21 |
-| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 113 |
+| Desktop | [Other Hyprland binds](#other-hyprland-binds) | 7 |
+| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 123 |
 | Terminal | [tmux: this setup](#tmux-this-setup) | 55 |
 | Terminal | [tmux: stock prefix keys](#tmux-stock-prefix-keys) | 80 |
 | Terminal | [zsh line editor](#zsh-line-editor) | 34 |
@@ -224,6 +225,12 @@ Hyprland. Volume, microphones, media keys and brightness of the focused monitor.
 | `Super+Mute` | Focused app mute |
 | `Bright up` | Brightness up (focused monitor) |
 | `Bright down` | Brightness down (focused monitor) |
+| `Alt+Vol up` | Volume up 1 percent |
+| `Alt+Vol down` | Volume down 1 percent |
+| `Alt+Bright up` | Brightness up 1 percent |
+| `Alt+Bright down` | Brightness down 1 percent |
+| `Shift+Bright up` | Brightness 100 percent |
+| `Shift+Bright down` | Brightness minimum (1 percent) |
 | `Play` | Play or pause |
 | `Pause` | Pause |
 | `Next track` | Next track |
@@ -249,7 +256,7 @@ Hyprland. Lock, power, update, idle, night light, the bar and the network picker
 | `Super+O` | Reload wallpaper |
 | `Super+B` | Bar compact or full |
 | `Super+Ctrl+B` | Hide or show the bar |
-| `Super+Esc` | Lock screen (password) |
+| `Super+Esc` | Lock screen (password; layout reset to us) |
 | `Super+Shift+Esc` | Power menu |
 | `Power` | Power menu |
 | `Super+Shift+U` | System update (sysup: install everything now) |
@@ -287,6 +294,20 @@ Hyprland. wl-kbptr hint click and drag, plus the mouse submap (SUPER+ALT+M) wher
 | `q` | Leave mouse mode | mouse mode |
 | `any other key` | Leave mouse mode (any other key) | mouse mode |
 
+### Other Hyprland binds
+
+Hyprland binds that no classification rule claims yet (add a rule to rules.tsv).
+
+| Keys | Action |
+|---|---|
+| `Super+Ctrl+.` | Transcode a picture or video for sharing |
+| `Super+Ctrl+Delete` | Laptop panel on or off (needs an external monitor) |
+| `Super+Ctrl+Alt+Delete` | Mirror the laptop panel to the external monitor |
+| `Super+Ctrl+Z` | Zoom the screen in around the pointer |
+| `Super+Ctrl+Shift+Z` | Zoom the screen out |
+| `Super+Ctrl+Alt+Z` | Reset the screen zoom |
+| `Shift+Mute` | Switch to the next audio output |
+
 ### Leader menu (SUPER+;)
 
 One-shot which-key popup generated from the hub rows: press SUPER+; then the group key, then the item key. The popup lists every option, so you can read as you go. Keys work on the ua and ru layouts.
@@ -311,6 +332,8 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; w z` | Windows: Fullscreen |
 | `Super+; c a` | Capture: Annotate |
 | `Super+; c b` | Capture: Record region |
+| `Super+; c d` | Capture: Download video |
+| `Super+; c f` | Capture: Transcode |
 | `Super+; c g` | Capture: GIF |
 | `Super+; c m` | Capture: Menu |
 | `Super+; c o` | Capture: Output |
@@ -325,11 +348,13 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; c z` | Capture: Frozen region |
 | `Super+; a d` | Audio: App volume down |
 | `Super+; a m` | Audio: Mute mics |
+| `Super+; a n` | Audio: Media menu |
 | `Super+; a p` | Audio: Output picker |
 | `Super+; a s` | Audio: Mute speakers |
 | `Super+; a u` | Audio: App volume up |
 | `Super+; a w` | Audio: Mixer |
 | `Super+; a x` | Audio: App mute |
+| `Super+; a y` | Audio: Play/pause |
 | `Super+; y e` | Clipboard: Emoji |
 | `Super+; y h` | Clipboard: History |
 | `Super+; y i` | Clipboard: Paste last image |
@@ -362,6 +387,8 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; n c` | Notifications: Actions |
 | `Super+; n d` | Notifications: Do not disturb |
 | `Super+; n h` | Notifications: History |
+| `Super+; n q` | Notifications: Wi-Fi QR |
+| `Super+; n s` | Notifications: Speed test |
 | `Super+; n x` | Notifications: Dismiss |
 | `Super+; m d` | Mouse: Hint drag |
 | `Super+; m h` | Mouse: Hint click |
@@ -403,6 +430,10 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; i s` | Setup: Stow |
 | `Super+; i t` | Setup: Theme init |
 | `Super+; i w` | Setup: Browser settings |
+| `Super+; f a` | Fix: Restart audio |
+| `Super+; f n` | Fix: Restart dunst |
+| `Super+; f t` | Fix: Restart trackpad |
+| `Super+; f w` | Fix: Restart Wi-Fi |
 | `Super+; l a` | Learn: Arch wiki |
 | `Super+; l c` | Learn: Architecture notes |
 | `Super+; l h` | Learn: Hyprland wiki |

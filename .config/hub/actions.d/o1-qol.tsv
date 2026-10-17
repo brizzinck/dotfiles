@@ -1,0 +1,11 @@
+# O1 D10: network, repair and sharing rows
+wifi-qr	Network	Wi-Fi: QR code of the current network	-	tui	+pause nmcli dev wifi show-password	-	nmcli	Shows the password and a QR code of the connected network (scan it with a phone). The password is visible on screen: do not do this while sharing the screen.	n q;Wi-Fi QR
+speedtest	Network	Network speed test (Cloudflare)	-	tui	+pause ~/.config/hypr/scripts/speedtest.sh	-	curl	Latency, download (50 MB) and upload (20 MB) against speed.cloudflare.com; no account, nothing is stored. Uses real traffic.	n s;Speed test
+restart-audio	Fix	Restart audio (pipewire, wireplumber)	-	run	~/.config/hypr/scripts/restart.sh audio	-	systemctl fzf-menu	Asks first. A running call or recording drops while the audio stack restarts; audio-ensure runs afterwards.	f a;Restart audio
+restart-wifi	Fix	Restart Wi-Fi (radio off and on)	-	run	~/.config/hypr/scripts/restart.sh wifi	-	nmcli fzf-menu	Asks first. The connection drops for a few seconds.	f w;Restart Wi-Fi
+restart-trackpad	Fix	Restart the trackpad	-	run	~/.config/hypr/scripts/restart.sh trackpad	-	hyprctl fzf-menu	Asks first. The touchpad is disabled for a second and enabled again (device config in Hyprland).	f t;Restart trackpad
+restart-dunst	Fix	Restart the notification daemon (dunst)	-	run	~/.config/hypr/scripts/restart.sh dunst	-	dunst fzf-menu	Asks first. The notification history is lost.	f n;Restart dunst
+transcode	Capture	Transcode a picture or video for sharing	SUPER+CTRL+period	run	~/.config/hypr/scripts/transcode.sh	-	ffmpeg fzf-menu	Pick a file from the screenshot, recording and download folders, a format and a size (3160/2160/1080 px pictures, 1080p/720p/4k videos, GIF). The result is saved next to the original and its file:// URI is copied for drag and drop.	c f;Transcode
+ytdl	Capture	Download the video from the clipboard URL (yt-dlp)	-	tui	+pause ~/.config/hypr/scripts/ytdl.sh	-	yt-dlp wl-paste	Copy a video URL first (Zen, Telegram, anywhere). The file lands in ~/Videos/downloads.	c d;Download video
+media-play	Sound	Media: play / pause	XF86AudioPlay	run	playerctl play-pause	-	playerctl	-	a y;Play/pause
+media-menu	Sound	Media: player menu (next, previous, focus the player)	-	run	~/.config/waybar/scripts/media.sh menu	-	playerctl fzf-menu	The same menu as a right click on the waybar media module.	a n;Media menu

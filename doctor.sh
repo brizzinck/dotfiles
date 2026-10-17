@@ -736,6 +736,16 @@ if [ -x "$DOTFILES/.config/hypr/scripts/safe-close.sh" ] && [ -f "$DOTFILES/.con
 else
   bad safe-close "safe-close.sh / term-procs.py missing"
 fi
+if o1_out="$("$DOTFILES/infrastructure/tests/o1/run.sh" 2>&1)"; then ok o1-tests "desktop helpers (displays, zoom, brightness, restart, lock, media, transcode): $(printf '%s' "$o1_out" | tail -1)"; else bad o1-tests "$(printf '%s' "$o1_out" | grep -m1 '^FAIL') (infrastructure/tests/o1/run.sh)"; fi
+if [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && command -v hyprctl >/dev/null 2>&1; then
+  o1_rate="$(hyprctl getoption input:repeat_rate -j 2>/dev/null | jq -r '.int // empty')"
+  o1_delay="$(hyprctl getoption input:repeat_delay -j 2>/dev/null | jq -r '.int // empty')"
+  o1_click="$(hyprctl getoption input:touchpad:clickfinger_behavior -j 2>/dev/null | jq -r '.bool // empty')"
+  if [ "$o1_rate" = 40 ] && [ "$o1_delay" = 250 ] && [ "$o1_click" = true ]; then ok input-feel "key repeat 40/s after 250 ms, two-finger right click"; else bad input-feel "repeat $o1_rate/$o1_delay clickfinger $o1_click (expected 40/250/true; hyprctl reload)"; fi
+  o1_binds="$(hyprctl binds -j 2>/dev/null | jq -r '[.[] | select(.description | test("Laptop panel on or off|Mirror the laptop panel|Zoom the screen in|Switch to the next audio output|Brightness up 1 percent|Volume up 1 percent"))] | length')"
+  if [ "${o1_binds:-0}" -ge 6 ]; then ok o1-binds "display, zoom and fine-step binds are live"; else bad o1-binds "only ${o1_binds:-0} of 6 O1 binds are live (hyprctl reload)"; fi
+fi
+[ -x "$HOME/.local/bin/lock-screen" ] && grep -q 'lock_cmd = lock-screen' "$HOME/.config/hypr/hypridle.conf" 2>/dev/null && ok lock-layout "lock-screen resets the layout to us (bind, power menu, hub, hypridle lock_cmd)" || bad lock-layout "lock-screen missing or hypridle lock_cmd does not use it"
 hub_groups="$("$DOTFILES/.config/hub/hub" groups 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"
 hub_missing=""
 for g in Setup Update Learn Fix; do case " $hub_groups " in *" $g "*) ;; *) hub_missing="$hub_missing $g" ;; esac; done
