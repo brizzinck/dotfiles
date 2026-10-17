@@ -17,6 +17,7 @@ cleanup() { [[ -n $GWPID ]] && kill "$GWPID" 2>/dev/null; rm -rf "$SCRATCH"; }
 trap cleanup EXIT
 export FAKE_DIR="$SCRATCH/fake" MCP_STATE_DIR="$SCRATCH/state" MCP_RUNTIME_DIR="$SCRATCH/run" MCP_CONFIG_DIR="$REPO/.config/mcp"
 export XDG_RUNTIME_DIR="$SCRATCH/xdg-run"
+export MCP_TGCONFIRM_UNIT="$SCRATCH/no-tgconfirm.service" MCP_TGCONFIRM_SOCK="$SCRATCH/no-tgconfirm.sock"   # a real broker on this machine must not change the results
 mkdir -p "$FAKE_DIR/vault" "$XDG_RUNTIME_DIR"
 : >"$FAKE_DIR/argv.log"
 PASS=0 FAILS=0 SKIPS=0
@@ -59,6 +60,12 @@ echo "tg-token" >"$MCP_STATE_DIR/telegram.token"
 check "telegram appears once its token exists" bash -c '"$1" servers | grep -qx telegram' _ "$GW"
 check "url shape" bash -c '[ "$("$1" url telegram)" = "http://127.0.0.1:37411/telegram/mcp" ]' _ "$GW"
 rm -f "$MCP_STATE_DIR/telegram.token"
+check "telegram-send is held back while the tgconfirm broker is not installed" bash -c '! "$1" servers | grep -qx telegram-send' _ "$GW"
+check "telegram-send appears once the broker unit exists" bash -c ': >"$2"; MCP_TGCONFIRM_UNIT="$2" "$1" servers | grep -qx telegram-send' _ "$GW" "$SCRATCH/tgc.service"
+check "telegram-send appears while the broker socket exists" bash -c 'python3 -c "import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); import time; time.sleep(3)" "$2" & sleep 0.5; MCP_TGCONFIRM_SOCK="$2" "$1" servers | grep -qx telegram-send; rc=$?; kill %1 2>/dev/null; exit $rc' _ "$GW" "$SCRATCH/tgc.sock"
+check "telegram-send toolFilter: an allow list of exactly send_message and status" jq -e '.mcpServers["telegram-send"].options.toolFilter | .mode == "allow" and (.list | sort) == ["send_message","status"]' "$MCP_CONFIG_DIR/gateway.json"
+check "telegram-send: stdio server from the pinned venv, no secret and no URL in its entry, timeout 90s" jq -e '.mcpServers["telegram-send"] | .timeout == "90s" and (.command | endswith("/venv/bin/python")) and (.args[0] | endswith("/telegram-send.py")) and (has("env") | not) and (has("headers") | not) and (has("url") | not)' "$MCP_CONFIG_DIR/gateway.json"
+check "the effective config with the broker installed passes mcp-proxy's own check" bash -c 'p="$2"; [ -x "$p" ] || exit 0; : >"$3"; MCP_TGCONFIRM_UNIT="$3" MCP_PROXY_BIN="$p" "$1" check' _ "$GW" "$PROXY" "$SCRATCH/tgc.service"
 check "no toolFilter lists a send/edit/delete tool for telegram" bash -c '! jq -r ".mcpServers.telegram.options.toolFilter.list[]" "$1" | grep -E "^(send|reply|edit|delete|forward|mark|save|upload|download|press|join|leave|invite|ban|pin|set_|create|update|promote|demote|add_|remove|block|mute|archive|import|export)"' _ "$MCP_CONFIG_DIR/gateway.json"
 check "telegram toolFilter is an allow list" jq -e '.mcpServers.telegram.options.toolFilter.mode == "allow"' "$MCP_CONFIG_DIR/gateway.json"
 
@@ -82,6 +89,11 @@ echo "tg-token" >"$MCP_STATE_DIR/telegram.token"
 MCP_PROXY_BIN="$SCRATCH/fake-proxy" "$GW" run
 check "telegram token reaches the proxy environment" bash -c '[ "$(cat "$1/proxy-env-tg")" = tg-token ]' _ "$FAKE_DIR"
 check "telegram stays in the effective config" jq -e '.mcpServers.telegram' "$FAKE_DIR/proxy-config"
+check "effective config drops telegram-send without the broker" bash -c '! jq -e ".mcpServers[\"telegram-send\"]" "$1" >/dev/null' _ "$FAKE_DIR/proxy-config"
+: >"$SCRATCH/tgc.service"
+MCP_TGCONFIRM_UNIT="$SCRATCH/tgc.service" MCP_PROXY_BIN="$SCRATCH/fake-proxy" "$GW" run
+check "effective config keeps telegram-send once the broker is installed, and never its token (it has none)" bash -c 'jq -e ".mcpServers[\"telegram-send\"]" "$1" >/dev/null && ! grep -q -i "MCP_.*TOKEN" <(jq -c ".mcpServers[\"telegram-send\"]" "$1")' _ "$FAKE_DIR/proxy-config"
+rm -f "$SCRATCH/tgc.service"
 rm -f "$MCP_STATE_DIR/telegram.token"
 
 # --- installer: checksum gate --------------------------------------------------------------------------------------
@@ -159,7 +171,7 @@ unset MCP_CHROME_NO_RESTART MCP_CHROME_NO_TIMER
 cat >"$SCRATCH/fake-gw" <<'EOF'
 #!/usr/bin/env bash
 case $1 in
-  servers) printf 'desktop-ro\nchrome-devtools\ncontext7\n' ;;
+  servers) printf 'desktop-ro\nchrome-devtools\ncontext7\ntelegram-send\n' ;;
   url) printf 'http://127.0.0.1:37411/%s/mcp\n' "$2" ;;
 esac
 EOF
@@ -178,6 +190,9 @@ startup_timeout_sec = 30.0
 
 [mcp_servers.http-toolkit]
 command = "/opt/httptoolkit/resources/httptoolkit-mcp"
+
+[mcp_servers.telegram-send]
+url = "http://127.0.0.1:37411/telegram-send/mcp"
 
 [marketplaces.codex-hud]
 source_type = "git"
@@ -201,6 +216,7 @@ if [[ $QUICK -eq 0 && -n $CLAUDE_BIN ]]; then
   check "claude: mcphub removed" bash -c '! jq -e ".mcpServers.mcphub" "$1"' _ "$CJ"
   check "claude: direct chrome-devtools replaced by the gateway entry" jq -e '.mcpServers["chrome-devtools"] | .type == "http" and (.url | endswith("/chrome-devtools/mcp"))' "$CJ"
   check "claude: gateway servers registered with a headers helper" jq -e '[.mcpServers["desktop-ro"], .mcpServers["context7"]] | all(.type == "http" and (.headersHelper | endswith("mcp-gateway-headers")))' "$CJ"
+  check "claude: telegram-send is registered (Claude Code only)" jq -e '.mcpServers["telegram-send"] | .type == "http" and (.url | endswith("/telegram-send/mcp")) and (.headersHelper | endswith("mcp-gateway-headers"))' "$CJ"
   check "claude: stdio entry goes through mcp-run" jq -e '.mcpServers.demo | .type == "stdio" and (.command | endswith("/mcp-run")) and .args == ["demo"]' "$CJ"
   check "claude: unrelated entry kept" jq -e '.mcpServers.keepme' "$CJ"
   check "claude: no token anywhere in the config" bash -c '! grep -q -i -F -e "$2" -e "Bearer" "$1"' _ "$CJ" "$T1"
@@ -220,6 +236,7 @@ for n in ("desktop-ro", "chrome-devtools", "context7"):
     assert d[n]["url"].endswith(f"/{n}/mcp") and d[n]["http_headers_helper"].endswith("mcp-gateway-headers"), n
 assert d["demo"]["command"].endswith("/mcp-run") and d["demo"]["args"] == ["demo"]
 ' "$CT"
+check "codex: telegram-send is never registered and a leftover entry is removed" bash -c '! grep -q "telegram-send" "$1"' _ "$CT"
 check "codex: unrelated tables, keys and the comment survive" bash -c 'grep -q "keep this comment" "$1" && grep -q "mcp_servers.http-toolkit" "$1" && grep -q "marketplaces.codex-hud" "$1" && grep -q "approval_policy" "$1"' _ "$CT"
 check "codex: a timestamped backup was written" bash -c 'ls "$1"/config.toml.bak-mcp-add-* >/dev/null' _ "$CODEX_DIR"
 check "codex: no token in config.toml" bash -c '! grep -q -i -F -e "$2" -e "Bearer" "$1"' _ "$CT" "$T1"
@@ -408,6 +425,13 @@ check "setup: a stale stored session falls back to a QR login" bash -c 'grep -q 
 check "setup: --new-login skips the stored session" bash -c ': >"$2"; FAKE_PICK_IDS=42 "${@:3}" "$1" --new-login >/dev/null 2>&1; ! grep -q "^mode=list" "$2" && grep -q "^mode=qr" "$2"' _ "$SETUP" "$FAKE_DIR/login.log" env BW_BIN="$HERE/bin/bw" VAULT_BW="$REPO/.config/hypr/scripts/vault-bw.py" VAULT_RBW_CONF=/nonexistent PATH="$HERE/bin:$PATH" MCP_TG_PYTHON=/usr/bin/python3 MCP_TG_LOGIN="$HERE/fake_login.py" MCP_TG_CREDS="$HERE/fake_creds.sh" MCP_TG_SUDO=env MCP_TG_PICK="$HERE/fake_pick.sh" MCP_GATEWAY_CMD="$HERE/fake_gw_tg.sh" MCP_ADD_CMD="$HERE/fake_add.sh" MCP_TG_NO_VERIFY=1 MCP_STATE_DIR="$SCRATCH/setup-state"
 check "setup: nothing ticked and no allowlist -> refuses, nothing sent to the root helper" bash -c 'rm -f "$3"; jq "del(.fields[] | select(.name==\"allowlist\" or .name==\"session\"))" "$2" >"$2.x" && mv "$2.x" "$2"; FAKE_PICK_IDS="" "${@:4}" "$1" >/dev/null 2>&1; rc=$?; [ $rc -ne 0 ] && [ ! -e "$3" ]' _ "$SETUP" "$FAKE_DIR/bw-item.json" "$FAKE_DIR/creds-payload.json" env BW_BIN="$HERE/bin/bw" VAULT_BW="$REPO/.config/hypr/scripts/vault-bw.py" VAULT_RBW_CONF=/nonexistent PATH="$HERE/bin:$PATH" MCP_TG_PYTHON=/usr/bin/python3 MCP_TG_LOGIN="$HERE/fake_login.py" MCP_TG_CREDS="$HERE/fake_creds.sh" MCP_TG_SUDO=env MCP_TG_PICK="$HERE/fake_pick.sh" MCP_GATEWAY_CMD="$HERE/fake_gw_tg.sh" MCP_ADD_CMD="$HERE/fake_add.sh" MCP_TG_NO_VERIFY=1 MCP_STATE_DIR="$SCRATCH/setup-state"
 check "setup: a missing Bitwarden folder gives instructions" bash -c 'out=$(FAKE_BW_NOFOLDER=1 "${@:2}" "$1" 2>&1); grep -q "no folder MCP" <<<"$out"' _ "$SETUP" env BW_BIN="$HERE/bin/bw" VAULT_BW="$REPO/.config/hypr/scripts/vault-bw.py" VAULT_RBW_CONF=/nonexistent PATH="$HERE/bin:$PATH" MCP_TG_PYTHON=/usr/bin/python3 MCP_TG_LOGIN="$HERE/fake_login.py" MCP_TG_CREDS="$HERE/fake_creds.sh" MCP_TG_SUDO=env MCP_TG_PICK="$HERE/fake_pick.sh" MCP_GATEWAY_CMD="$HERE/fake_gw_tg.sh" MCP_ADD_CMD="$HERE/fake_add.sh" MCP_TG_NO_VERIFY=1 MCP_STATE_DIR="$SCRATCH/setup-state"
+
+# the agents' send-request server (telegram-send.py) against a fake broker socket
+if [[ -x $VENV_PY ]]; then
+  count_py "$VENV_PY" "$HERE/test_telegram_send.py" "$REPO/.config/mcp/telegram-send.py"
+else
+  skip "telegram-send protocol test (no venv: run mcp-install)"
+fi
 
 # --- tgconfirm: the owner-confirmation broker, its popup, unit and window rule ---------------------------------------------
 CFD="$REPO/infrastructure/mcp/confirm"

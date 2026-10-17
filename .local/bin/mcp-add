@@ -16,6 +16,8 @@ at connect time. The token itself is never written into ~/.claude.json or ~/.cod
 Claude Code is driven through its own CLI (`claude mcp add-json/remove -s user`). Codex has no flag for the headers helper, so
 ~/.codex/config.toml is edited as text: only the [mcp_servers.NAME] tables named here are replaced, a timestamped backup is
 written first and the result is parsed back (tomllib) and compared with the old file before it is saved.
+telegram-send (owner-confirmed Telegram sending) is registered for Claude Code ONLY and removed from Codex when found there: Codex runs
+with --dangerously-bypass-approvals-and-sandbox, so no permission rule (mcp-guard) can protect the popup from it.
 Throwaway test: CLAUDE_CONFIG_DIR=/tmp/x CODEX_HOME=/tmp/y mcp-add.  Hooks: MCP_GATEWAY_CMD, MCP_CLAUDE_BIN, MCP_STATE_DIR.
 """
 
@@ -40,6 +42,7 @@ CONFIG_DIR = Path(os.environ.get("MCP_CONFIG_DIR") or Path(os.environ.get("XDG_C
 STATE_DIR = Path(os.environ.get("MCP_STATE_DIR") or Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local/state") / "mcp")
 CLAUDE = os.environ.get("MCP_CLAUDE_BIN", "claude")
 CODEX_CONFIG = Path(os.environ.get("CODEX_HOME") or HOME / ".codex") / "config.toml"
+CLAUDE_ONLY = {"telegram-send"}   # never registered for Codex (see the header)
 DRY = False
 
 
@@ -165,7 +168,11 @@ def do_codex(servers: dict[str, str], stdio: dict[str, dict], legacy: bool) -> b
     except tomllib.TOMLDecodeError as e:
         say(f"codex: {cfg} does not parse ({e}); left untouched")
         return False
+    servers = {n: u for n, u in servers.items() if n not in CLAUDE_ONLY}
     names = set(servers) | set(stdio)
+    for n in CLAUDE_ONLY & set(old_data.get("mcp_servers") or {}):
+        names.add(n)
+        say(f"codex: remove {n} (Claude Code only)")
     if legacy and "mcphub" in (old_data.get("mcp_servers") or {}):
         names.add("mcphub")
         say("codex: remove legacy entry mcphub")

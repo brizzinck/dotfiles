@@ -12,8 +12,9 @@
 # Config (repo, stowed): ~/.config/mcp/gateway.json in mcp-proxy's own format. It holds ${ENV} placeholders only; the tokens come
 # from 0600 files in ~/.local/state/mcp/ and reach mcp-proxy through its environment (never argv, never a config file, never a
 # client config: Claude Code and Codex call `mcp-gateway-headers` at connect time). The effective config is written to
-# $XDG_RUNTIME_DIR/mcp-gateway/config.json (tmpfs) without the servers that are not set up yet (telegram until its token exists).
-# Test hooks: MCP_STATE_DIR, MCP_CONFIG_DIR, MCP_RUNTIME_DIR, MCP_PROXY_BIN, MCP_GATEWAY_UNIT.
+# $XDG_RUNTIME_DIR/mcp-gateway/config.json (tmpfs) without the servers that are not set up yet (telegram until its token exists,
+# telegram-send until the tgconfirm broker is installed: its unit file or its socket exists).
+# Test hooks: MCP_STATE_DIR, MCP_CONFIG_DIR, MCP_RUNTIME_DIR, MCP_PROXY_BIN, MCP_GATEWAY_UNIT, MCP_TGCONFIRM_UNIT, MCP_TGCONFIRM_SOCK.
 set -u
 
 STATE_DIR=${MCP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/mcp}
@@ -22,6 +23,8 @@ RUNTIME_DIR=${MCP_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/mcp-gatewa
 UNIT=${MCP_GATEWAY_UNIT:-mcp-gateway.service}
 GATEWAY_TOKEN=$STATE_DIR/gateway.token
 TELEGRAM_TOKEN=$STATE_DIR/telegram.token
+TGCONFIRM_UNIT=${MCP_TGCONFIRM_UNIT:-/etc/systemd/system/tgconfirm.service}
+TGCONFIRM_SOCK=${MCP_TGCONFIRM_SOCK:-/run/tgconfirm/req.sock}
 SRC_CONFIG=$CONFIG_DIR/gateway.json
 
 die() { echo "mcp-gateway: $*" >&2; exit 1; }
@@ -48,11 +51,15 @@ ensure_token() {
   chmod 600 "$f"
 }
 
-# render_config: effective config on stdout (jq): the telegram server only exists once its token file does
+# render_config: effective config on stdout (jq): the telegram server only exists once its token file does, telegram-send once
+# the tgconfirm broker is installed (a held-back server costs nothing; a listed one answers "not set up" if the broker is down)
 render_config() {
-  local have_tg=0
+  local have_tg=0 have_send=0
   [[ -s $TELEGRAM_TOKEN ]] && have_tg=1
-  HAVE_TG=$have_tg jq 'if env.HAVE_TG == "1" then . else del(.mcpServers.telegram) end' "$SRC_CONFIG"
+  [[ -e $TGCONFIRM_UNIT || -S $TGCONFIRM_SOCK ]] && have_send=1
+  HAVE_TG=$have_tg HAVE_SEND=$have_send jq '
+    (if env.HAVE_TG == "1" then . else del(.mcpServers.telegram) end)
+    | (if env.HAVE_SEND == "1" then . else del(.mcpServers["telegram-send"]) end)' "$SRC_CONFIG"
 }
 
 cmd_run() {
