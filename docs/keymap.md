@@ -303,13 +303,13 @@ Hyprland binds that no classification rule claims yet (add a rule to rules.tsv).
 | `F9` | Dictation: hold F9 to dictate |
 | `Super+Alt+D` | Dictation on or off (Voxtype) |
 | `Super+Alt+Shift+D` | Dictation: next language (ru uk en) |
-| `Super+Ctrl+E` | Edit anywhere: nvim at the pointer then paste (Ctrl+S) |
 | `Super+Alt+T` | New reminder (25 tea or 14:30 standup) |
 | `Super+Ctrl+Alt+T` | Reminders: list and cancel |
 | `Super+Ctrl+A` | AI: ask about the focused window |
 | `Super+Alt+A` | AI: question about the selected text |
 | `Super+Ctrl+T` | AI: Telegram digest (unread allowlisted chats) |
 | `Super+Ctrl+.` | Transcode a picture or video for sharing |
+| `Super+Ctrl+E` | Edit anywhere: nvim at the pointer then paste (Ctrl+S) |
 | `Super+Ctrl+Delete` | Laptop panel on or off (needs an external monitor) |
 | `Super+Ctrl+Alt+Delete` | Mirror the laptop panel to the external monitor |
 | `Super+Ctrl+Z` | Zoom the screen in around the pointer |
