@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # health-details: left click of waybar custom/health. A fzf-menu (vim keys, float.tui) with every current health issue:
 # failed system/user units, restart-looping units and the sysalert conditions (memory, CPU temperature, load, disk).
-# The rows come from the "items" of the very same cached run that draws the badge (health.sh via cache.sh), so the
-# badge and this view cannot disagree. The preview of a unit is `systemctl [--user] status` plus the last 30 journal
+# The rows come from the "items" of the exact snapshot the badge is showing (health-badge.sh keeps it as
+# waybar-cache/health-shown.json), not from a new run that could already differ: an issue that cleared after the badge
+# was drawn stays in the list marked "cleared" with a note, and the badge is refreshed at once, so the two cannot
+# disagree. Issues that appeared since are listed too. The preview of a unit is `systemctl [--user] status` plus the last 30 journal
 # lines; Enter opens the actions for the row (restart, stop, full journal in less, ...), then the list is rebuilt.
 #
 #   health-details.sh                  interactive view (Esc / q leaves)
@@ -13,7 +15,7 @@
 #   --dry-run                          with --do: print the command instead of running it
 #
 # ID = scope:unit (scope system|user) for units, alert:KEY for sysalert conditions.
-# Test hook: HEALTH_DETAILS_JSON=FILE reads the health JSON from FILE instead of the cache.
+# Test hook: HEALTH_DETAILS_JSON=FILE reads the health JSON (snapshot and fresh run) from FILE instead of the cache.
 # System unit actions run in a float.tui terminal through sudo (asks there); user unit actions run directly.
 set -u
 
@@ -28,33 +30,68 @@ set -- "${args[@]+"${args[@]}"}"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# the badge's data: the shared cache entry; FRESH=1 drops it first (after an action)
-data() {
+CACHE_DIR="${WAYBAR_CACHE_DIR:-${XDG_RUNTIME_DIR:-/tmp}/waybar-cache}"
+
+# the current run: the shared cache entry; FRESH=1 drops it first (after an action)
+fresh_data() {
   if [[ -n ${HEALTH_DETAILS_JSON:-} ]]; then cat "$HEALTH_DETAILS_JSON"; return; fi
   [[ ${FRESH:-0} == 1 ]] && "$HERE/cache.sh" --drop health
   "$HERE/cache.sh" health 55 -- "$HERE/health.sh"
 }
 
+# what the badge shows right now (written by health-badge.sh on every poll); the current run when there is none yet
+shown_data() {
+  if [[ -n ${HEALTH_DETAILS_JSON:-} ]]; then cat "$HEALTH_DETAILS_JSON"; return; fi
+  if [[ -s $CACHE_DIR/health-shown.json ]]; then cat "$CACHE_DIR/health-shown.json"; else fresh_data; fi
+}
+
+# make the badge redraw from the current run (module signal 16)
+poke_badge() {
+  ((DRY)) && return 0
+  pkill -o -u "$(id -u)" -RTMIN+16 -x waybar 2>/dev/null || true
+}
+
 flag_of() { [[ $1 == user ]] && echo --user || echo --system; }
 
 # rows: id <TAB> label. Every row carries its one-line reason ("unit (scope) restarting 5x - last error of the unit").
+# Source: the badge's snapshot plus whatever the current run adds; a snapshot item the current run no longer has is
+# marked "cleared" (it recovered after the badge was drawn) and the badge is poked to catch up.
 rows() {
-  local json kind scope unit detail reason id
-  json=$(data)
-  while IFS=$'\t' read -r kind scope unit detail reason; do
+  local shown cur kind orig_kind scope unit detail reason gone id ts body='' snap_n=0 gone_n=0
+  shown=$(shown_data)
+  cur=$(fresh_data)
+  while IFS=$'\t' read -r kind scope unit detail reason gone; do
     [[ -n $unit ]] || continue
     [[ -n $reason ]] || reason="no reason recorded"
-    if [[ $kind == alert ]]; then
+    snap_n=$((snap_n + 1))
+    orig_kind=$kind
+    if [[ $gone == true ]]; then gone_n=$((gone_n + 1)); kind="cleared"; fi
+    if [[ $orig_kind == alert ]]; then
       id="alert:$unit"
-      printf '%s\t%-10s %s - %s\n' "$id" "alert" "$detail" "$reason"
+      body+=$(printf '%s\t%-10s %s - %s' "$id" "$kind" "$detail" "$reason")$'\n'
     else
       id="$scope:$unit"
-      printf '%s\t%-10s %s (%s) %s - %s\n' "$id" "$kind" "$unit" "$scope" "$detail" "$reason"
+      body+=$(printf '%s\t%-10s %s (%s) %s - %s' "$id" "$kind" "$unit" "$scope" "$detail" "$reason")$'\n'
     fi
-  done < <(jq -r '.items[]? | [.kind, .scope, .unit, .detail, (.reason // "")] | @tsv' <<<"$json" 2>/dev/null)
-  # the badge shows an issue but the cached run has no item list (cache written by an older health.sh): say so
-  if [[ -n $json ]] && [[ $(jq -r '(.text // "") != "" and ((.items // []) | length == 0)' <<<"$json" 2>/dev/null) == true ]]; then
-    printf 'none:\tdetails    the badge counts issues but the cached run has no item list yet - press Esc and click again in a minute\n'
+  done < <(jq -rn --argjson s "${shown:-null}" --argjson c "${cur:-null}" '
+      def key: (if .kind == "alert" then "alert:" else (.scope + ":") end) + .unit;
+      (($s // {}).items // []) as $si | (($c // {}).items // []) as $ci
+      | ($ci | map(key)) as $ck | ($si | map(key)) as $sk
+      | ($si | map(. + {gone: (key as $k | ($ck | index($k)) == null)}))
+        + ($ci | map(select(key as $k | ($sk | index($k)) == null)) | map(. + {gone: false}))
+      | .[] | [.kind, .scope, .unit, .detail, (.reason // ""), (.gone | tostring)] | @tsv' 2>/dev/null)
+  if ((gone_n > 0)); then
+    ts=$(date -r "$CACHE_DIR/health-shown.json" +%H:%M 2>/dev/null || echo "earlier")
+    printf 'none:\tnote       the badge showed these at %s; %d of %d cleared since (recovered on their own), the badge refreshes now\n' "$ts" "$gone_n" "$snap_n"
+  fi
+  printf '%s' "$body"
+  # the badge shows an issue but the snapshot has no item list (cache written by an older health.sh): say so
+  if [[ -n $shown ]] && [[ $(jq -r '(.text // "") != "" and ((.items // []) | length == 0)' <<<"$shown" 2>/dev/null) == true ]]; then
+    printf 'none:\tdetails    the badge counts issues but its snapshot has no item list yet - press Esc and click again in a minute\n'
+  fi
+  # the badge and the current run disagree: let the badge redraw from the current run
+  if [[ -z ${HEALTH_DETAILS_JSON:-} ]] && [[ $(jq -r '.text // ""' <<<"${shown:-null}" 2>/dev/null) != "$(jq -r '.text // ""' <<<"${cur:-null}" 2>/dev/null)" ]]; then
+    poke_badge
   fi
 }
 
@@ -71,7 +108,7 @@ preview() {
         disk*) echo "Low disk space (sysalert)"; echo; df -h -x tmpfs -x devtmpfs -x efivarfs 2>/dev/null ;;
         *) echo "sysalert condition: $key" ;;
       esac ;;
-    none:*) echo "No item list in the cached health run yet. The badge refreshes every minute." ;;
+    none:*) echo "Note about the badge snapshot (see the row). The badge refreshes every minute and right after you open this list." ;;
     *:*)
       scope=${id%%:*} unit=${id#*:}
       echo "== systemctl $(flag_of "$scope") status =="

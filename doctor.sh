@@ -302,6 +302,19 @@ pin_sig="$(git -C "$DOTFILES" grep -nE 'RTMIN\+14' -- .config .local ':!.config/
 if [ -z "$pin_err" ]; then ok pinned "pinned.tsv ($(grep -cvE '^[[:space:]]*(#|$)' "$DOTFILES/.config/waybar/pinned.tsv") apps) -> group/pinned in both bars, pinned-watch.py running"; else bad pinned "$pin_err"; fi
 css_hex="$(grep -nE '#[0-9a-fA-F]{3,8}\b' "$DOTFILES/.config/waybar/style.css" 2>/dev/null | head -2 | tr '\n' ' ')"
 if [ -z "$css_hex" ]; then ok bar-css "style.css uses palette tokens only"; else bad bar-css "hex literal in style.css: $css_hex"; fi
+# health badge: the module runs health-badge.sh (keeps the snapshot the details view lists) with signal 16, and a unit in a
+# normal start job (activating, 0 restarts: a D-Bus activated daemon, a oneshot run by a timer) must not raise the alert
+hb_dir="$(mktemp -d)"
+printf '#!/bin/bash\n[[ $* == *--failed* ]] && exit 0\n[[ $* == *show\\ \\*.service* ]] && { printf "Id=upower.service\\nActiveState=activating\\nSubState=start\\nNRestarts=0\\n\\n"; exit 0; }\nexec /usr/bin/systemctl "$@"\n' >"$hb_dir/systemctl"
+chmod +x "$hb_dir/systemctl"
+hb_err=""
+hb_mod="$(sed -n '/"custom\/health"/,/^  }/p' "$DOTFILES/.config/waybar/modules.jsonc")"
+grep -q 'health-badge.sh' <<<"$hb_mod" && grep -q '"signal": 16' <<<"$hb_mod" || hb_err="custom/health must exec health-badge.sh with signal 16"
+[ -x "$DOTFILES/.config/waybar/scripts/health-badge.sh" ] || hb_err="${hb_err:+$hb_err; }health-badge.sh is not executable"
+hb_out="$(PATH="$hb_dir:$PATH" XDG_RUNTIME_DIR="$hb_dir" "$DOTFILES/.config/waybar/scripts/failed.sh" 2>/dev/null)"
+[ "$(jq -r '.text // ""' <<<"$hb_out" 2>/dev/null)" = "" ] || hb_err="${hb_err:+$hb_err; }failed.sh raises an alert for a unit that is merely starting"
+rm -rf "$hb_dir"
+if [ -z "$hb_err" ]; then ok health-badge "custom/health -> health-badge.sh (signal 16); a unit in a plain start job does not alert"; else bad health-badge "$hb_err"; fi
 raw_usr1="$(git -C "$DOTFILES" grep -nE 'USR1.*waybar|waybar.*USR1' -- .config .local ':!.config/nvim' ':!.config/waybar/scripts/bar.sh' ':!*.md' ':!.config/waybar/config' ':!.config/waybar/modules.jsonc' 2>/dev/null | head -2 | tr '\n' ' ')"
 if [ -z "$raw_usr1" ]; then ok bar-sigusr1 "only bar.sh sends SIGUSR1 to waybar"; else bad bar-sigusr1 "raw SIGUSR1: $raw_usr1"; fi
 
