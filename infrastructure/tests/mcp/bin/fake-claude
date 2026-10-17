@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# fake claude: records argv, the working directory content and the context file as seen by the session
+{
+  echo "argv: $*"
+  echo "cwd: $PWD"
+  echo "files: $(ls "$PWD" | tr '\n' ' ')"
+  [[ -r context.md ]] && { echo "--- context.md"; cat context.md; }
+  [[ -r mcp.json ]] && { echo "--- mcp.json"; cat mcp.json; }
+  echo "done"
+} >"$FAKE_DIR/claude-session.txt"

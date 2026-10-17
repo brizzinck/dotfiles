@@ -379,5 +379,66 @@ check "setup: --new-login skips the stored session" bash -c ': >"$2"; FAKE_PICK_
 check "setup: nothing ticked and no allowlist -> refuses, nothing sent to the root helper" bash -c 'rm -f "$3"; jq "del(.fields[] | select(.name==\"allowlist\" or .name==\"session\"))" "$2" >"$2.x" && mv "$2.x" "$2"; FAKE_PICK_IDS="" "${@:4}" "$1" >/dev/null 2>&1; rc=$?; [ $rc -ne 0 ] && [ ! -e "$3" ]' _ "$SETUP" "$FAKE_DIR/bw-item.json" "$FAKE_DIR/creds-payload.json" env BW_BIN="$HERE/bin/bw" VAULT_BW="$REPO/.config/hypr/scripts/vault-bw.py" VAULT_RBW_CONF=/nonexistent PATH="$HERE/bin:$PATH" MCP_TG_PYTHON=/usr/bin/python3 MCP_TG_LOGIN="$HERE/fake_login.py" MCP_TG_CREDS="$HERE/fake_creds.sh" MCP_TG_SUDO=env MCP_TG_PICK="$HERE/fake_pick.sh" MCP_GATEWAY_CMD="$HERE/fake_gw_tg.sh" MCP_ADD_CMD="$HERE/fake_add.sh" MCP_TG_NO_VERIFY=1 MCP_STATE_DIR="$SCRATCH/setup-state"
 check "setup: a missing Bitwarden folder gives instructions" bash -c 'out=$(FAKE_BW_NOFOLDER=1 "${@:2}" "$1" 2>&1); grep -q "no folder MCP" <<<"$out"' _ "$SETUP" env BW_BIN="$HERE/bin/bw" VAULT_BW="$REPO/.config/hypr/scripts/vault-bw.py" VAULT_RBW_CONF=/nonexistent PATH="$HERE/bin:$PATH" MCP_TG_PYTHON=/usr/bin/python3 MCP_TG_LOGIN="$HERE/fake_login.py" MCP_TG_CREDS="$HERE/fake_creds.sh" MCP_TG_SUDO=env MCP_TG_PICK="$HERE/fake_pick.sh" MCP_GATEWAY_CMD="$HERE/fake_gw_tg.sh" MCP_ADD_CMD="$HERE/fake_add.sh" MCP_TG_NO_VERIFY=1 MCP_STATE_DIR="$SCRATCH/setup-state"
 
+# --- AI hotkeys (ai-ask.sh) with fake hyprctl / grim / wl-paste / terminal / claude ---------------------------------------
+AA="$REPO/.config/hypr/scripts/ai-ask.sh"
+AADIR="$SCRATCH/ai-ask"
+aa() { env PATH="$HERE/bin:$PATH" AI_ASK_DIR="$AADIR" AI_ASK_TERMINAL="$HERE/bin/fake-term" AI_ASK_CLAUDE="$HERE/bin/fake-claude" AI_ASK_NO_NOTIFY=1 \
+  AI_ASK_GATEWAY="${AA_GW:-$HERE/fake_gw_tg.sh}" AI_ASK_HEADERS=/home/x/.local/bin/mcp-gateway-headers "$@"; }
+wait_done() {
+  local n=0
+  while ((n < 50)); do
+    grep -qx "done" "$FAKE_DIR/claude-session.txt" 2>/dev/null && return 0
+    sleep 0.1
+    n=$((n + 1))
+  done
+  return 1
+}
+reset_aa() { rm -rf "$AADIR" "$FAKE_DIR/claude-session.txt"; : >"$FAKE_DIR/argv.log"; : >"$FAKE_DIR/notify.log"; }
+reset_aa
+aa "$AA" --dry-run window >"$SCRATCH/aa-dry.out" 2>&1
+check "dry-run window: plans a screenshot of that window only and the popup" bash -c 'grep -q "grim -g \"10,20 800x600\"" "$1" && grep -q "_session window" "$1"' _ "$SCRATCH/aa-dry.out"
+check "dry-run touches nothing (no grim call, no directory)" bash -c '! grep -q "^grim" "$1" && [ ! -e "$2" ]' _ "$FAKE_DIR/argv.log" "$AADIR"
+aa "$AA" --dry-run selection >/dev/null 2>&1; aa "$AA" --dry-run telegram >/dev/null 2>&1
+check "dry-run selection/telegram create no files" test ! -e "$AADIR"
+export FAKE_PRIMARY_TYPES="text/plain" FAKE_PRIMARY_TEXT="def f(): pass  # PRIMARY-SELECTION" FAKE_CLIP_TYPES="text/plain" FAKE_CLIP_TEXT="CLIPBOARD-TEXT"
+
+reset_aa; aa "$AA" window; wait_done
+check "window: claude runs in the context directory with context.md and window.png" bash -c 'grep -q "^cwd: $1$" "$2" && grep -q "files: .*context.md" "$2" && grep -q "window.png" "$2"' _ "$AADIR" "$FAKE_DIR/claude-session.txt"
+check "window: context has class, title and the screenshot note" bash -c 'grep -q "application class: com.mitchellh.ghostty" "$1" && grep -q "title: nvim" "$1" && grep -q "screenshot of this window only" "$1"' _ "$FAKE_DIR/claude-session.txt"
+check "window: grim got the window geometry only" grep -qx 'grim -g 10,20 800x600 '"$AADIR"'/window.png' "$FAKE_DIR/argv.log"
+check "window: the desktop-ro tools are pre-allowed, the prompt is generic" bash -c 'grep "^argv:" "$1" | grep -q -- "--allowedTools mcp__desktop-ro" && ! grep "^argv:" "$1" | grep -q "nvim"' _ "$FAKE_DIR/claude-session.txt"
+check "window: context files are removed when the session ends" bash -c '[ ! -e "$1/context.md" ] && [ ! -e "$1/window.png" ]' _ "$AADIR"
+check "window: the context directory is private (700)" bash -c '[ "$(stat -c %a "$1")" = 700 ]' _ "$AADIR"
+
+reset_aa; aa "$AA" window --no-shot; wait_done
+check "window --no-shot: no grim call, text only" bash -c '! grep -q "^grim" "$1" && grep -q "text only" "$2"' _ "$FAKE_DIR/argv.log" "$FAKE_DIR/claude-session.txt"
+reset_aa; FAKE_ACTIVE='{"address":"0x1","class":"Bitwarden","title":"Vault","pid":5,"at":[0,0],"size":[500,500]}' aa "$AA" window; wait_done
+check "window: a password-manager class is never screenshotted" bash -c '! grep -q "^grim" "$1" && grep -q "application class: Bitwarden" "$2"' _ "$FAKE_DIR/argv.log" "$FAKE_DIR/claude-session.txt"
+reset_aa; FAKE_ACTIVE='{"address":"0x2","class":"org.telegram.desktop","title":"Ann","pid":6,"at":[0,0],"size":[500,500]}' aa "$AA" window --no-shot; wait_done
+check "window: a Telegram window gets the chat-title hint" grep -q 'window title is the open chat' "$FAKE_DIR/claude-session.txt"
+
+reset_aa; FAKE_TERM_INPUT="What does this do?" aa "$AA" selection; wait_done
+check "selection: the primary selection is in context.md, not on argv" bash -c 'grep -q "PRIMARY-SELECTION" "$1" && ! grep "^argv:" "$1" | grep -q "PRIMARY-SELECTION"' _ "$FAKE_DIR/claude-session.txt"
+check "selection: the typed question reaches the prompt" bash -c 'grep "^argv:" "$1" | grep -q "Question: What does this do?"' _ "$FAKE_DIR/claude-session.txt"
+reset_aa; FAKE_TERM_INPUT="" aa "$AA" selection; wait_done
+check "selection: Enter alone asks to explain it" bash -c 'grep "^argv:" "$1" | grep -q "Explain what this is"' _ "$FAKE_DIR/claude-session.txt"
+reset_aa; FAKE_PRIMARY_TYPES="" FAKE_PRIMARY_TEXT="" aa "$AA" selection; wait_done
+check "selection: falls back to the clipboard text" grep -q 'CLIPBOARD-TEXT' "$FAKE_DIR/claude-session.txt"
+reset_aa; FAKE_PRIMARY_TYPES="text/plain\nx-kde-passwordManagerHint" FAKE_CLIP_TYPES="text/plain\nx-kde-passwordManagerHint" aa "$AA" selection
+check "selection: sensitive entries are refused, nothing launched" bash -c '[ ! -e "$1" ] && grep -q "nothing selected" <<<"$(AI_ASK_NO_NOTIFY=1 PATH="$2:$PATH" AI_ASK_DIR="$3" FAKE_PRIMARY_TYPES="text/plain\nx-kde-passwordManagerHint" FAKE_CLIP_TYPES="text/plain\nx-kde-passwordManagerHint" "$4" selection 2>&1)"' _ "$FAKE_DIR/claude-session.txt" "$HERE/bin" "$AADIR" "$AA"
+reset_aa; FAKE_PRIMARY_TYPES="" FAKE_CLIP_TYPES="" aa "$AA" selection
+check "selection: empty everywhere launches nothing" test ! -e "$FAKE_DIR/claude-session.txt"
+
+reset_aa; aa "$AA" telegram; wait_done
+check "telegram: strict MCP config with only the telegram server" bash -c 'a=$(grep "^argv:" "$1"); grep -q -- "--strict-mcp-config" <<<"$a" && grep -q -- "--mcp-config" <<<"$a" && jq -e ".mcpServers | keys == [\"telegram\"]" <(sed -n "/^--- mcp.json/,\$p" "$1" | sed 1d | sed "/^done/d")' _ "$FAKE_DIR/claude-session.txt"
+check "telegram: the MCP config uses the headers helper, never a token" bash -c 'grep -q "headersHelper" "$1" && ! grep -q -i -E "bearer|test-gateway-token" "$1"' _ "$FAKE_DIR/claude-session.txt"
+check "telegram: built-in tools limited to Bash, allowed only for wl-copy; no web tools" bash -c 'a=$(grep "^argv:" "$1"); grep -q -- "--tools Bash" <<<"$a" && grep -q -- "--allowedTools mcp__telegram,Bash(wl-copy:\*)" <<<"$a" && ! grep -q -i "web" <<<"$a"' _ "$FAKE_DIR/claude-session.txt"
+check "telegram: the prompt forbids sending and marking read" bash -c 'grep "^argv:" "$1" | grep -q "never send anything" && grep "^argv:" "$1" | grep -q "Do not mark anything as read"' _ "$FAKE_DIR/claude-session.txt"
+check "telegram: the session files are cleaned up" bash -c '[ ! -e "$1/mcp.json" ]' _ "$AADIR"
+reset_aa; AA_GW=/bin/false aa "$AA" telegram; sleep 0.3
+check "telegram: not set up -> no session, a clear message" bash -c '[ ! -e "$1" ]' _ "$FAKE_DIR/claude-session.txt"
+check "the three AI binds exist in hyprland.lua" bash -c '[ "$(grep -c "scripts .. \"/ai-ask.sh" "$1")" = 3 ]' _ "$REPO/.config/hypr/hyprland.lua"
+unset FAKE_PRIMARY_TYPES FAKE_PRIMARY_TEXT FAKE_CLIP_TYPES FAKE_CLIP_TEXT
+
 echo "mcp tests: $PASS passed, $FAILS failed, $SKIPS skipped"
 [[ $FAILS -eq 0 ]]

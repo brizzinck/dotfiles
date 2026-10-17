@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+echo "notify-send $*" >>"${FAKE_DIR:-/tmp}/notify.log"

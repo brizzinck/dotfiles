@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# fake wl-paste: FAKE_CLIP_TYPES (newline list), FAKE_CLIP_TEXT
+# fake wl-paste: FAKE_CLIP_TYPES (newline list), FAKE_CLIP_TEXT; with --primary: FAKE_PRIMARY_TYPES / FAKE_PRIMARY_TEXT
 echo "wl-paste $*" >>"${FAKE_DIR:-/tmp}/argv.log"
+if [[ $* == *--primary* ]]; then
+  FAKE_CLIP_TYPES=${FAKE_PRIMARY_TYPES:-}; FAKE_CLIP_TEXT=${FAKE_PRIMARY_TEXT:-}
+fi
 if [[ $* == *--list-types* ]]; then
   [[ -n ${FAKE_CLIP_TYPES:-} ]] || { echo "Nothing is copied" >&2; exit 1; }
   printf '%b\n' "$FAKE_CLIP_TYPES"; exit 0

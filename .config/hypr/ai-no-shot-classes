@@ -1,0 +1,10 @@
+# Window classes (bash extended regex, one per line) that ai-ask.sh never screenshots for the "ask about this window" hotkey:
+# password managers, authenticators, auth dialogs. The window's text metadata is still shared; add more patterns as needed.
+[Bb]itwarden
+[Kk]ee[Pp]ass
+[Pp]inentry
+[Pp]olkit
+hyprpolkitagent
+[1]password
+[Aa]uthenticator
+[Hh]yprlock

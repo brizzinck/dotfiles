@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# fake terminal: runs the command given after it, answering the first prompt with $FAKE_TERM_INPUT
+printf '%s\n' "${FAKE_TERM_INPUT:-}" | "$@"

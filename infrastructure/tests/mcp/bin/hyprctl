@@ -7,7 +7,7 @@ case "$*" in
  {"address":"0xbbb","class":"com.mitchellh.ghostty","title":"nvim","pid":12,"floating":true,"fullscreen":0,"pinned":false,"xwayland":false,"at":[10,10],"size":[500,400],"monitor":1,"workspace":{"id":2,"name":"2"},"focusHistoryID":0,"tags":[],"grouped":[]}]
 J
   ;;
-  "-j activewindow") echo '{"address":"0xbbb","class":"com.mitchellh.ghostty","title":"nvim","pid":12,"workspace":{"id":2,"name":"2"}}' ;;
+  "-j activewindow") if [[ -n ${FAKE_ACTIVE:-} ]]; then echo "$FAKE_ACTIVE"; else echo '{"address":"0xbbb","class":"com.mitchellh.ghostty","title":"nvim","pid":12,"at":[10,20],"size":[800,600],"workspace":{"id":2,"name":"2"}}'; fi ;;
   "-j monitors") echo '[{"id":0,"name":"HDMI-A-1","description":"Dell","width":2560,"height":1440,"refreshRate":144.0,"x":0,"y":0,"scale":1.0,"focused":true,"dpmsStatus":true,"transform":0,"activeWorkspace":{"id":1,"name":"1"},"specialWorkspace":{"id":0,"name":""}}]' ;;
   "-j workspaces") echo '[{"id":1,"name":"1","monitor":"HDMI-A-1","windows":2,"hasfullscreen":false,"lastwindowtitle":"x"}]' ;;
   *) echo "fake hyprctl: unexpected $*" >&2; exit 1 ;;

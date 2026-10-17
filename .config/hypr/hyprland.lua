@@ -512,6 +512,10 @@ hl.bind(mainMod .. " + CTRL + O", hl.dsp.exec_cmd(scripts .. "/vault.sh totp"), 
 hl.bind(mainMod .. " + CTRL + SHIFT + P", hl.dsp.exec_cmd(scripts .. "/vault.sh browse"), { description = "Vault browser (every item, folders, trash)" })
 hl.bind(mainMod .. " + CTRL + U", function() exec_when_keys_up(scripts .. "/vault.sh user-pass", { "u" }) end, { description = "Type the Linux password of the current user (terminal or polkit)" })
 hl.bind(mainMod .. " + equal", hl.dsp.exec_cmd(scripts .. "/calc.sh"), { description = "Calculator (qalc)" })
+-- AI hotkeys (ai-ask.sh): context goes to a Claude session in a floating terminal; the AI only drafts, the owner sends
+hl.bind(mainMod .. " + CTRL + A", hl.dsp.exec_cmd(scripts .. "/ai-ask.sh window"), { description = "AI: ask about the focused window" })
+hl.bind(mainMod .. " + ALT + A", hl.dsp.exec_cmd(scripts .. "/ai-ask.sh selection"), { description = "AI: question about the selected text" })
+hl.bind(mainMod .. " + CTRL + T", hl.dsp.exec_cmd(scripts .. "/ai-ask.sh telegram"), { description = "AI: Telegram digest (unread allowlisted chats)" })
 hl.bind(mainMod .. " + slash", hl.dsp.exec_cmd("~/.local/bin/keymap menu"), { description = "Shortcut search (every key of every tool)" })
 hl.bind(mainMod .. " + SHIFT + slash", hl.dsp.exec_cmd("~/.local/bin/keymap page"), { description = "Shortcut reference page (browser window)" })
 hl.bind(mainMod .. " + M", hl.dsp.exec_cmd("~/.config/hub/hub open"), { description = "Utility hub (fzf)" })

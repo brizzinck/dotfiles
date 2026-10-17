@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+echo "grim $*" >>"${FAKE_DIR:-/tmp}/argv.log"
+out="${@: -1}"; printf 'PNG' >"$out"

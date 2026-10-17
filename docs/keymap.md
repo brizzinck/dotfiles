@@ -16,14 +16,14 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Desktop | [Notifications](#notifications) | 4 |
 | Desktop | [System, power, bar](#system-power-bar) | 12 |
 | Desktop | [Pointer from the keyboard](#pointer-from-the-keyboard) | 21 |
-| Desktop | [Other Hyprland binds](#other-hyprland-binds) | 11 |
-| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 134 |
+| Desktop | [Other Hyprland binds](#other-hyprland-binds) | 14 |
+| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 147 |
 | Terminal | [tmux: this setup](#tmux-this-setup) | 55 |
 | Terminal | [tmux: stock prefix keys](#tmux-stock-prefix-keys) | 80 |
 | Terminal | [zsh line editor](#zsh-line-editor) | 34 |
 | Terminal | [zsh helpers](#zsh-helpers) | 8 |
 | Terminal | [zsh aliases](#zsh-aliases) | 42 |
-| Editor | [Neovim: AI agents](#neovim-ai-agents) | 26 |
+| Editor | [Neovim: AI agents](#neovim-ai-agents) | 25 |
 | Editor | [Neovim: find](#neovim-find) | 23 |
 | Editor | [Neovim: git](#neovim-git) | 9 |
 | Editor | [Neovim: LSP and code](#neovim-lsp-and-code) | 33 |
@@ -304,6 +304,9 @@ Hyprland binds that no classification rule claims yet (add a rule to rules.tsv).
 | `Super+Alt+D` | Dictation on or off (Voxtype) |
 | `Super+Alt+T` | New reminder (25 tea or 14:30 standup) |
 | `Super+Ctrl+Alt+T` | Reminders: list and cancel |
+| `Super+Ctrl+A` | AI: ask about the focused window |
+| `Super+Alt+A` | AI: question about the selected text |
+| `Super+Ctrl+T` | AI: Telegram digest (unread allowlisted chats) |
 | `Super+Ctrl+.` | Transcode a picture or video for sharing |
 | `Super+Ctrl+Delete` | Laptop panel on or off (needs an external monitor) |
 | `Super+Ctrl+Alt+Delete` | Mirror the laptop panel to the external monitor |
@@ -452,6 +455,19 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; r c` | Reminders: Clear reminders |
 | `Super+; r l` | Reminders: Reminder list |
 | `Super+; r n` | Reminders: New reminder |
+| `Super+; x a` | AI and MCP: Register servers in the CLIs |
+| `Super+; x c` | AI and MCP: Chrome: my profile |
+| `Super+; x d` | AI and MCP: Telegram digest |
+| `Super+; x g` | AI and MCP: Telegram chats |
+| `Super+; x i` | AI and MCP: Install pinned servers |
+| `Super+; x l` | AI and MCP: Gateway logs |
+| `Super+; x n` | AI and MCP: Window, text only |
+| `Super+; x q` | AI and MCP: Question about the selection |
+| `Super+; x r` | AI and MCP: Restart gateway |
+| `Super+; x s` | AI and MCP: Gateway status |
+| `Super+; x t` | AI and MCP: Telegram setup |
+| `Super+; x u` | AI and MCP: Telegram status |
+| `Super+; x w` | AI and MCP: Ask about the window |
 
 ## Terminal
 
@@ -728,7 +744,6 @@ Neovim (NvChad fork), dumped headless from the live mappings that carry a desc. 
 | `Space a e` | AI: explore working-tree changes (codediff) |  |
 | `Space a g` | AI: Gemini |  |
 | `Space a l` | AI: select CLI / session |  |
-| `Space a m` | AI: MCP hub |  |
 | `Space a n` | AI: new ACP session |  |
 | `Space a p` | AI: prompt picker |  |
 | `Space a q` | AI: quick chat (ACP) |  |
