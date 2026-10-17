@@ -210,6 +210,18 @@ if [ -x "$DOTFILES/.config/hub/leader" ]; then
 else
   bad leader-menu ".config/hub/leader missing or not executable"
 fi
+# K2: the shortcut reference (keymap): docs/keymap.md equals a fresh generation, every pinned key exists, no block is empty,
+# every described Hyprland bind appears once; the reading page loads nothing from the network
+if [ -x "$DOTFILES/.local/bin/keymap" ]; then
+  if out="$(PYTHONPYCACHEPREFIX=/tmp/pycache "$DOTFILES/.local/bin/keymap" check 2>&1)"; then ok keymap-doc "$out"; else bad keymap-doc "$(printf '%s' "$out" | head -1)"; fi
+  if page="$(PYTHONPYCACHEPREFIX=/tmp/pycache "$DOTFILES/.local/bin/keymap" page --print 2>/dev/null)" && [ -s "$page" ]; then
+    if grep -Eq '(src|href)="https?://|@import|url\(https?:|<link[^>]*stylesheet' "$page"; then bad keymap-page "$page loads something from the network"; else ok keymap-page "reading page renders offline ($(wc -c <"$page") bytes)"; fi
+  else
+    bad keymap-page "keymap page --print produced no page"
+  fi
+else
+  bad keymap-doc ".local/bin/keymap missing or not executable"
+fi
 # U8: SUPER+CTRL+U types the Linux password of the user the focused window asks for (vault.sh user-pass + vault-who.py)
 if [ -x "$DOTFILES/.config/hypr/scripts/vault.sh" ] && [ -r "$DOTFILES/.config/hypr/scripts/vault-who.py" ]; then
   if python3 -I "$DOTFILES/.config/hypr/scripts/vault-who.py" --pid "$$" --class doctor | jq -e '.kind == "other" and (.user | length > 0)' >/dev/null 2>&1; then
