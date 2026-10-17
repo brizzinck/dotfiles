@@ -519,6 +519,12 @@ if [ -x "$HOME/.local/bin/mcp-gateway" ]; then
   fi
   if "$HOME/.local/bin/mcp-guard" --check >/dev/null 2>&1; then ok mcp-guard "Claude Code denies wtype, wlrctl, hyprd, hyprctl eval/dispatch and grim to the agents' Bash"
   else info mcp-guard "deny rules for key injection and capture are not in Claude Code's settings yet: mcp-guard (mcp-add runs it)"; fi
+  # a new compositor socket inherits the runtime dir's default ACL (u:tgconfirm:---): the popup cannot connect until usr clipboard-acl
+  # ran again. The Hyprland autostart runs it per compositor instance; wayland-acl.path (PathChanged on the runtime dir) is the safety net.
+  if systemctl --user is-active wayland-acl.path >/dev/null 2>&1 && systemctl --user is-enabled wayland-acl.path >/dev/null 2>&1; then ok mcp-wayland-acl "wayland-acl.path re-applies the Wayland ACL when a compositor socket appears"
+  else info mcp-wayland-acl "wayland-acl.path is not enabled: after a compositor restart the popup fails until usr clipboard-acl runs (stow ., systemctl --user enable --now wayland-acl.path)"; fi
+  if wl_out="$("$DOTFILES/infrastructure/tests/wayland-acl/run.sh" 2>&1)"; then ok mcp-wayland-acl-test "wayland-acl.sh picks the session compositor's socket and runs usr clipboard-acl once per socket: $(printf '%s' "$wl_out" | tail -1)"
+  else bad mcp-wayland-acl-test "$(printf '%s' "$wl_out" | grep -m1 '^FAIL') (infrastructure/tests/wayland-acl/run.sh)"; fi
   if [ -s /srv/models/ggml-small.bin ]; then ok mcp-whisper "Whisper model shared in /srv/models ($(stat -c %s /srv/models/ggml-small.bin) bytes)"; else info mcp-whisper "no /srv/models/ggml-small.bin yet (sudo ./apply-system.sh --only mcp)"; fi
   if [ -x /usr/bin/chromium ]; then ok mcp-chromium "Chromium for the clean chrome-devtools server is installed"; else info mcp-chromium "chromium not installed: chrome-devtools answers with a stub (sudo ./apply-system.sh --only mcp)"; fi
 else
