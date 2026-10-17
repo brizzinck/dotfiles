@@ -50,7 +50,18 @@ expect "real registry valid" "" "$(managed_validate "$ME")"
 export USR_MANAGED_TSV="$T/m.tsv"
 
 # ── apply-system.sh --only users (dry run, fixture): rendered sudoers + polkit, service user creation ────────────────
-dry="$("$REPO/apply-system.sh" --dry-run --only users 2>&1)"
+# The accounts td, yc and aimcp may or may not exist on the machine that runs this test (aimcp does since M1), so a fake
+# `getent` shadows the real one: passwd answers only for the owner and root (fixture passwd), everything else is real.
+mkdir -p "$T/fakebin"
+cat >"$T/fakebin/getent" <<'FAKE'
+#!/bin/sh
+if [ "${1:-}" = passwd ] && [ -n "${2:-}" ]; then
+  case "$2" in "$FAKE_PASSWD_OWNER" | root) exec /usr/bin/getent "$@" ;; *) exit 2 ;; esac
+fi
+exec /usr/bin/getent "$@"
+FAKE
+chmod +x "$T/fakebin/getent"
+dry="$(PATH="$T/fakebin:$PATH" FAKE_PASSWD_OWNER="$ME" "$REPO/apply-system.sh" --dry-run --only users 2>&1)"
 case "$dry" in *"Runas_Alias USR_MANAGED = td, yc"*) ok ;; *) bad "sudoers Runas list is not td, yc" ;; esac
 case "$dry" in *"var managed = [\"td\", \"yc\"];"*) ok ;; *) bad "polkit list is not td, yc" ;; esac
 sudoers_rules="$(printf '%s\n' "$dry" | sed -n '/rendered .*50-usr-managed (mode/,/install -Dm440/p' | grep -E '\| (Runas_Alias|[a-z]+ ALL =)')"
