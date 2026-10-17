@@ -752,6 +752,13 @@ if [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && command -v hyprctl >/dev/null 2>
   if [ "${o1_binds:-0}" -ge 6 ]; then ok o1-binds "display, zoom and fine-step binds are live"; else bad o1-binds "only ${o1_binds:-0} of 6 O1 binds are live (hyprctl reload)"; fi
 fi
 [ -x "$HOME/.local/bin/lock-screen" ] && grep -q 'lock_cmd = lock-screen' "$HOME/.config/hypr/hypridle.conf" 2>/dev/null && ok lock-layout "lock-screen resets the layout to us (bind, power menu, hub, hypridle lock_cmd)" || bad lock-layout "lock-screen missing or hypridle lock_cmd does not use it"
+if grep -q 'dim.sh dim' "$HOME/.config/hypr/hypridle.conf" 2>/dev/null && grep -q 'dim.sh restore' "$HOME/.config/hypr/hypridle.conf" 2>/dev/null && grep -q 'input.keyboard.key' "$DOTFILES/.config/hypr/hyprland.lua"; then
+  ok idle-dim "dim goes through dim.sh (saves only when not dimmed, restores from state, key-press restore in hyprland.lua)"
+else
+  bad idle-dim "hypridle.conf must call dim.sh dim / restore and hyprland.lua restore on input.keyboard.key"
+fi
+if [ -e "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/idle-off" ]; then info hypridle-alive "idle is switched off on purpose (SUPER+CTRL+I)"; elif pgrep -x hypridle >/dev/null 2>&1; then ok hypridle-alive "hypridle runs"; else bad hypridle-alive "hypridle is not running (the hypridle-watch timer starts it within a minute, or SUPER+CTRL+I)"; fi
+if systemctl --user is-enabled hypridle-watch.timer >/dev/null 2>&1; then ok hypridle-watch "user timer hypridle-watch.timer restarts hypridle when it died"; else bad hypridle-watch "hypridle-watch.timer not enabled (stow ., systemctl --user enable --now hypridle-watch.timer)"; fi
 hub_groups="$("$DOTFILES/.config/hub/hub" groups 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"
 hub_missing=""
 for g in Setup Update Learn Fix; do case " $hub_groups " in *" $g "*) ;; *) hub_missing="$hub_missing $g" ;; esac; done

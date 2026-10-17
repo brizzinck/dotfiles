@@ -86,6 +86,17 @@ hl.on("monitor.removed", function()
     hl.exec_cmd(scripts .. "/lid.sh recover")
 end)
 
+-- A key press restores a dimmed panel even when hypridle missed its resume event (dim.sh keeps the saved value; the watcher it
+-- starts also reacts to pointer movement and to a dead hypridle). The state file only exists while the panel is dimmed.
+local dim_state = (os.getenv("XDG_RUNTIME_DIR") or "/tmp") .. "/dim-saved"
+hl.on("input.keyboard.key", function()
+    local f = io.open(dim_state, "r")
+    if f then
+        f:close()
+        hl.exec_cmd(scripts .. "/dim.sh restore")
+    end
+end)
+
 -- ───────────────────────────── environment ──────────────────────────
 hl.env("XDG_CURRENT_DESKTOP", "Hyprland")
 hl.env("QT_QPA_PLATFORMTHEME", "qt6ct")

@@ -247,5 +247,37 @@ expect "reminder waybar: tooltip lists both with the hint line" bash -c "jq -e '
 reset; "$R" clear --yes >/dev/null
 expect "reminder clear stops every timer and service" bash -c "grep -c 'systemctl --user stop reminder-' '$T/log' | grep -q '^2$'"
 
+# ── idle dim: never save a dimmed value ──
+cat >"$T/bin/brightnessctl" <<'X'
+#!/bin/sh
+# fake: raw value in $FAKE_BL, max 496000, exponent 4 for -e4 set 25%
+max=496000
+cur=$(cat "$FAKE_BL")
+case "$*" in
+  "-m") echo "amdgpu_bl1,backlight,$cur,0%,$max" ;;
+  "-e4 set 25%") echo $((max / 256)) >"$FAKE_BL" ;;
+  "set "*) echo "${2}" >"$FAKE_BL" ;;
+esac
+X
+chmod +x "$T/bin/brightnessctl"
+export FAKE_BL="$T/bl" DIM_NO_WATCH=1
+DIM="$SC/dim.sh"
+echo 248000 >"$FAKE_BL"; rm -f "$T/run/dim-saved"
+"$DIM" dim
+expect "dim saves the real value and dims" bash -c "[ \"\$(cut -d' ' -f1 '$T/run/dim-saved')\" = 248000 ] && [ \"\$(cat '$FAKE_BL')\" = 1937 ]"
+"$DIM" dim
+expect "a second dim without a resume does not save the dimmed value" bash -c "[ \"\$(cut -d' ' -f1 '$T/run/dim-saved')\" = 248000 ]"
+"$DIM" restore
+expect "restore brings the saved value back and clears the state" bash -c "[ \"\$(cat '$FAKE_BL')\" = 248000 ] && [ ! -e '$T/run/dim-saved' ]"
+"$DIM" restore
+expect "restore without a dim is a no-op" bash -c "[ \"\$(cat '$FAKE_BL')\" = 248000 ]"
+echo 1937 >"$FAKE_BL"; "$DIM" dim
+expect "an already dark panel is neither dimmed nor remembered" bash -c "[ ! -e '$T/run/dim-saved' ]"
+echo "1937 496000" >"$T/run/dim-saved"; "$DIM" restore
+expect "a corrupt saved value falls back to 50 percent" bash -c "[ \"\$(cat '$FAKE_BL')\" = 248000 ]"
+expect "hypridle uses dim.sh for dim and resume" bash -c "grep -q 'dim.sh dim' '$REPO/.config/hypr/hypridle.conf' && grep -q 'dim.sh restore' '$REPO/.config/hypr/hypridle.conf'"
+expect "a key press restores through the hyprland.lua event" grep -q 'input.keyboard.key' "$REPO/.config/hypr/hyprland.lua"
+expect "watchdog leaves hypridle alone after idle off" bash -c "touch '$T/run/idle-off'; : >'$T/log'; PATH='$T/bin:'\"\$PATH\" '$DIM' watchdog; ! grep -q hypridle '$T/log'"
+
 echo "o1 tests: $fails failure(s)"
 exit $((fails > 0))

@@ -1,0 +1,6 @@
+[Unit]
+Description=Start hypridle when it died (idle dim, screensaver, panel off), restoring a dimmed panel first
+
+[Service]
+Type=oneshot
+ExecStart=%h/.config/hypr/scripts/dim.sh watchdog
