@@ -4,6 +4,7 @@ Start here rows on an empty query, Audit hidden from the all view, header / prev
 menu in a private tmux. The unit part runs on fixture.json (KEYMAP_DB), the live part on ~/.cache/keymap/keymap.json when it is a
 v4 database. Nothing is copied or sent: no entry is accepted, XDG_RUNTIME_DIR is a scratch directory.
   test_keymap.py [--quick]   --quick (doctor) skips the tmux part. Prints PASS / FAIL lines, exit 1 on any failure."""
+import atexit
 import importlib.util
 import json
 import os
@@ -23,6 +24,16 @@ QUICK = "--quick" in sys.argv[1:]
 TMP = Path(tempfile.mkdtemp(prefix="keymap-test."))
 RUN = TMP / "run"
 RUN.mkdir()
+SOCK = f"keymap-test-{os.getpid()}"
+
+
+def _cleanup():
+    """runs on any exit, also after an exception: the private tmux server and the scratch directory never stay behind"""
+    subprocess.run(["tmux", "-L", SOCK, "kill-server"], capture_output=True)
+    shutil.rmtree(TMP, ignore_errors=True)
+
+
+atexit.register(_cleanup)
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 results = []
 
@@ -100,7 +111,7 @@ check("preview: a long note is cut to 300 characters and an ellipsis", note and 
 check("preview: ctx joins the Where line", "Where   audit · login" in keymap("preview", "28"))
 o = keymap("cycle", "next").strip()
 check("cycle: reload-sync + first + change-header (colon form last), the header of the new block",
-      o.startswith("reload-sync(") and o.endswith(" rows)+first+change-header:Block: Apps and launchers (5)") or o.endswith("+first+change-header:Block: Apps and launchers (5)"))
+      o.startswith("reload-sync(") and o.endswith(" rows)+first+change-header:Block: Apps and launchers (5)"))
 keymap("cycle", "reset")
 
 # keywords
@@ -110,8 +121,29 @@ for r in rws:
     r.pop("kw", None)
 km.apply_keywords(rws, d["blocks"])
 kw = {r["desc"]: r.get("kw", "") for r in rws}
-check("keywords.tsv: rules add their words by description + block title",
+check("keywords.tsv: rules add their words by description",
       "screenshot" in kw["Screenshot region"] and "password" in kw["Passwords (Bitwarden via rbw and fzf)"] and "volume" in kw["Volume up"])
+check("keywords.tsv: the block title gives no words (Volume up sits in 'Audio, media, brightness' and gets no 'dim' / 'brightness')",
+      "dim" not in kw["Volume up"].split() and "brightness" not in kw["Volume up"].split() and "brightness" in kw["Brightness up (focused monitor)"])
+check("keywords.tsv: 'Lock screen' in 'System, power, bar' gets lock but no reboot / shutdown (those words belong to the power menu)",
+      "lock" in kw["Lock screen (password; layout reset to us)"].split() and "reboot" not in kw["Lock screen (password; layout reset to us)"].split())
+synth = [{"desc": "Show a clock", "block": "x"}, {"desc": "Block hint", "block": "x"}, {"desc": "Lock screen", "block": "x", "kw": "stale"},
+         {"desc": "Power menu", "block": "x"}]
+km.apply_keywords(synth, [])
+check("keywords.tsv: 'lock' does not match clock or block (word anchor)", "kw" not in synth[0] and "kw" not in synth[1])
+check("keywords.tsv: a row that already had words (reused from the old DB) is recomputed, not appended to",
+      synth[2]["kw"].split()[0] == "lock" and "stale" not in synth[2]["kw"] and "reboot" in synth[3]["kw"])
+broad = {"pins": [], "hypr_binds": 0, "blocks": [{"id": "b", "title": "B", "count": 9}],
+         "rows": [{"keys": f"k{i}", "desc": f"lock {i}", "block": "b", "source": "x"} for i in range(9)]}
+real_rules = km.keyword_rules
+km.keyword_rules = lambda: [("lock", re.compile("lock"), ["w"])]
+check("keymap check: a keyword rule that hits every row of a block of 8+ is a broadcast and fails",
+      any("every row of the block" in e for e in km.problems(broad)))
+km.keyword_rules = lambda: [("clock", re.compile("clock"), ["w"])]
+check("keymap check: a rule that matches nothing still fails (stale rule)", any("matches no row" in e for e in km.problems(broad)))
+km.keyword_rules = real_rules
+check("keymap check: the committed keywords.tsv passes against the fixture except for rules the fixture has no row for",
+      not any("does not compile" in e or "broadcast" in e or "too broad" in e for e in km.problems(json.loads(FIX.read_text()))))
 check("keywords.tsv: every regex compiles", all(rx is not None for _s, rx, _w in km.keyword_rules()))
 check("fit_cells: pads to the width, cuts with an ellipsis", km.fit_cells("ab", 5) == "ab   " and km.fit_cells("abcdefgh", 5) == "abcd…" and km.cell_width(km.fit_cells("日本語日本語", 7)) == 7)
 
@@ -125,12 +157,19 @@ if live_ok:
     for q in ("screenshot", "record", "clipboard", "password", "volume", "brightness"):
         check(f"live '{q}': a global row among the first 3", any(r[3] == "global" for r in rows(q, live)[:3]))
     check("live 'screen shot' returns fewer than 25 rows", len(rows("screen shot", live)) < 25)
+    for q, limit in (("reboot", 12), ("shutdown", 12), ("dim", 14), ("password", 60)):
+        check(f"live '{q}': at most {limit} rows (block titles do not broadcast words)", 0 < len(rows(q, live)) <= limit)
+    check("live 'reboot': the power menu rows only", all(re.search(r"power menu|reboot", d, re.I) for d in descs("reboot", live)))
+    check("live 'dim': brightness rows only (no volume row)", all("rightness" in d or "ight" in d or "dim" in d.lower() for d in descs("dim", live)))
+    check("live 'lock': the first rows are real lock rows, ahead of block / clock text hits",
+          all(re.search(r"\block\b", d, re.I) for d in descs("lock", live)[:3]))
+    check("live 'w' still finds Super+W first", rows("w", live)[0][1] == "Super+W")
     check("live: an empty query starts with the Start here rows", rows("", live)[0][3] == "start")
 else:
     print("SKIP  live database (missing or an older version: run keymap gen)")
 
 # ── the menu itself in a private tmux ──
-sock = f"keymap-test-{os.getpid()}"
+sock = SOCK
 if not QUICK and (not shutil.which("tmux") or not shutil.which("fzf")):
     print("SKIP  menu UI (tmux and fzf are required)")
     QUICK = True
@@ -177,6 +216,5 @@ if not QUICK:
     check("UI: Esc Esc exits the menu", "python" not in tmux("list-panes", "-F", "#{pane_current_command}"))
     tmux("kill-server")
 
-shutil.rmtree(TMP, ignore_errors=True)
 print(f"\nkeymap tests: {sum(results)} passed, {len(results) - sum(results)} failed")
 sys.exit(0 if all(results) else 1)

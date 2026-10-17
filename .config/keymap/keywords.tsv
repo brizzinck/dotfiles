@@ -1,18 +1,20 @@
 # Search keywords of the SUPER+/ menu and the reading page: regex <TAB> words. A row gets the words when the regex (case-insensitive,
-# re.search) matches its description + its block title, so "screen shot" finds the "Screenshot ..." binds and "password" finds the
-# Bitwarden pickers. The words are searched next to keys, description and block (the row shows only the description). Every regex must
-# match at least one row (`keymap check` fails on a stale rule); add a line when a natural word finds nothing.
-screenshot|screen ?shot|frozen|ocr|satty|region	screenshot screen shot print capture image snip
-record	record recording video screencast capture
-clipboard|paste|copy|yank|cliphist	clipboard copy paste yank history
-password|vault|bitwarden|2fa|totp|secret	password vault bitwarden secret login 2fa otp totp
-volume|mute|audio|sound|speaker|mic	volume sound audio mute speaker microphone mic
+# re.search) matches its DESCRIPTION (never the block title: a title would hand the words to every row of the block), so "screen
+# shot" finds the "Screenshot ..." binds and "password" finds the Bitwarden pickers. Anchor the regexes (\bword\b, ^start): `keymap
+# check` fails on a rule that hits more than 60 rows or every row of a block of 8 or more. The words are searched next to keys,
+# description and block (the row shows only the description). Every regex must match at least one row (`keymap check` fails on a stale rule); add a line when a natural word finds nothing.
+screenshot|screen ?shot|\bfrozen\b|\bocr\b|\bsatty\b|^capture: region	screenshot screen shot print capture image snip
+\brecord(ing)?\b	record recording video screencast capture
+clipboard|cliphist|\bpaste\b|\byank\b|^copy\b	clipboard copy paste yank history
+password|bitwarden|\b2fa\b|\btotp\b|^vault\b|vault browser|the vault$	password vault bitwarden secret login 2fa otp totp
+volume|\bmute\b|\bsound\b|speaker|\bmics?\b|microphone|wiremix|^audio: (app|mixer|output|mute|media|play)	volume sound audio mute speaker microphone mic
 brightness|backlight|night light	brightness backlight screen light dim
-lock|power|reboot|shut ?down|log ?out	lock power reboot shutdown logout
+\block\b|\bunlock	lock lockscreen
+power menu|power off|reboot|shut ?down|log ?out	power reboot shutdown logout poweroff suspend
 wi-?fi|bluetooth|network|vpn	network wifi bluetooth vpn internet
 emoji	emoji smiley symbol
 notification|dunst|do-not-disturb	notification notify dnd
 dictation|voxtype	dictation voice speech
 color picker	color colour picker eyedropper
 close window	close kill quit
-terminal	terminal console shell
+^terminal\b|drop-down terminal	terminal console shell

@@ -58,7 +58,8 @@ RUN = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "keymap"
 DB_FILE = Path(os.environ["KEYMAP_DB"]) if os.environ.get("KEYMAP_DB") else CACHE / "keymap.json"   # KEYMAP_DB: fixture DB of the tests
 PAGE_FILE = CACHE / "keymap.html"
 DOC_FILE = REPO / "docs" / "keymap.md"
-DB_VERSION = 4          # v4: rows gain `kw` (keywords.tsv), blocks gain `scope` and `rank` (blocks.tsv)
+KEYWORD_MAX_ROWS = 60     # a keywords.tsv rule that hits more descriptions than this is too broad (`keymap check`)
+DB_VERSION = 5          # v5: keywords match the description only; v4: rows gain `kw` (keywords.tsv), blocks gain `scope` and `rank` (blocks.tsv)
 
 GROUPS = ["Desktop", "Terminal", "Editor", "Menus and bar", "Apps and login"]
 
@@ -930,11 +931,13 @@ def keyword_rules():
 
 
 def apply_keywords(rows, blocks):
-    """row["kw"] = the words of every keywords.tsv rule that matches description + block title (deduplicated, rule order)"""
-    title = {b["id"]: b["title"] for b in blocks}
+    """row["kw"] = the words of every keywords.tsv rule that matches the DESCRIPTION (deduplicated, rule order). Never the block
+    title: a title such as "System, power, bar" would hand "reboot shutdown" to every row of the block (block words are searched
+    anyway through the block field). A row reused from the old DB loses its old words first, so a changed rule takes effect."""
     rules = keyword_rules()
     for row in rows:
-        text = f"{row['desc']} {title.get(row['block'], '')}"
+        row.pop("kw", None)
+        text = row["desc"]
         words = []
         for _src, rx, ws in rules:
             if rx is not None and rx.search(text):
@@ -1039,13 +1042,20 @@ def problems(data):
     for b in data["blocks"]:
         if not b["count"] and b["id"] not in ("hypr-other",):
             errs.append(f"block {b['id']} is empty (its source returned nothing)")
-    title = {b["id"]: b["title"] for b in data["blocks"]}
-    texts_kw = [f"{r['desc']} {title.get(r['block'], '')}" for r in data["rows"]]
+    texts_kw = [r["desc"] for r in data["rows"]]
     for src, rx, _words in keyword_rules():
         if rx is None:
             errs.append(f"keywords.tsv: the regex {src!r} does not compile")
-        elif not any(rx.search(t) for t in texts_kw):
+            continue
+        hits = sum(1 for t in texts_kw if rx.search(t))
+        if not hits:
             errs.append(f"keywords.tsv: the regex {src!r} matches no row (stale rule)")
+        elif hits > KEYWORD_MAX_ROWS:
+            errs.append(f"keywords.tsv: the regex {src!r} matches {hits} rows (more than {KEYWORD_MAX_ROWS}: too broad, anchor it)")
+        for b in data["blocks"]:
+            rows_b = [r["desc"] for r in data["rows"] if r["block"] == b["id"]]
+            if len(rows_b) >= 8 and all(rx.search(t) for t in rows_b):
+                errs.append(f"keywords.tsv: the regex {src!r} matches every row of the block {b['id']} (a broadcast, anchor it)")
     hypr = sum(r.get("n", 1) for r in data["rows"] if r["source"] == "hyprland")
     if data.get("hypr_binds") and hypr != data["hypr_binds"]:
         errs.append(f"Hyprland rows cover {hypr} binds, the live table has {data['hypr_binds']} described ones")
