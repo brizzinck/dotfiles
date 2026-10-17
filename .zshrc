@@ -295,3 +295,13 @@ hub() { "$HOME/.config/hub/hub" "$@" }
 
 # fuzzy journal: jf [journalctl args], e.g. jf -p err  /  jf -u docker  /  jf --user
 jf() { journalctl -b -o short-iso --no-pager "$@" | fzf-menu --here -p journal --tac --no-sort --exact; }
+
+# >>> skw completion >>>
+# Managed by skw; remove with "skw completion uninstall".
+(( ${fpath[(Ie)"$HOME/.local/share/zsh/site-functions"]} )) || fpath=("$HOME/.local/share/zsh/site-functions" $fpath)
+if (( $+functions[compdef] )); then
+  autoload -Uz _skw && compdef _skw skw
+else
+  autoload -Uz compinit && compinit -i
+fi
+# <<< skw completion <<<
