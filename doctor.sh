@@ -1316,6 +1316,30 @@ for g in Setup Update Learn Fix; do case " $hub_groups " in *" $g "*) ;; *) hub_
 if [ -z "$hub_missing" ]; then ok hub-groups "groups Setup/Update/Learn/Fix exist (hub groups)"; else bad hub-groups "hub groups lacks:$hub_missing"; fi
 if "$DOTFILES/.config/hub/hub" --json 2>/dev/null | jq -e 'length > 50 and all(.[]; has("id") and has("group") and has("available"))' >/dev/null 2>&1; then ok hub-json "hub --json lists the rows for agents"; else bad hub-json "hub --json is not valid JSON of rows"; fi
 
+# ── DEV-b: mise (tool versions per project, replaces direnv) and envs (per-project secrets from Bitwarden) ───────
+if command -v mise >/dev/null 2>&1; then info mise "installed ($(mise --version 2>/dev/null | head -1))"; else info mise "not installed (sudo ~/dotfiles/apply-system.sh --only install; .config/zsh/mise.zsh returns at once without it)"; fi
+db_bad=""
+grep -q 'direnv hook' "$DOTFILES/.zshrc" 2>/dev/null && db_bad="$db_bad .zshrc still has the direnv hook;"
+grep -q 'zsh/mise.zsh' "$DOTFILES/.zshrc" 2>/dev/null || db_bad="$db_bad .zshrc does not source mise.zsh;"
+grep -q 'zsh/envs.zsh' "$DOTFILES/.zshrc" 2>/dev/null || db_bad="$db_bad .zshrc does not source envs.zsh;"
+grep -q '_ENVS_PROMPT' "$DOTFILES/.zshrc" 2>/dev/null || db_bad="$db_bad the PROMPT lacks the envs marker;"
+[ -r "$DOTFILES/.config/zsh/mise.zsh" ] && [ -r "$DOTFILES/.config/zsh/envs.zsh" ] || db_bad="$db_bad mise.zsh or envs.zsh is missing;"
+if [ -n "$db_bad" ]; then bad mise-shell "$db_bad"; else ok mise-shell "mise.zsh (cached activation, shims for agents, auto-install on cd) and envs.zsh (prompt marker) are sourced, no direnv hook"; fi
+if command -v mise >/dev/null 2>&1; then
+  if [ "$(readlink -f "$HOME/.config/mise/config.toml" 2>/dev/null)" = "$(readlink -f "$DOTFILES/.config/mise/config.toml")" ]; then ok mise-config "~/.config/mise/config.toml is the stowed repo file"; else bad mise-config "~/.config/mise/config.toml is not the repo file (cd ~/dotfiles && stow .)"; fi
+fi
+if db_t="$("$DOTFILES/infrastructure/tests/envs/run.sh" --quick 2>&1)"; then ok envs-test "envs against the fake vault: $(printf '%s' "$db_t" | tail -1)"; else bad envs-test "$(printf '%s' "$db_t" | grep -m1 '^FAIL') (infrastructure/tests/envs/run.sh)"; fi
+if "$DOTFILES/.config/hub/hub" --list --all 2>/dev/null | grep -q ' envs '; then ok envs-row "hub row envs exists (group Dev, leader j e)"; else bad envs-row "hub row envs missing (.config/hub/actions.d/dev-b.tsv)"; fi
+db_dir="${XDG_STATE_HOME:-$HOME/.local/state}/envs"
+if [ -d "$db_dir" ]; then
+  db_bad=""
+  [ "$(stat -c %a "$db_dir")" = 700 ] || db_bad="$db_bad directory is $(stat -c %a "$db_dir") (want 700);"
+  while IFS= read -r db_f; do [ "$(stat -c %a "$db_f")" = 600 ] || db_bad="$db_bad $(basename "$db_f") is $(stat -c %a "$db_f") (want 600);"; done < <(find "$db_dir" -type f 2>/dev/null)
+  if [ -n "$db_bad" ]; then bad envs-state "$db_bad"; else ok envs-state "~/.local/state/envs is 700, files 600 (no value is ever stored there)"; fi
+else
+  info envs-state "no ~/.local/state/envs yet (created by the first envs bind / use)"
+fi
+
 # ── stow symlinks: every tracked config file must resolve to the repo copy ──────
 broken=""
 n_links=0
