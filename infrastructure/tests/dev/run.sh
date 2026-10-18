@@ -1095,6 +1095,9 @@ None"
 out=$(DEVTOOLS_SHARED_ROOT=/tmp DEVTOOLS_TEST_UID=$(( $(id -u) + 4242 )) python3 -I -B -c "$py" "$REPO/.config/devtools" 2>&1)
 check "17: a hook root outside the scratch directories is ignored" test "$out" = "None
 None"
+out=$(DEVTOOLS_TEST_UID=$(( $(id -u) + 4242 )) python3 -I -B -c "$py" "$REPO/.config/devtools" 2>&1)
+check "17: verified test mode with no hook root never resolves into the machine's real /srv/devtools (M3)" test "$out" = "None
+None"
 local before; before=$(DEVTOOLS_SHARED_ROOT="$ST" DEVTOOLS_TEST_UID=$(( $(id -u) + 4242 )) python3 -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import devtools as D; print(D.tool("lazysql"))' "$REPO/.config/devtools" 2>&1)
 check "17: a tool that is in the fakes still wins over the shared tree" test "$before" = "$HERE/bin/lazysql"
 }

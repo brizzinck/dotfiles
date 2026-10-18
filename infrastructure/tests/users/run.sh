@@ -78,8 +78,9 @@ case "$dry" in *"useradd -m -U -s /usr/bin/nologin -K HOME_MODE=0700 aimcp"*) ok
 case "$dry" in *"passwd -l aimcp"*) ok ;; *) bad "dry run does not lock aimcp's password" ;; esac
 if printf '%s\n' "$dry" | grep -E '^\[dry-run\] useradd .* (td|yc)$' >/dev/null; then bad "dry run would create td or yc"; else ok; fi
 # USERS-SYNC C1: /srv/devtools (the shared tool tree) and its .owner file are created next to /srv/dotfiles and /srv/nvim-shared
-case "$dry" in *"install -d -o $ME -g "*" -m 755 /srv/devtools"*) ok ;; *) bad "dry run does not create /srv/devtools (owner:owner 755)" ;; esac
-case "$dry" in *"/dev/stdin /srv/devtools/.owner"*) ok ;; *) bad "dry run does not write /srv/devtools/.owner" ;; esac
+# (the real /srv/devtools exists after the owner applied the section: the dry run then says "unchanged", which is as good; M3)
+case "$dry" in *"install -d -o $ME -g "*" -m 755 /srv/devtools"* | *"unchanged: /srv/devtools ($ME:"*" 755)"*) ok ;; *) bad "dry run does not create /srv/devtools (owner:owner 755)" ;; esac
+case "$dry" in *"/dev/stdin /srv/devtools/.owner"* | *"unchanged: /srv/devtools/.owner ($ME)"*) ok ;; *) bad "dry run does not write /srv/devtools/.owner" ;; esac
 grep -q '/srv/devtools' "$REPO/infrastructure/users/rollback.sh" && bad "rollback.sh must not name /srv/devtools (it is data, never removed)" || ok
 # render the real templates for the owner and check them with the real parsers
 sed -e "s|@OWNER@|$ME|g" -e 's|@MANAGED@|td, yc|' "$REPO/infrastructure/users/sudoers/50-usr-managed.in" >"$T/sudoers"

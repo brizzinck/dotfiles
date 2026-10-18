@@ -102,6 +102,8 @@ def shared_bin(root=None, me=None):
         scratch = [d for d in (os.environ.get("XDG_RUNTIME_DIR"), os.environ.get("XDG_STATE_HOME")) if d]   # not the real ones in test mode
         if v and e.TEST_DIRS and os.path.isabs(v) and any(e._under(v, d) for d in list(e.TEST_DIRS) + scratch):
             root, test_root = v, True
+        elif e.TEST_DIRS:
+            return None   # verified test mode without an accepted hook root: never the machine's real /srv/devtools (M3)
         u = os.environ.get("DEVTOOLS_TEST_UID")
         if u and e.TEST_DIRS and u.isdigit() and me is None:
             me = int(u)
