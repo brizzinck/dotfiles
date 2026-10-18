@@ -16,3 +16,7 @@
 .config/yazi
 .config/workmux
 .local/bin/theme
+.config/mise
+.local/bin/envs
+.local/bin/fzf-menu
+.local/bin/bw-setup

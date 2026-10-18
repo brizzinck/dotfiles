@@ -25,9 +25,21 @@ done
 command -v rbw >/dev/null || { echo "rbw is not installed. Run: sudo ~/dotfiles/apply-system.sh --only install" >&2; exit 1; }
 
 self_dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
-pinentry=$(command -v pinentry-themed 2>/dev/null || true)
+# No usable Wayland socket (a managed user such as yc, ssh, a bare tty): a terminal pinentry, the themed one needs a window
+wl=${WAYLAND_DISPLAY:-}
+[[ $wl == /* ]] || wl="${XDG_RUNTIME_DIR:-/nonexistent}/${wl:-none}"
+pinentry=
+if [[ -z ${WAYLAND_DISPLAY:-} || ! -w $wl ]]; then
+  pinentry=$(command -v pinentry-curses 2>/dev/null || command -v pinentry-tty 2>/dev/null || true)
+  [[ -z $pinentry ]] || echo "No graphical session: the master password is asked in this terminal ($pinentry)."
+fi
+[[ -n $pinentry ]] || pinentry=$(command -v pinentry-themed 2>/dev/null || true)
 [[ -n $pinentry ]] || pinentry="$self_dir/pinentry-themed"
 [[ -x $pinentry ]] || pinentry=$(command -v pinentry)
+# vault-bw.py lives next to this script's repo (the owner's ~/dotfiles, /srv/dotfiles for managed users: the cli profile links
+# envs, bw-setup and fzf-menu, not .config/hypr)
+vbw_py="$self_dir/../../.config/hypr/scripts/vault-bw.py"
+[[ -f $vbw_py ]] || vbw_py="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/scripts/vault-bw.py"
 
 cur_url=$(rbw config show 2>/dev/null | jq -r '.base_url // empty' 2>/dev/null || true)
 cur_email=$(rbw config show 2>/dev/null | jq -r '.email // empty' 2>/dev/null || true)
@@ -51,7 +63,7 @@ rbw config set lock_timeout 31536000
 rbw config set pinentry "$pinentry"
 echo "rbw configured (pinentry: $pinentry)."
 
-echo "Logging in: a pinentry window asks for the master password."
+echo "Logging in: pinentry asks for the master password."
 if ! rbw login; then
   cat <<'MSG'
 
@@ -88,9 +100,9 @@ setup_bw() {
   ( umask 077; mkdir -p "$rundir"; printf '%s' "$key" >"$rundir/bw-session.tmp" && mv -f "$rundir/bw-session.tmp" "$rundir/bw-session" )
   key=
   # a per-session bw server of an earlier login holds the old key: stop it, the next bw action starts one with the new key
-  python3 -I "${XDG_CONFIG_HOME:-$HOME/.config}/hypr/scripts/vault-bw.py" serve-stop >/dev/null 2>&1 || true
+  python3 -I "$vbw_py" serve-stop >/dev/null 2>&1 || true
   # the sync goes through vault-bw.py like every other bw call: the process that holds the session key runs non-dumpable
-  python3 -I "${XDG_CONFIG_HOME:-$HOME/.config}/hypr/scripts/vault-bw.py" sync >/dev/null 2>&1 && echo "bw synced."
+  python3 -I "$vbw_py" sync >/dev/null 2>&1 && echo "bw synced."
 }
 echo
 setup_bw || true

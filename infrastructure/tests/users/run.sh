@@ -127,7 +127,41 @@ expect "tmux link replaced" "$T/srv/.config/tmux" "$(readlink "$T/h/td/.config/t
 expect "old gitconfig backed up" "old" "$(cat "$T"/h/td/.local/state/usr/backup-*/.gitconfig 2>/dev/null)"
 case "$(cat "$T/h/td/.zshrc.local" 2>/dev/null)" in *'PROMPT="%F{#ea9e77}td%f ${PROMPT}"'*) ok ;; *) bad "zshrc.local accent block missing" ;; esac
 case "$(cat "$T/h/td/.tmux.local.conf" 2>/dev/null)" in *'#ea9e77'*) ok ;; *) bad "tmux.local.conf accent block missing" ;; esac
-case "$(run_link)" in *"0 linked, 13 already linked"*) ok ;; *) bad "second link run is not a no-op" ;; esac
+case "$(run_link)" in *"0 linked, 17 already linked"*) ok ;; *) bad "second link run is not a no-op" ;; esac
+# DEV-b: envs, fzf-menu, bw-setup and the mise config are in the cli profile; envs finds vault-bw.py inside the published tree
+for want in .config/mise .local/bin/envs .local/bin/fzf-menu .local/bin/bw-setup; do
+  grep -qx "$want" "$REPO/infrastructure/users/profiles/cli.txt" && ok || bad "cli profile does not list $want"
+  [ -e "$T/srv/$want" ] && ok || bad "sync: $want is not published"
+done
+[ -L "$T/h/td/.local/bin/envs" ] && [ "$(readlink "$T/h/td/.local/bin/envs")" = "$T/srv/.local/bin/envs" ] && ok || bad "td's envs is not linked to the published copy"
+out="$(python3 -I - "$T/srv/.local/bin/envs" <<'PY' 2>&1
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("envs_mod", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("envs_mod", loader))
+loader.exec_module(m)
+print(m.REPO, m.VAULT_BW.exists())
+PY
+)"
+expect "envs resolves its repo and vault-bw.py inside the published tree" "$T/srv True" "$out"
+# bw-setup without a Wayland socket asks pinentry in the terminal (pinentry-curses), with one it keeps the themed pinentry
+mkdir -p "$T/fakebin"
+printf '#!/bin/sh\nexit 0\n' >"$T/fakebin/pinentry-curses"
+printf '#!/bin/sh\nexit 0\n' >"$T/fakebin/pinentry-themed"
+cat >"$T/fakebin/rbw" <<'RBW'
+#!/bin/sh
+[ "$1" = config ] && [ "$2" = set ] && [ "$3" = pinentry ] && echo "$4" >>"$FAKE_PIN_LOG"
+[ "$1" = login ] && exit 1
+exit 0
+RBW
+chmod +x "$T/fakebin"/*
+: >"$T/pin.log"
+(FAKE_PIN_LOG="$T/pin.log" PATH="$T/fakebin:$PATH" WAYLAND_DISPLAY= XDG_RUNTIME_DIR="$T/run" "$REPO/.local/bin/bw-setup" --url https://v.example.invalid --email t@example.invalid </dev/null >/dev/null 2>&1)
+expect "bw-setup without a Wayland display uses pinentry-curses" "$T/fakebin/pinentry-curses" "$(tail -1 "$T/pin.log")"
+mkdir -p "$T/run"; : >"$T/run/wayland-fake"
+(FAKE_PIN_LOG="$T/pin.log" PATH="$T/fakebin:$PATH" WAYLAND_DISPLAY=wayland-fake XDG_RUNTIME_DIR="$T/run" "$REPO/.local/bin/bw-setup" --url https://v.example.invalid --email t@example.invalid </dev/null >/dev/null 2>&1)
+expect "bw-setup with a writable Wayland socket keeps pinentry-themed" "$T/fakebin/pinentry-themed" "$(tail -1 "$T/pin.log")"
+(FAKE_PIN_LOG="$T/pin.log" PATH="$T/fakebin:$PATH" WAYLAND_DISPLAY=wayland-nosuch XDG_RUNTIME_DIR="$T/run" "$REPO/.local/bin/bw-setup" --url https://v.example.invalid --email t@example.invalid </dev/null >/dev/null 2>&1)
+expect "bw-setup with a Wayland socket that is not writable falls back to the terminal" "$T/fakebin/pinentry-curses" "$(tail -1 "$T/pin.log")"
 run_link --restore >/dev/null
 expect "restore gitconfig" "old" "$(cat "$T/h/td/.gitconfig" 2>/dev/null)"
 expect "restore tmux link" "../dotfiles/.config/tmux" "$(readlink "$T/h/td/.config/tmux")"

@@ -386,7 +386,7 @@ ts = [threading.Thread(target=lambda: out.append(m.nodump_lib())) for _ in range
 [t.start() for t in ts]; [t.join() for t in ts]
 sys.exit(0 if len(out) == 4 and all(out) and len(set(out)) == 1 else 1)
 PY' _ "$V" "$FAKE"
-  check "bw-setup: its sync goes through vault-bw.py (no bare BW_SESSION=... bw sync without the library)" bash -c '! grep -Eq "BW_SESSION=[^ ]+ .*bw sync" "$1" && grep -q "vault-bw.py\" sync" "$1"' _ "$REPO/.local/bin/bw-setup"
+  check "bw-setup: its sync goes through vault-bw.py (no bare BW_SESSION=... bw sync without the library)" bash -c '! grep -Eq "BW_SESSION=[^ ]+ .*bw sync" "$1" && grep -q "vault-bw.py" "$1" && grep -q "vbw_py\" sync" "$1"' _ "$REPO/.local/bin/bw-setup"
   # the core limit is set once at import for the whole process tree; no preexec_fn per child is left for it
   out=$(ulimit -c unlimited 2>/dev/null; python3 -I - "$V" <<'PY'
 import importlib.util, sys
