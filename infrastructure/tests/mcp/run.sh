@@ -476,7 +476,7 @@ setup_env() {
   env BW_BIN="$HERE/bin/bw" VAULT_BW="$REPO/.config/hypr/scripts/vault-bw.py" VAULT_RBW_CONF=/nonexistent PATH="$HERE/bin:$PATH" \
     MCP_TG_PYTHON=/usr/bin/python3 MCP_TG_LOGIN="$HERE/fake_login.py" MCP_TG_CREDS="$HERE/fake_creds.sh" MCP_TG_SUDO=env \
     MCP_TG_PICK="$HERE/fake_pick.sh" MCP_GATEWAY_CMD="$HERE/fake_gw_tg.sh" MCP_ADD_CMD="$HERE/fake_add.sh" MCP_TG_NO_VERIFY=1 \
-    MCP_STATE_DIR="$SCRATCH/setup-state" "$@"
+    MCP_TG_SERVICE_ACTIVE=1 MCP_STATE_DIR="$SCRATCH/setup-state" "$@"
 }
 rm -rf "$SCRATCH/setup-state" "$FAKE_DIR/sealed-send.txt"; : >"$FAKE_DIR/argv.log"; : >"$FAKE_DIR/login.log"
 FAKE_PICK_IDS="-1001111 42" setup_env "$SETUP" <<<"" >"$SCRATCH/setup.out" 2>&1
@@ -588,6 +588,21 @@ check "bw1-fix7: a new setup refuses to overwrite a pending recovery (no second 
 setup_env VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" --resume >"$SCRATCH/s7e.out" 2>&1
 check "bw1-fix7: --resume writes the saved session and allowlist to Bitwarden, seals and starts, then drops the file" bash -c 'jq -e "(.fields[] | select(.name==\"session\") | .type == 1 and (.value | startswith(\"1FRESH\"))) and (.fields[] | select(.name==\"allowlist\") | .value == \"42\")" "$1" && jq -e ".allowlist == \"42\" and (.session | startswith(\"1FRESH\")) and .api_id == \"12345678\"" "$2" && grep -q "gateway restart" "$3" && [ ! -e "$4" ]' _ "$FAKE_DIR/bw-item.json" "$FAKE_DIR/creds-payload.json" "$FAKE_DIR/argv.log" "$REC"
 check "bw1-fix7: --resume with nothing saved fails" bash -c '! "${@:2}" "$1" --resume >/dev/null 2>&1' _ "$SETUP" env XDG_RUNTIME_DIR="$SCRATCH/xdg-run" MCP_STATE_DIR="$SCRATCH/setup-state"
+# FIX2 14 + 15: an unusable runtime directory falls back to ~/.local/state/mcp (0600), doctor sees the file, resume uses it
+reset_tg_item
+echo 99 >"$FAKE_DIR/bw-edit-fails"
+mkdir -p "$SCRATCH/rec"; : >"$SCRATCH/rec/notadir"
+FAKE_PICK_IDS="42" MCP_TG_RETRY_DELAY=0 setup_env MCP_TG_RECOVERY="$SCRATCH/rec/notadir/x/recovery.json" VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" <<<"" >"$SCRATCH/f14a.out" 2>&1; rc14=$?
+FB="$SCRATCH/setup-state/telegram-recovery.json"
+check "recovery: an unusable runtime directory does not lose the session (no traceback; 0600 file under the state directory)" bash -c '[ "$1" != 0 ] && ! grep -q Traceback "$2" && [ "$(stat -c %a "$3")" = 600 ] && jq -e ".session | startswith(\"1FRESH\")" "$3" >/dev/null && grep -q "$3" "$2" && grep -q "mcp-telegram-setup --resume" "$2" && ! grep -q FRESHSESSION "$2"' _ "$rc14" "$SCRATCH/f14a.out" "$FB"
+check "recovery-status: exit 1 and the path while a recovery file holds a session" bash -c 'out=$(MCP_STATE_DIR="$2" MCP_TG_RECOVERY="$3" "$1" recovery-status); rc=$?; [ $rc = 1 ] && [ "$out" = "$4" ]' _ "$SETUP" "$SCRATCH/setup-state" "$SCRATCH/rec/notadir/x/recovery.json" "$FB"
+check "recovery-status: exit 0 and silent when there is none" bash -c 'out=$(MCP_STATE_DIR="$2/none" MCP_TG_RECOVERY="$2/none/r.json" "$1" recovery-status); [ $? = 0 ] && [ -z "$out" ]' _ "$SETUP" "$SCRATCH"
+echo 0 >"$FAKE_DIR/bw-edit-fails"; : >"$FAKE_DIR/argv.log"
+setup_env MCP_TG_RECOVERY="$SCRATCH/rec/notadir/x/recovery.json" VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" --resume >"$SCRATCH/f14b.out" 2>&1
+check "recovery: --resume reads the fallback file, seals, and drops it" bash -c '[ ! -e "$1" ] && jq -e "(.fields[] | select(.name==\"session\") | .value | startswith(\"1FRESH\"))" "$2" >/dev/null && grep -q "creds-install called" "$3"' _ "$FB" "$FAKE_DIR/bw-item.json" "$FAKE_DIR/argv.log"
+
+check "doctor: mcp-tg-recovery FAILs while a recovery file exists (calls mcp-telegram-setup recovery-status)" bash -c 'grep -q "recovery-status" "$1" && grep -q "mcp-tg-recovery" "$1"' _ "$REPO/doctor.sh"
+reset_tg_item
 # nothing ticked after a fresh QR: the session is stored, not dropped
 reset_tg_item
 FAKE_PICK_IDS="" setup_env VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" >"$SCRATCH/s7f.out" 2>&1
@@ -629,12 +644,54 @@ check "new token file: the helper gets allowlist + token (and still no session /
 rm -f "$SCRATCH/setup-state/telegram.applied" "$FAKE_DIR/creds-payload.json"
 FAKE_PICK_IDS="" setup_env VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" chats <<<"" >"$SCRATCH/mu4.out" 2>&1
 check "unsealed state: a run without a change still seals everything once" jq -e '(keys | sort) == ["allowlist","api_hash","api_id","session","token"]' "$FAKE_DIR/creds-payload.json"
+# FIX2 (REVIEW-MENU-UX 2, 14, 12, 13, 16): the "No change." marker must not outlive what it describes
+reset_tg_item
+FAKE_PICK_IDS="42" setup_env VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" <<<"" >/dev/null 2>&1
+check "marker: holds hashes of every sealed value, never a value (list ids and the session are not in it)" bash -c 'jq -e "(keys | sort) == [\"allowlist\",\"api\",\"session\",\"token\"]" "$1" && ! grep -q -e FRESHSESSION -e 12345678 "$1"' _ "$SCRATCH/setup-state/telegram.applied"
+# a dead stored session -> QR -> the owner cancels: the new session is in Bitwarden, the OLD one is still sealed
+jq '(.fields[] | select(.name=="session") | .value) = "1STALE-dead-session"' "$FAKE_DIR/bw-item.json" >"$FAKE_DIR/bw-item.tmp" && mv "$FAKE_DIR/bw-item.tmp" "$FAKE_DIR/bw-item.json"
+FAKE_PICK_CANCEL=1 setup_env VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" <<<"" >"$SCRATCH/f2a.out" 2>&1
+check "stale session + QR + Esc: the new session is stored in Bitwarden and the 'applied' marker is dropped" bash -c 'jq -e "(.fields[] | select(.name==\"session\") | .value | startswith(\"1FRESH\"))" "$1" && [ ! -e "$2" ]' _ "$FAKE_DIR/bw-item.json" "$SCRATCH/setup-state/telegram.applied"
+rm -f "$FAKE_DIR/creds-payload.json"
+FAKE_PICK_IDS="" setup_env VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" chats <<<"" >"$SCRATCH/f2b.out" 2>&1
+check "  then 'chats' with no change seals the new session (it used to say No change. for ever)" bash -c '! grep -q "^No change" "$2" && jq -e "(.session | startswith(\"1FRESH\")) and .allowlist == \"42\"" "$1"' _ "$FAKE_DIR/creds-payload.json" "$SCRATCH/f2b.out"
+# credentials lost although /home kept (the service is not active): a plain run seals everything again
+: >"$FAKE_DIR/argv.log"; rm -f "$FAKE_DIR/creds-payload.json"
+FAKE_PICK_IDS="" setup_env MCP_TG_SERVICE_ACTIVE=0 VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" <<<"" >"$SCRATCH/f2c.out" 2>&1
+check "service not active although the marker matches: everything is sealed again" bash -c '! grep -q "^No change" "$2" && jq -e "(keys | sort) == [\"allowlist\",\"api_hash\",\"api_id\",\"session\",\"token\"]" "$1"' _ "$FAKE_DIR/creds-payload.json" "$SCRATCH/f2c.out"
+# the api id / session changed in Bitwarden behind our back, or an old-format marker (the bare list): sealed
+rm -f "$FAKE_DIR/creds-payload.json"; printf '42' >"$SCRATCH/setup-state/telegram.applied"
+FAKE_PICK_IDS="" setup_env VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" chats <<<"" >/dev/null 2>&1
+check "an old-format marker (only the list) is treated as never sealed" jq -e '(keys | sort) == ["allowlist","api_hash","api_id","session","token"]' "$FAKE_DIR/creds-payload.json"
+rm -f "$FAKE_DIR/creds-payload.json"
+jq '(.fields[] | select(.name=="api_hash") | .value) = "ffffffffffffffffffffffffffffffff"' "$FAKE_DIR/bw-item.json" >"$FAKE_DIR/bw-item.tmp" && mv "$FAKE_DIR/bw-item.tmp" "$FAKE_DIR/bw-item.json"
+FAKE_PICK_IDS="" setup_env VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" chats <<<"" >/dev/null 2>&1
+check "a changed api_hash is sealed (and only the api pair, not the unchanged session / list)" jq -e '(keys | sort) == ["api_hash","api_id"] and .api_hash == "ffffffffffffffffffffffffffffffff"' "$FAKE_DIR/creds-payload.json"
+# a deleted token file: no change in the list still recreates and seals it (REVIEW-MENU-UX 14)
+rm -f "$SCRATCH/setup-state/telegram.token" "$FAKE_DIR/creds-payload.json"
+FAKE_PICK_IDS="" setup_env VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" chats <<<"" >"$SCRATCH/f14.out" 2>&1
+check "deleted token file, no list change: the token comes back and reaches the root helper" bash -c '! grep -q "^No change" "$3" && [ -s "$2/telegram.token" ] && jq -e ".token == \"$(cat "$2/telegram.token")\"" "$1"' _ "$FAKE_DIR/creds-payload.json" "$SCRATCH/setup-state" "$SCRATCH/f14.out"
+# the picker closed (exit 1) after changes: ask instead of dropping them (REVIEW-MENU-UX 12)
+: >"$FAKE_DIR/argv.log"; rm -f "$FAKE_DIR/creds-payload.json"
+FAKE_PICK_EXIT1=1 FAKE_PICK_IDS="-1001111" setup_env VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" chats <<<"n" >"$SCRATCH/f12a.out" 2>&1
+check "picker exit 1 after changes, answered n: cancelled, nothing sealed" bash -c 'grep -q "Keep your changes" "$1" && grep -q "cancelled" "$1" && [ ! -e "$2" ]' _ "$SCRATCH/f12a.out" "$FAKE_DIR/creds-payload.json"
+FAKE_PICK_EXIT1=1 FAKE_PICK_IDS="-1001111" setup_env VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" chats <<<$'y\ny' >"$SCRATCH/f12b.out" 2>&1
+check "picker exit 1 after changes, answered y: the changed list goes on to the summary and is sealed" bash -c 'grep -q "^Adding (1):" "$1" && jq -e ".allowlist == \"-1001111,42\"" "$2"' _ "$SCRATCH/f12b.out" "$FAKE_DIR/creds-payload.json"
+rm -f "$FAKE_DIR/creds-payload.json"
+FAKE_PICK_CANCEL=1 setup_env VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" chats <<<"" >"$SCRATCH/f12c.out" 2>&1
+check "picker exit 1 with no change (a plain Esc): no question, cancelled" bash -c '! grep -q "Keep your changes" "$1" && grep -q "cancelled" "$1"' _ "$SCRATCH/f12c.out"
+# chat titles are attacker-chosen text (REVIEW-MENU-UX 13)
+FAKE_TITLE_EVIL=1 FAKE_PICK_IDS="888" setup_env VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" chats <<<"n" >"$SCRATCH/f13.out" 2>&1
+check "titles: bidi, zero-width and escape characters are shown as <U+XXXX> in the picker rows and the summary" bash -c 'for f in "$1" "$2"; do grep -aq "Evil<U+202E>gnp.exe<U+200B><U+001B>\[31mred" "$f" || { echo "missing in $f"; exit 1; }; ! grep -aqP "\x1b\[31mred" "$f" || exit 1; done' _ "$FAKE_DIR/pick-rows.txt" "$SCRATCH/f13.out"
+# stale texts (REVIEW-MENU-UX 16)
+check "picker header says Space works in NORMAL mode only; the hub row no longer names the old special workspace" bash -c 'grep -q "Tab: toggle (Space in NORMAL mode)" "$1" && ! grep -q "special workspace \"menu\"" "$2"' _ "$SETUP" "$REPO/.config/hub/actions.d/v1.tsv"
+reset_tg_item
 # the key handlers of the picker (hidden subcommand _pick)
 PD="$SCRATCH/pick-dir"; rm -rf "$PD"; mkdir -p "$PD"; chmod 700 "$PD"
 echo '[{"id":1,"title":"Saved Messages","kind":"user","unread":0},{"id":42,"title":"Ann","kind":"user","unread":2},{"id":-100,"title":"Work","kind":"group","unread":0}]' >"$PD/chats.json"
 printf '42\n' >"$PD/orig"; printf '42\n' >"$PD/sel"
 out=$("$SETUP" _pick tab "$PD" 1)
-check "_pick tab: toggles the id and answers reload-sync + down + change-header with the new counter" bash -c '[[ $2 == "reload-sync(cat "*"/rows)+down+change-header:Selected 2 (+1 / -0) · Tab / Space: toggle · Enter: save · Esc: cancel" ]] && [ "$(cat "$1/sel" | paste -sd,)" = "1,42" ]' _ "$PD" "$out"
+check "_pick tab: toggles the id and answers reload-sync + down + change-header with the new counter" bash -c '[[ $2 == "reload-sync(cat "*"/rows)+down+change-header:Selected 2 (+1 / -0) · Tab: toggle (Space in NORMAL mode) · Enter: save · Esc: cancel" ]] && [ "$(cat "$1/sel" | paste -sd,)" = "1,42" ]' _ "$PD" "$out"
 "$SETUP" _pick tab "$PD" 42 >/dev/null
 check "_pick tab: toggling an originally ticked chat off counts as -1, rows show the + and - marks" bash -c 'h=$("$1" _pick header "$2"); [[ $h == "Selected 1 (+1 / -1)"* ]] && sed "s/\x1b\[[0-9;]*m//g" "$2/rows" | grep -qP "^42\t\[ \]-" && sed "s/\x1b\[[0-9;]*m//g" "$2/rows" | grep -qP "^1\t\[x\]\+"' _ "$SETUP" "$PD"
 check "_pick tab: an unknown id changes nothing" bash -c 'before=$(cat "$2/sel"); "$1" _pick tab "$2" 999 >/dev/null; [ "$(cat "$2/sel")" = "$before" ]' _ "$SETUP" "$PD"
@@ -714,6 +771,7 @@ MCP_GUARD_SETTINGS="$GS" "$GUARD" >/dev/null
 check "guard: the key-injection and capture tools are denied for the agents' Bash" bash -c 'for r in "Bash(wtype:*)" "Bash(wlrctl:*)" "Bash(hyprd:*)" "Bash(hyprctl eval:*)" "Bash(hyprctl dispatch:*)" "Bash(grim:*)"; do jq -e --arg r "$r" ".permissions.deny | index(\$r)" "$1" >/dev/null || exit 1; done' _ "$GS"
 check "guard: hyprctl with flags, --batch and --instance, absolute paths and the other recorders are denied too" bash -c 'for r in "Bash(hyprctl -j dispatch:*)" "Bash(hyprctl -j eval:*)" "Bash(hyprctl --batch:*)" "Bash(hyprctl -r dispatch:*)" "Bash(hyprctl -i:*)" "Bash(hyprctl --instance:*)" "Bash(/usr/bin/hyprctl eval:*)" "Bash(/usr/bin/wtype:*)" "Bash(/usr/bin/grim:*)" "Bash(wf-recorder:*)" "Bash(wl-screenrec:*)" "Bash($HOME/.local/bin/hyprd:*)" "Bash(~/.local/bin/hyprd:*)"; do jq -e --arg r "$r" ".permissions.deny | index(\$r)" "$1" >/dev/null || { echo "missing $r"; exit 1; }; done' _ "$GS"
 check "guard: the repo scripts that call grim / wtype / send_shortcut are denied by ~ path and by expanded path" bash -c 'for r in "Bash(~/.config/hypr/scripts/capture.sh:*)" "Bash($HOME/.config/hypr/scripts/paste-lib.sh:*)" "Bash($HOME/dotfiles/.config/hypr/scripts/vault.sh:*)" "Bash(~/.config/hypr/scripts/type-guard.sh:*)" "Bash(~/.config/hypr/scripts/pointer.sh:*)" "Bash(~/.config/hypr/scripts/freeze-shot.sh:*)" "Bash(~/.local/bin/2fa-import:*)"; do jq -e --arg r "$r" ".permissions.deny | index(\$r)" "$1" >/dev/null || { echo "missing $r"; exit 1; }; done' _ "$GS"
+check "guard: Read of the Telegram recovery file (tmpfs and state fallback) is denied" bash -c 'for r in "Read(/${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/mcp-telegram-setup/**)" "Read(/$HOME/.local/state/mcp/telegram-recovery.json)" "Read(~/.local/state/mcp/telegram-recovery.json)"; do jq -e --arg r "$r" ".permissions.deny | index(\$r)" "$1" >/dev/null || { echo "missing $r"; exit 1; }; done' _ "$GS"
 check "guard: no rule is listed twice" jq -e '.permissions.deny | length == (unique | length)' "$GS"
 check "guard: the denied tools really exist as scripts or commands the rules refer to (every script path names a file in the repo)" bash -c 'for n in capture freeze-shot paste-lib emoji snippets type-guard pointer vault window-menu ai-ask edit-anywhere; do [ -f "$1/.config/hypr/scripts/$n.sh" ] || { echo "no $n.sh"; exit 1; }; done; [ -f "$1/.config/hypr/scripts/vault-browse.py" ] && [ -f "$1/.local/bin/2fa-import" ]' _ "$REPO"
 check "guard: existing rules, allow list, model and mode are kept" jq -e '.permissions.deny[0] == "Bash(rm -rf /:*)" and .permissions.allow == ["mcp__x"] and .permissions.defaultMode == "auto" and .model == "opus"' "$GS"

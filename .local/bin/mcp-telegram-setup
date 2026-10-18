@@ -35,8 +35,10 @@ Where things go:
   * ~/.local/state/mcp/telegram.token (0600): bearer token between the gateway and the service, also stored in the credstore.
 A fresh QR login is never lost: the full Bitwarden item is read BEFORE the QR is shown (a broken bw stops you before you scan),
 rbw is synced before its copy is read, a failed write to Bitwarden is retried once, and when it still fails the new session is
-kept in a 0600 file under $XDG_RUNTIME_DIR/mcp-telegram-setup/ (tmpfs: it survives the terminal, not a reboot) and the command
-tells you to run `mcp-telegram-setup --resume` after fixing bw (unlock, network). Until then a new setup refuses to start.
+kept in a 0600 file under $XDG_RUNTIME_DIR/mcp-telegram-setup/ (tmpfs: it survives the terminal, not a reboot; when that directory
+is unusable, ~/.local/state/mcp/telegram-recovery.json instead) and the command tells you to run `mcp-telegram-setup --resume` after
+fixing bw (unlock, network). Until then a new setup refuses to start, and doctor fails (`mcp-tg-recovery`): the file is a plaintext
+full-account session. "No change." is only said when the marker (hashes of every sealed value) matches and the service is active.
 Sending (M1-send): `send-chats` starts from the SEALED send list (read by the root helper), shows the final list with title, kind
 and id, asks for an explicit confirmation, then seals it for the send route inside telegram-mcp and records it in the text field
 `send_allowlist` of the same Bitwarden item (chat ids, not secret; a record only, never trusted as input). `chats` never sends a
@@ -46,12 +48,13 @@ after you confirm each message in a popup. Kill switch: Telegram > Settings > De
 "telegram-mcp (AI, read-only)".
 Test hooks: MCP_TG_PYTHON, MCP_TG_LOGIN, MCP_TG_CREDS, MCP_TG_SUDO, MCP_TG_PICK (a command that gets the rows on stdin and edits
 $MCP_TG_PICK_DIR/sel; exit 0 = save), MCP_GATEWAY_CMD, MCP_ADD_CMD, MCP_STATE_DIR,
-MCP_TG_NO_VERIFY=1, MCP_TG_RETRY_DELAY (seconds between the two write attempts), VAULT_BW (path of vault-bw.py), BW_BIN.
+MCP_TG_NO_VERIFY=1, MCP_TG_SERVICE_ACTIVE=1|0 (instead of asking systemd), MCP_TG_RECOVERY (path of the tmpfs recovery file), MCP_TG_RETRY_DELAY (seconds between the two write attempts), VAULT_BW (path of vault-bw.py), BW_BIN.
 """
 from __future__ import annotations
 
 import base64
 import contextlib
+import hashlib
 import importlib.util
 import json
 import os
@@ -62,6 +65,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -79,7 +83,12 @@ TOKEN_FILE = STATE_DIR / "telegram.token"
 APPLIED = STATE_DIR / "telegram.applied"   # the allowlist the root helper last sealed (ids only, not secret): "No change." needs it
 VAULT_BW = Path(os.environ.get("VAULT_BW") or HOME / ".config/hypr/scripts/vault-bw.py")
 FOLDER, ITEM = "MCP", "telegram-mcp"
-RECOVERY = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "mcp-telegram-setup" / "recovery.json"
+RECOVERY = Path(os.environ.get("MCP_TG_RECOVERY")   # test hook
+                or Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "mcp-telegram-setup" / "recovery.json")
+RECOVERY_FALLBACK = STATE_DIR / "telegram-recovery.json"   # when the runtime directory is unusable (missing, full): 0600, survives a reboot
+RECOVERY_FILES = (RECOVERY, RECOVERY_FALLBACK)
+BIDI = set("\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\u061c")
+ESC_CHARS = {"\x1b", "\x9b", "\x7f"}
 
 
 class BwWriteError(Exception):
@@ -225,28 +234,59 @@ def store_fields(m, item: dict, values: dict[str, tuple[str, int]], recovery: di
                 time.sleep(float(os.environ.get("MCP_TG_RETRY_DELAY", "2")))
     if recovery is None:
         die(f"could not update the Bitwarden item: {err}")
-    save_recovery(recovery)
+    try:
+        where = save_recovery(recovery)
+    except OSError as e:
+        die(f"could not write the new session to Bitwarden ({err}) and could not keep it either ({e}); scan the QR again "
+            "(mcp-telegram-setup --new-login) after fixing bw")
+    gone = "tmpfs: gone at reboot" if where == RECOVERY else "on disk: delete it when done"
     die("could not write the new session to Bitwarden "
-        f"({err}).\nIt is NOT lost: it is kept in {RECOVERY} (mode 600, tmpfs: gone at reboot).\n"
+        f"({err}).\nIt is NOT lost: it is kept in {where} (mode 600, {gone}).\n"
         "Fix bw (unlock the vault, check the network), then run:  mcp-telegram-setup --resume")
 
 
-def save_recovery(rec: dict) -> None:
-    RECOVERY.parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(RECOVERY.parent, 0o700)
-    tmp = RECOVERY.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(rec, f)
-    os.replace(tmp, RECOVERY)
+def save_recovery(rec: dict) -> Path:
+    """Write the recovery file (0600) and return where it went: the tmpfs directory first, else ~/.local/state/mcp (an
+    unusable runtime directory must not turn a fresh QR session into a traceback and a lost login)."""
+    last: OSError | None = None
+    for path in RECOVERY_FILES:
+        try:
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            os.chmod(path.parent, 0o700)
+            tmp = path.with_suffix(".tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump(rec, f)
+            os.replace(tmp, path)
+            return path
+        except OSError as e:
+            last = e
+    raise last if last else OSError("no place for the recovery file")
+
+
+def recovery_path() -> Path | None:
+    """The recovery file that holds a session (tmpfs one first), or None."""
+    for path in RECOVERY_FILES:
+        try:
+            rec = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(rec, dict) and rec.get("session"):
+            return path
+    return None
 
 
 def load_recovery() -> dict | None:
-    try:
-        rec = json.loads(RECOVERY.read_text())
-    except (OSError, ValueError):
-        return None
-    return rec if isinstance(rec, dict) and rec.get("session") else None
+    path = recovery_path()
+    return json.loads(path.read_text()) if path else None
+
+
+def drop_recovery() -> None:
+    for path in RECOVERY_FILES:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass   # an unusable directory has no file to remove
 
 
 # --- Telegram (login.py in the pinned venv) ------------------------------------------------------------------------------------
@@ -283,6 +323,20 @@ def read_ids(path: Path) -> set[int]:
         return set()
 
 
+def safe_title(text: str) -> str:
+    """A chat title is attacker-chosen text: control, zero-width and bidi characters (a title can reorder or hide what you read
+    next to it, or carry terminal escapes) are shown as <U+XXXX>, the same rule as the send popup."""
+    out = []
+    for ch in str(text):
+        if ch == "\t":
+            out.append(" ")
+        elif ch in BIDI or ch in ESC_CHARS or unicodedata.category(ch) in ("Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"):
+            out.append(f"<U+{ord(ch):04X}>")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def render_rows(chats: list[dict], sel: set[int], orig: set[int]) -> str:
     """`id TAB [x]+ kind title (N unread)`: green [x] / grey [ ], then + (newly ticked) or - (unticked) or a space"""
     lines = []
@@ -291,12 +345,12 @@ def render_rows(chats: list[dict], sel: set[int], orig: set[int]) -> str:
         box = "\033[32m[x]\033[0m" if on else "\033[90m[ ]\033[0m"
         mark = "\033[32m+\033[0m" if on and not was else "\033[31m-\033[0m" if was and not on else " "
         unread = f"({c['unread']} unread)" if c.get("unread") else ""
-        lines.append(f"{c['id']}\t{box}{mark} {c['kind']:7} {c['title']} {unread}".rstrip())
+        lines.append(f"{c['id']}\t{box}{mark} {c['kind']:7} {safe_title(c['title'])} {unread}".rstrip())
     return "\n".join(lines) + "\n"
 
 
 def picker_header(sel: set[int], orig: set[int]) -> str:
-    return f"Selected {len(sel)} (+{len(sel - orig)} / -{len(orig - sel)}) · Tab / Space: toggle · Enter: save · Esc: cancel"
+    return f"Selected {len(sel)} (+{len(sel - orig)} / -{len(orig - sel)}) · Tab: toggle (Space in NORMAL mode) · Enter: save · Esc: cancel"
 
 
 def pick_write(d: Path, chats: list[dict], sel: set[int], orig: set[int]) -> None:
@@ -357,7 +411,14 @@ def pick_chats(chats: list[dict], selected: set[int], me_id: int | None, prompt:
         pick_write(d, ordered, set(selected), set(selected))
         with phase("your choice", timed=False):
             rc = run_picker(d, prompt)
-        return read_ids(d / "sel") if rc == 0 else None
+        if rc == 0:
+            return read_ids(d / "sel")
+        # fzf also exits 1 for Enter while a typed filter matches nothing, and the menu wrapper reports Esc the same way: when
+        # the list was changed, ask instead of silently throwing the changes away
+        if read_ids(d / "sel") != set(selected):
+            if confirm("The picker closed without a choice, but you had changed the list. Keep your changes?"):
+                return read_ids(d / "sel")
+        return None
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -395,19 +456,51 @@ def ensure_token() -> tuple[str, bool]:
     return tok, True
 
 
-def applied_allowlist() -> str | None:
-    """The allowlist the root helper sealed last time (None: never by this version or the seal failed: seal everything once)."""
+def _h(*parts: str) -> str:
+    h = hashlib.sha256()
+    for part in parts:
+        h.update(hashlib.sha256(part.encode()).digest())
+    return h.hexdigest()
+
+
+def sealed_parts(allowlist: str, api_id: str, api_hash: str, session: str, token: str) -> dict[str, str]:
+    """A hash per sealed value (the list, api id + hash, the session, the gateway token); the marker holds only these, never a value."""
+    return {"allowlist": _h(allowlist), "api": _h(api_id, api_hash), "session": _h(session), "token": _h(token)}
+
+
+def applied_state() -> dict | None:
+    """The hashes of what the root helper sealed last time. None = never by this version (an old marker that held only the list
+    counts too, and so does a failed seal): seal everything once."""
     try:
-        return APPLIED.read_text().strip()
-    except OSError:
+        st = json.loads(APPLIED.read_text())
+    except (OSError, ValueError):
         return None
+    return st if isinstance(st, dict) and {"allowlist", "api", "session", "token"} <= set(st) else None
 
 
-def mark_applied(value: str) -> None:
+def seal_needs(marker: dict | None, parts: dict[str, str], full: bool) -> set[str]:
+    """Which of allowlist / api / session / token the helper has to seal: all of them when `full` or without a marker, else the
+    ones whose hash differs from the marker."""
+    if full or marker is None:
+        return set(parts)
+    return {k for k, v in parts.items() if marker.get(k) != v}
+
+
+def mark_applied(parts: dict[str, str]) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     fd = os.open(APPLIED, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
-        f.write(value)
+        json.dump(parts, f)
+
+
+def service_active() -> bool:
+    """Does the sealed setup actually run? An inactive telegram-mcp.service means the credentials are gone or broken (the unit has
+    ConditionPathExists= on every credential), whatever the marker says. MCP_TG_SERVICE_ACTIVE=1|0 is the test hook."""
+    forced = os.environ.get("MCP_TG_SERVICE_ACTIVE")
+    if forced in ("0", "1"):
+        return forced == "1"
+    p = subprocess.run(["systemctl", "is-active", "telegram-mcp.service"], capture_output=True, text=True)
+    return p.stdout.strip() == "active"
 
 
 def ensure_sudo(why: str) -> None:
@@ -514,6 +607,9 @@ def read_item(m) -> dict:
 def keep_fresh_session(m, item: dict, session: str, allowlist: str, why: str) -> None:
     """A QR login happened and the run stops before sealing: the new session must not vanish."""
     store_fields(m, item, {"session": (session, 1)}, recovery={"session": session, "allowlist": allowlist})
+    # Bitwarden now holds a session that is NOT the sealed one: forget what was applied, or the next run would say "No change."
+    # and leave the dead session sealed for ever
+    APPLIED.unlink(missing_ok=True)
     die(f"{why} The new session is stored in Bitwarden: run  mcp-telegram-setup chats  to choose the chats (nothing was sealed or started)")
 
 
@@ -522,7 +618,7 @@ def cmd_setup(chats_only: bool, new_login: bool) -> None:
         if not Path(path).exists():
             die(f"{what} is missing ({path}): run  sudo ~/dotfiles/apply-system.sh --only users,mcp  first")
     if load_recovery() is not None:
-        die(f"an earlier login is waiting in {RECOVERY} (its session could not be written to Bitwarden): run  "
+        die(f"an earlier login is waiting in {recovery_path()} (its session could not be written to Bitwarden): run  "
             "mcp-telegram-setup --resume  first (or delete that file to throw it away)")
     m = load_vault_bw()
     item = read_item(m)
@@ -558,12 +654,17 @@ def cmd_setup(chats_only: bool, new_login: bool) -> None:
     allowlist = sorted(final)
     value = ",".join(map(str, allowlist))
     changed = final != allowed
-    marker = applied_allowlist()
+    token, _created = ensure_token()   # before the no-change check: a deleted token file must come back (and be sealed)
+    marker = applied_state()
+    # what the helper has to (re)seal: everything on a fresh login or while the service is not running (the credentials are gone
+    # or broken whatever the marker says); else only the values whose hash differs from the marker
+    full = fresh or not service_active()
+    needs = seal_needs(marker, sealed_parts(value, api_id, api_hash, session, token), full)
     if not allowlist:
         if fresh:   # the QR login happened: the session must not vanish just because nothing was ticked
             keep_fresh_session(m, item, session, "", "No chat ticked: the service refuses to run without an allowlist.")
         die("no chat ticked: the service refuses to run without an allowlist (nothing was changed)")
-    if not changed and not fresh and marker == value:
+    if not changed and not fresh and not needs:
         eprint("No change.")
         print_total()
         return
@@ -583,8 +684,7 @@ def cmd_setup(chats_only: bool, new_login: bool) -> None:
             store_fields(m, item, values, recovery={"session": session, "allowlist": value} if fresh else None)
         eprint("Bitwarden updated (the master copy).")
     # seal everything on a fresh login or when this version never sealed (a failed earlier seal, an upgrade); else only what changed
-    apply_setup(m, item, allowlist, session, api_id, api_hash, full=(fresh or marker is None),
-                allowlist_changed=(changed or marker != value), names={i: c["title"] for i, c in names.items()}, fresh=fresh)
+    apply_setup(m, item, allowlist, session, api_id, api_hash, full=full, names={i: c["title"] for i, c in names.items()}, fresh=fresh)
     print_total()
 
 
@@ -605,25 +705,31 @@ def cmd_resume() -> None:
         store_fields(m, item, values, recovery=rec)
     eprint("Bitwarden updated (the master copy).")
     if not rec["allowlist"].strip():
-        RECOVERY.unlink(missing_ok=True)
+        drop_recovery()
         die("the session is stored in Bitwarden; no chats were chosen yet: run  mcp-telegram-setup chats", 0)
     session, allowlist = rec["session"], sorted(int(x) for x in rec["allowlist"].split(",") if x.strip().lstrip("-").isdigit())
-    RECOVERY.unlink(missing_ok=True)   # the session is safe in Bitwarden now
-    apply_setup(m, item, allowlist, session, api_id, api_hash, full=True, allowlist_changed=True, names={}, fresh=True)
+    drop_recovery()   # the session is safe in Bitwarden now
+    apply_setup(m, item, allowlist, session, api_id, api_hash, full=True, names={}, fresh=True)
     print_total()
 
 
 def apply_setup(m, item: dict, allowlist: list[int], session: str, api_id: str, api_hash: str, full: bool, names: dict,
-                allowlist_changed: bool = True, fresh: bool = False) -> None:
+                fresh: bool = False) -> None:
     """After Bitwarden holds the values: seal what changed with the root helper, restart the gateway, register, verify."""
     token, created = ensure_token()
     value = ",".join(map(str, allowlist))
+    parts = sealed_parts(value, api_id, api_hash, session, token)
+    needs = seal_needs(applied_state(), parts, full)
+    if created:
+        needs.add("token")
     payload: dict[str, str] = {}
-    if allowlist_changed or full:
+    if "allowlist" in needs:
         payload["allowlist"] = value   # the root helper narrows the sealed send list to this on its own
-    if full:
-        payload.update(api_id=api_id, api_hash=api_hash, session=session, token=token)
-    elif created:
+    if "api" in needs:
+        payload.update(api_id=api_id, api_hash=api_hash)
+    if "session" in needs:
+        payload["session"] = session
+    if "token" in needs:
         payload["token"] = token
     if not payload:
         eprint("Nothing to seal (the credentials are unchanged).")
@@ -632,7 +738,7 @@ def apply_setup(m, item: dict, allowlist: list[int], session: str, api_id: str, 
     served_before = set(gateway("servers").stdout.split())
     sudo_apply(payload)
     payload.clear()
-    mark_applied(value)
+    mark_applied(parts)
     if sealed_list:
         with phase("sealed send list (sudo)"):
             sealed = sealed_send_allowlist()
@@ -666,7 +772,7 @@ def describe_chats(ids: list[int], names: dict[int, dict]) -> list[str]:
     out = []
     for i in ids:
         c = names.get(i)
-        out.append(f"  {c['title'] if c else '(not in the chat list)'}  [{c['kind'] if c else '?'}]  id {i}")
+        out.append(f"  {safe_title(c['title']) if c else '(not in the chat list)'}  [{safe_title(c['kind']) if c else '?'}]  id {i}")
     return out
 
 
@@ -778,6 +884,11 @@ def main(argv: list[str]) -> int:
         return 0
     if words == ["status"]:
         return cmd_status()
+    if words == ["recovery-status"]:   # hidden: doctor. Exit 1 and the path while a plaintext session waits in a recovery file
+        where = recovery_path()
+        if where:
+            print(where)
+        return 1 if where else 0
     if words and words[0] == "send-chats":
         acct = "main"
         if "--account" in argv:

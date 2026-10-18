@@ -14,6 +14,8 @@ chats = [{"id": 1, "title": "Test Owner", "kind": "user", "unread": 0},   # the 
          {"id": 42, "title": "Ann", "kind": "user", "unread": 0},
          {"id": -1002222, "title": "News", "kind": "channel", "unread": 9},
          {"id": 777, "title": "Secret person", "kind": "user", "unread": 1}]
+if os.environ.get("FAKE_TITLE_EVIL") == "1":   # an attacker-chosen title: bidi override, zero-width space, a terminal escape
+    chats.append({"id": 888, "title": "Evil\u202egnp.exe\u200b\x1b[31mred", "kind": "user", "unread": 0})
 out = {"me": {"id": 1, "name": "Test Owner", "username": "owner"}, "chats": chats}
 if mode == "qr":
     out["session"] = "1" + "FRESHSESSION" * 12

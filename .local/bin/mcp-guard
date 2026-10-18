@@ -14,7 +14,8 @@
 #   * screen capture: grim, wf-recorder, wl-screenrec
 #   * the repo's own scripts that call those tools (capture, freeze shot, paste, emoji/snippet/vault typing, pointer, window menu,
 #     AI ask, 2fa-import), by `~/` path, expanded $HOME path and ~/dotfiles path
-# each also by absolute path (/usr/bin, /usr/local/bin, ~/.local/bin). Our own scripts keep calling the tools; only the agent's Bash
+# each also by absolute path (/usr/bin, /usr/local/bin, ~/.local/bin); plus Read() rules for the Telegram recovery file (a plaintext
+# session that only exists after a failed Bitwarden write). Our own scripts keep calling the tools; only the agent's Bash
 # tool is blocked. Claude Code only: Codex runs with its sandbox and approvals bypassed and cannot be restricted, which is why
 # telegram-send is never registered for Codex (mcp-add).
 # This is BEST EFFORT, not a defence layer: Claude Code matches command prefixes, so a determined agent can still wrap a command
@@ -43,6 +44,12 @@ for dir in '~/.config/hypr/scripts' "$HOME/.config/hypr/scripts" '~/dotfiles/.co
 done
 for dir in '~/.local/bin' "$HOME/.local/bin" '~/dotfiles/.local/bin' "$HOME/dotfiles/.local/bin"; do add "$dir/2fa-import"; done
 add 2fa-import
+# the plaintext Telegram session a failed Bitwarden write leaves behind (mcp-telegram-setup recovery file; both places)
+RUNDIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+for f in "$RUNDIR/mcp-telegram-setup/**" "$HOME/.local/state/mcp/telegram-recovery.json"; do
+  RULES+=("Read(/$f)")   # Claude Code: an absolute path starts with //
+done
+RULES+=("Read(~/.local/state/mcp/telegram-recovery.json)")
 SETTINGS=${MCP_GUARD_SETTINGS:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json}
 DRY=0 MODE=add
 
