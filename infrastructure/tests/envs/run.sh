@@ -1184,7 +1184,7 @@ if ((QUICK)); then
     ok "runtime bounded masking and private tmpfs unit groups"
   else bad "runtime unit groups" "$(printf '%s' "$result" | tail -12)"; fi
 else
-  for module in references policy imports native runners runtime send precedence; do
+  for module in references policy imports native native_socket runners runtime send precedence; do
     if result=$(env -u DISPLAY -u WAYLAND_DISPLAY -u HYPRLAND_INSTANCE_SIGNATURE /usr/bin/python3 -I -B "$HERE/${module}_test.py" 2>&1); then
       ok "$module isolated integration groups"
       [[ $module != precedence ]] || printf '%s\n' "$result" | grep -E '^(PASS|SKIP|loader probes:)'
