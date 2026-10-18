@@ -32,6 +32,8 @@ import secrets
 import shlex
 import shutil
 import subprocess
+import stat
+import tempfile
 import sys
 import unicodedata
 import urllib.parse
@@ -1322,36 +1324,207 @@ def get_json(m, *args):
         raise Fail("bw returned something that is not JSON", 1)
 
 
-def backup_export(m):
-    """Account-key encrypted export (no master password is asked: bw export without --password); returns the path.
-    Anything wrong stops the whole run before a single change."""
-    BACKUPS.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(BACKUPS, 0o700)
-    path = BACKUPS / f"vault-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
-    p = m.bw_cli("export", "--format", "encrypted_json", "--output", str(path))
-    if p.returncode != 0 or not path.exists():
-        path.unlink(missing_ok=True)
-        raise Fail("backup failed: nothing was changed (" + m.first_line(p.stderr or p.stdout) + ")", 1)
-    os.chmod(path, 0o600)
+def backup_refused(reason):
+    # Backend output may contain values. Only fixed, locally constructed reasons escape this gate.
+    raise Fail("backup failed: nothing was changed (" + reason + ")", 1)
+
+
+def backup_cli(m, *args):
     try:
-        doc = json.loads(path.read_text())
-        live = [i for i in get_json(m, "list", "items") if not i.get("deletedDate")]
-        trash = get_json(m, "list", "items", "--trash")
-        n = len(doc.get("items", []))
-        if doc.get("encrypted") is not True or n not in (len(live), len(live) + len(trash)):
-            raise ValueError(f"encrypted={doc.get('encrypted')} items={n} live={len(live)}")
-    except (OSError, ValueError, Fail) as e:
-        path.unlink(missing_ok=True)
-        raise Fail(f"backup failed: nothing was changed ({e})", 1)
-    old = sorted(BACKUPS.glob("vault-*.json"))
-    for f in old[:-5]:
-        f.unlink(missing_ok=True)
-    return path
+        p = m.bw_cli(*args)
+    except Exception:
+        backup_refused("CLI request failed")
+    if p.returncode != 0:
+        backup_refused("CLI request failed; check export permissions and session")
+    return p.stdout
+
+
+def backup_id(value):
+    return isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value) is not None
+
+
+def backup_snapshot(m, cli=True):
+    """Metadata only in the returned snapshot; full CLI records never reach disk or diagnostics."""
+    def listing(kind):
+        try:
+            if cli:
+                raw = backup_cli(m, "list", kind)
+            else:
+                try:
+                    p = m.bw("list", kind)
+                except Exception:
+                    backup_refused("service inventory failed")
+                if p.returncode != 0:
+                    backup_refused("service inventory failed")
+                raw = p.stdout
+            records = json.loads(raw)
+        except (ValueError, TypeError):
+            backup_refused("invalid inventory")
+        if not isinstance(records, list):
+            backup_refused("invalid inventory")
+        return records
+
+    folders = {}
+    for f in listing("folders"):
+        if not isinstance(f, dict) or not backup_id(f.get("id")) or f["id"] in folders or not isinstance(f.get("name"), str):
+            backup_refused("invalid folder inventory")
+        folders[f["id"]] = f["name"]
+    items = {}
+    for i in listing("items"):
+        if not isinstance(i, dict) or not backup_id(i.get("id")) or i["id"] in items:
+            backup_refused("invalid item inventory")
+        if i.get("deletedDate"):
+            backup_refused("inventory unexpectedly contains trash")
+        org, folder, revision = i.get("organizationId"), i.get("folderId"), i.get("revisionDate")
+        if ((org is not None and not backup_id(org)) or (folder is not None and folder not in folders)
+                or type(i.get("type")) is not int or i["type"] not in BW_TYPE
+                or not isinstance(revision, str) or not revision or len(revision) > 128):
+            backup_refused("invalid item metadata")
+        items[i["id"]] = {"organizationId": org, "folderId": folder, "revisionDate": revision, "type": i["type"]}
+    return {"items": items, "folders": folders}
+
+
+def backup_directory():
+    """Refuse redirected/foreign backup ancestors before creating a private bundle."""
+    root = BACKUPS.absolute()
+    for part in reversed([root, *root.parents]):
+        try:
+            st = part.lstat()
+        except FileNotFoundError:
+            part.mkdir(mode=0o700)
+            st = part.lstat()
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid not in (0, os.getuid()):
+            backup_refused("unsafe backup directory")
+        if st.st_mode & 0o022 and not (st.st_uid == 0 and st.st_mode & stat.S_ISVTX):
+            backup_refused("unsafe backup directory")
+    st = root.lstat()
+    if st.st_uid != os.getuid():
+        backup_refused("unsafe backup directory")
+    os.chmod(root, 0o700)
+    return root
+
+
+def backup_artifact(m, bundle, filename, org, expected, folder_ids, inventory):
+    path = bundle / filename
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        before = os.fstat(fd)
+        args = ["export", "--format", "encrypted_json", "--output", str(path)]
+        if org is not None:
+            args.extend(("--organizationid", org))
+        backup_cli(m, *args)
+        after = path.lstat()
+        if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino) or not stat.S_ISREG(after.st_mode):
+            backup_refused("export replaced its output file")
+        os.fchmod(fd, 0o600)
+        os.fsync(fd)
+        with os.fdopen(os.dup(fd), "rb") as f:
+            raw = f.read(256 * 1024 * 1024 + 1)
+        if len(raw) > 256 * 1024 * 1024:
+            backup_refused("export too large")
+        try:
+            doc = json.loads(raw)
+        except (ValueError, TypeError):
+            backup_refused("invalid encrypted export")
+        if (not isinstance(doc, dict) or doc.get("encrypted") is not True
+                or not isinstance(doc.get("encKeyValidation_DO_NOT_EDIT"), str)
+                or not doc["encKeyValidation_DO_NOT_EDIT"].startswith("2.")
+                or doc.get("passwordProtected") is True or not isinstance(doc.get("items"), list)):
+            backup_refused("invalid account-key encrypted export")
+        found = set()
+        for item in doc["items"]:
+            if (not isinstance(item, dict) or not backup_id(item.get("id")) or item["id"] in found
+                    or item.get("organizationId") != org or item.get("deletedDate")
+                    or (item.get("id") in inventory and inventory[item["id"]]["organizationId"] != org)):
+                backup_refused("invalid export ownership or duplicate IDs")
+            if (type(item.get("type")) is not int or item["type"] not in BW_TYPE
+                    or not isinstance(item.get("revisionDate"), str) or not item["revisionDate"]):
+                backup_refused("invalid encrypted item metadata")
+            if item["id"] in inventory and any(item.get(k) != inventory[item["id"]][k] for k in ("revisionDate", "type")):
+                backup_refused("encrypted item revision or type mismatch")
+            found.add(item["id"])
+        missing, extra = expected - found, found - expected
+        if missing or (org is None and extra):
+            backup_refused(f"item coverage missing={len(missing)} extra={len(extra)}")
+        if org is None:
+            folders = doc.get("folders")
+            if not isinstance(folders, list):
+                backup_refused("invalid export folders")
+            ids = [f.get("id") if isinstance(f, dict) else None for f in folders]
+            if any(not backup_id(i) for i in ids) or len(set(ids)) != len(ids) or set(ids) != folder_ids:
+                backup_refused("folder coverage mismatch")
+        return {"file": filename, "organizationId": org, "ids": sorted(found), "expected": len(expected),
+                "extra": len(extra), "sha256": hashlib.sha256(raw).hexdigest()}
+    finally:
+        os.close(fd)
+
+
+def backup_export(m, plan_sha):
+    """Fresh coherent encrypted bundle before every apply/resume; a journal row alone never proves coverage.
+    Account-bound exports preserve supported export data, not attachments or a full restore guarantee."""
+    bundle = None
+    try:
+        backup_cli(m, "sync")
+        initial = backup_snapshot(m)
+        root = backup_directory()
+        bundle = Path(tempfile.mkdtemp(prefix=".pending-", dir=root))
+        os.chmod(bundle, 0o700)
+        partitions = {None: set()}
+        for ident, item in initial["items"].items():
+            partitions.setdefault(item["organizationId"], set()).add(ident)
+        exports = []
+        for n, org in enumerate(sorted(partitions, key=lambda o: o or "")):
+            filename = "personal.json" if org is None else f"organization-{n}.json"
+            exports.append(backup_artifact(m, bundle, filename, org, partitions[org], set(initial["folders"]), initial["items"]))
+        backup_cli(m, "sync")
+        if backup_snapshot(m) != initial:
+            backup_refused("CLI inventory changed during backup")
+        try:
+            p = m.bw("sync")
+            if p.returncode != 0:
+                backup_refused("service sync failed")
+        except Exception:
+            backup_refused("service sync failed")
+        if backup_snapshot(m, cli=False) != initial:
+            backup_refused("CLI and service inventories differ")
+        manifest = {"version": 1, "complete": True, "planSha256": plan_sha, "created": now_iso(),
+                    "items": initial["items"], "folderIds": sorted(initial["folders"]), "exports": exports}
+        fd = os.open(bundle / "manifest.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(manifest, f, sort_keys=True)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        dfd = os.open(bundle, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+        complete = root / ("vault-" + bundle.name.removeprefix(".pending-"))
+        os.rename(bundle, complete)
+        bundle = None
+        dfd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+        # Retain all completed/legacy backups: a resume must never prune its original recovery bundle.
+        return complete
+    except Fail:
+        raise
+    except Exception:
+        backup_refused("cannot complete verified encrypted bundle")
+    finally:
+        if bundle is not None:
+            try:
+                shutil.rmtree(bundle)
+            except OSError:
+                pass       # an incomplete private directory is never accepted as a backup
 
 
 def would(rows, audit):
     """The --dry-run text: what apply would do, from the plan alone."""
-    out = [f"would write an encrypted backup to {BACKUPS}/vault-<time>.json",
+    out = [f"would write an encrypted backup bundle to {BACKUPS}/vault-<unique>/",
            "would sync, then:"]
     folders = {r.id: r for r in rows if r.kind == "folder"}
     for r in rows:
@@ -1501,15 +1674,9 @@ class Applier:
     def run(self):
         m = self.m
         try:
-            if not self.j.seen("backup", "-"):
-                p = m.bw("sync")
-                if p.returncode != 0:
-                    raise Fail("bw sync failed: " + m.first_line(p.stderr or p.stdout), 1)
-                path = backup_export(m)
-                self.j.log("backup", "-", f"ok {path}")
-                print(f"backup: {path}")
-            else:
-                print("backup: done in an earlier run of this plan")
+            path = backup_export(m, self.j.sha)
+            self.j.log("backup", "-", f"ok {path}")
+            print(f"backup: {path}")
             self.renames()
             self.creates()
             self.moves()

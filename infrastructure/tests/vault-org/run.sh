@@ -33,14 +33,14 @@ cleanup() {
 trap cleanup EXIT
 
 cat >"$ROOT/env.sh" <<ENV
-export FAKE_DIR='$FAKE' XDG_RUNTIME_DIR='$RUN' XDG_STATE_HOME='$ROOT/state' XDG_DATA_HOME='$ROOT/data' XDG_CACHE_HOME='$ROOT/cache'
+export HOME='$ROOT/home' XDG_CONFIG_HOME='$ROOT/conf' FAKE_DIR='$FAKE' XDG_RUNTIME_DIR='$RUN' XDG_STATE_HOME='$ROOT/state' XDG_DATA_HOME='$ROOT/data' XDG_CACHE_HOME='$ROOT/cache'
 export PATH='$VB':'$REPO/.local/bin':/usr/bin:/bin
 export RBW_BIN=rbw BW_BIN=bw PINENTRY_BIN='$VB/pinentry' VAULT_RBW_CONF='$FAKE/rbw.json'
 export VAULT_BW_LAUNCH=popen VAULT_BW_SERVE_POLL=0.3 VAULT_BW_RBW_POLL=0.3 VAULT_BW_NODUMP=0
 export ENVS_TOOL_PATH='$VB' ENVS_TEST_ROOT_PID=$$ VAULT_ORG_USERS=skalse,td,yc FZF_MENU_NO_SERVER=1 VAULT_ORG_CONF='$ROOT/conf' VAULT_ORG_SCOPES=/nonexistent/scopes.tsv
 unset WAYLAND_DISPLAY DISPLAY CLAUDECODE TMUX TMUX_PANE
 ENV
-mkdir -p "$FAKE" "$ROOT/state" "$ROOT/data" "$ROOT/conf/vault-org" "$ROOT/conf/vault-share" "$ROOT/cache"
+mkdir -p "$ROOT/home" "$FAKE" "$ROOT/state" "$ROOT/data" "$ROOT/conf/vault-org" "$ROOT/conf/vault-share" "$ROOT/cache"
 echo '{"email":"test@example.com"}' >"$FAKE/rbw.json"
 # shellcheck disable=SC1091
 . "$ROOT/env.sh"
@@ -283,20 +283,23 @@ expected_state() {
 not_finished() { ! expected_state && [[ $(vjq '[.items[]|select((.folderId // "")|test("^f-new"))]|length') -ge 1 ]]; }
 
 section3() {
-  local rc out
+  local rc out dry_fake
   fresh_plan
   # 3.1 dry run: offline
   rm -rf "$ROOT/data/vault-backups"; mark
-  out=$(A apply --dry-run 2>&1); rc=$?
+  # Isolate this invocation's fake log from the previous review/server's background polling.
+  dry_fake="$ROOT/dry-run-fake"
+  mkdir -p "$dry_fake"
+  out=$(FAKE_DIR="$dry_fake" A apply --dry-run 2>&1); rc=$?
   check "3.1 dry-run exit 0, it names the backup, the moves, the trash and the folder deletes" bash -c '
     [ "$1" = 0 ] && grep -q "would write an encrypted backup" <<<"$2" && grep -q "would move i-04 Acme Portal: Work -> Work/Acme" <<<"$2" \
     && grep -q "would trash i-02" <<<"$2" && grep -q "would create folder Work/Acme" <<<"$2" && grep -q "would delete folder f-empty" <<<"$2"' _ "$rc" "$out"
   check "3.1 dry-run: no write request, no export, no bw process, no backup, no journal" bash -c '
-    [ "$(wc -l <"$1")" = "$2" ] && [ ! -e "$3" ] && [ ! -e "$4" ]' _ "$FAKE/argv.log" "$MARK" "$ROOT/data/vault-backups" "$(JOURNALF)"
+    [ ! -s "$1" ] && [ ! -e "$2" ] && [ ! -e "$3" ]' _ "$dry_fake/argv.log" "$ROOT/data/vault-backups" "$(JOURNALF)"
   # 3.3 backup failure: nothing changed
   mark; out=$(FAKE_BW_EXPORT_FAIL=1 A apply --yes 2>&1); rc=$?
   check "3.3 a failing export: exit 1, 'nothing was changed', zero writes" bash -c '[ "$1" = 1 ] && grep -q "backup failed: nothing was changed" <<<"$2"' _ "$rc" "$out"
-  check "3.3 ...and no POST/PUT/DELETE reached the server, no half backup left" bash -c '[ "$1" = 0 ] && ! ls "$2"/vault-*.json >/dev/null 2>&1' _ "$(writes_since)" "$ROOT/data/vault-backups"
+  check "3.3 ...and no POST/PUT/DELETE reached the server, no half backup left" bash -c '[ "$1" = 0 ] && ! ls "$2"/vault-* >/dev/null 2>&1' _ "$(writes_since)" "$ROOT/data/vault-backups"
   # 3.2 + 3.4 full apply
   mark; out=$(A apply --yes 2>&1); rc=$?; echo "$out" >"$ROOT/apply-out.txt"
   check "3.4 apply exit 0, the summary counts the work" bash -c '[ "$1" = 0 ] && grep -q "applied: 6 moved, 4 to the trash, 0 folders renamed, 4 folders created, 3 empty folders deleted" <<<"$2"' _ "$rc" "$out"
@@ -306,11 +309,11 @@ section3() {
   check "3.4 trash is the soft trash (no ?permanent), items still exist" bash -c '! grep -q "permanent" "$1" && [ "$(jq "[.items[]|select(.id==\"i-02\")]|length" "$2")" = 1 ]' _ "$FAKE/argv.log" "$FAKE/vault.json"
   check "3.4 rbw was synced at the end and the audit file is gone (stale)" bash -c 'grep -q "^rbw sync" "$1" && [ ! -e "$2" ]' _ "$FAKE/argv.log" "$(AJ)"
   check "3.12 backup: 600 file in a 700 dir, encrypted, 23 items, no plaintext" bash -c '
-    f=$(ls "$1"/vault-*.json | head -1); [ "$(stat -c %a "$f")" = 600 ] && [ "$(stat -c %a "$1")" = 700 ] && [ "$(jq .encrypted "$f")" = true ] \
+    f=$(ls "$1"/vault-*/personal.json | head -1); [ "$(stat -c %a "$f")" = 600 ] && [ "$(stat -c %a "$1")" = 700 ] && [ "$(jq .encrypted "$f")" = true ] \
     && [ "$(jq ".items|length" "$f")" = 23 ] && ! grep -q "PW-" "$f"' _ "$ROOT/data/vault-backups"
   check "3.12 journal: 600, header with the plan sha, one ok line per step" bash -c '
     [ "$(stat -c %a "$1")" = 600 ] && head -1 "$1" | grep -q "^# plan-sha256=[0-9a-f]\{64\}$" && grep -qP "\tbackup\t-\tok " "$1" && grep -qP "\tmove\ti-04\tok moved" "$1" && grep -qP "\ttrash\ti-02\tok trashed" "$1"' _ "$(JOURNALF)"
-  check "3.12 sentinels: not in stdout, the journal, the backup, the argv log" no_sentinel "$ROOT/apply-out.txt" "$(JOURNALF)" "$ROOT"/data/vault-backups/vault-*.json "$FAKE/argv.log"
+  check "3.12 sentinels: not in stdout, the journal, the backup, the argv log" no_sentinel "$ROOT/apply-out.txt" "$(JOURNALF)" "$ROOT"/data/vault-backups/vault-*/*.json "$FAKE/argv.log"
   # 3.5 idempotent
   mark; A apply --yes >"$ROOT/apply2.txt" 2>&1; rc=$?
   check "3.5 a second apply: exit 0 and zero write requests" bash -c '[ "$1" = 0 ] && [ "$2" = 0 ]' _ "$rc" "$(writes_since)"
@@ -330,8 +333,8 @@ section3() {
   out=$(A apply --yes --resume 2>&1); rc=$?
   check "3.6 --resume finishes: exit 0 and the expected state" bash -c '[ "$1" = 0 ]' _ "$rc"
   check "3.6 ...expected vault state" expected_state
-  check "3.6 nothing was done twice: one export, no item PUT twice" bash -c '
-    [ "$(grep -c "^bw export" "$1")" = 1 ] && [ -z "$(grep "^bw-serve PUT" "$1" | sort | uniq -d)" ]' _ "$FAKE/argv.log"
+  check "3.6 resume makes a fresh verified export, no item PUT twice" bash -c '
+    [ "$(grep -c "^bw export" "$1")" = 2 ] && [ -z "$(grep "^bw-serve PUT" "$1" | sort | uniq -d)" ]' _ "$FAKE/argv.log"
   check "3.6 --resume with another plan is refused (exit 4) unless --new-journal" bash -c '
     A() { python3 -I -B "$1" "${@:2}"; }; echo "# x" >>"$2"; sed -i "s/^i-20\t\(.*\)\tfolder:Home\t/i-20\t\1\tkeep\t/" "$2"; A "$3" apply --yes --resume >/dev/null 2>&1; [ $? = 4 ]' _ "$SCRIPTS/vault-org.py" "$(PLANF)" "$SCRIPTS/vault-org.py"
   fi
@@ -372,6 +375,8 @@ section3() {
   check "3.11 without --yes and without a terminal: exit 4" bash -c '[ "$1" = 4 ] && grep -q "no terminal" "$2"' _ "$rc" "$ROOT/e12.txt"
   ONLY_REST=1
 }
+
+check "security: encrypted backup ownership, exact coverage, coherence and resume" python3 -I -B "$HERE/backup_test.py" "$SCRIPTS/vault-org.py"
 
 check "security: complete duplicate preservation and live mutation guards" python3 -I -B "$HERE/safety_test.py" "$SCRIPTS/vault-org.py"
 

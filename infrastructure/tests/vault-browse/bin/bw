@@ -32,11 +32,16 @@ case $cmd in
     # account-key encrypted export: no master password is asked and no plaintext is written (FAKE_BW_EXPORT_FAIL=1 fails it)
     need
     [[ -n ${FAKE_BW_EXPORT_FAIL:-} ]] && { echo "Export failed." >&2; exit 1; }
-    out=""
-    for ((i = 1; i <= $#; i++)); do [[ ${!i} == --output ]] && { j=$((i + 1)); out=${!j}; }; done
+    out="" org=""
+    for ((i = 1; i <= $#; i++)); do
+      [[ ${!i} == --output ]] && { j=$((i + 1)); out=${!j}; }
+      [[ ${!i} == --organizationid ]] && { j=$((i + 1)); org=${!j}; }
+    done
     [[ -n $out ]] || { echo "fake bw: export needs --output" >&2; exit 1; }
-    jq -c '{encrypted: true, encKeyValidation_DO_NOT_EDIT: "2.FAKE", folders: [.folders[] | {id, name: ("2.ENC-" + (.name | @base64 | .[0:8]))}],
-            items: [.items[] | select(.deletedDate == null) | {id, name: ("2.ENC-" + (.name | @base64 | .[0:8]))}]}' "$FAKE_DIR/vault.json" >"$out" ;;
+    jq -c --arg org "$org" '{encrypted: true, encKeyValidation_DO_NOT_EDIT: "2.FAKE",
+            folders: (if $org == "" then [.folders[] | {id, name: ("2.ENC-" + (.name | @base64 | .[0:8]))}] else [] end),
+            items: [.items[] | select(.deletedDate == null and (.organizationId // "") == $org) |
+                    {id, type, revisionDate, organizationId: (.organizationId // null), name: ("2.ENC-" + (.name | @base64 | .[0:8]))}]}' "$FAKE_DIR/vault.json" >"$out" ;;
   generate) echo "GEN-erated-Pw-0001" ;;
   encode) base64 -w0 ;;
   list)

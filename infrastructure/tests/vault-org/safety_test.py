@@ -28,6 +28,7 @@ def login():
 class Journal:
     def __init__(self, seen=()):
         self.done = set(seen)
+        self.sha = "f" * 64
         self.lines = []
 
     def seen(self, step, ident):
@@ -159,7 +160,7 @@ class LiveProtection(unittest.TestCase):
         ap.finish = lambda: None
         ap.summary = lambda: 5 if ap.skipped else 0
         old_backup = v.backup_export
-        v.backup_export = lambda m: "invented-encrypted-backup"
+        v.backup_export = lambda m, plan_sha: "invented-encrypted-backup"
         try:
             with contextlib.redirect_stdout(io.StringIO()):
                 rc = ap.run()
