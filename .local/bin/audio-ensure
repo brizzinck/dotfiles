@@ -208,6 +208,7 @@ mic_probe() {
   case "$src" in
     "") echo "no default source"; return 3 ;;
     *.monitor | easyeffects_*) echo "default source $src is not a microphone"; return 3 ;;
+    bluez_*) [ -n "${AE_PROBE_BT:-}" ] || { echo "default source $src is a Bluetooth headset: not probed (recording would switch it to HFP; AE_PROBE_BT=1 forces it)"; return 3; } ;;
   esac
   tmp="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/audio-mic.XXXXXX")" || { echo "no temp dir"; return 3; }
   if [ "$CHAIN" = 1 ]; then

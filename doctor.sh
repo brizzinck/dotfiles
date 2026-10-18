@@ -2,6 +2,8 @@
 # dotfiles doctor: asserts that the approved workstation state stays in place. Read-only, no sudo.
 #   ./doctor.sh              print PASS/FAIL lines and a summary (exit 1 when anything failed)
 #   ./doctor.sh --fails      print only the failures
+#   ./doctor.sh --live       also run the checks that touch the real hardware (audio-ee-signal records 1.5 s from the
+#                            microphone, which lights the privacy indicator and forces a Bluetooth headset into HFP); DOCTOR_LIVE=1 does the same
 # Repo-only (listed in .stow-local-ignore). Declined items (restic, keyring, ...) are intentionally not checked.
 set -u
 
@@ -40,7 +42,13 @@ fi
 
 DOTFILES="$(cd "$(dirname "$DOCTOR_SELF")" && pwd)"
 ONLY_FAILS=0
-[ "${1:-}" = "--fails" ] && ONLY_FAILS=1
+LIVE="${DOCTOR_LIVE:-0}"
+for _darg in "$@"; do
+  case "$_darg" in
+    --fails) ONLY_FAILS=1 ;;
+    --live) LIVE=1 ;;
+  esac
+done
 
 PASS=0
 FAIL=0
@@ -409,6 +417,20 @@ elif [ -n "$bw_bad" ]; then
 else
   info vault-bw-serve "not running (starts on the first Trash / edit / new action after the bw unlock; no TCP listener)"
 fi
+# FIX3 F5: the bw processes that hold the session key run non-dumpable (a crash must not put the environment into the journal):
+# the LD_PRELOAD library is built per boot in $XDG_RUNTIME_DIR/vault and probed once; INFO when it cannot be (no cc, failed probe)
+if [ -r "$DOTFILES/.config/hypr/scripts/vault-bw.py" ]; then
+  nd_out="$(python3 -I -B "$DOTFILES/.config/hypr/scripts/vault-bw.py" nodump-status 2>&1)"
+  if [ "$nd_out" = yes ]; then ok vault-nodump "bw processes that hold the session key are non-dumpable (library probed this boot)"; else info vault-nodump "bw processes non-dumpable: $nd_out; a crashing bw can log its environment (COREDUMP_ENVIRON)"; fi
+fi
+# FIX3 F6: dead tmux socket files (kill-server leaves them; every test suite and tool now removes its own)
+tm_dir="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
+if [ -d "$tm_dir" ] && command -v ss >/dev/null 2>&1; then
+  tm_live="$(ss -xlH 2>/dev/null | awk '{print $5}')"
+  tm_dead=0
+  while IFS= read -r tm_f; do grep -qxF -- "$tm_f" <<<"$tm_live" || tm_dead=$((tm_dead + 1)); done < <(find "$tm_dir" -maxdepth 1 -type s 2>/dev/null)
+  if [ "$tm_dead" -le 10 ]; then ok tmux-sockets "$tm_dead dead tmux socket file(s) in $tm_dir"; else info tmux-sockets "$tm_dead dead tmux socket files in $tm_dir (leftovers of old test runs, harmless): cd $tm_dir && for f in *; do tmux -L \"\$f\" ls >/dev/null 2>&1 || rm -f \"\$f\"; done"; fi
+fi
 # V1c: generated layout twins are current (tmux/rofi depend on running tools and are skipped by `layout.py check`)
 if lay_out="$(PYTHONPYCACHEPREFIX=/tmp/pycache python3 "$DOTFILES/.config/layout/layout.py" check 2>&1)"; then ok layout-gen "generated ua/ru twins are current (layout.py check)"; else bad layout-gen "stale: $(printf '%s' "$lay_out" | head -1) (layout.py gen)"; fi
 # K4: offline test of the ghostty twin generator (fixture defaults and config, no ghostty needed)
@@ -510,7 +532,7 @@ if [ -x "$HOME/.local/bin/mcp-gateway" ]; then
   if tg_rec="$("$DOTFILES/.local/bin/mcp-telegram-setup" recovery-status 2>/dev/null)"; then
     ok mcp-tg-recovery "no plaintext Telegram session waiting in a recovery file"
   elif [ -n "$tg_rec" ]; then
-    bad mcp-tg-recovery "a Telegram session sits in plaintext in $tg_rec (readable by every process of yours): mcp-telegram-setup --resume, or delete the file"
+    bad mcp-tg-recovery "a Telegram session may sit in plaintext in $(printf '%s' "$tg_rec" | paste -sd, - | sed 's/,/, /g') (readable by every process of yours): mcp-telegram-setup --resume, or delete the file(s)"
   else
     info mcp-tg-recovery "mcp-telegram-setup recovery-status gave no answer"
   fi
@@ -835,21 +857,38 @@ if [ "$ee_installed" = 1 ]; then
       1) bad audio-ee-chain "$(printf '%s' "$ee_out" | grep -v '^note:' | paste -sd';' | sed 's/;/; /g') (fix: ee-ctl restart, or ~/.local/bin/audio-ensure)" ;;
       *) info audio-ee-chain "$ee_out" ;;
     esac
-    ee_sig="$("$DOTFILES/.local/bin/audio-ensure" --mic --chain 2>&1)"; ee_src_rc=$?
-    case "$ee_src_rc" in
-      0) ok audio-ee-signal "$ee_sig" ;;
-      1 | 4) bad audio-ee-signal "$ee_sig (fix: ee-ctl restart, ~/.local/bin/audio-ensure --ee --verbose)" ;;
-      *) info audio-ee-signal "$ee_sig" ;;
-    esac
+    # recording is opt-in: a probe lights the microphone indicator and makes a Bluetooth headset switch to HFP (music drops)
+    if [ "$LIVE" = 1 ]; then
+      ee_sig="$("$DOTFILES/.local/bin/audio-ensure" --mic --chain 2>&1)"; ee_src_rc=$?
+      case "$ee_src_rc" in
+        0) ok audio-ee-signal "$ee_sig" ;;
+        1 | 4) bad audio-ee-signal "$ee_sig (fix: ee-ctl restart, ~/.local/bin/audio-ensure --ee --verbose)" ;;
+        *) info audio-ee-signal "$ee_sig" ;;
+      esac
+    else
+      info audio-ee-signal "not run (it records 1.5 s from the microphone); run ./doctor.sh --live or ~/.local/bin/audio-ensure --mic --chain"
+    fi
   else
     info audio-ee-chain "PipeWire not reachable from this shell, skipped"
     info audio-ee-signal "PipeWire not reachable from this shell, skipped"
   fi
-  # the dictation daemon keeps the raw microphone (offline A/B: RNNoise in front of Whisper did not help, CLAUDE.md "Audio")
-  if "$DOTFILES/.config/hypr/scripts/dictation.sh" run --dry-run 2>/dev/null | grep -q 'node.dont-move'; then
-    ok audio-dictation-raw "dictation.sh run exports PIPEWIRE_PROPS node.dont-move (Whisper hears the raw microphone)"
+  # the dictation daemon keeps the raw microphone (offline A/B: RNNoise in front of Whisper did not help, CLAUDE.md "Audio").
+  # Read only: the script must export PIPEWIRE_PROPS node.dont-move and the RUNNING daemon must carry it in its environment
+  # (a daemon started before the change keeps the old one); no config is rewritten and no transcription probe runs.
+  dict_sh="$DOTFILES/.config/hypr/scripts/dictation.sh"
+  if ! grep -q "local props='{ node.dont-move = true }'" "$dict_sh" || ! grep -q 'export PIPEWIRE_PROPS="\$props"' "$dict_sh"; then
+    bad audio-dictation-raw "dictation.sh does not export PIPEWIRE_PROPS node.dont-move (EasyEffects would feed Whisper)"
   else
-    bad audio-dictation-raw "dictation.sh run does not set node.dont-move (EasyEffects would feed Whisper)"
+    vx_pid="$(systemctl --user show -p MainPID --value voxtype.service 2>/dev/null)"
+    if [ -n "$vx_pid" ] && [ "$vx_pid" != 0 ] && [ -r "/proc/$vx_pid/environ" ]; then
+      if tr '\0' '\n' <"/proc/$vx_pid/environ" 2>/dev/null | grep -q '^PIPEWIRE_PROPS=.*node.dont-move'; then
+        ok audio-dictation-raw "dictation.sh exports PIPEWIRE_PROPS node.dont-move and the running daemon (pid $vx_pid) carries it (Whisper hears the raw microphone)"
+      else
+        bad audio-dictation-raw "the running voxtype daemon (pid $vx_pid) has no PIPEWIRE_PROPS node.dont-move: systemctl --user restart voxtype (EasyEffects would feed Whisper)"
+      fi
+    else
+      ok audio-dictation-raw "dictation.sh exports PIPEWIRE_PROPS node.dont-move (the voxtype daemon is not running, the next start carries it)"
+    fi
   fi
 else
   info audio-ee-files "EasyEffects is not installed, mic chain checks skipped"

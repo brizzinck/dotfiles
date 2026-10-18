@@ -4,7 +4,7 @@
 # checks and boot/fix modes, the raw/chain mic probes, the input picker, and the static files (preset, WirePlumber priority rules,
 # unit). Fakes only: a fake EasyEffects control server (fake-ee.py), fake pactl / pw-dump / pw-metadata / wpctl / pw-record /
 # systemctl / notify-send / pkill. No real audio, no notification, no real EasyEffects, nothing of the live session is touched.
-#   infrastructure/tests/audio/run.sh [--quick]     --quick skips the cases that wait (doctor runs this)
+#   infrastructure/tests/audio/run.sh [--quick]     --quick runs the fast sections only, under 3 s (doctor runs this)
 #   ONLY=1,3 infrastructure/tests/audio/run.sh      pick sections
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -13,6 +13,7 @@ QUICK=0
 [ "${1:-}" = --quick ] && QUICK=1
 EE="$REPO/.local/bin/ee-ctl"
 AE="$REPO/.local/bin/audio-ensure"
+T0=${EPOCHREALTIME/./}
 T=$(mktemp -d)
 FAKEPIDS=()
 cleanup() {
@@ -31,7 +32,12 @@ pass() { printf 'PASS  %s\n' "$1"; passes=$((passes + 1)); }
 fail() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 skip() { printf 'SKIP  %s\n' "$1"; }
 expect() { local n=$1; shift; if "$@" >/dev/null 2>&1; then pass "$n"; else fail "$n"; fi; }
-want() { [ -z "${ONLY:-}" ] || [[ ",$ONLY," == *",$1,"* ]]; }
+# --quick (doctor) runs only the sections that finish in well under a second each (the others wait for sockets, restarts and
+# stray processes); the full run covers everything
+want() {
+  if [ -n "${ONLY:-}" ]; then [[ ",$ONLY," == *",$1,"* ]]; return; fi
+  [ "$QUICK" = 0 ] || [[ " 1 5 8 10 11 13 " == *" $1 "* ]]
+}
 logged() { grep -qF -- "$1" "$2" 2>/dev/null; }
 
 # ── fakes ──
@@ -416,6 +422,12 @@ if want 8; then
   printf '[{"name":"%s"}]\n' "$HWSRC" >"$F/sources.json"
   ae --mic --chain >/dev/null; [ $? -eq 3 ] && pass "8 --mic --chain: no easyeffects_source = exit 3" || fail "8 --mic --chain n/a"
   ae --chain >/dev/null 2>&1; [ $? -eq 2 ] && pass "8 --chain without --mic is a usage error" || fail "8 --chain usage"
+  # a Bluetooth headset as default source: a recording would force it into HFP (music drops), so the probes skip it
+  echo bluez_input.40_58_99_2F_C1_63 >"$F/default-source"; reset_log
+  out=$(ae --mic); rc=$?
+  [ $rc -eq 3 ] && grep -q 'Bluetooth headset: not probed' <<<"$out" && ! grep -q '^pw-record' "$F/log" && pass "8 --mic: a Bluetooth default source is not recorded (exit 3, no pw-record)" || fail "8 --mic bluetooth (rc $rc: $out)"
+  out=$(AE_PROBE_BT=1 ae --mic); [ -n "$(grep -c '^pw-record' "$F/log")" ] && grep -q '^pw-record.*bluez_input' "$F/log" && pass "8 --mic: AE_PROBE_BT=1 forces the probe" || fail "8 --mic bluetooth forced"
+  echo "$HWSRC" >"$F/default-source"
   ls "$T/run" | grep -q audio-mic && fail "8 probes leave no temp audio" || pass "8 probes leave no temp audio"
 fi
 
@@ -496,6 +508,7 @@ X
   }
   # A2: a pin on easyeffects_source is not a card failure (no wireplumber restart, no false notification) and is cleared in every mode
   for mode in --boot fix; do
+    [ "$QUICK" = 1 ] && [ "$mode" = fix ] && continue
     ae_fixture; echo easyeffects_source >"$F/default-source"; echo "$PINEE" >"$F/pw-dump.json"; mkhook
     ee_stop; ee_start --preset mic-clean; ee_wait
     if [ "$mode" = fix ]; then ae 2>"$F/err"; rc=$?; else ae --boot 2>"$F/err"; rc=$?; fi
@@ -503,6 +516,7 @@ X
     logged "pw-metadata -n default -d 0 default.configured.audio.source" "$F/log" && [ $rc -eq 0 ] && pass "13 A2 $mode: the pin is cleared with ee-ctl auto, run ends ok (rc $rc)" || fail "13 A2 $mode clear (rc $rc: $(cat "$F/err"))"
   done
   rm -f "$F/on-metadata"
+  if [ "$QUICK" = 0 ]; then
   # A3: every wireplumber restart is followed by a restart of a running EasyEffects (the metadata target of its streams is lost)
   ae_fixture; ee_stop; ee_start --preset mic-clean; ee_wait
   echo '[{"name":"alsa_card.pci-0000_04_00.6","active_profile":"off","profiles":{"HiFi":{"available":true}}}]' >"$F/cards.json"
@@ -514,6 +528,7 @@ X
   ae 2>"$F/err"
   grep -q 'try-restart easyeffects' "$F/log" && fail "13 A3: no restart of EasyEffects when wireplumber was left alone" || pass "13 A3: no restart of EasyEffects when wireplumber was left alone"
   rm -f "$T/state/wireplumber/default-profile"
+  fi
 
   # A4: capture streams linked straight to a hardware microphone are listed (voxtype and the probes are meant to be raw)
   ae_fixture
@@ -528,6 +543,7 @@ X
   ee_stop
 
   # A5: an EasyEffects outside the unit is asked to quit before prepare/start
+  if [ "$QUICK" = 0 ]; then
   rm -f "$F/ee-log" "$F/ee-log.ready"
   ( exec -a "$EE_PROC_NAME" python3 -I "$HERE/fake-ee.py" "$EE_SOCKET" "$F/ee-log" ) &
   STRAY=$!; FAKEPIDS+=("$STRAY"); ee_wait
@@ -547,6 +563,7 @@ X
   sleep 0.2
   [ $rc -eq 0 ] && ! kill -0 "$STRAY" 2>/dev/null && pass "13 A5: a stray that ignores quit_app gets SIGTERM after the wait" || fail "13 A5 sigterm (rc $rc)"
   "$EE" quit-stray && pass "13 A5: nothing running = exit 0" || fail "13 A5 idle"
+  fi
   U="$REPO/.config/systemd/user/easyeffects.service"
   q=$(grep -n '^ExecStartPre=.*ee-ctl quit-stray' "$U" | head -1 | cut -d: -f1); pr=$(grep -n '^ExecStartPre=.*ee-ctl prepare' "$U" | head -1 | cut -d: -f1)
   [ -n "$q" ] && [ -n "$pr" ] && [ "$q" -lt "$pr" ] && pass "13 A5: the unit runs quit-stray before prepare" || fail "13 A5 unit order"
@@ -562,10 +579,12 @@ PY
   [ "${ms#* }" = 2 ] && [ "${ms% *}" -lt 100 ] && pass "13 A7: a reply without a newline returns at once (${ms% *} ms, was 150+)" || fail "13 A7 send latency ($ms)"
   ee_stop
   # a hung EasyEffects (every reply 3 s late) costs ns status about a second, not the old 3 s per probe
+  if [ "$QUICK" = 0 ]; then
     ee_start --preset mic-clean --slow 3; ee_wait
     a=${EPOCHREALTIME/./}; "$EE" ns status --quiet; rc=$?; b=${EPOCHREALTIME/./}
     [ $rc -eq 1 ] && [ $(((b - a) / 1000)) -lt 2000 ] && pass "13 A7: a hung EasyEffects: ns status = off/unknown within $(((b - a) / 1000)) ms" || fail "13 A7 hang (rc $rc, $(((b - a) / 1000)) ms)"
     ee_stop
+  fi
   # A7: toggles grace period after login
   TG="$REPO/.config/waybar/scripts/toggles.sh"
   mkdir -p "$T/home/.local/bin"; ln -sf "$EE" "$T/home/.local/bin/ee-ctl"
@@ -625,6 +644,10 @@ assert prio(node("alsa_input.pci-0000_04_00.6.analog-stereo"), 2009) == 1000
 assert prio(node("bluez_input.40_58_99_2F_C1_63"), 2010) == 2010
 assert prio(node("easyeffects_source"), 0) == 0
 PY
+  # doctor: the recording probe is opt-in, the dictation check reads the running daemon instead of rewriting config
+  DOC="$REPO/doctor.sh"
+  awk '/audio-ensure" --mic --chain/ { if (prev ~ /\$LIVE" = 1/) ok = 1 } { if ($0 !~ /^[[:space:]]*#/ && $0 != "") prev = $0 } END { exit !ok }' "$DOC" && grep -q 'DOCTOR_LIVE' "$DOC" && grep -q -- '--live' "$DOC" && pass "11 doctor: audio-ee-signal records only with --live / DOCTOR_LIVE" || fail "11 doctor: audio-ee-signal opt-in"
+  ! grep -q 'dictation.sh" run --dry-run' "$DOC" && grep -q '/proc/\$vx_pid/environ' "$DOC" && pass "11 doctor: audio-dictation-raw reads the daemon's /proc environ, no dry-run (config rewrite, probe)" || fail "11 doctor: dictation check"
   U="$REPO/.config/systemd/user/easyeffects.service"
   grep -q '^\[Install\]' "$U" && fail "11 unit has no [Install]" || pass "11 unit has no [Install]"
   grep -q '^ExecCondition=.*WAYLAND_DISPLAY' "$U" && grep -q '^Restart=on-failure' "$U" && grep -q '^PartOf=pipewire.service' "$U" && pass "11 unit: ExecCondition on the Wayland socket, Restart=on-failure, PartOf pipewire" || fail "11 unit keys"
@@ -633,5 +656,12 @@ PY
   ls "$REPO/.local/bin/__pycache__" 2>/dev/null | grep -q '^ee-ctl' && fail "11 py_compile leaves no __pycache__ in the repo" || pass "11 py_compile leaves no __pycache__ in the repo"
 fi
 
+# --quick is what doctor runs: the fast sections only. Only judged when the machine is not busy (load average below 2).
+if [ "$QUICK" = 1 ] && [ -z "${ONLY:-}" ]; then
+  el=$(( (${EPOCHREALTIME/./} - T0) / 1000 ))
+  if [ "$(cut -d. -f1 /proc/loadavg)" -lt 2 ]; then
+    [ "$el" -lt 3000 ] && pass "12 --quick finishes under 3 s ($el ms)" || fail "12 --quick takes $el ms (limit 3000)"
+  fi
+fi
 echo "---- $passes passed, $fails failed"
 [ "$fails" -eq 0 ]
