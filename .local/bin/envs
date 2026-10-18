@@ -745,14 +745,15 @@ def is_global_root(root):
         return False
 
 
-def _own_file_problem(path):
+def _own_file_problem(path, allow_published=False):
     """The file must belong to this user and not be writable by group or others (a symlink is judged by its target): it names
-    the secrets a launcher passes on and the connections it opens."""
+    the secrets a launcher passes on and the connections it opens. `allow_published`: a managed user's global.toml may be a link into
+    the owner's published checkout (only that file; global.local.toml and every other file must be the user's own)."""
     try:
         st = os.stat(path)
     except OSError as e:
         return f"cannot read {path}: {e.strerror}"
-    if st.st_uid != os.getuid() and not _published_file(path, st):
+    if st.st_uid != os.getuid() and not (allow_published and _published_file(path, st)):
         return f"{path} is not owned by you"
     if st.st_mode & 0o022:
         return f"{path} is writable by group or others (chmod go-w)"
@@ -810,7 +811,7 @@ def load_global(strict=True):
         fail(f"no {gp}: run `stow .` in ~/dotfiles (it links .config/envs/global.toml)", 1)
     for f in (gp, lp):
         if f.exists() or f.is_symlink():
-            bad = _own_file_problem(f)
+            bad = _own_file_problem(f, allow_published=(f == gp))
             if bad:
                 fail(f"global scope refused: {bad}", 4)
     gtext = gp.read_text()

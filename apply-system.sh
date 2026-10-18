@@ -1092,6 +1092,7 @@ USERS_POLKIT=/etc/polkit-1/rules.d/50-usr-managed.rules
 USERS_SRV_DOTFILES=/srv/dotfiles
 USERS_SRV_NVIM=/srv/nvim-shared
 USERS_SRV_DEVTOOLS=/srv/devtools
+USERS_DEVTOOLS_ANCHOR=/etc/usr-managed/devtools-owner
 
 # stdout: the sudoers drop-in / polkit rule rendered from managed.tsv (users with the `become` capability)
 users_render_sudoers() {
@@ -1367,6 +1368,17 @@ section_users() {
     run install -m 644 -o "$OWNER" -g "$grp" /dev/stdin "$USERS_SRV_DEVTOOLS/.owner" <<<"$OWNER"
     changed "$USERS_SRV_DEVTOOLS/.owner names $OWNER (user-tools.sh --shared fills the tree as $OWNER)"
   fi
+  # 4c. /etc/usr-managed/devtools-owner (root:root 644): the trust anchor of the same rule. .owner sits in the tree and the account
+  # that owns the tree can always write a matching one; this file cannot be written by that account, so a tree owned by anybody but
+  # root or this account is never trusted, and this account never puts the tree on its own PATH (L2)
+  if [ -f "$USERS_DEVTOOLS_ANCHOR" ] && [ "$(cat "$USERS_DEVTOOLS_ANCHOR")" = "$OWNER" ] &&
+    [ "$(stat -c '%U %G %a' "$USERS_DEVTOOLS_ANCHOR")" = "root root 644" ] && [ "$(stat -c '%U %a' "$(dirname "$USERS_DEVTOOLS_ANCHOR")")" = "root 755" ]; then
+    log "unchanged: $USERS_DEVTOOLS_ANCHOR ($OWNER)"
+  else
+    run install -d -m 755 -o root -g root "$(dirname "$USERS_DEVTOOLS_ANCHOR")"
+    run install -m 644 -o root -g root /dev/stdin "$USERS_DEVTOOLS_ANCHOR" <<<"$OWNER"
+    changed "$USERS_DEVTOOLS_ANCHOR names $OWNER (root-owned anchor of the /srv/devtools PATH rule)"
+  fi
 
   # 4c. vault-share: the socket directory and the scope file the broker in the owner's session trusts (td / yc get no vault of their own)
   users_vault_share
@@ -1431,7 +1443,7 @@ section_users() {
   fi
 
   followup "managed users: usr list | usr term td | SUPER+SHIFT+T (picker); checks: ./doctor.sh | grep users-"
-  followup "dev tools for td / yc: infrastructure/dev/user-tools.sh --shared   # fills $USERS_SRV_DEVTOOLS as $OWNER (no sudo); doctor devtools-shared checks it"
+  followup "dev tools for td / yc: the section already started the fill of $USERS_SRV_DEVTOOLS in the background (tail -f ~/.local/state/usr/devtools-sync.log); later runs: usr devtools-sync (waits for a running one); doctor users-devtools checks it"
   followup "rollback of the users section: sudo $USERS_DIR/rollback.sh (--home-acl-cleanup alone puts only the stripped ACL skeletons and the old secret modes back, as the owner)"
 }
 

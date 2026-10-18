@@ -475,6 +475,17 @@ cmd__link() {
     block_set "$home/.zshrc.local" accent "PROMPT=\"%F{$hex}$user%f \${PROMPT}\""
     block_set "$home/.tmux.local.conf" accent "set -ga status-left \"#[fg=$hex,bold]$user #[default]\""
   fi
+  # the shared dev tools on PATH for NON-interactive and login shells too (M4: `zsh -c`, `zsh -lc`, `ssh td@host CMD`, `usr exec` and
+  # `bash -lc` of an agent never read .zshrc): .zshenv is read by every zsh, .profile / .bash_profile by bash -l. Both only call
+  # .config/zsh/devtools.zsh, the one place that decides whether the tree is trustworthy.
+  block_set "$home/.zshenv" devtools '[[ -r ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/devtools.zsh ]] && source ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/devtools.zsh'
+  for a in .profile .bash_profile .bash_login; do
+    { [ "$a" = .profile ] || [ -e "$home/$a" ]; } || continue
+    # shellcheck disable=SC2016
+    block_set "$home/$a" devtools '_df_dt=$(DF_DEVTOOLS_PRINT=1 zsh -f -c '"'"'[[ -r ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/devtools.zsh ]] && source ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/devtools.zsh'"'"' 2>/dev/null) || _df_dt=
+case "$_df_dt" in /*) case ":$PATH:" in *":$_df_dt:"*) ;; *) PATH="$PATH:$_df_dt" ;; esac ;; esac
+unset _df_dt'
+  done
   mkdir -p "$home/.config/secrets"
   chmod 700 "$home/.config/secrets"
   return 0

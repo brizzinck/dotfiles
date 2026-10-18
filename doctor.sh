@@ -1186,7 +1186,17 @@ if [ -r "$users_lib" ]; then
       bad users-devtools "/srv/devtools:$users_dt_bad"
     fi
   else
-    info users-devtools "/srv/devtools does not exist yet (sudo ./apply-system.sh --only users, then infrastructure/dev/user-tools.sh --shared)"
+    info users-devtools "/srv/devtools does not exist yet (sudo ./apply-system.sh --only users; the section starts the fill, or run usr devtools-sync)"
+  fi
+  # the root-owned anchor of the /srv/devtools PATH rule (.owner alone can be written by the account that owns the tree)
+  if [ -e /etc/usr-managed/devtools-owner ]; then
+    if [ "$(cat /etc/usr-managed/devtools-owner 2>/dev/null)" = "$USER" ] && [ "$(stat -c '%U %G %a' /etc/usr-managed/devtools-owner)" = "root root 644" ] && [ "$(stat -c '%U %a' /etc/usr-managed/)" = "root 755" ]; then
+      ok users-devtools-anchor "/etc/usr-managed/devtools-owner names $USER (root:root 644)"
+    else
+      bad users-devtools-anchor "/etc/usr-managed/devtools-owner is not 'root root 644' naming $USER (sudo ./apply-system.sh --only users)"
+    fi
+  elif [ -d /srv/devtools ]; then
+    info users-devtools-anchor "/etc/usr-managed/devtools-owner is missing: the PATH rule still trusts /srv/devtools/.owner (sudo ./apply-system.sh --only users)"
   fi
   # the clipboard: traverse-only on the runtime dir, rw on the Wayland socket, the other sockets closed
   users_clip=""

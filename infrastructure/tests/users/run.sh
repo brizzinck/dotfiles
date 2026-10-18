@@ -84,6 +84,7 @@ if printf '%s\n' "$dry" | grep -E '^\[dry-run\] useradd .* (td|yc)$' >/dev/null;
 # (the real /srv/devtools exists after the owner applied the section: the dry run then says "unchanged", which is as good; M3)
 case "$dry" in *"install -d -o $ME -g "*" -m 755 /srv/devtools"* | *"unchanged: /srv/devtools ($ME:"*" 755)"*) ok ;; *) bad "dry run does not create /srv/devtools (owner:owner 755)" ;; esac
 case "$dry" in *"/dev/stdin /srv/devtools/.owner"* | *"unchanged: /srv/devtools/.owner ($ME)"*) ok ;; *) bad "dry run does not write /srv/devtools/.owner" ;; esac
+case "$dry" in *"/dev/stdin /etc/usr-managed/devtools-owner"* | *"unchanged: /etc/usr-managed/devtools-owner ($ME)"*) ok ;; *) bad "dry run does not write the root-owned anchor /etc/usr-managed/devtools-owner (L2)" ;; esac
 grep -q '/srv/devtools' "$REPO/infrastructure/users/rollback.sh" && bad "rollback.sh must not name /srv/devtools (it is data, never removed)" || ok
 # BW-ORG C5: /run/vault-share (tmpfiles) and /etc/vault-share/scopes.tsv (rendered as the owner from the repo file + the overlay)
 vsdry() { PATH="$T/fakebin:$PATH" FAKE_PASSWD_OWNER="$ME" USERS_ACL_ROOT="$T/dryhome" VAULT_SHARE_LOCAL_SCOPES="$1" "$REPO/apply-system.sh" --dry-run --only users 2>&1; }
@@ -575,7 +576,7 @@ unset FAKE_UT_LOG USR_DEVTOOLS_SCRIPT
 
 # ── USERS-SYNC C3: /srv/devtools/bin on a managed user's PATH and in the launchers' lookup, only while the tree is trusted ─────
 # mk NAME: a fake shared tree owned by the owner (this user), .owner naming him; the "managed user" is a name / uid that is not him
-mk_tree() { local d="$T/dtree-$1"; mkdir -p "$d/bin"; printf '%s\n' "$ME" >"$d/.owner"; chmod 755 "$d" "$d/bin"; chmod 644 "$d/.owner"; printf '#!/bin/sh\n' >"$d/bin/lazysql"; chmod 755 "$d/bin/lazysql"; echo "$d"; }
+mk_tree() { local d="$T/dtree-$1"; mkdir -p "$d/bin"; printf '%s\n' "$ME" >"$d/.owner"; chmod 755 "$d" "$d/bin"; chmod 644 "$d/.owner"; printf '#!/bin/sh\n' >"$d/bin/lazysql"; chmod 755 "$d/bin/lazysql"; : >"$d/.devtools-test"; echo "$d"; }
 zpath() { # zpath ROOT USER -> position of ROOT/bin in PATH (0 = not there) as zsh sees it
   DF_DEVTOOLS_TEST=1 DF_DEVTOOLS_ROOT="$1" DF_DEVTOOLS_ME="$2" zsh -f -c "source '$REPO/.config/zsh/devtools.zsh'; print -r -- \${path[(Ie)$1/bin]}"
 }
@@ -593,6 +594,30 @@ d="$(mk_tree g)"; ln -s "$d" "$T/dtree-link"; expect "zsh: a symlinked root refu
 d="$(mk_tree h)"; mv "$d/bin" "$d/bin-x"; ln -s bin-x "$d/bin"; expect "zsh: a symlinked bin refused" 0 "$(zpath "$d" td)"
 d="$(mk_tree i)"
 expect "zsh: the hooks do nothing without DF_DEVTOOLS_TEST=1" 0 "$(DF_DEVTOOLS_ROOT="$d" DF_DEVTOOLS_ME=td zsh -f -c "source '$REPO/.config/zsh/devtools.zsh'; print -r -- \${path[(Ie)$d/bin]}")"
+# L3: the hooks need a marker file in a tree below a temp directory; L2: the root-owned anchor decides who the owner is
+d="$(mk_tree j)"; rm "$d/.devtools-test"; expect "zsh: the test hooks need the .devtools-test marker in the tree" 0 "$(zpath "$d" td)"
+d="$(mk_tree k)"
+zanchor() { DF_DEVTOOLS_TEST=1 DF_DEVTOOLS_ROOT="$1" DF_DEVTOOLS_ME="$2" DF_DEVTOOLS_ANCHOR="$3" zsh -f -c "source '$REPO/.config/zsh/devtools.zsh'; print -r -- \${path[(Ie)$1/bin]}"; }
+printf '%s\n' "$ME" >"$T/anchor-ok"; chmod 644 "$T/anchor-ok"
+[ "$(zanchor "$d" td "$T/anchor-ok")" -gt 0 ] && ok || bad "zsh: a tree owned by the account the anchor names is not used by a managed user"
+expect "zsh: the account the anchor names does not use the tree" 0 "$(zanchor "$d" "$ME" "$T/anchor-ok")"
+printf 'someone-else\n' >"$T/anchor-other"; chmod 644 "$T/anchor-other"
+expect "zsh: a tree owned by an account the anchor does not name is refused" 0 "$(zanchor "$d" td "$T/anchor-other")"
+chmod 666 "$T/anchor-other"; printf '%s\n' "$ME" >"$T/anchor-other"
+expect "zsh: a writable anchor is refused" 0 "$(zanchor "$d" td "$T/anchor-other")"
+expect "zsh: an anchor path that does not exist leaves the .owner rule" "$(zpath "$d" td)" "$(zanchor "$d" td "$T/no-anchor")"
+# M4: login and non-interactive shells of a managed user (td's own .zshenv / .profile get a managed block from usr link)
+LH="$T/h/login"; mkdir -p "$LH"
+USR_TARGET_USER=td USR_TARGET_HOME="$LH" "$USR" _link >/dev/null 2>&1
+grep -q '>>> usr:devtools >>>' "$LH/.zshenv" && grep -q '>>> usr:devtools >>>' "$LH/.profile" && ok || bad "usr link did not write the devtools blocks into .zshenv and .profile"
+d="$(mk_tree l)"
+lenv() { env -i HOME="$LH" PATH=/usr/bin:/bin DF_DEVTOOLS_TEST=1 DF_DEVTOOLS_ROOT="$d" DF_DEVTOOLS_ME=td "$@"; }
+[ "$(lenv zsh -c "print -r -- \${path[(Ie)$d/bin]}")" -gt 0 ] && ok || bad "zsh -c (non-interactive) of a managed user does not get the shared tree"
+[ "$(lenv zsh -lc "print -r -- \${path[(Ie)$d/bin]}")" -gt 0 ] && ok || bad "zsh -lc of a managed user does not get the shared tree"
+case ":$(lenv bash -lc 'echo $PATH'):" in *":$d/bin:"*) ok ;; *) bad "bash -lc of a managed user does not get the shared tree" ;; esac
+case ":$(lenv bash -lc 'echo $PATH' | tr -d '\n'):" in *"$d/bin:$d/bin"*) bad "bash -lc put the tree on PATH twice" ;; *) ok ;; esac
+d2="$(mk_tree m)"
+case ":$(env -i HOME="$LH" PATH=/usr/bin:/bin DF_DEVTOOLS_TEST=1 DF_DEVTOOLS_ROOT="$d2" DF_DEVTOOLS_ME="$ME" bash -lc 'echo $PATH'):" in *":$d2/bin:"*) bad "bash -lc of the owner got the tree" ;; *) ok ;; esac
 expect "zsh: the real /srv/devtools is not used while it is absent" 0 "$(zsh -f -c "source '$REPO/.config/zsh/devtools.zsh'; print -r -- \${path[(Ie)/srv/devtools/bin]}")"
 grep -q 'zsh/devtools.zsh' "$REPO/.zshrc" && ok || bad ".zshrc does not source zsh/devtools.zsh"
 # the launchers' lookup (devtools.py): the same rule, in Python
@@ -621,6 +646,17 @@ d = tree("g"); os.chmod(d + "/.owner", 0o666); r("py writable .owner", D.shared_
 d = tree("h"); os.symlink(d, f"{T}/pylink"); r("py symlinked root", D.shared_bin(f"{T}/pylink", me=mine + 1), None)
 d = tree("i"); os.rename(d + "/bin", d + "/bin-x"); os.symlink("bin-x", d + "/bin"); r("py symlinked bin", D.shared_bin(d, me=mine + 1), None)
 r("py a missing root", D.shared_bin(f"{T}/pytree-none", me=mine + 1), None)
+# L2: the root-owned anchor names the account that fills the tree
+def anchor(name, mode=0o644):
+    p = f"{T}/pyanchor-{name}"; open(p, "w").write(name + "\n"); os.chmod(p, mode); return p
+d = tree("k")
+r("py anchor naming the owner: a managed user gets the tree", D.shared_bin(d, me=mine + 1, anchor=anchor(me)), d + "/bin")
+r("py anchor naming the owner: the owner does not", D.shared_bin(d, me=mine, anchor=anchor(me)), None)
+r("py anchor naming another account: refused", D.shared_bin(d, me=mine + 1, anchor=anchor("root")), None)
+r("py a writable anchor: refused", D.shared_bin(d, me=mine + 1, anchor=anchor(me + "x", 0o666)), None)
+r("py an anchor that is not there: the .owner rule", D.shared_bin(d, me=mine + 1, anchor=f"{T}/pyanchor-none"), d + "/bin")
+a2 = anchor("no-such-account-xyz")
+r("py anchor naming an unknown account: refused", D.shared_bin(d, me=mine + 1, anchor=a2), None)
 # _shared_tool: the file must really sit inside the tree and neither it nor its directories may be group/other-writable
 d = tree("j")
 D.shared_bin = lambda root=None, me=None, _d=d: _d + "/bin"
@@ -653,29 +689,38 @@ T = sys.argv[2]
 os.getuid = lambda: 99999          # the caller is a managed user: neither file belongs to uid 99999
 def r(label, got, want):
     print(f"{label}|{'ok' if got == want else f'FAIL got {got!r} want {want!r}'}")
-r("envs: link into the published tree is accepted", m._own_file_problem(f"{T}/h99/.config/envs/global.toml"), None)
+r("envs: link into the published tree is accepted (global.toml)", m._own_file_problem(f"{T}/h99/.config/envs/global.toml", allow_published=True), None)
+r("envs: the same link is refused for any other file (global.local.toml; L7)", m._own_file_problem(f"{T}/h99/.config/envs/global.toml") is not None, True)
 r("envs: a foreign file outside the published tree is refused", m._own_file_problem(f"{T}/foreign.toml") is not None, True)
 os.chmod(f"{T}/pub/.config/envs/global.toml", 0o664)
-r("envs: a group-writable published file is refused", "writable by group" in (m._own_file_problem(f"{T}/h99/.config/envs/global.toml") or ""), True)
+r("envs: a group-writable published file is refused", "writable by group" in (m._own_file_problem(f"{T}/h99/.config/envs/global.toml", allow_published=True) or ""), True)
 os.chmod(f"{T}/pub/.config/envs/global.toml", 0o644)
 os.chmod(f"{T}/pub", 0o775)
-r("envs: a group-writable published root is not trusted", m._own_file_problem(f"{T}/h99/.config/envs/global.toml") is not None, True)
+r("envs: a group-writable published root is not trusted", m._own_file_problem(f"{T}/h99/.config/envs/global.toml", allow_published=True) is not None, True)
 PY
 )"
 while IFS='|' read -r label res; do
   [ -n "$label" ] || continue
   [ "$res" = ok ] && ok || bad "$label: $res"
 done <<<"$out"
-case "$out" in *"link into the published tree is accepted|ok"*) ;; *) bad "envs published-file harness did not run: $out" ;; esac
+case "$out" in *"link into the published tree is accepted (global.toml)|ok"*) ;; *) bad "envs published-file harness did not run: $out" ;; esac
 # the launchers' runtime directory without a logind session (usr exec / sudo): a private /dev/shm directory, never a planted one
 fb="/dev/shm/devtools-run-$(id -u)"
-if [ ! -e "$fb" ] && [ -d /dev/shm ] && [ -w /dev/shm ]; then
-  out="$(XDG_RUNTIME_DIR="$T/no-runtime" python3 -I -B - "$REPO/.config/devtools" "$fb" <<'PY' 2>&1
-import os, sys
+if [ ! -e "$fb" ] && [ ! -L "$fb" ] && [ -d /dev/shm ] && [ -w /dev/shm ]; then
+  out="$(env -u XDG_RUNTIME_DIR python3 -I -B - "$REPO/.config/devtools" "$fb" "$T" <<'PY' 2>&1
+import os, sys, time
+from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 import devtools as D
-fb = sys.argv[2]
-print("rb", D.runtime_base() == __import__("pathlib").Path(fb), oct(os.stat(fb).st_mode & 0o777))
+fb, T = sys.argv[2], sys.argv[3]
+D.RUN_USER_DIR = f"{T}/no-run-user"            # no /run/user/UID
+print("rb", D.runtime_base() == Path(fb), oct(os.stat(fb).st_mode & 0o777))
+# L6: the job log ci-last.log ages out of the fallback after a day; a fresh one and other files stay
+rr = D.run_root()
+for n, age in (("ci-last.log", 90000), ("ci-new.log", 10), ("keep.txt", 90000)):
+    (rr / n).write_text("x\n"); os.utime(rr / n, (time.time() - age,) * 2)
+rr = D.run_root()
+print("aged", sorted(x.name for x in rr.iterdir()))
 os.chmod(fb, 0o755)
 try:
     D.runtime_base(); print("loose ACCEPTED")
@@ -683,9 +728,27 @@ except D.DevError as e:
     print("loose refused")
 PY
 )"
-  rmdir "$fb" 2>/dev/null
-  expect "devtools: no /run/user/UID = a private /dev/shm directory, a loose one is refused" "rb True 0o700
+  rm -rf "$fb" 2>/dev/null
+  expect "devtools: no /run/user/UID = a private /dev/shm directory (ci-* ages out after a day), a loose one is refused" "rb True 0o700
+aged ['ci-new.log', 'keep.txt']
 loose refused" "$out"
+  # a planted symlink at the fallback name is refused, and an explicitly set XDG_RUNTIME_DIR is used even when it is missing (L6)
+  mkdir -p "$T/planted"; ln -s "$T/planted" "$fb"
+  out="$(env -u XDG_RUNTIME_DIR python3 -I -B - "$REPO/.config/devtools" "$T" <<'PY' 2>&1
+import sys
+sys.path.insert(0, sys.argv[1])
+import devtools as D
+D.RUN_USER_DIR = f"{sys.argv[2]}/no-run-user"
+try:
+    D.runtime_base(); print("link ACCEPTED")
+except D.DevError:
+    print("link refused")
+PY
+)"
+  rm -f "$fb"
+  expect "devtools: a symlink planted at the /dev/shm fallback name is refused" "link refused" "$out"
+  out="$(XDG_RUNTIME_DIR="$T/set-but-missing" python3 -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import devtools as D; print(D.runtime_base())' "$REPO/.config/devtools" 2>&1)"
+  expect "devtools: an explicit XDG_RUNTIME_DIR that does not exist is used, not replaced by /dev/shm" "$T/set-but-missing" "$out"
 else
   printf 'skip  devtools runtime fallback test: %s exists or /dev/shm is not writable\n' "$fb"
 fi

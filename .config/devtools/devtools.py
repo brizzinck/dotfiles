@@ -87,23 +87,59 @@ def _ww(st):
     return bool(st.st_mode & 0o022)
 
 
-def shared_bin(root=None, me=None):
+# Written by `sudo ./apply-system.sh --only users`: root:root 644 in a root-owned directory, one line, the account that fills the tree.
+# Unlike /srv/devtools/.owner (which that account can write itself) it cannot be forged by the account it names (L2).
+OWNER_ANCHOR = "/etc/usr-managed/devtools-owner"
+
+
+def _anchor_name(path, lax):
+    """(present, name): the account named in the anchor file, `present` False when there is no file; name None when it is not
+    trustworthy (not a regular file, not root's, group/other-writable, or in a directory that is not root's). `lax` (tests) skips the root checks."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return False, None
+    except OSError:
+        return True, None
+    try:
+        if not stat.S_ISREG(st.st_mode) or _ww(st) or (not lax and st.st_uid != 0):
+            return True, None
+        dn = os.lstat(os.path.dirname(path))
+        if _ww(dn) or (not lax and dn.st_uid != 0):
+            return True, None
+        with open(path, "rb") as f:
+            return True, (f.read(256).decode("utf-8", "replace").splitlines() or [""])[0].strip() or None
+    except OSError:
+        return True, None
+
+
+def shared_bin(root=None, me=None, anchor=None):
     """`<root>/bin` of the shared tool tree when it may be trusted, else None. Same rule as .config/zsh/devtools.zsh: a real
-    directory with a real `bin/`, owned by root or by the account named in `<root>/.owner` (that file owned by the same account),
-    neither directory nor `.owner` writable by group/other, `bin/` owned like the root, /srv itself root's and not writable by
-    group/other (the real tree only), and the caller is NOT that owner (the owner keeps his own installs; a tree the caller can
-    write is never trusted). ROOT / ME (uid) are for tests; the environment hooks DEVTOOLS_SHARED_ROOT / DEVTOOLS_TEST_UID count
-    only in verified envs test mode and only below one of its tool directories or its scratch runtime / state directory."""
+    directory with a real `bin/`, owned by root or by the account the root-owned anchor file (OWNER_ANCHOR) names (without an anchor
+    file: by the account named in `<root>/.owner`, that file owned by the same account), neither directory nor `.owner` writable by
+    group/other, `bin/` owned like the root, /srv itself root's and not writable by group/other (the real tree only), and the caller
+    is NOT that owner (the owner keeps his own installs; a tree the caller can write is never trusted; with the anchor the account it
+    names never uses the tree, whoever owns it). ROOT / ME (uid) / ANCHOR are for tests; the environment hooks DEVTOOLS_SHARED_ROOT /
+    DEVTOOLS_TEST_UID / DEVTOOLS_ANCHOR count only in verified envs test mode and only below one of its tool directories or its
+    scratch runtime / state directory."""
     e = envs()
     test_root = False
     if root is None:
         root = SHARED_ROOT
-        v = os.environ.get("DEVTOOLS_SHARED_ROOT")
         scratch = [d for d in (os.environ.get("XDG_RUNTIME_DIR"), os.environ.get("XDG_STATE_HOME")) if d]   # not the real ones in test mode
-        if v and e.TEST_DIRS and os.path.isabs(v) and any(e._under(v, d) for d in list(e.TEST_DIRS) + scratch):
+        allowed = list(e.TEST_DIRS) + scratch
+
+        def hook(name):
+            v = os.environ.get(name)
+            return v if v and e.TEST_DIRS and os.path.isabs(v) and any(e._under(v, d) for d in allowed) else None
+        v = hook("DEVTOOLS_SHARED_ROOT")
+        if v:
             root, test_root = v, True
+            anchor = hook("DEVTOOLS_ANCHOR")          # a test tree has no anchor unless the test makes one
         elif e.TEST_DIRS:
             return None   # verified test mode without an accepted hook root: never the machine's real /srv/devtools (M3)
+        else:
+            anchor = OWNER_ANCHOR
         u = os.environ.get("DEVTOOLS_TEST_UID")
         if u and e.TEST_DIRS and u.isdigit() and me is None:
             me = int(u)
@@ -116,16 +152,20 @@ def shared_bin(root=None, me=None):
         if not (stat.S_ISDIR(r.st_mode) and stat.S_ISDIR(b.st_mode)) or _ww(r) or _ww(b) or b.st_uid != r.st_uid:
             return None
         owner = r.st_uid
+        present, aname = _anchor_name(anchor, test_root) if anchor else (False, None)
+        if present:
+            if aname is None:
+                return None
+            auid = pwd.getpwnam(aname).pw_uid
+            if owner not in (0, auid) or me == auid:
+                return None
         if owner != 0:
             o = os.lstat(os.path.join(root, ".owner"))
             if not stat.S_ISREG(o.st_mode) or o.st_uid != owner or _ww(o):
                 return None
             with open(os.path.join(root, ".owner"), "rb") as f:
                 named = f.read(256).decode("utf-8", "replace").strip()
-            try:
-                if pwd.getpwnam(named).pw_uid != owner:
-                    return None
-            except KeyError:
+            if pwd.getpwnam(named).pw_uid != owner:
                 return None
         if owner == me:
             return None
@@ -133,7 +173,7 @@ def shared_bin(root=None, me=None):
             p = os.lstat(os.path.dirname(root))
             if p.st_uid != 0 or _ww(p):
                 return None
-    except (OSError, ValueError):
+    except (OSError, ValueError, KeyError):
         return None
     return os.path.join(root, "bin")
 
@@ -156,7 +196,7 @@ def _shared_tool(name):
         if st.st_uid != owner or _ww(st):
             return None
         cur = os.path.dirname(cur)
-    return c
+    return rp   # the verified real file, not the link a later swap could repoint (L8)
 
 
 def managed_account():
@@ -170,12 +210,17 @@ REPO_PKG_HINT = ("the owner installs the package: sudo ~/dotfiles/apply-system.s
                  else "sudo ~/dotfiles/apply-system.sh --only install")
 
 
+RUN_USER_DIR = "/run/user"      # a module constant so the tests can point it away from the machine's real one
+
+
 def runtime_base():
-    """The user's runtime directory (tmpfs). Without one (a managed user reached by `usr exec` / sudo has no logind session, hence
-    no /run/user/UID) a private directory of our own in /dev/shm: created 0700, and refused when it is a link, not ours or not
-    0700 (that sticky directory is writable by everybody, so the name could have been planted)."""
-    p = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
-    if p.is_dir():
+    """The user's runtime directory (tmpfs). Without one (XDG_RUNTIME_DIR unset and no /run/user/UID: a managed user reached by
+    `usr exec` / sudo has no logind session) a private directory of our own in /dev/shm: created 0700, and refused when it is a link,
+    not ours or not 0700 (that sticky directory is writable by everybody, so the name could have been planted). An explicitly set
+    XDG_RUNTIME_DIR is always used (and created when missing), never replaced by the fallback."""
+    v = os.environ.get("XDG_RUNTIME_DIR")
+    p = Path(v or f"{RUN_USER_DIR}/{os.getuid()}")
+    if v or p.is_dir():
         return p
     fb = Path(f"/dev/shm/devtools-run-{os.getuid()}")
     try:
@@ -188,10 +233,25 @@ def runtime_base():
     return fb
 
 
+def _age_fallback(d, max_age=86400):
+    """The /dev/shm fallback outlives the session and has no user tmpfiles ageing: `ci-*` there (the last job log, which may echo a
+    secret) is removed after a day (L6)."""
+    now = time.time()
+    for f in d.glob("ci-*"):
+        try:
+            if not f.is_symlink() and f.is_file() and now - f.stat().st_mtime > max_age:
+                f.unlink()
+        except OSError:
+            pass
+
+
 def run_root():
-    d = runtime_base() / "devtools"
+    base = runtime_base()
+    d = base / "devtools"
     d.mkdir(parents=True, exist_ok=True)
     os.chmod(d, 0o700)
+    if str(base).startswith("/dev/shm/"):
+        _age_fallback(d)
     return d
 
 
