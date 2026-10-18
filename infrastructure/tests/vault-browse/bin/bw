@@ -28,6 +28,15 @@ case $cmd in
       "$([[ -S ${XDG_RUNTIME_DIR:-/x}/vault/bw.sock ]] && echo present || echo gone)" "${BW_SESSION:-}" >>"$FAKE_DIR/lock-state"
     rm -f "$FAKE_DIR/bw-unlocked"; echo '{"success":true}' ;;
   sync) need; echo "Syncing complete." ;;
+  export)
+    # account-key encrypted export: no master password is asked and no plaintext is written (FAKE_BW_EXPORT_FAIL=1 fails it)
+    need
+    [[ -n ${FAKE_BW_EXPORT_FAIL:-} ]] && { echo "Export failed." >&2; exit 1; }
+    out=""
+    for ((i = 1; i <= $#; i++)); do [[ ${!i} == --output ]] && { j=$((i + 1)); out=${!j}; }; done
+    [[ -n $out ]] || { echo "fake bw: export needs --output" >&2; exit 1; }
+    jq -c '{encrypted: true, encKeyValidation_DO_NOT_EDIT: "2.FAKE", folders: [.folders[] | {id, name: ("2.ENC-" + (.name | @base64 | .[0:8]))}],
+            items: [.items[] | select(.deletedDate == null) | {id, name: ("2.ENC-" + (.name | @base64 | .[0:8]))}]}' "$FAKE_DIR/vault.json" >"$out" ;;
   generate) echo "GEN-erated-Pw-0001" ;;
   encode) base64 -w0 ;;
   list)

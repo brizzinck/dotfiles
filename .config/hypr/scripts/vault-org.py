@@ -1225,9 +1225,394 @@ def cmd_review(argv):
     return 0
 
 
+# ───────────────────────────── apply ─────────────────────────────
+
+class Journal:
+    """~/.local/state/vault/org-journal.tsv: `# plan-sha256=...` then time<TAB>step<TAB>id<TAB>result, one line per finished step,
+    appended and flushed at once so an interrupt leaves a consistent file."""
+
+    def __init__(self, plan_sha, resume=False, new_journal=False):
+        self.sha, self.done = plan_sha, set()
+        STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if JOURNAL.exists():
+            head = JOURNAL.read_text().splitlines()[:1]
+            same = bool(head) and head[0] == f"# plan-sha256={plan_sha}"
+            if resume and not same and not new_journal:
+                raise Fail("the journal belongs to another plan: --new-journal archives it and starts over", 4)
+            if resume and same:
+                for line in JOURNAL.read_text().splitlines()[1:]:
+                    c = line.split("\t")
+                    if len(c) == 4 and c[3].startswith("ok"):
+                        self.done.add((c[1], c[2]))
+            else:
+                os.replace(JOURNAL, JOURNAL.with_name(JOURNAL.name + ".prev"))
+        if not JOURNAL.exists():
+            fd = os.open(JOURNAL, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            os.write(fd, f"# plan-sha256={plan_sha}\n".encode())
+            os.close(fd)
+
+    def seen(self, step, ident):
+        return (step, ident) in self.done
+
+    def log(self, step, ident, result):
+        fd = os.open(JOURNAL, os.O_WRONLY | os.O_APPEND, 0o600)
+        try:
+            os.write(fd, f"{now_iso()}\t{step}\t{ident}\t{clean(result)}\n".encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        if result.startswith("ok"):
+            self.done.add((step, ident))
+
+
+def folder_parents(name):
+    parts = name.split("/")
+    return ["/".join(parts[:i]) for i in range(1, len(parts) + 1)]
+
+
+def get_json(m, *args):
+    p = m.bw(*args)
+    if p.returncode != 0:
+        raise Fail(m.first_line(p.stderr or p.stdout), 1)
+    try:
+        return json.loads(p.stdout or "null")
+    except ValueError:
+        raise Fail("bw returned something that is not JSON", 1)
+
+
+def backup_export(m):
+    """Account-key encrypted export (no master password is asked: bw export without --password); returns the path.
+    Anything wrong stops the whole run before a single change."""
+    BACKUPS.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(BACKUPS, 0o700)
+    path = BACKUPS / f"vault-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
+    p = m.bw_cli("export", "--format", "encrypted_json", "--output", str(path))
+    if p.returncode != 0 or not path.exists():
+        path.unlink(missing_ok=True)
+        raise Fail("backup failed: nothing was changed (" + m.first_line(p.stderr or p.stdout) + ")", 1)
+    os.chmod(path, 0o600)
+    try:
+        doc = json.loads(path.read_text())
+        live = [i for i in get_json(m, "list", "items") if not i.get("deletedDate")]
+        trash = get_json(m, "list", "items", "--trash")
+        n = len(doc.get("items", []))
+        if doc.get("encrypted") is not True or n not in (len(live), len(live) + len(trash)):
+            raise ValueError(f"encrypted={doc.get('encrypted')} items={n} live={len(live)}")
+    except (OSError, ValueError, Fail) as e:
+        path.unlink(missing_ok=True)
+        raise Fail(f"backup failed: nothing was changed ({e})", 1)
+    old = sorted(BACKUPS.glob("vault-*.json"))
+    for f in old[:-5]:
+        f.unlink(missing_ok=True)
+    return path
+
+
+def would(rows, audit):
+    """The --dry-run text: what apply would do, from the plan alone."""
+    out = [f"would write an encrypted backup to {BACKUPS}/vault-<time>.json",
+           "would sync, then:"]
+    folders = {r.id: r for r in rows if r.kind == "folder"}
+    for r in rows:
+        if r.kind == "folder" and r.target.startswith("rename:"):
+            out.append(f"would rename folder {r.id} {r.name}: -> {r.target[7:]}")
+    want_f = sorted({p for r in rows if r.kind == "item" and r.target.startswith("folder:")
+                     for p in folder_parents(r.target[7:])}
+                    | {p for r in rows if r.kind == "folder" and r.target.startswith("rename:") for p in folder_parents(r.target[7:])},
+                    key=lambda x: (x.count("/"), x))
+    existing = {r.name for r in rows if r.kind == "folder"}
+    for f in want_f:
+        if f not in existing:
+            out.append(f"would create folder {f}")
+    for r in rows:
+        if r.kind == "item" and r.target.startswith("folder:"):
+            out.append(f"would move {r.id} {r.name}: {r.current or '-'} -> {r.target[7:]}")
+    for r in rows:
+        if r.kind == "item" and r.target.startswith("trash-duplicate-of:"):
+            out.append(f"would trash {r.id} {r.name} (duplicate of {r.target.split(':', 1)[1]}), soft, restorable 30 days")
+    for r in rows:
+        if r.kind == "folder" and r.target == "delete-if-empty":
+            out.append(f"would delete folder {r.id} {r.name} if it holds no item")
+    out.append("would sync bw and rbw")
+    out += summary_lines(rows, audit) if audit else []
+    return out
+
+
+def confirm(summary):
+    print("\n".join(summary))
+    if not (sys.stdin.isatty() and sys.stderr.isatty()):
+        raise Fail("no terminal to confirm on: apply asks [y/N] and has no --yes outside the tests", 4)
+    return input("Apply this plan? [y/N] ").strip().lower() == "y"
+
+
+def apply_plan(argv):
+    dry = resume = new_journal = yes = False
+    for a in argv:
+        if a == "--dry-run":
+            dry = True
+        elif a == "--resume":
+            resume = True
+        elif a == "--new-journal":
+            new_journal = True
+        elif a == "--yes":
+            yes = True
+        else:
+            raise Fail("usage: vault-audit apply [--dry-run] [--resume] [--new-journal] [--yes]", 2)
+    if yes and not envs_lib().test_mode():
+        raise Fail("--yes is only honoured in the tests", 4)
+    m = vbw()
+    header, rows = load_plan()
+    try:
+        audit = json.loads(audit_path(m).read_text())
+    except (OSError, ValueError):
+        audit = None
+    problems = validate_plan(header, rows, audit)
+    if problems:
+        raise Fail("the plan is invalid:\n  " + "\n  ".join(problems), 4)
+    if dry:
+        print("\n".join(would(rows, audit)))
+        return 0
+    a = agent()
+    if a:
+        raise Fail(f"apply is refused under an agent ({a}): the owner runs vault-audit apply himself", 4)
+    plan_sha = sha(PLAN.read_text())
+    changes = [r for r in rows if r.target != "keep"]
+    if not changes:
+        print("nothing to do: the plan changes nothing")
+        return 0
+    import fcntl
+    org_dir(m)
+    lock = os.open(m.RUN / "org" / "apply.lock", os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        raise Fail("another vault-audit apply is running", 4)
+    opened_bw(m)
+    if not (yes or confirm(["About to change the vault:"] + ["  " + x for x in summary_lines(rows, audit or {"groups": [], "items": []})])):
+        print("cancelled")
+        return 130
+    return Applier(m, rows, Journal(plan_sha, resume, new_journal), audit).run()
+
+
+class Applier:
+    def __init__(self, m, rows, journal, audit):
+        self.m, self.rows, self.j, self.audit = m, rows, journal, audit
+        self.counts = {"moved": 0, "trashed": 0, "renamed": 0, "created": 0, "deleted": 0, "already": 0}
+        self.skipped = []
+        self.wrote = 0
+
+    def fmap(self):
+        return {f["name"]: f["id"] for f in get_json(self.m, "list", "folders") if f.get("id")}
+
+    def step(self, step, ident, label, fn):
+        """Run one journalled step; fn returns (result, kind) with kind created|moved|... or raises Fail."""
+        if self.j.seen(step, ident):
+            self.counts["already"] += 1
+            return
+        try:
+            res = fn()
+        except Fail as e:
+            self.j.log(step, ident, "failed: " + e.msg)
+            self.skipped.append(f"{ident} {label}: {e.msg}")
+            return
+        self.j.log(step, ident, res)
+        if res.startswith("skipped"):
+            self.skipped.append(f"{ident} {label}: {res}")
+
+    def run(self):
+        m = self.m
+        try:
+            if not self.j.seen("backup", "-"):
+                p = m.bw("sync")
+                if p.returncode != 0:
+                    raise Fail("bw sync failed: " + m.first_line(p.stderr or p.stdout), 1)
+                path = backup_export(m)
+                self.j.log("backup", "-", f"ok {path}")
+                print(f"backup: {path}")
+            else:
+                print("backup: done in an earlier run of this plan")
+            self.renames()
+            self.creates()
+            self.moves()
+            self.trash()
+            self.empty_folders()
+            self.finish()
+        except KeyboardInterrupt:
+            print("\ninterrupted: the journal is consistent, vault-audit apply --resume continues", file=sys.stderr)
+            return 130
+        return self.summary()
+
+    def renames(self):
+        m = self.m
+        for r in self.rows:
+            if r.kind != "folder" or not r.target.startswith("rename:"):
+                continue
+            new = r.target[7:]
+
+            def go(r=r, new=new):
+                cur = {f["id"]: f["name"] for f in get_json(m, "list", "folders")}
+                if cur.get(r.id) == new:
+                    return "ok (already)"
+                if r.id not in cur:
+                    raise Fail("the folder does not exist any more")
+                for par in folder_parents(new)[:-1]:
+                    m.folder_id(par, create=True)
+                p = m.bw("edit", "folder", r.id, stdin=m.b64({"name": new}))
+                if p.returncode != 0:
+                    raise Fail("rename failed: " + m.first_line(p.stderr or p.stdout))
+                self.counts["renamed"] += 1
+                self.wrote += 1
+                return "ok renamed"
+
+            self.step("rename", r.id, r.name, go)
+
+    def creates(self):
+        m = self.m
+        want = sorted({p for r in self.rows if r.kind == "item" and r.target.startswith("folder:")
+                       for p in folder_parents(r.target[7:])}, key=lambda x: (x.count("/"), x))
+        for name in want:
+            def go(name=name):
+                if name in self.fmap():
+                    return "ok (already)"
+                if m.folder_id(name, create=True) is None:
+                    raise Fail("could not create the folder")
+                self.counts["created"] += 1
+                self.wrote += 1
+                return "ok created"
+
+            self.step("create", name, name, go)
+
+    def moves(self):
+        m = self.m
+        for r in self.rows:
+            if r.kind != "item" or not r.target.startswith("folder:"):
+                continue
+            dest = r.target[7:]
+
+            def go(r=r, dest=dest):
+                fid = self.fmap().get(dest)
+                if not fid:
+                    raise Fail(f"target folder {dest!r} does not exist")
+                item = get_json(m, "get", "item", r.id)
+                if not item:
+                    raise Fail("the item does not exist any more")
+                if item.get("deletedDate"):
+                    return "skipped (in the trash)"
+                if item.get("folderId") == fid:
+                    self.counts["already"] += 1
+                    return "ok (already)"
+                item["folderId"] = fid
+                p = m.bw("edit", "item", r.id, stdin=m.b64(item))
+                item = None
+                if p.returncode != 0:
+                    raise Fail("move failed: " + m.first_line(p.stderr or p.stdout))
+                try:
+                    back = json.loads(p.stdout or "{}")
+                except ValueError:
+                    back = {}
+                if back.get("folderId") != fid:
+                    raise Fail("the answer does not show the new folder")
+                self.counts["moved"] += 1
+                self.wrote += 1
+                return "ok moved"
+
+            self.step("move", r.id, r.name, go)
+
+    def trash(self):
+        m = self.m
+        key = secrets.token_bytes(32)
+        for r in self.rows:
+            if r.kind != "item" or not r.target.startswith("trash-duplicate-of:"):
+                continue
+            keep_id = r.target.split(":", 1)[1]
+
+            def go(r=r, keep_id=keep_id):
+                x = get_json(m, "get", "item", r.id)
+                k = get_json(m, "get", "item", keep_id)
+                if not x or x.get("deletedDate"):
+                    return "ok (already)"
+                if not k or k.get("deletedDate"):
+                    return "skipped (the keep is gone or in the trash)"
+                if r.rev not in ("-", "") and x.get("revisionDate") != r.rev:
+                    return "skipped (changed after the audit)"
+                folders = {f["id"]: f.get("name") or "" for f in get_json(m, "list", "folders") if f.get("id")}
+                mx, kx = normalise(x, folders, key)
+                mk, kk = normalise(k, folders, key)
+                words = set(re.split(r"[\s:;,]+", r.note))
+                rel = relation(kx, kk)
+                if mx["type"] != mk["type"]:
+                    return "skipped (no longer a duplicate: another type)"
+                if "manual" in words:
+                    if kx["user"] is not None and kx["user"] != kk["user"]:
+                        return "skipped (no longer a duplicate: another username)"
+                elif "no-user" in words:
+                    if mx["user"] or mx["hosts"] != mk["hosts"]:
+                        return "skipped (no longer a duplicate)"
+                elif mx["hosts"] != mk["hosts"] or kx["user"] != kk["user"] or (not mx["hosts"] and norm_name(mx["name"]) != norm_name(mk["name"])):
+                    return "skipped (no longer a duplicate)"
+                if rel not in ("identical", "subset") or ("identical" in words and rel != "identical"):
+                    return "skipped (no longer a duplicate: " + rel + ")"
+                p = m.bw("delete", "item", r.id)
+                if p.returncode != 0:
+                    raise Fail("trash failed: " + m.first_line(p.stderr or p.stdout))
+                self.counts["trashed"] += 1
+                self.wrote += 1
+                return "ok trashed"
+
+            self.step("trash", r.id, r.name, go)
+
+    def empty_folders(self):
+        m = self.m
+        for r in self.rows:
+            if r.kind != "folder" or r.target != "delete-if-empty":
+                continue
+
+            def go(r=r):
+                cur = {f["id"] for f in get_json(m, "list", "folders")}
+                if r.id not in cur:
+                    return "ok (already)"
+                items = [i for i in get_json(m, "list", "items", "--folderid", r.id) if not i.get("deletedDate")]
+                if items:
+                    return f"skipped (the folder holds {len(items)} items)"
+                p = m.bw("delete", "folder", r.id)
+                if p.returncode != 0:
+                    raise Fail("delete failed: " + m.first_line(p.stderr or p.stdout))
+                self.counts["deleted"] += 1
+                self.wrote += 1
+                return "ok deleted"
+
+            self.step("delete-folder", r.id, r.name, go)
+
+    def finish(self):
+        m = self.m
+        m.bw("sync")
+        m.refresh_rbw()
+        for f in ("browse-index.json", "browse-index.tmp"):
+            (m.RUN / f).unlink(missing_ok=True)
+        audit_path(m).unlink(missing_ok=True)       # the inventory is stale now
+        self.j.log("sync", "-", "ok")
+
+    def summary(self):
+        c = self.counts
+        print(f"applied: {c['moved']} moved, {c['trashed']} to the trash, {c['renamed']} folders renamed, "
+              f"{c['created']} folders created, {c['deleted']} empty folders deleted"
+              + (f", {c['already']} steps were already done" if c["already"] else ""))
+        for line in summary_lines(self.rows, self.audit or {"groups": [], "items": []}):
+            print("  " + line)
+        if self.skipped:
+            print(f"{len(self.skipped)} skipped or failed:")
+            for x in self.skipped:
+                print("  " + x)
+            return 5
+        return 0
+
+
+def cmd_apply(argv):
+    return apply_plan(argv)
+
+
 # ───────────────────────────── main ─────────────────────────────
 
-COMMANDS = {"audit": cmd_audit, "plan": cmd_plan, "check": cmd_check, "review": cmd_review, "_preview": cmd_preview}
+COMMANDS = {"audit": cmd_audit, "plan": cmd_plan, "check": cmd_check, "review": cmd_review, "apply": cmd_apply, "_preview": cmd_preview}
 
 
 def main(argv):

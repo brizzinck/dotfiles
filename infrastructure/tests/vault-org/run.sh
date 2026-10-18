@@ -259,8 +259,119 @@ section2_tmux() {
   tmux_cleanup
 }
 
+# ───────────── 3: apply ─────────────
+mark() { MARK=$(wc -l <"$FAKE/argv.log" 2>/dev/null || echo 0); }
+since() { tail -n +"$((MARK + 1))" "$FAKE/argv.log"; }
+writes_since() { since | grep -acE '^bw-serve (POST|PUT|DELETE) /(object|restore|attachment)' || true; }   # POST /sync is no change
+JOURNALF() { echo "$ROOT/state/vault/org-journal.tsv"; }
+vjq() { jq -r "$1" "$FAKE/vault.json"; }
+# the state the golden plan must produce: 4 new folders (Work/Acme Design Finance Home), the 3 empty ones gone, 6 moves, 4 trashed
+expected_state() {
+  [[ $(vjq '[.folders[].name]|sort|join(",")') == "Design,Env,Env/demo,Finance,Home,Linux,MCP,Mail,Old Stuff,Work,Work/Acme" ]] || return 1
+  local fid
+  fid() { vjq ".folders[]|select(.name==\"$1\")|.id"; }
+  [[ $(vjq ".items[]|select(.id==\"i-04\")|.folderId") == "$(fid Work/Acme)" ]] || return 1
+  [[ $(vjq ".items[]|select(.id==\"i-05\")|.folderId") == "$(fid Work/Acme)" ]] || return 1
+  [[ $(vjq ".items[]|select(.id==\"i-01\")|.folderId") == "$(fid Mail)" ]] || return 1
+  [[ $(vjq ".items[]|select(.id==\"i-10\")|.folderId") == "$(fid Design)" ]] || return 1
+  [[ $(vjq ".items[]|select(.id==\"i-19\")|.folderId") == "$(fid Finance)" ]] || return 1
+  [[ $(vjq ".items[]|select(.id==\"i-20\")|.folderId") == "$(fid Home)" ]] || return 1
+  [[ $(vjq '[.items[]|select(.deletedDate!=null)|.id]|sort|join(",")') == "i-02,i-03,i-07,i-09,i-24" ]] || return 1
+  [[ $(vjq '[.items[]|select(.id=="i-12" or .id=="i-13" or .id=="i-15")|.folderId]|join(",")') == "f-linux,f-linux,f-env" ]] || return 1
+}
+
+not_finished() { ! expected_state && [[ $(vjq '[.items[]|select((.folderId // "")|test("^f-new"))]|length') -ge 1 ]]; }
+
+section3() {
+  local rc out
+  fresh_plan
+  # 3.1 dry run: offline
+  rm -rf "$ROOT/data/vault-backups"; mark
+  out=$(A apply --dry-run 2>&1); rc=$?
+  check "3.1 dry-run exit 0, it names the backup, the moves, the trash and the folder deletes" bash -c '
+    [ "$1" = 0 ] && grep -q "would write an encrypted backup" <<<"$2" && grep -q "would move i-04 Acme Portal: Work -> Work/Acme" <<<"$2" \
+    && grep -q "would trash i-02" <<<"$2" && grep -q "would create folder Work/Acme" <<<"$2" && grep -q "would delete folder f-empty" <<<"$2"' _ "$rc" "$out"
+  check "3.1 dry-run: no write request, no export, no bw process, no backup, no journal" bash -c '
+    [ "$(wc -l <"$1")" = "$2" ] && [ ! -e "$3" ] && [ ! -e "$4" ]' _ "$FAKE/argv.log" "$MARK" "$ROOT/data/vault-backups" "$(JOURNALF)"
+  # 3.3 backup failure: nothing changed
+  mark; out=$(FAKE_BW_EXPORT_FAIL=1 A apply --yes 2>&1); rc=$?
+  check "3.3 a failing export: exit 1, 'nothing was changed', zero writes" bash -c '[ "$1" = 1 ] && grep -q "backup failed: nothing was changed" <<<"$2"' _ "$rc" "$out"
+  check "3.3 ...and no POST/PUT/DELETE reached the server, no half backup left" bash -c '[ "$1" = 0 ] && ! ls "$2"/vault-*.json >/dev/null 2>&1' _ "$(writes_since)" "$ROOT/data/vault-backups"
+  # 3.2 + 3.4 full apply
+  mark; out=$(A apply --yes 2>&1); rc=$?; echo "$out" >"$ROOT/apply-out.txt"
+  check "3.4 apply exit 0, the summary counts the work" bash -c '[ "$1" = 0 ] && grep -q "applied: 6 moved, 4 to the trash, 0 folders renamed, 4 folders created, 3 empty folders deleted" <<<"$2"' _ "$rc" "$out"
+  check "3.4 the vault ends in the expected state (folders, moves, soft trash, empty folders gone)" expected_state
+  check "3.2 the export ran before the first write request" bash -c '
+    e=$(grep -n "^bw export" "$1" | head -1 | cut -d: -f1); w=$(grep -nE "^bw-serve (POST|PUT|DELETE) /(object|restore|attachment)" "$1" | head -1 | cut -d: -f1); [ -n "$e" ] && [ "$e" -lt "$w" ]' _ "$FAKE/argv.log"
+  check "3.4 trash is the soft trash (no ?permanent), items still exist" bash -c '! grep -q "permanent" "$1" && [ "$(jq "[.items[]|select(.id==\"i-02\")]|length" "$2")" = 1 ]' _ "$FAKE/argv.log" "$FAKE/vault.json"
+  check "3.4 rbw was synced at the end and the audit file is gone (stale)" bash -c 'grep -q "^rbw sync" "$1" && [ ! -e "$2" ]' _ "$FAKE/argv.log" "$(AJ)"
+  check "3.12 backup: 600 file in a 700 dir, encrypted, 23 items, no plaintext" bash -c '
+    f=$(ls "$1"/vault-*.json | head -1); [ "$(stat -c %a "$f")" = 600 ] && [ "$(stat -c %a "$1")" = 700 ] && [ "$(jq .encrypted "$f")" = true ] \
+    && [ "$(jq ".items|length" "$f")" = 23 ] && ! grep -q "PW-" "$f"' _ "$ROOT/data/vault-backups"
+  check "3.12 journal: 600, header with the plan sha, one ok line per step" bash -c '
+    [ "$(stat -c %a "$1")" = 600 ] && head -1 "$1" | grep -q "^# plan-sha256=[0-9a-f]\{64\}$" && grep -qP "\tbackup\t-\tok " "$1" && grep -qP "\tmove\ti-04\tok moved" "$1" && grep -qP "\ttrash\ti-02\tok trashed" "$1"' _ "$(JOURNALF)"
+  check "3.12 sentinels: not in stdout, the journal, the backup, the argv log" no_sentinel "$ROOT/apply-out.txt" "$(JOURNALF)" "$ROOT"/data/vault-backups/vault-*.json "$FAKE/argv.log"
+  # 3.5 idempotent
+  mark; A apply --yes >"$ROOT/apply2.txt" 2>&1; rc=$?
+  check "3.5 a second apply: exit 0 and zero write requests" bash -c '[ "$1" = 0 ] && [ "$2" = 0 ]' _ "$rc" "$(writes_since)"
+  # 3.6 resume after a kill in the middle
+  fresh_plan; rm -rf "$ROOT/data/vault-backups"
+  FAKE_BW_REQ_DELAY=0.3 python3 -I -B "$SCRIPTS/vault-org.py" apply --yes >"$ROOT/apply3.txt" 2>&1 & local pid=$!
+  local i; for ((i = 0; i < 100; i++)); do [[ $(grep -c '^bw-serve PUT' "$FAKE/argv.log") -ge 3 ]] && break; sleep 0.1; done
+  kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+  check "3.6 the kill came in the middle (some moves done, the vault not finished)" not_finished
+  out=$(A apply --yes 2>&1); rc=$?
+  check "3.6 a plain re-run after the kill archives the journal and still finishes (idempotent)" bash -c '[ "$1" = 0 ]' _ "$rc"
+  fresh_plan; rm -rf "$ROOT/data/vault-backups";   : >"$FAKE/argv.log"
+  FAKE_BW_REQ_DELAY=0.3 python3 -I -B "$SCRIPTS/vault-org.py" apply --yes >"$ROOT/apply3.txt" 2>&1 & pid=$!
+  for ((i = 0; i < 100; i++)); do [[ $(grep -c '^bw-serve PUT' "$FAKE/argv.log") -ge 3 ]] && break; sleep 0.1; done
+  kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+  out=$(A apply --yes --resume 2>&1); rc=$?
+  check "3.6 --resume finishes: exit 0 and the expected state" bash -c '[ "$1" = 0 ]' _ "$rc"
+  check "3.6 ...expected vault state" expected_state
+  check "3.6 nothing was done twice: one export, no item PUT twice" bash -c '
+    [ "$(grep -c "^bw export" "$1")" = 1 ] && [ -z "$(grep "^bw-serve PUT" "$1" | sort | uniq -d)" ]' _ "$FAKE/argv.log"
+  check "3.6 --resume with another plan is refused (exit 4) unless --new-journal" bash -c '
+    A() { python3 -I -B "$1" "${@:2}"; }; echo "# x" >>"$2"; sed -i "s/^i-20\t\(.*\)\tfolder:Home\t/i-20\t\1\tkeep\t/" "$2"; A "$3" apply --yes --resume >/dev/null 2>&1; [ $? = 4 ]' _ "$SCRIPTS/vault-org.py" "$(PLANF)" "$SCRIPTS/vault-org.py"
+  # 3.7 a revision that changed after the audit: the trash is skipped
+  fresh_plan; rm -rf "$ROOT/data/vault-backups"
+  jq '(.items[]|select(.id=="i-02")|.revisionDate)="2026-10-18T00:00:00.000Z"' "$FAKE/vault.json" >"$FAKE/v.tmp" && mv "$FAKE/v.tmp" "$FAKE/vault.json"
+  out=$(A apply --yes 2>&1); rc=$?
+  check "3.7 changed after the audit: exit 5, i-02 stays, the others are trashed" bash -c '
+    [ "$1" = 5 ] && grep -q "i-02 Example Mail: skipped (changed after the audit)" <<<"$2"' _ "$rc" "$out"
+  check "3.7 ...i-02 not in the trash, i-03 in the trash" bash -c '[ "$(jq -r ".items[]|select(.id==\"i-02\")|.deletedDate" "$1")" = null ] && [ "$(jq -r ".items[]|select(.id==\"i-03\")|.deletedDate" "$1")" != null ]' _ "$FAKE/vault.json"
+  # 3.8 the username changed: no longer a duplicate
+  fresh_plan; rm -rf "$ROOT/data/vault-backups"
+  jq '(.items[]|select(.id=="i-03")|.login.username)="someone-else"' "$FAKE/vault.json" >"$FAKE/v.tmp" && mv "$FAKE/v.tmp" "$FAKE/vault.json"
+  out=$(A apply --yes 2>&1); rc=$?
+  check "3.8 a changed username: skipped as 'no longer a duplicate', exit 5" bash -c '[ "$1" = 5 ] && grep -q "i-03 Example Mail: skipped (no longer a duplicate)" <<<"$2"' _ "$rc" "$out"
+  fresh_plan; rm -rf "$ROOT/data/vault-backups"
+  jq '(.items[]|select(.id=="i-02")|.login.password)="PW-changed-later"' "$FAKE/vault.json" >"$FAKE/v.tmp" && mv "$FAKE/v.tmp" "$FAKE/vault.json"
+  out=$(A apply --yes 2>&1); rc=$?
+  check "3.8 a changed password of an 'identical' duplicate: skipped, never trashed" bash -c '[ "$1" = 5 ] && grep -q "i-02 Example Mail: skipped (no longer a duplicate" <<<"$2"' _ "$rc" "$out"
+  # 3.9 / 3.10 / 3.11 refusals before anything happens
+  fresh_plan; rm -rf "$ROOT/data/vault-backups"; mark
+  variant d 's/^\(i-12\t[^\t]*\t[^\t]*\t\)keep/\1folder:Personal/'
+  A apply --yes >/dev/null 2>"$ROOT/e9.txt"; rc=$?
+  check "3.9 moving a tool-folder item: exit 4, no export, no write" bash -c '[ "$1" = 4 ] && [ "$2" = 0 ] && ! grep -q "^bw export" "$3"' _ "$rc" "$(writes_since)" "$FAKE/argv.log"
+  variant d2 's/^\(@folder\tf-linux\tLinux\t\)keep/\1rename:Linux2/'
+  A apply --yes >/dev/null 2>&1; check "3.9 renaming Linux: exit 4" test $? = 4
+  variant e 's/^\(@folder\tf-old\tOld Stuff\t\)keep/\1rename:Mail/'
+  A apply --yes >/dev/null 2>&1; check "3.10 a rename collision: exit 4" test $? = 4
+  fresh_plan; rm -rf "$ROOT/data/vault-backups"; mark
+  ln -sf "$(command -v bash)" "$ROOT/claude"
+  "$ROOT/claude" -c "python3 -I -B '$SCRIPTS/vault-org.py' apply --yes; exit \$?" >"$ROOT/o11.txt" 2>"$ROOT/e11.txt"; rc=$?
+  check "3.11 under a fake claude ancestor: exit 4, no export, no write" bash -c '[ "$1" = 4 ] && [ "$2" = 0 ] && ! grep -q "^bw export" "$3" && grep -q "refused under an agent" "$4"' _ "$rc" "$(writes_since)" "$FAKE/argv.log" "$ROOT/e11.txt"
+  "$ROOT/claude" -c "python3 -I -B '$SCRIPTS/vault-org.py' apply --dry-run; exit \$?" >"$ROOT/o11b.txt" 2>&1; rc=$?
+  check "3.11 ...the offline dry-run is allowed for an agent" test $rc = 0
+  A apply >/dev/null 2>"$ROOT/e12.txt" </dev/null; rc=$?
+  check "3.11 without --yes and without a terminal: exit 4" bash -c '[ "$1" = 4 ] && grep -q "no terminal" "$2"' _ "$rc" "$ROOT/e12.txt"
+  ONLY_REST=1
+}
+
 want 1 && section1
 want 2 && section2
+want 3 && section3
 
 echo
 echo "passed $PASS, failed $FAILS"
