@@ -1,0 +1,181 @@
+#!/usr/bin/python3 -I
+"""forge: the git forge dashboard of this repository (DEV-d): gh-dash for GitHub, glab-tui for GitLab. Python 3 stdlib only;
+absolute shebang (the GitLab path receives the token through `envs run -g`). Docs: CLAUDE.md "Dev tools".
+
+  forge [github|gitlab] [--root DIR]   the host of the `origin` remote decides: github.com -> gh-dash, anything else -> glab-tui;
+                                       outside a repository a picker offers the GitHub dashboard, the GitLab dashboard and the
+                                       bound checkouts
+  forge check                          what is installed and which tool a remote would pick (no vault, no network)
+
+GitHub: gh-dash with a per-run config on tmpfs = ~/.config/gh-dash/base.yml + the active palette variant's gh-dash-theme.yml
+(base.yml must not hold a `theme:` key); auth is gh's own. Its cwd is the run directory and --config is explicit, so a repo
+`.gh-dash.yml` is not read.
+GitLab: `envs run -g -- glab-tui`: GITLAB_TOKEN and GITLAB_HOST come from Bitwarden (Env/global, `envs set GITLAB_TOKEN -g`),
+never from a glab config or the shell; glab-tui runs `glab`, which inherits them. glab-tui reads a repo-local
+.glab-tui/config.toml (custom key commands = code): open only trusted repositories. The self-update key `u` of glab-tui cannot be
+remapped (cargo owns the binary; sysup updates it).
+Exit codes: 0 ok, 1 error, 2 usage, 4 refused (agent), 127 tool missing.
+"""
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+SELF = Path(__file__).resolve()
+_spec = __import__("importlib.util").util.spec_from_file_location("devtools", SELF.parents[2] / ".config/devtools/devtools.py")
+D = __import__("importlib.util").util.module_from_spec(_spec)
+_spec.loader.exec_module(D)
+E = D.envs()
+PY = "/usr/bin/python3" if os.access("/usr/bin/python3", os.X_OK) else sys.executable
+
+REMOTE_RES = [re.compile(r"^(?:ssh://)?(?:[^@/]+@)?(?P<host>[^:/]+)(?::\d+)?[:/](?P<path>[^/].*?)(?:\.git)?/?$"),
+              re.compile(r"^https?://(?:[^@/]+@)?(?P<host>[^:/]+)(?::\d+)?/(?P<path>.+?)(?:\.git)?/?$")]
+
+
+def parse_remote(url):
+    """(host, owner/repo path) of a git remote URL (ssh, scp-like, https), or (None, None)."""
+    url = (url or "").strip()
+    for r in reversed(REMOTE_RES) if url.startswith(("http://", "https://")) else REMOTE_RES:
+        m = r.match(url)
+        if m:
+            return m.group("host").lower(), m.group("path")
+    return None, None
+
+
+def git(root, *args):
+    g = D.tool("git", required=False)
+    if not g:
+        return ""
+    p = subprocess.run([g, *args], cwd=str(root), capture_output=True, text=True, stdin=subprocess.DEVNULL, env=E.git_env())
+    return p.stdout.strip() if p.returncode == 0 else ""
+
+
+def git_top(start):
+    t = git(start, "rev-parse", "--show-toplevel")
+    return Path(t) if t else None
+
+
+def kind_of(root):
+    """'github' / 'gitlab' by the host of origin; None without a remote."""
+    host, _path = parse_remote(git(root, "remote", "get-url", "origin"))
+    if host is None:
+        return None
+    return "github" if host == "github.com" else "gitlab"
+
+
+def theme_text():
+    f = Path(os.environ.get("XDG_STATE_HOME") or E.HOME / ".local/state") / "theme/current/gh-dash-theme.yml"
+    try:
+        return f.read_text()
+    except OSError:
+        return ""
+
+
+def base_config():
+    f = Path(os.environ.get("XDG_CONFIG_HOME") or E.HOME / ".config") / "gh-dash/base.yml"
+    try:
+        text = f.read_text()
+    except OSError:
+        D.fail(f"{f} is missing: run `stow .` in ~/dotfiles", 1)
+    if re.search(r"^theme:", text, re.M):
+        D.fail(f"{f} must not hold a top-level `theme:` key (the palette variant provides it)", 1)
+    return text
+
+
+def run_github(root):
+    E.refuse_agent("forge")
+    gd = D.tool("gh-dash", hint=D.USER_TOOLS_HINT)
+    run = D.run_dir("forge")
+    cfg = D.write_private(run / "gh-dash.yml", base_config().rstrip("\n") + "\n\n" + theme_text())
+    os.chdir(run)                                              # no repo .gh-dash.yml: the config is explicit and the cwd is ours
+    D.switch_layout()
+    sys.stdout.flush()
+    try:
+        os.execv(gd, ["gh-dash", "--config", str(cfg)])
+    except OSError as e:
+        D.fail(f"cannot run gh-dash: {e.strerror}", 127)
+
+
+def run_gitlab(root, inner=False):
+    E.refuse_agent("forge")
+    if not inner:                                              # fetch the token first: GITLAB_TOKEN and GITLAB_HOST, both required
+        argv = [str(E.SELF), "run", "-g", "--", PY, "-I", str(SELF), "_gitlab"] + (["--root", str(root)] if root else [])
+        sys.stdout.flush()
+        os.execv(argv[0], argv)
+    E.harden_environment()
+    gt = D.tool("glab-tui", hint=D.USER_TOOLS_HINT)
+    env = dict(os.environ)
+    for n in os.environ.get("ENVS_SECRETS", "").split():       # every injected global secret except the two glab needs
+        if n not in ("GITLAB_TOKEN", "GITLAB_HOST"):
+            env.pop(n, None)
+    if not env.get("GITLAB_TOKEN") or not env.get("GITLAB_HOST"):
+        D.fail("GITLAB_TOKEN / GITLAB_HOST are not set: `envs set GITLAB_TOKEN -g` and `envs set GITLAB_HOST -g`", 1)
+    env["PATH"] = ":".join(E.SAFE_DIRS + [str(E.HOME / ".cargo/bin"), str(E.HOME / ".local/bin")])
+    if root:
+        os.chdir(root)
+    D.switch_layout()
+    sys.stdout.flush()
+    try:
+        os.execve(gt, ["glab-tui"], env)
+    except OSError as e:
+        D.fail(f"cannot run glab-tui: {e.strerror}", 127)
+
+
+def pick_target():
+    """Outside a repository: the dashboards and the bound checkouts."""
+    rows = ["github   GitHub dashboard (gh-dash)", "gitlab   GitLab dashboard (glab-tui)"]
+    roots = []
+    for key in E.bindings():
+        r = Path(E.key_root(key))
+        k = kind_of(r) if (r / ".git").exists() else None
+        if k and r not in roots:
+            roots.append(r)
+            rows.append(f"{k:<8} {r.name}  {E.short_path(r)}")
+    got = E.pick(rows, "forge") if D.tty() else None
+    if not got:
+        D.fail("no repository here: run `forge github` or `forge gitlab`", 2 if not D.tty() else 130)
+    i = rows.index(got)
+    if i < 2:
+        return ("github", None) if i == 0 else ("gitlab", None)
+    return kind_of(roots[i - 2]), roots[i - 2]
+
+
+def cmd_check(a):
+    for t, hint in (("gh-dash", D.USER_TOOLS_HINT), ("glab-tui", D.USER_TOOLS_HINT), ("glab", D.REPO_PKG_HINT), ("gh", D.REPO_PKG_HINT)):
+        p = D.tool(t, required=False)
+        print(f"{t:<9} {'installed: ' + p if p else 'missing (' + hint + ')'}")
+    top = git_top(Path.cwd())
+    print(f"remote    {parse_remote(git(top, 'remote', 'get-url', 'origin')) if top else 'no repository here'} -> {kind_of(top) if top else '-'}")
+
+
+def run(argv):
+    E.harden_environment()
+    import argparse
+    ap = argparse.ArgumentParser(prog="forge", description="git forge dashboard (see the header of this file)")
+    ap.add_argument("what", nargs="?", choices=["github", "gitlab", "check", "_gitlab"])
+    ap.add_argument("--root")
+    a = ap.parse_args(argv)
+    if a.what == "check":
+        return cmd_check(a)
+    if a.what == "_gitlab":
+        return run_gitlab(a.root, inner=True)
+    root = None
+    if a.root:
+        root = git_top(Path(a.root).expanduser()) or Path(a.root).expanduser().resolve()
+    else:
+        root = git_top(Path.cwd())
+    kind = a.what
+    if kind is None:
+        if root is not None:
+            kind = kind_of(root)
+        if kind is None:
+            kind, root = pick_target()
+    if kind == "github":
+        return run_github(root)
+    return run_gitlab(root)
+
+
+if __name__ == "__main__":
+    sys.exit(D.main_wrap("forge", run, sys.argv[1:]))

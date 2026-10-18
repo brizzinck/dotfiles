@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# fake glab: logs argv and the hash of GITLAB_TOKEN (`glab ci view` of the hub row)
+. "$(dirname "$0")/_dev.sh"
+dev_log "glab $*"
+dev_log "glab hashes $(hashes GITLAB_TOKEN GITLAB_HOST)"

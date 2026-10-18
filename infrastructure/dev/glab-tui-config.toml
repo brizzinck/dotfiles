@@ -1,0 +1,4 @@
+# glab-tui config (DEV-d), copied to ~/.config/glab-tui/config.toml by infrastructure/dev/user-tools.sh when it is missing.
+# Not stowed: glab-tui writes this file itself (Configure View > Save View). The theme is the stowed palette link
+# ~/.config/glab-tui/themes/everforest.toml. `u` (self-update) cannot be remapped: cargo owns the binary, sysup updates it.
+theme_preset = "everforest"

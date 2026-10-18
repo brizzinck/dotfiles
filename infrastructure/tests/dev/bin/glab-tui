@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# fake glab-tui: logs argv, cwd, hashes of GITLAB_TOKEN / GITLAB_HOST and the NAMES of the global secrets it can see
+. "$(dirname "$0")/_dev.sh"
+dev_log "glab-tui $*"
+dev_log "glab-tui cwd=$PWD"
+dev_log "glab-tui hashes $(hashes GITLAB_TOKEN GITLAB_HOST) names=$(env | cut -d= -f1 | grep -E '^(GITLAB_TOKEN|GITLAB_HOST|TD_PW|DB_PASSWORD|OPENAI_API_KEY)$' | sort | tr '\n' ' ')"
+maybe_sleep

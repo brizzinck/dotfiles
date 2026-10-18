@@ -607,6 +607,66 @@ check "9: the menu is refused for an agent" test $RC = 4
 scan "9"
 }
 
+sections_10() {
+section "10 forge: gh-dash with a merged config, glab-tui through envs run -g, the zsh glab function"
+reset
+FORGE="$REPO/.local/bin/forge"
+f() { N=$((N + 1)); (cd "${EDIR:-$PROJ}" && "$FORGE" "$@" >"$CAP/$N.out" 2>"$CAP/$N.err" </dev/null); RC=$?; OUT="$CAP/$N.out" ERR="$CAP/$N.err"; }
+if python3 -I -B - "$FORGE" <<'PY'
+import importlib.machinery, importlib.util, sys
+l = importlib.machinery.SourceFileLoader("forge_mod", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("forge_mod", l)); l.exec_module(m)
+cases = {"git@github.com:o/r.git": ("github.com", "o/r"), "ssh://git@gitlab.example.com:2222/grp/sub/proj.git": ("gitlab.example.com", "grp/sub/proj"),
+         "https://user@github.com/o/r": ("github.com", "o/r"), "https://gitlab.example.com:8443/grp/proj.git/": ("gitlab.example.com", "grp/proj"),
+         "git@GitHub.com:o/r": ("github.com", "o/r"), "": (None, None), "nonsense": (None, None)}
+bad = [(u, m.parse_remote(u), want) for u, want in cases.items() if m.parse_remote(u) != want]
+print(bad)
+sys.exit(1 if bad else 0)
+PY
+then ok "10: remote parsing: scp-like and ssh:// and https forms, port, .git, user, case"; else bad "10: remote parsing"; fi
+mkdir -p "$XDG_STATE_HOME/theme/current"; cp "$REPO/themes/generated/black/gh-dash-theme.yml" "$XDG_STATE_HOME/theme/current/gh-dash-theme.yml"
+(cd "$PROJ" && git remote add origin git@github.com:owner/repo.git)
+: >"$FAKE_DIR/dev.log"; : >"$FAKE_DIR/argv.log"
+f
+check "10: a github.com remote -> gh-dash --config <run dir>/gh-dash.yml; cwd = the run dir (no repo .gh-dash.yml); no vault" bash -c "[ $RC = 0 ] && grep -qE '^gh-dash --config $XDG_RUNTIME_DIR/devtools/forge-[0-9]+/gh-dash.yml\$' '$FAKE_DIR/dev.log' && grep -q \"^gh-dash cwd=$XDG_RUNTIME_DIR/devtools/forge-\" '$FAKE_DIR/dev.log' && ! grep -q '^rbw' '$FAKE_DIR/argv.log' && grep -q 'config-mode=600' '$FAKE_DIR/dev.log'"
+check "10: the config is base.yml + the theme: exactly one top-level theme: key, the sections of base.yml, the palette colours" bash -c "[ \$(grep -c '^theme:' '$FAKE_DIR/gh-dash.config') = 1 ] && grep -q '^prSections:' '$FAKE_DIR/gh-dash.config' && grep -q 'selected: \"#' '$FAKE_DIR/gh-dash.config'"
+check "10: the real base.yml has no top-level theme: key" bash -c "! grep -q '^theme:' '$REPO/.config/gh-dash/base.yml'"
+mkdir -p "$T/xdgc/gh-dash"; printf 'theme:\n  ui: {}\n' >"$T/xdgc/gh-dash/base.yml"
+XDG_CONFIG_HOME="$T/xdgc" f
+check "10: a base.yml with its own theme: key is refused (the launcher would produce two)" bash -c "[ $RC = 1 ] && grep -q 'must not hold a top-level' '$ERR'"
+CLAUDECODE=1 f
+check "10: forge is refused for an agent (exit 4)" test $RC = 4
+# gitlab
+(cd "$PROJ" && git remote set-url origin git@gitlab.example.com:grp/proj.git)
+printf '[secrets]\nTD_PW = ""\n' >"$ENVS_GLOBAL_DIR/global.local.toml"; chmod 600 "$ENVS_GLOBAL_DIR/global.local.toml"
+: >"$FAKE_DIR/dev.log"
+f
+check "10: a non-github remote -> glab-tui through envs run -g: GITLAB_TOKEN and GITLAB_HOST arrive (hashes), cwd = the repository" bash -c "[ $RC = 0 ] && grep -q 'GITLAB_TOKEN=$(sha SECRET-gitlab-token) GITLAB_HOST=$(sha SECRET-gitlab-host.example) ' '$FAKE_DIR/dev.log' && grep -q \"^glab-tui cwd=$PROJ\$\" '$FAKE_DIR/dev.log'"
+check "10: no other global secret (TD_PW) and no project secret reaches glab-tui; the parent's OPENAI key is the user's own environment" bash -c "grep '^glab-tui hashes' '$FAKE_DIR/dev.log' | grep -q 'names=GITLAB_HOST GITLAB_TOKEN OPENAI_API_KEY \$'"
+f gitlab --root "$PROJ"
+check "10: forge gitlab --root works from anywhere" test $RC = 0
+CLAUDECODE=1 f gitlab
+check "10: the gitlab path is refused for an agent (exit 4)" test $RC = 4
+jq '(.items[]|select(.id=="g-def").fields) |= map(select(.name != "GITLAB_HOST"))' "$FAKE_DIR/vault.json" >"$T/v.json" && mv "$T/v.json" "$FAKE_DIR/vault.json"; rm -f "$FAKE_DIR/rbw-view.json"
+f
+check "10: GITLAB_HOST missing in Env/global: envs says to use envs set NAME -g (exit 1), glab-tui never starts" bash -c "[ $RC = 1 ] && grep -q 'envs set NAME -g' '$ERR'"
+cp "$HERE/fixtures/vault.json" "$FAKE_DIR/vault.json"; rm -f "$FAKE_DIR/rbw-view.json" "$ENVS_GLOBAL_DIR/global.local.toml"
+(cd "$PROJ" && git remote remove origin)
+f
+check "10: no remote and no terminal: asks for github|gitlab (exit 2)" bash -c "[ $RC = 2 ] && grep -q 'forge github' '$ERR'"
+f check
+check "10: forge check reports the tools and the remote without any vault" bash -c "[ $RC = 0 ] && grep -q 'gh-dash' '$OUT' && grep -q 'remote' '$OUT'"
+# the zsh function: glab with the token from Bitwarden (Env/global) through envs run -g
+blk=$(sed -n '/^# The absolute path of envs/,/^fi$/p' "$REPO/.zshrc")
+gfn=$(grep -E '^glab\(\)' "$REPO/.zshrc")
+check "10: .zshrc defines glab() through \$_ENVS_BIN run -g, with the comment" bash -c "grep -B2 -E '^glab\\(\\)' '$REPO/.zshrc' | grep -q '^# glab with the GitLab token' && grep -qE '^glab\\(\\) \\{ \\\$_ENVS_BIN run -g -- glab \"\\\$@\" \\}' '$REPO/.zshrc'"
+: >"$FAKE_DIR/dev.log"
+(cd "$T" && zsh -f -c "$blk; $gfn; glab ci view" >"$CAP/zg.out" 2>"$CAP/zg.err" </dev/null); rc=$?
+check "10: glab ci view in zsh runs the (fake) glab with GITLAB_TOKEN from Env/global, no glab config involved" bash -c "[ $rc = 0 ] && grep -q '^glab ci view\$' '$FAKE_DIR/dev.log' && grep -q 'GITLAB_TOKEN=$(sha SECRET-gitlab-token) ' '$FAKE_DIR/dev.log'"
+check "10: .zshrc exports the lazysql privacy switches for hand runs" bash -c "grep -q 'LAZYSQL_NO_TELEMETRY=1' '$REPO/.zshrc' && grep -q 'LAZYSQL_NO_UPDATE_CHECK=1' '$REPO/.zshrc'"
+scan "10"
+}
+
 run_section() { [[ -z $ONLY || $ONLY == "$1" ]] && "$2"; }
 run_section 1 sections_1
 run_section 2 sections_2_3
@@ -616,6 +676,7 @@ run_section 6 sections_6
 run_section 7 sections_7
 run_section 8 sections_8
 run_section 9 sections_9
+run_section 10 sections_10
 run_section 11 sections_11_12
 
 printf '\ndev test: %d passed, %d failed\n' "$PASS" "$FAILS"

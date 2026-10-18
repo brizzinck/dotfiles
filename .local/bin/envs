@@ -1529,7 +1529,7 @@ def cmd_run(a, cmd):
         fields = fields or {}
         missing = [n for n in cfg.secrets if fields.get(n, "") == ""]
         if missing and not a.allow_missing:
-            fail(f"{env}: missing {', '.join(missing)}: set them with `envs set NAME -e {env}` "
+            fail(f"{env}: missing {', '.join(missing)}: set them with `envs set NAME {'-g' if cfg.is_global else '-e ' + env}` "
                  "(or run with --allow-missing)", 1)
         values = {n: fields[n] for n in cfg.secrets if fields.get(n, "") != ""}
         fields = None

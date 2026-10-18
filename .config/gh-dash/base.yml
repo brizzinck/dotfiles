@@ -1,0 +1,24 @@
+# gh-dash (DEV-d: `forge`). The launcher concatenates this file with the active palette variant's gh-dash-theme.yml (a top-level
+# `theme:` only) into a per-run config on tmpfs, so this file must NOT have a `theme:` key. Auth is gh's own (hosts.yml / GH_TOKEN).
+prSections:
+  - title: My PRs
+    filters: is:open author:@me
+  - title: Review requested
+    filters: is:open review-requested:@me
+  - title: Involved
+    filters: is:open involves:@me -author:@me
+issuesSections:
+  - title: Assigned
+    filters: is:open assignee:@me
+  - title: Created
+    filters: is:open author:@me
+defaults:
+  view: prs
+  prsLimit: 30
+  issuesLimit: 30
+  preview:
+    open: true
+    width: 0.5
+pager:
+  diff: delta
+confirmQuit: false
