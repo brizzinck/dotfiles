@@ -1370,6 +1370,28 @@ else
   info envs-state "no ~/.local/state/envs yet (created by the first envs bind / use)"
 fi
 
+# ── DEV-c: pj, the project picker (one tmux session per repo; replaces sessionizer.sh) ──────
+if [ -x "$DOTFILES/.local/bin/pj" ]; then
+  pj_out="$("$DOTFILES/.local/bin/pj" check 2>&1)"; pj_rc=$?
+  if [ "$pj_rc" = 0 ]; then ok pj "pj check: $(printf '%s\n' "$pj_out" | grep -c '^PASS') ok (SUPER+P, prefix F, no sessionizer.sh, cli profile, config)"; else bad pj "$(printf '%s\n' "$pj_out" | grep -m1 '^FAIL') (pj check)"; fi
+  if [ -x "$DOTFILES/infrastructure/tests/pj/run.sh" ]; then
+    if pj_t="$("$DOTFILES/infrastructure/tests/pj/run.sh" --quick 2>&1)"; then ok pj-tests "offline tests: $(printf '%s' "$pj_t" | tail -1)"; else bad pj-tests "$(printf '%s' "$pj_t" | grep -m1 '^FAIL') (infrastructure/tests/pj/run.sh)"; fi
+  else
+    bad pj-tests "infrastructure/tests/pj/run.sh missing"
+  fi
+  pj_dir="${XDG_STATE_HOME:-$HOME/.local/state}/pj"
+  if [ -d "$pj_dir" ]; then
+    pj_bad=""
+    [ "$(stat -c %a "$pj_dir")" = 700 ] || pj_bad="$pj_bad $pj_dir is $(stat -c %a "$pj_dir") (want 700);"
+    [ ! -e "$pj_dir/trusted.tsv" ] || [ "$(stat -c %a "$pj_dir/trusted.tsv")" = 600 ] || pj_bad="$pj_bad trusted.tsv is $(stat -c %a "$pj_dir/trusted.tsv") (want 600);"
+    if [ -n "$pj_bad" ]; then bad pj-trust "$pj_bad"; else info pj-trust "$(grep -c . "$pj_dir/trusted.tsv" 2>/dev/null || echo 0) trusted .tmux-session.toml file(s) (pj trust DIR to add one); state dir 700, trusted.tsv 600"; fi
+  else
+    info pj-trust "no trusted layout files yet (~/.local/state/pj appears with the first pj trust)"
+  fi
+else
+  info pj ".local/bin/pj not present"
+fi
+
 # ── stow symlinks: every tracked config file must resolve to the repo copy ──────
 broken=""
 n_links=0
