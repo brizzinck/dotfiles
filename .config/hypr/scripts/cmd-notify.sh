@@ -13,9 +13,12 @@
 #
 # "In front" = the Hyprland active window is the terminal window of the shell AND (no tmux, or the pane is the active pane
 # of the active window of a client of its session). The window is found by walking the parent chain of the shell (or, in
-# tmux, of the clients attached to the pane's session) to the first process that owns a window; when one process owns
-# several windows the one titled `<session>:...` wins, else the first. A shell whose window cannot be found still gets the
-# toast (no Focus action). Hyprland: $HYPRLAND_INSTANCE_SIGNATURE when it answers, else the newest instance in
+# tmux, of the clients attached to the pane's session) to the first process that owns a window. When one process owns
+# several windows (ghostty Ctrl+Shift+N) only the one titled `<session>:...` counts as the shell's window; without a title match
+# the window is not decidable, so it counts as "not found" (never "the focused sibling"). A tmux inside a tmux pane is followed to
+# the outer server (the client's chain ends in the outer `tmux: server`; the pane's shell has the outer $TMUX/$TMUX_PANE in its
+# environment): in front = inner AND outer pane active, and the focus steps use the outer tmux. A shell whose window cannot be
+# found still gets the toast (no Focus action). Hyprland: $HYPRLAND_INSTANCE_SIGNATURE when it answers, else the newest instance in
 # $XDG_RUNTIME_DIR/hypr that does (tmux outlives Hyprland and its environment can be stale); none (td, yc, a TTY) = silent.
 # `locate` prints: address TAB tmux-socket TAB session TAB window_id TAB pane_id TAB client_tty TAB focused(0|1)
 # The toast: app `terminal`, summary "Finished in 1m 42s" / "Failed (exit 2) after 1m 42s", body = the command (80 characters,
@@ -67,47 +70,100 @@ owner_of() {
   return 1
 }
 
+# pick_window OWNER TITLE_PREFIX: the window of the terminal process OWNER that shows the shell; prints its address.
+# One window = it. Several windows (ghostty Ctrl+Shift+N makes more windows in ONE process): the title `<session>:...` of the
+# tmux session decides (the active one among several matches); no match = not decidable, return 1 (never "the focused sibling").
+pick_window() {
+  local owner=$1 prefix=$2 addr title m
+  local -a all=() match=()
+  while IFS=$'\t' read -r _ addr title; do
+    [[ -n $addr ]] || continue
+    all+=("$addr")
+    [[ -n $prefix && $title == "$prefix":* ]] && match+=("$addr")
+  done < <(grep "^$owner"$'\t' <<<"$windows")
+  if ((${#match[@]})); then
+    for m in "${match[@]}"; do [[ $m == "$active" ]] && { printf '%s\n' "$m"; return 0; }; done
+    printf '%s\n' "${match[0]}"; return 0
+  fi
+  ((${#all[@]} == 1)) || return 1
+  printf '%s\n' "${all[0]}"
+}
+
+# outer_of PID SOCKET: a tmux client that runs inside a pane of ANOTHER tmux server (nested tmux): its parent chain ends in the
+# outer `tmux: server` (ppid 1), but the pane's shell has the outer $TMUX / $TMUX_PANE in its environment. Prints "socket TAB pane".
+outer_of() {
+  local p=$1 sock=$2 i ppid t tp
+  for ((i = 0; i < 32 && p > 1; i++)); do
+    if [[ -r /proc/$p/environ ]]; then
+      t=$(tr '\0' '\n' <"/proc/$p/environ" 2>/dev/null | sed -n 's/^TMUX=//p' | head -n1)
+      tp=$(tr '\0' '\n' <"/proc/$p/environ" 2>/dev/null | sed -n 's/^TMUX_PANE=//p' | head -n1)
+      if [[ -n $t && -n $tp && ${t%%,*} != "$sock" ]]; then printf '%s\t%s\n' "${t%%,*}" "$tp"; return 0; fi
+    fi
+    ppid=$(sed -E 's/^.*\) [^ ]+ ([0-9]+).*$/\1/' "/proc/$p/stat" 2>/dev/null) || return 1
+    [[ $ppid =~ ^[0-9]+$ ]] || return 1
+    p=$ppid
+  done
+  return 1
+}
+
+# collect SOCK PANE DEPTH UP SHELLPID: append the terminal window(s) that show the shell to the C_* arrays. SOCK/PANE = the tmux
+# pane of the shell (empty = no tmux: the window of SHELLPID); UP = 1 while every tmux level above this one has the pane in front
+# (a nested tmux counts only when the inner pane AND the outer pane are the active ones). Returns 2 when tmux cannot be asked.
+collect() {
+  local sock=$1 pane=$2 depth=$3 up=$4 shellpid=$5
+  local tmuxline session='' win='' wa pa act=$up cpid ctty owner addr prefix='' outer osock opane
+  local -a pids=() ttys=()
+  if [[ -n $sock ]]; then
+    tmuxline=$("$TMUXBIN" -S "$sock" display-message -p -t "$pane" '#{session_name}'$'\t''#{window_id}'$'\t''#{window_active}'$'\t''#{pane_active}' 2>/dev/null) || tmuxline=''
+    [[ -n $tmuxline ]] || return 2
+    IFS=$'\t' read -r session win wa pa <<<"$tmuxline"
+    [[ $wa == 1 && $pa == 1 ]] || act=0
+    prefix=$session
+    while IFS=$'\t' read -r cpid ctty _; do
+      [[ -n $cpid ]] || continue
+      pids+=("$cpid"); ttys+=("$ctty")
+    done < <("$TMUXBIN" -S "$sock" list-clients -t "$session" -F '#{client_pid}'$'\t''#{client_tty}'$'\t''#{client_session}' 2>/dev/null)
+  else
+    pids=("$shellpid"); ttys=('')
+  fi
+  local n
+  for n in "${!pids[@]}"; do
+    cpid=${pids[n]}
+    if owner=$(owner_of "$cpid" "$windows") && addr=$(pick_window "$owner" "$prefix"); then
+      C_ADDR+=("$addr"); C_SOCK+=("$sock"); C_SESSION+=("$session"); C_WINDOW+=("$win"); C_PANE+=("${sock:+$pane}"); C_TTY+=("${ttys[n]}"); C_ACT+=("$act")
+    elif [[ -n $sock ]] && ((depth < 3)) && outer=$(outer_of "$cpid" "$sock"); then
+      IFS=$'\t' read -r osock opane <<<"$outer"
+      collect "$osock" "$opane" $((depth + 1)) "$act" "$shellpid"
+    fi
+  done
+  return 0
+}
+
 # locate PID: sets L_ADDR L_SOCK L_SESSION L_WINDOW L_PANE L_TTY L_FOCUSED
 locate() {
-  local shellpid=$1 clients active windows="" start=() pid owner tmuxline cpid ctty wa pa
+  local shellpid=$1 clients active windows="" rc i
+  local -a C_ADDR=() C_SOCK=() C_SESSION=() C_WINDOW=() C_PANE=() C_TTY=() C_ACT=()
   L_ADDR='' L_SOCK='' L_SESSION='' L_WINDOW='' L_PANE='' L_TTY='' L_FOCUSED=0
   clients=$("$HYPRCTL" clients -j 2>/dev/null) || return 1
   windows=$(jq -r '.[] | [.pid, .address, .title] | @tsv' <<<"$clients" 2>/dev/null) || return 1
   active=$("$HYPRCTL" activewindow -j 2>/dev/null | jq -r '.address // empty' 2>/dev/null)
-  local -A tty_of=()
-  local tmux_active=1
   if [[ -n ${TMUX:-} && -n ${TMUX_PANE:-} ]]; then
-    L_SOCK=${TMUX%%,*}
-    tmuxline=$("$TMUXBIN" -S "$L_SOCK" display-message -p -t "$TMUX_PANE" '#{session_name}'$'\t''#{window_id}'$'\t''#{window_active}'$'\t''#{pane_active}' 2>/dev/null) || tmuxline=''
-    if [[ -n $tmuxline ]]; then
-      IFS=$'\t' read -r L_SESSION L_WINDOW wa pa <<<"$tmuxline"
-      L_PANE=$TMUX_PANE
-      [[ $wa == 1 && $pa == 1 ]] || tmux_active=0
-      while IFS=$'\t' read -r cpid ctty _; do
-        [[ -n $cpid ]] || continue
-        start+=("$cpid"); tty_of[$cpid]=$ctty
-      done < <("$TMUXBIN" -S "$L_SOCK" list-clients -t "$L_SESSION" -F '#{client_pid}'$'\t''#{client_tty}'$'\t''#{client_session}' 2>/dev/null)
-    else
-      L_SOCK=''
-    fi
+    collect "${TMUX%%,*}" "$TMUX_PANE" 0 1 "$shellpid"; rc=$?
+    # the tmux server cannot be asked: treat the shell as a plain one
+    ((rc == 2)) && collect '' '' 0 1 "$shellpid"
+  else
+    collect '' '' 0 1 "$shellpid"
   fi
-  [[ ${#start[@]} -gt 0 ]] || { [[ -n $L_SOCK ]] && return 1; start=("$shellpid"); }
-  local best='' best_pid='' best_prio=0 prio addr title
-  for pid in "${start[@]}"; do
-    owner=$(owner_of "$pid" "$windows") || continue
-    # all windows of that process: the active one wins, then the title `<session>:`, then the first
-    while IFS=$'\t' read -r _ addr title; do
-      [[ -n $addr ]] || continue
-      prio=1
-      [[ -n $L_SESSION && $title == "$L_SESSION":* ]] && prio=2
-      [[ $addr == "$active" ]] && prio=3
-      if ((prio > best_prio)); then best=$addr best_pid=$pid best_prio=$prio; fi
-    done < <(grep "^$owner"$'\t' <<<"$windows")
+  ((${#C_ADDR[@]})) || return 1
+  # the window in front among the candidates (and the pane in front in it), else the first
+  local best=0
+  for i in "${!C_ADDR[@]}"; do
+    if [[ ${C_ADDR[i]} == "$active" ]]; then
+      best=$i
+      [[ ${C_ACT[i]} == 1 ]] && { L_FOCUSED=1; break; }
+    fi
   done
-  [[ -n $best ]] || return 1
-  L_ADDR=$best
-  L_TTY=${tty_of[$best_pid]:-}
-  if ((best_prio == 3 && tmux_active)); then L_FOCUSED=1; fi
+  L_ADDR=${C_ADDR[best]} L_SOCK=${C_SOCK[best]} L_SESSION=${C_SESSION[best]} L_WINDOW=${C_WINDOW[best]} L_PANE=${C_PANE[best]} L_TTY=${C_TTY[best]}
   return 0
 }
 

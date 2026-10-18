@@ -11,7 +11,7 @@
 #   long-command toast  a command that ran at least DF_CMD_NOTIFY_MIN seconds (30; 0 = off in this shell) and finished while its
 #                     terminal is not in front starts ~/.config/hypr/scripts/cmd-notify.sh (it decides "in front", shows the
 #                     toast, a click focuses the terminal and the tmux pane). Never for: ssh logins (SSH_CONNECTION), a command with
-#                     a leading space, interactive programs (DF_CMD_NOTIFY_IGNORE: the first word after sudo/env/VAR=x). A
+#                     a leading space, interactive programs (DF_CMD_NOTIFY_IGNORE: the first word of the alias-expanded line after sudo/doas/env/command/VAR=x and their options). A
 #                     secret-looking command is shown as "(command hidden)". Switch: hub row "Long-command notifications"
 #                     (state file, live). Override any DF_* value in ~/.zshrc.local.
 [[ -o zle && -o interactive && -z $CLAUDECODE ]] || return 0
@@ -24,10 +24,11 @@
 _df_cmd_assign_re='^[[:space:]]*((export|typeset|declare|local|readonly)([[:space:]]+-[a-zA-Z]+)*[[:space:]]+[A-Za-z_][A-Za-z0-9_]*=[^$]*|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]$]*)$'
 _df_cmd_notify=${XDG_CONFIG_HOME:-$HOME/.config}/hypr/scripts/cmd-notify.sh
 zmodload zsh/datetime 2>/dev/null
-_df_cmd_preexec() { _df_cmd_line=$1 _df_cmd_dir=$PWD _df_cmd_t0=$EPOCHREALTIME }
+# $1 = the line as typed, $3 = the line as it will run (aliases expanded: `lzd` -> `lazydocker`), used for the ignore list
+_df_cmd_preexec() { _df_cmd_line=$1 _df_cmd_exp=${3:-$1} _df_cmd_dir=$PWD _df_cmd_t0=$EPOCHREALTIME }
 _df_cmd_precmd() {
-  local ec=$? line=$_df_cmd_line dir=$_df_cmd_dir t0=$_df_cmd_t0
-  _df_cmd_line= _df_cmd_t0=
+  local ec=$? line=$_df_cmd_line exp=$_df_cmd_exp dir=$_df_cmd_dir t0=$_df_cmd_t0
+  _df_cmd_line= _df_cmd_exp= _df_cmd_t0=
   [[ -n $line && -n $t0 && $line != [[:space:]]* ]] || return 0
   local -i ms=$(( (EPOCHREALTIME - t0) * 1000 )) secret=0
   [[ ${(L)line} =~ $DF_SECRET_CMD_RE ]] && secret=1
@@ -43,8 +44,15 @@ _df_cmd_precmd() {
   fi
   (( DF_CMD_NOTIFY_MIN > 0 && ms >= DF_CMD_NOTIFY_MIN * 1000 )) || return 0
   [[ -z $SSH_CONNECTION && -x $_df_cmd_notify ]] || return 0
-  local -a w=(${(z)line}) extra
-  while [[ $w[1] == (sudo|env|nice|time|*=*) ]]; do shift w; done
+  local -a w=(${(z)exp}) extra
+  # the first real word: skip wrappers and their options (`sudo -E nvim`, `sudo -u root nvim`, `command nvim`, `FOO=1 nvim`)
+  while (( $#w )); do
+    case $w[1] in
+      sudo|doas) shift w; while [[ $w[1] == -* ]]; do [[ $w[1] == -[ugCDhprtURT] ]] && shift w; shift w; done ;;
+      env|nice|time|command|builtin|nohup|exec|noglob|*=*|-*) shift w ;;
+      *) break ;;
+    esac
+  done
   (( ${DF_CMD_NOTIFY_IGNORE[(Ie)${w[1]:t}]} )) && return 0
   (( secret )) && extra=(--hidden)
   DF_CMD=$line DF_CMD_DIR=$dir setsid -f $_df_cmd_notify notify --exit $ec --ms $ms --pid $$ $extra &>/dev/null

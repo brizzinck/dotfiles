@@ -6,11 +6,13 @@
 #   ONLY=1,3 run.sh     only those sections (1 gitleaks hook, 2 atuin, 3 carapace + fzf-tab, 4 cmd-notify, 5 overhead)
 #   DEV_A_REAL=1        also smoke-test the real atuin / carapace / difft binaries found on PATH (scratch XDG dirs)
 #
-# 1 pre-commit hook: scratch repo with the hook and .gitleaks.toml of this repo (skipped when gitleaks is missing)
-# 2 atuin: recording hook (fake atuin logs its argv), rows / filter cycling / preview of fzf/atuin-history.sh, and the Ctrl+R
+# 1 pre-commit + pre-push hooks: scratch repo (and a bare remote) with the hooks and .gitleaks.toml of this repo; the push cases are
+#   --no-verify, merge, cherry-pick, rebase, am, an evil merge, a broad working-tree allowlist, fail closed (skipped without gitleaks)
+# 2 atuin: recording hook (fake atuin logs its argv), the secret-command table, history_filter + prune (real atuin when on PATH), rows / filter cycling / preview of fzf/atuin-history.sh, and the Ctrl+R
 #   list in a private tmux (full run only)
 # 3 carapace: cache build, lookup table, `-default-` fallback next to untouched native completions; fzf-tab zstyles
-# 4 cmd-notify: worker with a fake hyprctl / notify-send / hyprd and a private tmux, zsh side with a fake worker
+# 4 cmd-notify: worker with a fake hyprctl / notify-send / hyprd and a private tmux (also two windows of one process and a nested
+#   tmux), zsh side with a fake worker (ignore list through aliases and wrappers)
 # 5 hook overhead: 1000 x preexec + precmd with an instant fake atuin, average must stay under 1 ms
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -591,6 +593,13 @@ s4() {
   DF_CMD='sleep 40' DF_CMD_DIR=/tmp bash "$CN" notify --exit 0 --ms 40000 --pid "$SHELL_PID"
   [[ $(cat "$FAKE/notify.log") == *"Finished in 40s"* && $(cat "$FAKE/notify.log") != *"-A"* ]] && pass "no window found: toast without the Focus action" || fail "no window: $(cat "$FAKE/notify.log")"
   reset_log
+  # M3: two windows of ONE process (ghostty Ctrl+Shift+N) and nothing tells which one is the shell's: the focused sibling must not
+  # swallow the toast, and there is no Focus action for a window we cannot name
+  clients_json "$TERM_PID" 0xaaa "zsh" "$TERM_PID" 0xbbb "zsh"; echo 0xbbb >"$FAKE/active.txt"
+  DF_CMD='sleep 40' DF_CMD_DIR=/tmp bash "$CN" notify --exit 0 --ms 40000 --pid "$SHELL_PID"
+  [[ $(cat "$FAKE/notify.log") == *"Finished in 40s"* && $(cat "$FAKE/notify.log") != *"-A"* ]] && pass "M3: two windows of one process, none decidable: toast, no Focus action (the focused sibling does not count as in front)" || fail "M3 two windows: $(cat "$FAKE/notify.log")"
+  expect "M3: locate says no window for an undecidable pair" bash -c "! bash '$CN' locate --pid '$SHELL_PID'"
+  clients_json "$TERM_PID" 0xaaa "zsh"; echo 0xbbb >"$FAKE/active.txt"; reset_log
   # no reachable Hyprland: silent
   out=$(HYPRLAND_INSTANCE_SIGNATURE='' XDG_RUNTIME_DIR="$T/run-empty" CMD_NOTIFY_HYPRCTL=/bin/false bash "$CN" notify --exit 0 --ms 40000 --pid "$SHELL_PID" 2>&1; echo "rc=$?")
   [[ $out == "rc=0" ]] && ! notified && pass "no reachable Hyprland: silent" || fail "no Hyprland: $out"
@@ -647,6 +656,30 @@ EOF
     ((n == 3)) && pass "zsh: exactly the three expected worker calls" || fail "zsh: $n worker calls (expected 3): $(cat "$wl")"
   fi
 
+  # L5: the ignore list looks at the alias-expanded line ($3 of preexec) and skips wrappers with their options
+  if have zsh; then
+    local wl2="$T/worker2.log"; : >"$wl2"
+    cat >"$T/s4b.zsh" <<EOF
+source $T/hooks.zsh
+DF_CMD_NOTIFY_MIN=1
+run3() { _df_cmd_preexec "\$1" "\$1" "\${2:-\$1}"; _df_cmd_t0=\$(( EPOCHREALTIME - 1.5 )); (exit 0); _df_cmd_precmd; }
+cd /tmp
+run3 "lzd" "lazydocker"
+run3 "ed x" "nvim x"
+run3 "sudo -E nvim x"
+run3 "sudo -u root nvim x"
+run3 "doas nvim x"
+run3 "command nvim x"
+run3 "nohup less x"
+run3 "env -i FOO=1 nvim x"
+run3 "sudo -E make all"
+run3 "mk" "make all"
+sleep 0.3
+EOF
+    PATH="$T/bin:$real_path" XDG_CONFIG_HOME="$T/zcfg" FAKE_WORKER_LOG="$wl2" zsh -f "$T/s4b.zsh" >/dev/null 2>&1
+    eq "L5: only the two long non-interactive commands notify (alias lzd, sudo -E / -u, doas, command, nohup, env -i are ignored)" "$(sed 's/^[^|]*|//; s/|.*//' "$wl2" | tr '\n' ',')" "sudo -E make all,mk,"
+  fi
+
   # --- tmux (full run): a real client in a fake terminal process
   if ((!QUICK)) && have tmux && have script; then s4_tmux; fi
   kill -- "-$TERM_PID" 2>/dev/null
@@ -686,6 +719,36 @@ s4_tmux() {
   [[ $(cat "$FAKE/hyprd.log") == "focuswindow address:0xddd" ]] && pass "click: the terminal window is focused" || fail "click focus: $(cat "$FAKE/hyprd.log")"
   eq "click: the tmux window of the command is selected" "$(tm display-message -p -t main '#{window_id}')" "$win1"
   eq "click: the tmux pane of the command is selected" "$(tm display-message -p -t main '#{pane_id}')" "$pane1"
+  # M3: a second window of the same terminal process; the title `main:` says which one shows this session
+  clients_json "$tpid" 0xddd "main:zsh" "$tpid" 0xfff "other:zsh"; echo 0xfff >"$FAKE/active.txt"; reset_log
+  TMUX_PANE=$pane0 DF_CMD='make' DF_CMD_DIR=/tmp bash "$CN" notify --exit 0 --ms 40000 --pid 1
+  notified && pass "M3: the sibling window of the terminal process has focus, the session's own window has not: toast" || fail "M3 sibling focused: silent"
+  out=$(TMUX_PANE=$pane0 bash "$CN" locate --pid 1)
+  [[ $out == "0xddd"$'\t'* && $out == *$'\t'0 ]] && pass "M3: locate picks the window titled <session>: and reports not focused" || fail "M3 locate: $out"
+  echo 0xddd >"$FAKE/active.txt"; reset_log; tm select-window -t main:0
+  TMUX_PANE=$pane0 DF_CMD='make' DF_CMD_DIR=/tmp bash "$CN" notify --exit 0 --ms 40000 --pid 1
+  notified && fail "M3: the session's own window is in front: no toast" || pass "M3: the session's own window is in front: no toast"
+  clients_json "$tpid" 0xddd "main:zsh"
+  # L4: a tmux inside a pane of the outer tmux: the inner client's parent chain ends in the outer tmux server
+  local isock="$T/tmux-inner.sock" iw ipane
+  tmux -S "$isock" -f /dev/null new-session -d -s inner -x 80 -y 20 "sleep 600"
+  iw=$(tm new-window -d -P -F '#{window_id}' -t main: "bash -c 'TMUX= tmux -S $isock attach -t inner; sleep 600'")
+  for _ in $(seq 1 50); do tmux -S "$isock" list-clients 2>/dev/null | grep -q . && break; sleep 0.1; done
+  ipane=$(tmux -S "$isock" list-panes -t inner -F '#{pane_id}')
+  tm select-window -t "$iw"; echo 0xddd >"$FAKE/active.txt"; reset_log
+  out=$(TMUX="$isock,1,0" TMUX_PANE=$ipane bash "$CN" locate --pid 1)
+  [[ $out == "0xddd"$'\t'"$tsock"$'\t'main$'\t'"$iw"$'\t'*$'\t'*$'\t'1 ]] && pass "L4: a nested tmux resolves to the outer terminal window, outer socket, session and window, in front" || fail "L4 locate (in front): $out"
+  TMUX="$isock,1,0" TMUX_PANE=$ipane DF_CMD=x DF_CMD_DIR=/tmp bash "$CN" notify --exit 0 --ms 40000 --pid 1
+  notified && fail "L4: a nested pane in front: no toast" || pass "L4: a nested pane in front: no toast"
+  tm select-window -t main:0
+  out=$(TMUX="$isock,1,0" TMUX_PANE=$ipane bash "$CN" locate --pid 1)
+  [[ $out == "0xddd"$'\t'"$tsock"$'\t'*$'\t'*$'\t'*$'\t'*$'\t'0 ]] && pass "L4: another outer tmux window is in front: not focused" || fail "L4 locate (outer elsewhere): $out"
+  reset_log; touch "$FAKE/click"
+  TMUX="$isock,1,0" TMUX_PANE=$ipane DF_CMD='make' DF_CMD_DIR=/tmp bash "$CN" notify --exit 0 --ms 40000 --pid 1
+  sleep 0.3
+  [[ $(cat "$FAKE/hyprd.log") == "focuswindow address:0xddd" ]] && pass "L4: click focuses the terminal window" || fail "L4 click: $(cat "$FAKE/hyprd.log")"
+  eq "L4: click selects the outer tmux window that shows the inner tmux" "$(tm display-message -p -t main '#{window_id}')" "$iw"
+  tmux -S "$isock" kill-server 2>/dev/null
   unset TMUX CMD_NOTIFY_TMUX
   kill -- "-$TMUX_TERM_PGID" 2>/dev/null
   if have zsh; then
