@@ -144,6 +144,14 @@ about = {"pins": [], "hypr_binds": 0, "blocks": [{"id": "dictation", "title": "D
 km.keyword_rules = lambda: [("dictation", re.compile("dictation"), ["dictation", "voice"])]
 check("keymap check: a correct rule on a block that is about its topic (block 'Dictation', rule 'dictation') is no broadcast",
       not any("every row of the block" in e for e in km.problems(about)))
+notabout = {"pins": [], "hypr_binds": 0, "blocks": [{"id": "clocks", "title": "Clock and timers", "count": 9}],
+            "rows": [{"keys": f"k{i}", "desc": f"lock {i}", "block": "clocks", "source": "x"} for i in range(9)]}
+km.keyword_rules = lambda: [("lock", re.compile("lock"), ["lock"])]
+check("keymap check: the topic exemption is by whole words: rule word 'lock' does not exempt a block titled 'Clock and timers' (a substring did)",
+      any("every row of the block" in e for e in km.problems(notabout)))
+check("keymap check: ... and a block titled 'Lock and idle' is exempt (whole word)",
+      not any("every row of the block" in e for e in km.problems(dict(notabout, blocks=[{"id": "idle", "title": "Lock and idle", "count": 9}],
+                                                                        rows=[dict(r, block="idle") for r in notabout["rows"]]))))
 km.keyword_rules = lambda: [("clock", re.compile("clock"), ["w"])]
 check("keymap check: a rule that matches nothing still fails (stale rule)", any("matches no row" in e for e in km.problems(broad)))
 km.keyword_rules = real_rules

@@ -1061,7 +1061,7 @@ def problems(data):
             rows_b = [r["desc"] for r in data["rows"] if r["block"] == b["id"]]
             # a block that is ABOUT the rule's topic (title or id holds one of its words, "Dictation" and the rule "dictation") is
             # uniform on purpose: the rule is correct there, not a broadcast
-            about = any(w.lower() in f"{b['title']} {b['id']}".lower() for w in words)
+            about = any(re.search(r"\b%s\b" % re.escape(w), f"{b['title']} {b['id']}", re.I) for w in words)   # whole words: 'lock' is not 'Clock'
             if len(rows_b) >= 8 and all(rx.search(t) for t in rows_b) and not about:
                 errs.append(f"keywords.tsv: the regex {src!r} matches every row of the block {b['id']} (a broadcast, anchor it)")
     hypr = sum(r.get("n", 1) for r in data["rows"] if r["source"] == "hyprland")
