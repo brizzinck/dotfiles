@@ -514,27 +514,34 @@ sec_layout() {
   echo "-- 8 fix-layout"
   client_setup
   ctl '{"pick": "1"}'
+  n0=$(nreq)
   run fix-layout ghbdtn
-  check "ghbdtn -> the model picked candidate 1 (привет)" $([ $RC = 0 ] && [ "$OUT" = "привет" ] && echo 0 || echo 1) "$OUT $ERR"
-  check "request: grammar root ::= [0-1] (two distinct candidates), max_tokens 1, temperature 0" $([ "$(req .grammar)" = 'root ::= [0-1]' ] && [ "$(req .max_tokens)" = 1 ] && [ "$(req '.temperature == 0')" = true ] && echo 0 || echo 1) "$(tail -1 "$T/req.log")"
-  check "request: the candidates are listed by index" $([ "$(req '.messages[1].content')" = $'0: ghbdtn\n1: привет' ] && echo 0 || echo 1) "$(req '.messages[1].content')"
-  ctl '{"pick": "2"}'
+  check "ghbdtn -> привет, decided offline: the model is not asked" $([ $RC = 0 ] && [ "$OUT" = "привет" ] && [ "$(nreq)" = "$n0" ] && echo 0 || echo 1) "$OUT $ERR"
   run fix-layout ghbdsn
-  check "ghbdsn (ua): three candidates, the model picks привіт" $([ "$OUT" = "привіт" ] && [ "$(req .grammar)" = 'root ::= [0-2]' ] && echo 0 || echo 1) "$OUT $(req .grammar)"
-  check "ghbdsn candidates: as typed, us->ru (привыт), us->ua (привіт)" $([ "$(req '.messages[1].content')" = $'0: ghbdsn\n1: привыт\n2: привіт' ] && echo 0 || echo 1) "$(req '.messages[1].content')"
-  ctl '{"pick": "1"}'
+  check "ghbdsn (ua) -> привіт offline" $([ "$OUT" = "привіт" ] && [ "$(nreq)" = "$n0" ] && echo 0 || echo 1) "$OUT"
   run fix-layout "руддщ"
-  check "руддщ -> hello" $([ "$OUT" = "hello" ] && echo 0 || echo 1) "$OUT"
-  ctl '{"pick": "0"}'
+  check "руддщ -> hello offline" $([ "$OUT" = "hello" ] && [ "$(nreq)" = "$n0" ] && echo 0 || echo 1) "$OUT"
   run fix-layout "hello world"
-  check "English is kept as typed when the model says 0" $([ "$OUT" = "hello world" ] && echo 0 || echo 1) "$OUT"
+  check "English typed correctly is kept offline" $([ "$OUT" = "hello world" ] && [ "$(nreq)" = "$n0" ] && echo 0 || echo 1) "$OUT"
+  run fix-layout "git commit -m fix"
+  check "a shell command is kept offline" $([ "$OUT" = "git commit -m fix" ] && echo 0 || echo 1) "$OUT"
   runin "ghbdtn" fix-layout
-  check "text on stdin works" $([ "$(req '.messages[1].content')" = $'0: ghbdtn\n1: привет' ] && echo 0 || echo 1)
+  check "text on stdin works" $([ "$OUT" = "привет" ] && echo 0 || echo 1)
   run fix-layout "1234 !!!"
-  check "text without letters has one candidate: printed as is, the model is not asked" $([ "$OUT" = "1234 !!!" ] && echo 0 || echo 1) "$OUT"
-  n0=$(nreq); run fix-layout --no-llm ghbdtn
-  check "--no-llm: heuristic pick, no request" $([ "$OUT" = "привет" ] && [ "$(nreq)" = "$n0" ] && echo 0 || echo 1) "$OUT"
-  # the heuristic over the whole eval set
+  check "text without letters has one candidate: printed as is" $([ "$OUT" = "1234 !!!" ] && echo 0 || echo 1) "$OUT"
+  # the uncertain band: two letters, no word of three
+  run fix-layout "ok"
+  check "ok: the offline guess is unsure, the model is asked (grammar root ::= [0-1]) and its pick wins" $([ "$OUT" = "щл" ] && [ "$(nreq)" = $((n0 + 1)) ] && [ "$(req .grammar)" = 'root ::= [0-1]' ] && echo 0 || echo 1) "$OUT $(req .grammar)"
+  check "request: max_tokens 1, temperature 0, system with examples, candidates listed by index" $([ "$(req .max_tokens)" = 1 ] && [ "$(req '.temperature == 0')" = true ] && [[ "$(req '.messages[0].content')" == *"Answer: 2"* ]] && [ "$(req '.messages[1].content')" = $'0: ok\n1: щл' ] && echo 0 || echo 1) "$(tail -1 "$T/req.log")"
+  ctl '{"pick": "2"}'
+  run fix-layout "ls"
+  check "ls (ru and ua differ): three candidates, grammar [0-2], the pick of the model" $([ "$OUT" = "ді" ] && [ "$(req .grammar)" = 'root ::= [0-2]' ] && [ "$(req '.messages[1].content')" = $'0: ls\n1: ды\n2: ді' ] && echo 0 || echo 1) "$OUT $(req '.messages[1].content')"
+  ctl '{"pick": "0"}'
+  run fix-layout "ls"
+  check "the model says 0: the text as typed" $([ "$OUT" = "ls" ] && echo 0 || echo 1) "$OUT"
+  n1=$(nreq); run fix-layout --no-llm ls
+  check "--no-llm never asks, even in the uncertain band" $([ $RC = 0 ] && [ "$(nreq)" = "$n1" ] && echo 0 || echo 1)
+  # the offline guess over the whole eval set (model not needed for any row except the single-word ones the guess also gets)
   good=0 tot=0 miss=""
   while IFS=$'\t' read -r typed want; do
     case $typed in ''|'#'*) continue ;; esac
@@ -544,16 +551,21 @@ sec_layout() {
   check "the offline guess gets every row of eval/layout.tsv ($good/$tot)" $([ "$good" = "$tot" ] && echo 0 || echo 1) "$miss"
   # the model cannot answer: nonsense, error, no server -> offline guess, exit 0
   ctl '{"pick": "9"}'
-  run fix-layout ghbdtn
-  check "a nonsense answer falls back to the offline guess" $([ $RC = 0 ] && [ "$OUT" = "привет" ] && echo 0 || echo 1) "$OUT"
+  run fix-layout ls
+  check "a nonsense answer falls back to the offline guess" $([ $RC = 0 ] && [ -n "$OUT" ] && echo 0 || echo 1) "$OUT"
   ctl '{"status": 503}'
-  run fix-layout ghbdtn
-  check "a server error falls back to the offline guess (stderr says so)" $([ $RC = 0 ] && [ "$OUT" = "привет" ] && has "$ERR" "offline guess" && echo 0 || echo 1) "$OUT $ERR"
+  run fix-layout ok
+  check "a server error falls back to the offline guess (stderr says so)" $([ $RC = 0 ] && has "$ERR" "offline guess" && echo 0 || echo 1) "$OUT $ERR"
   ctl ''; fake_down
+  run fix-layout ok
+  check "no socket: offline guess, exit 0" $([ $RC = 0 ] && [ -n "$OUT" ] && has "$ERR" "offline guess" && echo 0 || echo 1) "$RC $OUT $ERR"
   run fix-layout ghbdtn
-  check "no socket: offline guess, exit 0" $([ $RC = 0 ] && [ "$OUT" = "привет" ] && echo 0 || echo 1) "$RC $OUT $ERR"
-  run fix-layout --dry-run ghbdtn
-  check "fix-layout --dry-run lists the candidates and the grammar, not the text" $([ $RC = 0 ] && has "$OUT" 'root ::= [0-1]' && has "$OUT" "candidates: 2" && echo 0 || echo 1) "$OUT"
+  check "no socket and an obvious case: no complaint at all" $([ $RC = 0 ] && [ "$OUT" = "привет" ] && [ -z "$ERR" ] && echo 0 || echo 1) "$OUT $ERR"
+  run fix-layout --dry-run ok
+  check "fix-layout --dry-run lists the candidates, the grammar and the decision, not the text" $([ $RC = 0 ] && has "$OUT" 'root ::= [0-1]' && has "$OUT" "candidates: 2" && has "$OUT" "the model picks" && echo 0 || echo 1) "$OUT"
+  run fix-layout --dry-run rfnfkju4711
+  conv=$(PYTHONPYCACHEPREFIX="$T/pycache" python3 -I "$REPO/.config/layout/layout.py" convert --from us --to ru rfnfkju4711)
+  check "fix-layout --dry-run on an obvious case prints neither the text nor its conversion" $([ $RC = 0 ] && ! has "$OUT" "rfnfkju4711" && ! has "$OUT" "$conv" && has "$OUT" "offline guess" && echo 0 || echo 1) "$OUT"
   client_teardown
 }
 

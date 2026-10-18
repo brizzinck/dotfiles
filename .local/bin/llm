@@ -15,8 +15,9 @@ while it is used (llm.socket -> llm-proxy.service -> llm-server.service).
       --no-llm                         fix-layout only: the offline guess, no server
     Text comes from the arguments, else stdin (callers should pipe selections on stdin, never put them in argv). commit-msg uses
     the staged diff (git diff --cached) when there is no text; --stat is always included, the diff is cut at 12000 characters.
-    fix-layout prints the candidate (as typed, or the same keys read on us/ru/ua) the model picks with a one-digit grammar; when
-    the model cannot answer it falls back to the offline guess (a hotkey must work without it), the other presets exit 3.
+    fix-layout prints the candidate (as typed, or the same keys read on us/ru/ua): an offline guess decides the obvious cases
+    without loading the model, otherwise the model picks with a one-digit grammar, and when it cannot answer the guess is used
+    (a hotkey must work without the model); the other presets exit 3 when the model is not available.
   llm chat                             tiny REPL (history in memory only, Ctrl+D quits, /reset)
   llm status [--json]                  package, Vulkan device (cached), active model, socket, loaded or not (+ since, MemoryCurrent,
                                        GPU memory); never connects to the model socket, so it never loads the model
@@ -779,11 +780,19 @@ def print_dry_run(name, body, n_chars):
 # ---- fix-layout
 BIGRAMS = {
     "en": set("th he in er an re on at en nd ti es or te of ed is it al ar st to nt ng se ha as ou io le ve co me de hi ri ro ic "
-              "ne ea ra ce li ch ll be ma si om ur ca el ta la ns ge ly ei di ho ee ec pe ot us".split()),
-    "ru": set("ст но ен то на ов ни ра во ко ре ро ли пр ол ос по ат ор ер ан ет ал ит ти ей ел ва ле ны ть го ог да ед ть пе "
-              "ка де ск ем ве ль мо ни ин ак ов ое ом те ту до ое ие ра ят ие".split()),
+              "ne ea ra ce li ch ll be ma si om ur ca el ta la ns ge ly ei di ho ee ec pe ot us wo ld rl ow wh ay ul pl ak ki "
+              "ck gr fo ew ie id ip mp ir ts ey no ob bo op pp mi ms ni do ad ag am ap av ba bl br bu by ct da em ex ff fi fl "
+              "fu gi go gu im ke ky lo lu mo mu na nc nk oa od og ok ol oo os oy pa ph pr ps pu qu rd rg rk rm rn rs rt ry sa "
+              "sc sh sl sm so sp ss su sy tc tt tu ty ud ug um un up ut va vi wa we wi wn wr".split()),
+    "ru": set("ст но ен то на ов ни ра во ко ре ро ли пр ол ос по ат ор ер ан ет ал ит ти ей ел ва ле ны ть го ог да ед пе "
+              "ка де ск ем ве ль мо ин ак ое ом те ту до ие ят ия ых ая ую ый ий сл см сн со су тв тр уд уж ук ул ум ун уп ур "
+              "ус ут ух уч ша шк шо ще эт эк яв як ян ям яс еш ещ жд же жи жн за зд зн зи зл зо зв ив ид из ик им ис иц иш кр "
+              "кс кт ку кл кн ки ла лб ли лк лн ло лу лы ма ме ми мн му мы ми нь ну ны ня ов ог оп от оч ош па пи пл пу ра рт "
+              "ру ры се си ео ею".split()),
     "uk": set("ст но ен ов на ни ра ко пр ро ол ер ти ат ор ит ан ід ий ал ль по ва ті ну ле ів ом ві ке ми ть ин ка ог го де "
-              "пе ре ля ую св ен ий їх ят іс ія ац ам".split()),
+              "пе ре ля ую св їх іс ія ац ам ід ої ну ни ий ся ою ка ти ки ку ла ли ло ма ме ми мо му мі нь не ні но ну ня па "
+              "пи пі по пу ра ре ри ро ру ря са се си со су сь та те ти то ту тя ув уж ук ул ум ун уп ур ус ут ух уч ша ше ши "
+              "шо ще шк ях як яв ян ям ят яс".split()),
 }
 UK_ONLY, RU_ONLY = set("їєіґ"), set("ыэъё")
 
@@ -813,12 +822,12 @@ def layout_candidates(text):
     return out
 
 
+VOWELS = {"lat": set("aeiouy"), "cyr": set("аеёиоуыэюяіїє")}
+
+
 def bigram_score(text):
-    """Share of the letter pairs inside words that are common in the language of the text's script (0..1)."""
-    words = ["".join(c for c in w if c.isalpha()).lower() for w in text.split()]
-    pairs = [w[i:i + 2] for w in words if len(w) > 1 for i in range(len(w) - 1)]
-    if not pairs:
-        return 0.0
+    """Share of the letter pairs inside words that are common in the language of the text's script (0..1); words of 3+ letters
+    without a vowel (consonant strings such as `ntcn`) score nothing."""
     sc = script_of(text)
     if sc == "lat":
         langs = ("en",)
@@ -827,36 +836,61 @@ def bigram_score(text):
         langs = ("uk",) if has_uk and not has_ru else ("ru",) if has_ru and not has_uk else ("ru", "uk")
     else:
         return 0.0
-    score = max(sum(1 for p in pairs if p in BIGRAMS[l]) / len(pairs) for l in langs)
-    mixed = sum(1 for w in text.split() if any("Ѐ" <= c <= "ӿ" for c in w) and any(c.isascii() and c.isalpha() for c in w))
-    return score - 0.5 * mixed / max(1, len(text.split()))
+    words = ["".join(c for c in w if c.isalpha()).lower() for w in text.split()]
+    total = 0
+    best = 0.0
+    for l in langs:
+        hit = total = 0
+        for w in words:
+            if len(w) < 2:
+                continue
+            novowel = len(w) >= 3 and not (set(w) & VOWELS[sc])
+            for i in range(len(w) - 1):
+                total += 1
+                if not novowel and w[i:i + 2] in BIGRAMS[l]:
+                    hit += 1
+        best = max(best, hit / total if total else 0.0)
+    if not total:
+        return 0.0
+    mixed = sum(1 for w in text.split() if any("\u0400" <= c <= "\u04ff" for c in w) and any(c.isascii() and c.isalpha() for c in w))
+    return best - 0.5 * mixed / max(1, len(text.split()))
+
+
+def longest_word(text):
+    """Letters in the longest word (digits, punctuation and a leading dash do not count)."""
+    return max((sum(1 for c in w if c.isalpha()) for w in text.split()), default=0)
 
 
 def heuristic_pick(cands):
-    """Index of the most plausible candidate without a model; the text as typed gets a small head start."""
-    best, best_score = 0, -1.0
-    for i, (_, c) in enumerate(cands):
-        s = bigram_score(c) + (0.08 if i == 0 else 0.0)
-        if s > best_score:
-            best, best_score = i, s
-    return best
+    """(index, confident): the most plausible candidate without a model (the text as typed gets a small head start).
+    Confident = a word of at least 3 letters, a score of 0.3 and a lead of 0.2 over the runner-up: short words and mixed signals are
+    left to the model, which is not even loaded for the obvious cases (a hotkey must be instant and work without it)."""
+    scores = [bigram_score(c) + (0.08 if i == 0 else 0.0) for i, (_, c) in enumerate(cands)]
+    order = sorted(range(len(cands)), key=lambda i: -scores[i])
+    best = order[0]
+    lead = scores[best] - (scores[order[1]] if len(order) > 1 else 0.0)
+    return best, longest_word(cands[best][1]) >= 3 and scores[best] >= 0.3 and lead >= 0.2 - 1e-9
 
 
 def fix_layout_answer(text, o, model, preset, dry=False):
-    """The chosen candidate text. The model picks an index under a one-digit grammar; without a usable answer (server not
-    available, error, nonsense) the offline guess decides, so a layout-fix hotkey still works without the model."""
+    """The chosen candidate text. Deterministic first: when the offline guess is confident (see heuristic_pick) it is the answer and
+    the model is never asked; otherwise the model picks an index under a one-digit grammar, and without a usable answer (server
+    not available, error, nonsense) the offline guess decides, so a layout-fix hotkey still works without the model."""
     cands = layout_candidates(text)
-    if len(cands) == 1:
-        return cands[0][1]
-    if o.no_llm:
-        return cands[heuristic_pick(cands)][1]
+    guess, confident = heuristic_pick(cands)
+    grammar = f"root ::= [0-{max(len(cands) - 1, 0)}]"
     lines = "\n".join(f"{i}: {c}" for i, (_, c) in enumerate(cands))
-    grammar = f"root ::= [0-{len(cands) - 1}]"
     body = request_body(model["id"], preset["system"], lines, dict(preset, grammar=grammar), len(text), False, o)
     if dry:
         print_dry_run("fix-layout", body, len(text))
         print(f"candidates: {len(cands)} ({', '.join(l for l, _ in cands)})")
+        print("decision: " + ("nothing to convert" if len(cands) == 1 else
+                              "offline guess, the model is not asked" if o.no_llm or confident else "the model picks"))
         return None
+    if len(cands) == 1:
+        return cands[0][1]
+    if o.no_llm or confident:
+        return cands[guess][1]
     pick = None
     try:
         ensure_available(model)
@@ -869,7 +903,7 @@ def fix_layout_answer(text, o, model, preset, dry=False):
     except Fail as e:
         err(f"{e}; using the offline guess")
     if pick is None:
-        pick = heuristic_pick(cands)
+        pick = guess
     return cands[pick][1]
 
 
@@ -1210,6 +1244,9 @@ def cmd_bench(args):
     ensure_available(model)
     token_ensure()
     out = []
+    if cold:
+        cmd_stop([])  # the baseline is the GPU memory with the model gone
+        time.sleep(2.0)
     gtt0 = gtt_used()
     if cold:
         for label in ("cold start (first load after stop)", "cold start again (shader cache warm)"):
@@ -1219,7 +1256,8 @@ def cmd_bench(args):
             out.append((label, f"{ttft:.2f} s", f"first token; total {total:.2f} s"))
     else:
         timed_stream(model, "Say hello.", 4)  # make sure it is loaded; not measured
-    runs = [timed_stream(model, SPEED_PROMPT, 128) for _ in range(3)]
+    # a different first line per run: the slot would otherwise reuse the cached prompt and skip the prompt processing
+    runs = [timed_stream(model, f"Task {time.time_ns()}. " + SPEED_PROMPT, 128) for _ in range(3)]
     pp = [r[3].get("prompt_per_second") or 0 for r in runs]
     tg = [r[3].get("predicted_per_second") or 0 for r in runs]
     out.append(("prompt processing", f"{median(pp):.0f} t/s", f"{runs[0][3].get('prompt_n', '?')} prompt tokens"))

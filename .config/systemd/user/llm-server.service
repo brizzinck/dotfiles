@@ -39,8 +39,6 @@ ProtectKernelLogs=yes
 ProtectControlGroups=yes
 ProtectHostname=yes
 ProtectClock=yes
-# no network namespace access at all: the socket is a file under /run (reached through the filesystem), nothing needs TCP
-PrivateNetwork=yes
 UMask=0077
 RestrictNamespaces=yes
 RestrictRealtime=yes

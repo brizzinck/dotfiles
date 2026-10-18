@@ -55,7 +55,30 @@ max_tokens_rule = "diff"
 strip = true
 
 [fix-layout]
-system = "The user typed text while the keyboard layout was wrong. Below are candidates: the text as typed and the same keystrokes read on the other layouts (us, ru, ua). Reply with ONLY the number of the candidate that is a real word or sentence in a natural language (English, Russian or Ukrainian). If the text as typed is already right, reply 0."
+# the examples matter: without them the 2B model answers 0 for almost everything
+system = """The user typed text while the keyboard layout was wrong. Below are candidates: the text as typed and the same keystrokes read on the other layouts (us, ru, ua). Reply with ONLY the number of the candidate that is a real word or sentence in a natural language (English, Russian or Ukrainian). If the text as typed is already a real word or sentence, reply 0.
+
+Examples:
+0: ghbdtn
+1: привет
+Answer: 1
+
+0: руддщ цщкдв
+1: hello world
+Answer: 1
+
+0: hello world
+1: руддщ цщкдв
+Answer: 0
+
+0: привет мир
+1: ghbdtn vbh
+Answer: 0
+
+0: ghbdsn
+1: привыт
+2: привіт
+Answer: 2"""
 temperature = 0.0
 top_p = 1.0
 max_tokens = 1
