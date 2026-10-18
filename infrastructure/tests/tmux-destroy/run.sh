@@ -69,6 +69,19 @@ expect "the other detached term-* session is kept" tmux has-session -t =term-d2
 expect "a non-term session is kept" tmux has-session -t =plain-d3
 printf 'n\n' | KILL_SESSION_MENU="$T/menu" bash "$REPO/.config/tmux/scripts/kill-session.sh" --detached >/dev/null 2>&1
 expect "nothing picked, nothing killed" tmux has-session -t =term-d2
+# background and stopped jobs of an idle shell count as running (they die with the terminal): FIX-DEVc L1
+for n in d4 d5 d6 d7; do tmux new-session -d -s "term-$n" "bash --norc --noprofile -i"; done
+sleep 0.3
+tmux send-keys -t =term-d4: 'sleep 304 &' Enter
+tmux send-keys -t =term-d6: 'sleep 306' Enter; sleep 0.3; tmux send-keys -t =term-d6: C-z
+tmux send-keys -t =term-d7: '(sleep 307 &)' Enter    # forked away from the shell (wl-copy keeping the clipboard): not a job
+sleep 0.5
+rows=$(python3 "$REPO/.config/hypr/scripts/term-procs.py" --detached)
+expect "--detached: a background job (sleep 304 &) of an idle shell is listed" bash -c "printf '%s\n' \"$rows\" | grep -q '^term-d4.*sleep'"
+expect "--detached: a stopped job (Ctrl+Z) is listed" bash -c "printf '%s\n' \"$rows\" | grep -q '^term-d6.*sleep'"
+expect "--detached: an idle interactive shell has an empty summary" bash -c "printf '%s\n' \"$rows\" | awk -F'\t' '\$1 == \"term-d5\" { exit \$4 != \"\" }'"
+expect "--detached: a process that forked away from the shell is not listed as running" bash -c "printf '%s\n' \"$rows\" | awk -F'\t' '\$1 == \"term-d7\" { exit \$4 != \"\" }'"
+pkill -KILL -f '^sleep 30[4-7]$' 2>/dev/null
 tmux kill-server 2>/dev/null
 
 echo "tmux-destroy: $fails failed"

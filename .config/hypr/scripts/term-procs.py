@@ -13,7 +13,7 @@
                              kill-session.sh --detached and the hub row "Clean up detached terminal sessions" list them.
 
 Foreground = the process group that owns the pane's terminal (tcgetpgrp), read from /proc: nested shells, a pager or a
-`go test` run in the shell count, an idle zsh/bash does not. TERMPROCS_TMUX overrides the tmux command (tests use `tmux -L x`).
+`go test` run in the shell count, an idle zsh/bash does not. Background and stopped jobs of the same terminal count too. TERMPROCS_TMUX overrides the tmux command (tests use `tmux -L x`).
 """
 import os
 import re
@@ -78,7 +78,7 @@ def snapshot():
         except (IndexError, ValueError):
             continue
         argv = [a.decode(errors="replace") for a in read(f"/proc/{name}/cmdline").split(b"\0") if a]
-        procs[int(name)] = {"ppid": ppid, "pgrp": pgrp, "tty": tty, "tpgid": tpgid, "argv": argv}
+        procs[int(name)] = {"ppid": ppid, "pgrp": pgrp, "sid": int(tail[3]), "tty": tty, "tpgid": tpgid, "argv": argv}
     return procs
 
 
@@ -111,21 +111,41 @@ def tty_nr(path):
         return None
 
 
+def under(procs, pid, roots):
+    """True when PID is one of ROOTS or has one as an ancestor (a daemon that forked away was reparented, it is not)"""
+    for _ in range(64):
+        if pid in roots:
+            return True
+        pid = procs.get(pid, {}).get("ppid", 0)
+        if pid <= 1:
+            return False
+    return False
+
+
 def foreground_labels(procs, ttys):
-    """labels of the non-idle foreground command of each terminal (tty device numbers in ttys)"""
+    """labels of the non-idle commands of each terminal (tty device numbers in ttys): the foreground job, and the
+    background (`cmd &`) and stopped (Ctrl+Z) jobs of the same terminal, which die with it just the same. A process that
+    forked away from the shell (wl-copy keeping the clipboard, an agent) is not a job of the terminal."""
     labels = []
     for tty in ttys:
         on_tty = {pid: p for pid, p in procs.items() if p["tty"] == tty}
         if not on_tty:
             continue
         tpgid = next(iter(on_tty.values()))["tpgid"]
-        group = [pid for pid, p in on_tty.items() if p["pgrp"] == tpgid]
-        if not group:
-            continue
-        leader = tpgid if tpgid in on_tty else min(group)
-        lab = label(on_tty[leader]["argv"])
-        if lab and lab not in IDLE_SHELLS:
-            labels.append(lab)
+        leaders = {pid for pid, p in on_tty.items() if p["sid"] == pid}     # the shell of the pane owns the session
+        groups = {}
+        for pid, p in on_tty.items():
+            if p["pgrp"] == tpgid or under(procs, pid, leaders):
+                groups.setdefault(p["pgrp"], []).append(pid)
+        # the foreground group first, then the others by group id
+        for pg in sorted(groups, key=lambda g: (g != tpgid, g)):
+            leader = pg if pg in on_tty else min(groups[pg])
+            lab = label(on_tty[leader]["argv"])
+            if not lab or lab in IDLE_SHELLS:
+                # a forked shell (`(sleep 9) &`, a function in the background) leads a group of its own: its children count
+                lab = next((l for l in (label(on_tty[m]["argv"]) for m in sorted(groups[pg])) if l and l not in IDLE_SHELLS), "")
+            if lab and lab not in IDLE_SHELLS:
+                labels.append(lab)
     return labels
 
 
