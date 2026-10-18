@@ -5,15 +5,18 @@
 #
 #   infrastructure/dev/user-tools.sh [--dry-run] [--only NAME[,NAME]]     names: lazysql gh-dash posting gitlab-ci-local glab-tui glab
 #
+# (posting is the exception: exactly the pin, from the hash lock.)
+#
 # Sources and why (see CLAUDE.md "Dev tools"): `go install module@tag` is verified by sum.golang.org and has no telemetry
-# collector (the lazysql release builds ask once and send by default); pipx for posting, `npm install -g --ignore-scripts`
+# collector (the lazysql release builds ask once and send by default); pipx for posting (with a hash-locked dependency set),
+# `npm install -g --ignore-scripts`
 # for gitlab-ci-local, `cargo install --locked --version` for glab-tui. Repo packages (hurl, act, glab) come from
 # apply-system.sh. No AUR *-bin packages.
 set -u
 
 LAZYSQL_VERSION=v0.7.0                 # github.com/jorgerojas26/lazysql
 GHDASH_VERSION=v4.26.2                 # github.com/dlvhdr/gh-dash/v4
-POSTING_VERSION=2.11.1                 # PyPI posting (pipx)
+POSTING_VERSION=2.11.1                 # PyPI posting (pipx, hash-locked: posting-requirements.txt, exact version)
 GCL_VERSION=4.76.1                     # npm gitlab-ci-local
 GLABTUI_VERSION=0.9.3                  # crates.io glab-tui-crate (binary glab-tui)
 
@@ -63,10 +66,21 @@ try:
     print(d["venvs"]["posting"]["metadata"]["main_package"]["package_version"])
 except Exception:
     pass' 2>/dev/null)
-  if [[ -n $have_v ]] && ver_ge "$have_v" "$POSTING_VERSION"; then log "posting $have_v present (pin $POSTING_VERSION)"; return 0; fi
-  log "posting: pipx install posting==$POSTING_VERSION"
-  if [[ -n $have_v ]]; then run pipx install --force "posting==$POSTING_VERSION"; else run pipx install "posting==$POSTING_VERSION"; fi \
-    || warn "posting: pipx install failed"
+  # pipx makes the venv and the entry point WITHOUT dependencies, then every package (posting and its 46 dependencies) is
+  # installed from posting-requirements.txt with `--require-hashes`: nothing newer than the lock, every file hash-checked
+  # (REVIEW-DEV-d #16; the lock is made by posting-lock.py)
+  local lock="$HERE/posting-requirements.txt" mark lock_sum have_sum
+  [[ -f $lock ]] || { warn "posting: $lock is missing"; return 0; }
+  mark="${XDG_STATE_HOME:-$HOME/.local/state}/dev-tools/posting.lock"
+  lock_sum=$(sha256sum "$lock" | cut -d' ' -f1); have_sum=$(cat "$mark" 2>/dev/null)
+  # exactly the pin, installed from THIS lock (the marker): an older unhashed install, a newer pipx upgrade or a changed lock
+  # are all reinstalled
+  if [[ $have_v == "$POSTING_VERSION" && $have_sum == "$lock_sum" ]]; then log "posting $have_v present (pin $POSTING_VERSION, lock verified)"; return 0; fi
+  log "posting: pipx install --no-deps posting==$POSTING_VERSION, then pip --require-hashes -r posting-requirements.txt"
+  if [[ -n $have_v ]]; then run pipx install --force --pip-args=--no-deps "posting==$POSTING_VERSION"; else run pipx install --pip-args=--no-deps "posting==$POSTING_VERSION"; fi \
+    && run pipx runpip posting install --require-hashes --no-deps --force-reinstall -r "$lock" \
+    || { warn "posting: install failed"; return 0; }
+  if ((! DRY)); then mkdir -p "$(dirname "$mark")" && printf '%s\n' "$lock_sum" >"$mark"; fi
 }
 
 step_gcl() {
