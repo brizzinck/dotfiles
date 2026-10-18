@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# vault-audit: tidy the Bitwarden vault into a folder tree without reading a value (audit, plan, review, apply).
+# See `vault-audit --help` (.config/hypr/scripts/vault-org.py).
+exec /usr/bin/python3 -I "$(dirname "$(readlink -f "$0")")/../../.config/hypr/scripts/vault-org.py" "$@"

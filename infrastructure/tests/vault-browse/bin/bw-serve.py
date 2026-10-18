@@ -156,6 +156,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.ok(it) if it else self.fail("Not found.")
             if method == "PUT":
                 new = json.loads(body)
+                new["revisionDate"] = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())   # the real server stamps every write
                 with open(f"{FAKE}/last-edit.json", "w") as f:
                     json.dump(new, f)
                 v["items"] = [new if i["id"] == parts[2] else i for i in v["items"]]

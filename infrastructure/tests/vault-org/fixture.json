@@ -1,0 +1,614 @@
+{
+ "folders": [
+  {
+   "id": "f-work",
+   "name": "Work"
+  },
+  {
+   "id": "f-mail",
+   "name": "Mail"
+  },
+  {
+   "id": "f-linux",
+   "name": "Linux"
+  },
+  {
+   "id": "f-mcp",
+   "name": "MCP"
+  },
+  {
+   "id": "f-envp",
+   "name": "Env"
+  },
+  {
+   "id": "f-env",
+   "name": "Env/demo"
+  },
+  {
+   "id": "f-old",
+   "name": "Old Stuff"
+  },
+  {
+   "id": "f-old2",
+   "name": "old-stuff"
+  },
+  {
+   "id": "f-empty",
+   "name": "Empty"
+  },
+  {
+   "id": "f-arch",
+   "name": "Archive"
+  }
+ ],
+ "items": [
+  {
+   "id": "i-01",
+   "type": 1,
+   "name": "Example Mail",
+   "folderId": null,
+   "notes": null,
+   "reprompt": 0,
+   "login": {
+    "username": "alice-mail",
+    "password": "PW-mail-1",
+    "totp": null,
+    "uris": [
+     {
+      "uri": "https://login.example-mail.test/signin",
+      "match": null
+     }
+    ]
+   },
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "revisionDate": "2026-09-30T08:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  },
+  {
+   "id": "i-02",
+   "type": 1,
+   "name": "Example Mail",
+   "folderId": null,
+   "notes": null,
+   "reprompt": 0,
+   "login": {
+    "username": "alice-mail",
+    "password": "PW-mail-1",
+    "totp": null,
+    "uris": [
+     {
+      "uri": "https://www.login.example-mail.test",
+      "match": null
+     }
+    ]
+   },
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "revisionDate": "2026-06-01T08:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  },
+  {
+   "id": "i-03",
+   "type": 1,
+   "name": "Example Mail",
+   "folderId": "f-old",
+   "notes": null,
+   "reprompt": 0,
+   "login": {
+    "username": "Alice-Mail",
+    "password": "PW-mail-1",
+    "totp": null,
+    "uris": [
+     {
+      "uri": "login.example-mail.test:8443",
+      "match": null
+     }
+    ]
+   },
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "revisionDate": "2026-03-01T08:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  },
+  {
+   "id": "i-04",
+   "type": 1,
+   "name": "Acme Portal",
+   "folderId": "f-work",
+   "notes": "NOTE-acme-new",
+   "reprompt": 0,
+   "login": {
+    "username": "bob-acme",
+    "password": "PW-acme-new",
+    "totp": null,
+    "uris": [
+     {
+      "uri": "https://portal.acme-corp.test",
+      "match": null
+     }
+    ]
+   },
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "revisionDate": "2026-09-10T08:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  },
+  {
+   "id": "i-05",
+   "type": 1,
+   "name": "Acme Portal old",
+   "folderId": "f-work",
+   "notes": null,
+   "reprompt": 0,
+   "login": {
+    "username": "bob-acme",
+    "password": "PW-acme-old",
+    "totp": null,
+    "uris": [
+     {
+      "uri": "https://portal.acme-corp.test",
+      "match": null
+     }
+    ]
+   },
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "revisionDate": "2026-02-10T08:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  },
+  {
+   "id": "i-06",
+   "type": 1,
+   "name": "Shop",
+   "folderId": "f-work",
+   "notes": null,
+   "reprompt": 0,
+   "login": {
+    "username": "carol-shop",
+    "password": "PW-shop-1",
+    "totp": null,
+    "uris": [
+     {
+      "uri": "https://shop.example.test",
+      "match": null
+     }
+    ]
+   },
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "revisionDate": "2026-08-01T08:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  },
+  {
+   "id": "i-07",
+   "type": 1,
+   "name": "Shop (no user)",
+   "folderId": null,
+   "notes": null,
+   "reprompt": 0,
+   "login": {
+    "username": null,
+    "password": "PW-shop-1",
+    "totp": null,
+    "uris": [
+     {
+      "uri": "https://shop.example.test/cart",
+      "match": null
+     }
+    ]
+   },
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "revisionDate": "2026-05-01T08:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  },
+  {
+   "id": "i-08",
+   "type": 1,
+   "name": "Shop guest",
+   "folderId": null,
+   "notes": null,
+   "reprompt": 0,
+   "login": {
+    "username": null,
+    "password": "PW-shop-guest",
+    "totp": null,
+    "uris": [
+     {
+      "uri": "https://shop.example.test",
+      "match": null
+     }
+    ]
+   },
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "revisionDate": "2026-04-01T08:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  },
+  {
+   "id": "i-09",
+   "type": 1,
+   "name": "Shop old",
+   "folderId": null,
+   "notes": null,
+   "reprompt": 0,
+   "login": {
+    "username": null,
+    "password": null,
+    "totp": null,
+    "uris": [
+     {
+      "uri": "https://shop.example.test",
+      "match": null
+     }
+    ]
+   },
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "revisionDate": "2026-01-01T08:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  },
+  {
+   "id": "i-10",
+   "type": 1,
+   "name": "Pixelcraft",
+   "folderId": "f-work",
+   "notes": null,
+   "reprompt": 0,
+   "login": {
+    "username": "dave-px",
+    "password": "PW-px-1",
+    "totp": null,
+    "uris": [
+     {
+      "uri": "https://app.pixelcraft.example",
+      "match": null
+     }
+    ]
+   },
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "revisionDate": "2026-09-01T10:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  },
+  {
+   "id": "i-11",
+   "type": 1,
+   "name": "pixelcraft.test",
+   "folderId": "f-work",
+   "notes": null,
+   "reprompt": 0,
+   "login": {
+    "username": "dave2-px",
+    "password": "PW-px-2",
+    "totp": null,
+    "uris": [
+     {
+      "uri": "https://pixelcraft.test",
+      "match": null
+     }
+    ]
+   },
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "revisionDate": "2026-09-01T10:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  },
+  {
+   "id": "i-12",
+   "type": 1,
+   "name": "skalse",
+   "folderId": "f-linux",
+   "notes": null,
+   "reprompt": 0,
+   "login": {
+    "username": "skalse",
+    "password": "LINUXPASS-skalse",
+    "totp": null,
+    "uris": []
+   },
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "revisionDate": "2026-09-01T10:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  },
+  {
+   "id": "i-13",
+   "type": 2,
+   "name": "td",
+   "folderId": "f-linux",
+   "notes": "LINUXNOTE-td",
+   "secureNote": {
+    "type": 0
+   },
+   "reprompt": 0,
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "revisionDate": "2026-09-01T10:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  },
+  {
+   "id": "i-14",
+   "type": 1,
+   "name": "ghost-user",
+   "folderId": "f-linux",
+   "notes": null,
+   "reprompt": 0,
+   "login": {
+    "username": "ghost-user",
+    "password": "LINUXPASS-ghost",
+    "totp": null,
+    "uris": []
+   },
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "revisionDate": "2026-09-01T10:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  },
+  {
+   "id": "i-15",
+   "type": 2,
+   "name": "dev",
+   "folderId": "f-env",
+   "notes": "",
+   "secureNote": {
+    "type": 0
+   },
+   "reprompt": 0,
+   "fields": [
+    {
+     "name": "API_KEY",
+     "value": "TOKEN-hidden-xyz",
+     "type": 1
+    }
+   ],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "revisionDate": "2026-09-01T10:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  },
+  {
+   "id": "i-16",
+   "type": 2,
+   "name": "dev",
+   "folderId": "f-env",
+   "notes": "",
+   "secureNote": {
+    "type": 0
+   },
+   "reprompt": 0,
+   "fields": [
+    {
+     "name": "API_KEY",
+     "value": "TOKEN-hidden-other",
+     "type": 1
+    }
+   ],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "revisionDate": "2026-09-01T10:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  },
+  {
+   "id": "i-17",
+   "type": 1,
+   "name": "oops",
+   "folderId": "f-env",
+   "notes": null,
+   "reprompt": 0,
+   "login": {
+    "username": "oops-user",
+    "password": "PW-oops",
+    "totp": null,
+    "uris": []
+   },
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "revisionDate": "2026-09-01T10:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  },
+  {
+   "id": "i-18",
+   "type": 1,
+   "name": "telegram-mcp",
+   "folderId": "f-mcp",
+   "notes": null,
+   "reprompt": 0,
+   "login": {
+    "username": "tgbot",
+    "password": "PW-tg",
+    "totp": null,
+    "uris": []
+   },
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "revisionDate": "2026-09-01T10:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  },
+  {
+   "id": "i-19",
+   "type": 3,
+   "name": "Visa travel",
+   "folderId": "f-work",
+   "notes": null,
+   "card": {
+    "cardholderName": "V Test",
+    "brand": "visa",
+    "number": "4111111111111111",
+    "expMonth": "12",
+    "expYear": "2030",
+    "code": "CVV-secret-737"
+   },
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "revisionDate": "2026-09-01T10:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  },
+  {
+   "id": "i-20",
+   "type": 2,
+   "name": "Wi-Fi home",
+   "folderId": null,
+   "notes": "WIFI-secret-note",
+   "secureNote": {
+    "type": 0
+   },
+   "reprompt": 0,
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "revisionDate": "2026-09-01T10:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  },
+  {
+   "id": "i-21",
+   "type": 5,
+   "name": "deploy-key",
+   "folderId": "f-work",
+   "notes": null,
+   "sshKey": {
+    "privateKey": "SSHPRIVATE-vo",
+    "publicKey": "ssh-ed25519 AAAA pub",
+    "keyFingerprint": "SHA256:fp"
+   },
+   "fields": [
+    {
+     "name": "vault-share",
+     "value": "ssh",
+     "type": 0
+    }
+   ],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "revisionDate": "2026-09-01T10:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  },
+  {
+   "id": "i-22",
+   "type": 1,
+   "name": "Totp Site",
+   "folderId": "f-work",
+   "notes": null,
+   "reprompt": 0,
+   "login": {
+    "username": "erin-totp",
+    "password": "PW-totp-1",
+    "totp": "otpauth://totp/Site:erin?secret=JBSWY3DPEHPK3PXP&period=30",
+    "uris": [
+     {
+      "uri": "https://totp.example.test",
+      "match": null
+     }
+    ]
+   },
+   "fields": [
+    {
+     "name": "vault-share",
+     "value": "totp",
+     "type": 0
+    }
+   ],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "revisionDate": "2026-09-01T10:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  },
+  {
+   "id": "i-23",
+   "type": 1,
+   "name": "Docs Portal",
+   "folderId": "f-mail",
+   "notes": null,
+   "reprompt": 0,
+   "login": {
+    "username": "docuser",
+    "password": "PW-docs",
+    "totp": null,
+    "uris": [
+     {
+      "uri": "https://docs.example.test",
+      "match": null
+     }
+    ]
+   },
+   "fields": [],
+   "attachments": [
+    {
+     "id": "att-1",
+     "fileName": "report.pdf",
+     "size": "11",
+     "sizeName": "11 Bytes"
+    }
+   ],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "revisionDate": "2026-09-01T10:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  },
+  {
+   "id": "i-24",
+   "type": 1,
+   "name": "Gone Forum",
+   "folderId": "f-work",
+   "notes": null,
+   "reprompt": 0,
+   "login": {
+    "username": "olduser",
+    "password": "PW-gone",
+    "totp": null,
+    "uris": [
+     {
+      "uri": "https://forum.example.test",
+      "match": null
+     }
+    ]
+   },
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": "2026-09-30T10:00:00.000Z",
+   "revisionDate": "2026-09-01T10:00:00.000Z",
+   "creationDate": "2025-01-01T00:00:00.000Z"
+  }
+ ]
+}

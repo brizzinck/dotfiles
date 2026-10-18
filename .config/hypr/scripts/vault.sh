@@ -72,7 +72,7 @@ set -- "${args[@]+"${args[@]}"}"
 have() { command -v "$1" >/dev/null 2>&1; }
 note() { notify-send -a vault -u "${3:-low}" -t 4000 -h string:x-dunst-stack-tag:vault "$1" "${2:-}"; }
 poke_bar() { pkill -o -u "$UID" -RTMIN+15 -x waybar 2>/dev/null || true; }
-forget_index() { rm -f "$RUN/totp-index.tsv" "$RUN/totp-index.tmp" "$RUN/browse-index.json" "$RUN/browse-index.tmp"; }
+forget_index() { rm -f "$RUN/totp-index.tsv" "$RUN/totp-index.tmp" "$RUN/browse-index.json" "$RUN/browse-index.tmp"; rm -rf "$RUN/org"; }   # org/ = the vault-audit inventory (names)
 
 configured() { [[ -s $RBW_CONF ]] && jq -e '.email != null' "$RBW_CONF" >/dev/null 2>&1; }
 
