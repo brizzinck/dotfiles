@@ -758,6 +758,17 @@ s4() {
   expect "FIX5 M3: two shells in one directory: not decidable (no window)" bash -c "! bash '$CN' locate --pid '$shA' >/dev/null"
   clients_json "$T2" 0xb22 "/var" "$T2" 0xb23 "/var"
   expect "FIX5 M3: two windows with the shell's title: not decidable (no window)" bash -c "! bash '$CN' locate --pid '$shB' >/dev/null"
+  # FIX-DEVb2 #6: shell A (/tmp) has just finished a long command and its window title still shows the command (the title update
+  # races the toast); window B's shell sits in /var but its title says /tmp (ssh to a host with the same path): the title that
+  # equals A's directory is B's, so A must not be matched to it
+  kill "$shC" 2>/dev/null; sleep 0.3                      # A is now the only shell in /tmp
+  clients_json "$T2" 0xa11 "/tmp" "$T2" 0xb22 "/var"
+  out=$(bash "$CN" locate --pid "$shA")
+  eq "FIX-DEVb2-6: (control) with both titles right, A alone in /tmp gets its own window" "${out%%$'\t'*}" "0xa11"
+  clients_json "$T2" 0xa11 "sleep 600" "$T2" 0xb22 "/tmp"; echo 0xb22 >"$FAKE/active.txt"; reset_log
+  expect "FIX-DEVb2-6: a stale title on A's window does not hand A the window of somebody else (locate: none)" bash -c "! bash '$CN' locate --pid '$shA' >/dev/null"
+  DF_CMD='sleep 40' DF_CMD_DIR=/tmp bash "$CN" notify --exit 0 --ms 40000 --pid "$shA"
+  [[ $(cat "$FAKE/notify.log") == *"Finished in 40s"* && $(cat "$FAKE/notify.log") != *"-A"* ]] && pass "FIX-DEVb2-6: ... the toast comes without a Focus action (and is not suppressed by the window in front)" || fail "FIX-DEVb2-6 stale title: $(cat "$FAKE/notify.log")"
   kill "$shA" "$shB" "$shC" "$T2" 2>/dev/null
   clients_json "$TERM_PID" 0xaaa "zsh"; echo 0xbbb >"$FAKE/active.txt"; reset_log
   # no reachable Hyprland: silent

@@ -96,10 +96,12 @@ pty_title() { local d=$1; [[ $d == "$HOME" || $d == "$HOME"/* ]] && d="~${d#"$HO
 # pty_window OWNER SHELLPID: a shell outside tmux in a terminal process with several windows (ghostty Ctrl+Shift+N: one process, one
 # child per window, all windows have the same pid in Hyprland). The terminal's child tree names every shell of the process; the
 # window title at the prompt is the shell's directory, so the shell's window is the one titled with ITS directory, provided that
-# exactly one window has that title and no other shell of the process sits in the same directory. Anything less certain: return 1
+# exactly one window has that title, no other shell of the process sits in the same directory and EVERY window of the process
+# is titled with the directory of a shell of it (one each). Anything less certain: return 1
 # (not decidable, same as before: toast, no Focus action).
 pty_window() {
-  local owner=$1 shellpid=$2 top=$1 p=$shellpid i ppid c cwd mine nshell=0 addr title naddr=0 found=''
+  local owner=$1 shellpid=$2 top=$1 p=$shellpid i ppid c cwd mine nshell=0 addr title naddr=0 found='' t k
+  local -a ctitles=() wtitles=()
   for ((i = 0; i < 32 && p > 1; i++)); do
     ppid=$(sed -E 's/^.*\) [^ ]+ ([0-9]+).*$/\1/' "/proc/$p/stat" 2>/dev/null) || return 1
     [[ $ppid == "$owner" ]] && { top=$p; break; }
@@ -111,13 +113,25 @@ pty_window() {
   mine=$(pty_title "$mine")
   for c in $(pgrep -P "$owner" 2>/dev/null); do
     cwd=$(readlink "/proc/$c/cwd" 2>/dev/null) || continue
-    [[ $(pty_title "$cwd") == "$mine" ]] && nshell=$((nshell + 1))
+    ctitles+=("$(pty_title "$cwd")")
+    [[ ${ctitles[-1]} == "$mine" ]] && nshell=$((nshell + 1))
   done
   ((nshell == 1)) || return 1
   while IFS=$'\t' read -r _ addr title; do
-    [[ -n $addr && $title == "$mine" ]] && { naddr=$((naddr + 1)); found=$addr; }
+    [[ -n $addr ]] || continue
+    wtitles+=("$title")
+    [[ $title == "$mine" ]] && { naddr=$((naddr + 1)); found=$addr; }
   done < <(grep "^$owner"$'\t' <<<"$windows")
   ((naddr == 1)) || return 1
+  # every window of the process must carry the directory of ONE shell of it (each shell used once): a window whose title is not a
+  # shell's directory is stale (the precmd title update races this script: it still shows the command) or foreign (ssh, a nested
+  # shell that cd'ed), and then a title that merely equals our directory may belong to somebody else's window
+  for t in "${wtitles[@]}"; do
+    for k in "${!ctitles[@]}"; do
+      [[ ${ctitles[k]} == "$t" ]] && { unset 'ctitles[k]'; continue 2; }
+    done
+    return 1
+  done
   printf '%s\n' "$found"
 }
 
