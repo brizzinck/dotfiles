@@ -697,6 +697,9 @@ def validate_plan(header, rows, audit=None, allow_tool=False):
             if t == "delete-if-empty":
                 continue
             if t.startswith("rename:"):
+                if tool_root(t[7:]) and not allow_tool:
+                    problems.append(f"folder {r.id}: renaming into a tool folder is refused")
+                    continue
                 bad = folder_problem(t[7:])
                 if bad:
                     problems.append(f"folder {r.id}: new name {t[7:]!r}: {bad}")
@@ -1439,8 +1442,46 @@ class Applier:
         self.skipped = []
         self.wrote = 0
 
+    def live_folders(self):
+        """Fresh id -> name snapshot. Plan display columns and earlier snapshots are never mutation authority."""
+        folders = get_json(self.m, "list", "folders")
+        if not isinstance(folders, list):
+            raise Fail("cannot verify the live folders; audit and review again")
+        cur = {}
+        for f in folders:
+            if not isinstance(f, dict) or not f.get("id") or not isinstance(f.get("name"), str) or f["id"] in cur:
+                raise Fail("cannot verify the live folders; audit and review again")
+            cur[f["id"]] = unicodedata.normalize("NFC", f["name"])
+        return cur
+
     def fmap(self):
-        return {f["name"]: f["id"] for f in get_json(self.m, "list", "folders") if f.get("id")}
+        return {name: ident for ident, name in self.live_folders().items()}
+
+    @staticmethod
+    def ordinary_folder(name):
+        if tool_root(name):
+            raise Fail("live tool-folder protection: audit and review again")
+        if name is not None and folder_problem(name):
+            raise Fail("cannot verify the live folder name; audit and review again")
+
+    def item_folder(self, item, folders):
+        fid = item.get("folderId")
+        if fid is None:
+            return None
+        if fid not in folders:
+            raise Fail("the item's live folder is unknown; audit and review again")
+        return folders[fid]
+
+    def rename_guard(self, ident, new):
+        cur = self.live_folders()
+        if ident not in cur:
+            raise Fail("the folder does not exist any more")
+        self.ordinary_folder(cur[ident])
+        self.ordinary_folder(new)
+        if any(name == new and fid != ident for fid, name in cur.items()):
+            raise Fail("live rename collision: audit and review again")
+        return cur[ident]
+
 
     def step(self, step, ident, label, fn):
         """Run one journalled step; fn returns (result, kind) with kind created|moved|... or raises Fail."""
@@ -1488,13 +1529,11 @@ class Applier:
             new = r.target[7:]
 
             def go(r=r, new=new):
-                cur = {f["id"]: f["name"] for f in get_json(m, "list", "folders")}
-                if cur.get(r.id) == new:
+                if self.rename_guard(r.id, new) == new:
                     return "ok (already)"
-                if r.id not in cur:
-                    raise Fail("the folder does not exist any more")
                 for par in folder_parents(new)[:-1]:
                     m.folder_id(par, create=True)
+                self.rename_guard(r.id, new)       # parent creation may have taken time; recheck at the write boundary
                 p = m.bw("edit", "folder", r.id, stdin=m.b64({"name": new}))
                 if p.returncode != 0:
                     raise Fail("rename failed: " + m.first_line(p.stderr or p.stdout))
@@ -1528,14 +1567,19 @@ class Applier:
             dest = r.target[7:]
 
             def go(r=r, dest=dest):
-                fid = self.fmap().get(dest)
-                if not fid:
-                    raise Fail(f"target folder {dest!r} does not exist")
                 item = get_json(m, "get", "item", r.id)
                 if not item:
                     raise Fail("the item does not exist any more")
                 if item.get("deletedDate"):
                     return "skipped (in the trash)"
+                folders = self.live_folders()
+                self.ordinary_folder(self.item_folder(item, folders))
+                self.ordinary_folder(dest)
+                targets = [fid for fid, name in folders.items() if name == dest]
+                if len(targets) != 1:
+                    raise Fail("target folder missing or ambiguous; audit and review again")
+                fid = targets[0]
+                self.ordinary_folder(folders[fid])
                 if item.get("folderId") == fid:
                     self.counts["already"] += 1
                     return "ok (already)"
@@ -1573,7 +1617,9 @@ class Applier:
                     return "skipped (the keep is gone or in the trash)"
                 if r.rev not in ("-", "") and x.get("revisionDate") != r.rev:
                     return "skipped (changed after the audit)"
-                folders = {f["id"]: f.get("name") or "" for f in get_json(m, "list", "folders") if f.get("id")}
+                folders = self.live_folders()
+                self.ordinary_folder(self.item_folder(x, folders))
+                self.ordinary_folder(self.item_folder(k, folders))
                 mx, kx = normalise(x, folders, key)
                 mk, kk = normalise(k, folders, key)
                 words = set(re.split(r"[\s:;,]+", r.note))
@@ -1606,12 +1652,17 @@ class Applier:
                 continue
 
             def go(r=r):
-                cur = {f["id"] for f in get_json(m, "list", "folders")}
+                cur = self.live_folders()
                 if r.id not in cur:
                     return "ok (already)"
+                self.ordinary_folder(cur[r.id])
                 items = [i for i in get_json(m, "list", "items", "--folderid", r.id) if not i.get("deletedDate")]
                 if items:
                     return f"skipped (the folder holds {len(items)} items)"
+                cur = self.live_folders()       # listing items may race a folder rename
+                if r.id not in cur:
+                    return "ok (already)"
+                self.ordinary_folder(cur[r.id])
                 p = m.bw("delete", "folder", r.id)
                 if p.returncode != 0:
                     raise Fail("delete failed: " + m.first_line(p.stderr or p.stdout))

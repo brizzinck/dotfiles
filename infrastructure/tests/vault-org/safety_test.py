@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Security regressions using invented in-memory bw records; never opens a vault or launches a CLI."""
 import copy
+import contextlib
+import io
 import importlib.util
 import json
 import pathlib
@@ -62,6 +64,8 @@ class BW:
             data = self.items.get(args[2])
         elif args[:2] == ("list", "items"):
             data = [i for i in self.items.values() if i.get("folderId") == args[3]]
+        elif args == ("sync",):
+            data = {}
         else:
             self.writes.append(args)
             data = stdin or {}
@@ -135,6 +139,106 @@ class Preservation(unittest.TestCase):
             self.assertTrue(row.target.startswith("trash-duplicate-of:"))
             v.Applier(bw, [row], Journal(), audit).trash()
             self.assertEqual([("delete", "item", "discard")], bw.writes)
+
+
+class LiveProtection(unittest.TestCase):
+    def lab(self, target="folder:Shared/Example", kind="item"):
+        x = login(); keep = copy.deepcopy(x); keep.update(id="keep", revisionDate="2026-10-01")
+        bw = BW(x, keep)
+        audit = v.build_audit([x, keep], 0, bw.folders, b"invented-key")
+        ident = "discard" if kind == "item" else "ordinary"
+        row = v.Row(kind, ident, "Example login" if kind == "item" else "Private", "Private", target, "-", "manual")
+        keep_row = v.Row("item", "keep", "Example login", "Private", "keep")
+        self.assertEqual([], v.validate_plan({"version": 1, "audit": "invented"}, [row, keep_row], audit))
+        return bw, audit, row
+
+    def apply(self, bw, audit, row, resume):
+        # Exercise the production run sequence and its unfinished-step guards. Backup and final sync are inert.
+        journal = Journal([("backup", "-")] if resume else [])
+        ap = v.Applier(bw, [row], journal, audit)
+        ap.finish = lambda: None
+        ap.summary = lambda: 5 if ap.skipped else 0
+        old_backup = v.backup_export
+        v.backup_export = lambda m: "invented-encrypted-backup"
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = ap.run()
+        finally:
+            v.backup_export = old_backup
+        return rc, journal
+
+    def test_item_moved_to_tool_after_review(self):
+        for folder in ("Linux", "MCP", "Env/demo", "Users/td/Env/demo", "Shared/Env/demo"):
+            for target in ("folder:Shared/Example", "trash-duplicate-of:keep"):
+                for resume in (False, True):
+                    with self.subTest(folder=folder, target=target, resume=resume):
+                        bw, audit, row = self.lab(target)
+                        bw.folders.append({"id": "protected", "name": folder})
+                        bw.items["discard"]["folderId"] = "protected"
+                        rc, journal = self.apply(bw, audit, row, resume)
+                        self.assertEqual(5, rc)
+                        self.assertEqual([], bw.writes)
+                        self.assertEqual("protected", bw.items["discard"]["folderId"])
+                        self.assertTrue(any("tool-folder" in line[2] for line in journal.lines))
+
+    def test_keep_moved_to_tool(self):
+        bw, audit, row = self.lab("trash-duplicate-of:keep")
+        bw.folders.append({"id": "protected", "name": "Linux"})
+        bw.items["keep"]["folderId"] = "protected"
+        self.assertEqual(5, self.apply(bw, audit, row, False)[0])
+        self.assertEqual([], bw.writes)
+
+    def test_live_folder_renamed_to_tool(self):
+        for target in ("rename:Archive", "delete-if-empty"):
+            for folder in ("Linux", "Env/demo", "Users/td/Env/demo", "Shared/Env/demo"):
+                for resume in (False, True):
+                    with self.subTest(target=target, folder=folder, resume=resume):
+                        bw, audit, row = self.lab(target, "folder")
+                        bw.folders[0]["name"] = folder
+                        for item in bw.items.values():
+                            item["folderId"] = "shared"
+                        self.assertEqual(5, self.apply(bw, audit, row, resume)[0])
+                        self.assertEqual([], bw.writes)
+
+    def test_new_rename_collision_and_protected_target(self):
+        for resume in (False, True):
+            for target in ("Archive", "Linux", "Shared/Env/demo"):
+                with self.subTest(target=target, resume=resume):
+                    bw, audit, row = self.lab("rename:Archive", "folder")
+                    row.target = "rename:" + target
+                    if target == "Archive":
+                        bw.folders.append({"id": "collision", "name": target})
+                    self.assertEqual(5, self.apply(bw, audit, row, resume)[0])
+                    self.assertEqual([], bw.writes)
+
+    def test_changes_between_mutations_are_not_cached(self):
+        bw, audit, row = self.lab("rename:Archive", "folder")
+        second = v.Row("folder", "shared", "Shared/Example", None, "rename:Other")
+        original = bw.bw
+        def mutate(*args, **kwargs):
+            result = original(*args, **kwargs)
+            if args[:3] == ("edit", "folder", "ordinary"):
+                bw.folders[1]["name"] = "Linux"
+            return result
+        bw.bw = mutate
+        ap = v.Applier(bw, [row, second], Journal(), audit)
+        ap.renames()
+        self.assertEqual([("edit", "folder", "ordinary")], bw.writes)
+        self.assertTrue(ap.skipped)
+
+    def test_delete_rechecks_after_item_listing(self):
+        bw, audit, row = self.lab("delete-if-empty", "folder")
+        for item in bw.items.values():
+            item["folderId"] = "shared"
+        original = bw.bw
+        def mutate(*args, **kwargs):
+            result = original(*args, **kwargs)
+            if args[:2] == ("list", "items"):
+                bw.folders[0]["name"] = "Linux"
+            return result
+        bw.bw = mutate
+        self.assertEqual(5, self.apply(bw, audit, row, True)[0])
+        self.assertEqual([], bw.writes)
 
 
 if __name__ == "__main__":
