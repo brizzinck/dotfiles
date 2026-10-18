@@ -19,13 +19,39 @@
 : ${DF_CMD_NOTIFY_MIN:=30}          # seconds; 0 = off
 (( ${+DF_CMD_NOTIFY_IGNORE} )) || DF_CMD_NOTIFY_IGNORE=(nvim vim vi less man ssh tmux lazygit lazydocker htop btop yazi claude codex gemini top watch fzf hub)
 # literal secret values in a command line, matched lower-cased; variable references ($TOKEN, $(rbw get x)) do not count
-: ${DF_SECRET_CMD_RE:='(pass(word|wd)?|token|secret|api[_-]?key|credential|private[_-]?key)[a-z0-9_]*([[:space:]]*=[[:space:]]*|:)["'\'']?[^$[:space:]"'\'']{4,}|["'\''][a-z0-9_-]*(pass(word|wd)?|token|secret|api[_-]?key|credential)[a-z0-9_-]*[[:space:]]*:[[:space:]]*[^$[:space:]"'\'']{8,}|auth[a-z0-9_]*=["'\'']?[^$[:space:]"'\'']{4,}|sshpass[[:space:]]+-p|authorization:[[:space:]]*(bearer|basic)[[:space:]]+[^$[:space:]]|(ghp|gho|ghs|github_pat|glpat|xox[abps]|sk)[-_][a-z0-9]{12,}|sk-[a-z]+-[a-z0-9_-]{16,}|--(pass(word|wd)?|token|secret|api[_-]?key)[= ][^$[:space:]-][^[:space:]]{3,}|://[^/[:space:]:@]+:[^@/[:space:]$]+@|(^|[^a-z0-9])(mysql[a-z]*|mariadb[a-z-]*)[[:space:]].*[[:space:]]-p[^[:space:]$-]+|login[[:space:]].*[[:space:]]-p[[:space:]]+[^$[:space:]-]|(^|[^a-z0-9])bw[[:space:]]+(unlock|login)([[:space:]]+[^-$[:space:]][^[:space:]]*){1,2}'}
+: ${DF_SECRET_CMD_RE:='(pass(word|wd)?|token|secret|api[_-]?key|credential|private[_-]?key)[a-z0-9_]*([[:space:]]*=[[:space:]]*|:)["'\'']?[^$[:space:]"'\'']{4,}|["'\''][a-z0-9_-]*(pass(word|wd)?|token|secret|api[_-]?key|credential)[a-z0-9_-]*[[:space:]]*:[[:space:]]*[^$[:space:]"'\'']{8,}|auth[a-z0-9_]*=["'\'']?[^$[:space:]"'\'']{4,}|sshpass[[:space:]]+-p|authorization:[[:space:]]*(bearer|basic)[[:space:]]+[^$[:space:]]|(ghp|gho|ghs|github_pat|glpat|xox[abps]|sk)[-_][a-z0-9]{12,}|sk-[a-z]+-[a-z0-9_-]{16,}|--(pass(word|wd)?|token|secret|api[_-]?key)[= ][^$[:space:]-]|://[^/[:space:]:@]+:[^@/[:space:]$]+@|(^|[^a-z0-9])(mysql[a-z]*|mariadb[a-z-]*)[[:space:]]+(.*[[:space:]])?-p[^[:space:]$-]+|login[[:space:]]+(.*[[:space:]])?-p[[:space:]]+[^$[:space:]-]|(^|[^a-z0-9])bw[[:space:]]+(unlock([[:space:]]+[^-$[:space:]][^[:space:]]*){1,2}|login([[:space:]]+[^-$[:space:]][^[:space:]]*){2})|(^|[^a-z0-9])curl[[:space:]]+(.*[[:space:]])?(-u|--user)[= ]?[^[:space:]:$]+:[^[:space:]$]+'}
 
 _df_cmd_assign_re='^[[:space:]]*((export|typeset|declare|local|readonly)([[:space:]]+-[a-zA-Z]+)*[[:space:]]+[A-Za-z_][A-Za-z0-9_]*=[^$]*|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]$]*)$'
 _df_cmd_notify=${XDG_CONFIG_HOME:-$HOME/.config}/hypr/scripts/cmd-notify.sh
 zmodload zsh/datetime 2>/dev/null
 # $1 = the line as typed, $3 = the line as it will run (aliases expanded: `lzd` -> `lazydocker`), used for the ignore list
 _df_cmd_preexec() { _df_cmd_line=$1 _df_cmd_exp=${3:-$1} _df_cmd_dir=$PWD _df_cmd_t0=$EPOCHREALTIME }
+# the first real word of a command line: wrappers and their options are skipped, including the option ARGUMENT (`sudo -u root nvim`,
+# `sudo --user root nvim`, `nice -n 10 nvim`, `env -u X nvim`, `env FOO=1 nvim`, `command nvim`). Pure zsh, no fork when called as
+# `_df_cmd_first_word` in a command substitution only for the rare long command (the hot path never gets here)
+_df_cmd_first_word() {
+  local -a w=(${(z)1})
+  local o
+  while (( $#w )); do
+    case $w[1] in
+      sudo|doas)
+        shift w
+        while [[ $w[1] == -* ]]; do
+          o=$w[1]; shift w
+          [[ $o == --(user|group|close-from|chdir|host|prompt|role|type|other-user|chroot|command-timeout) || $o =~ '^-[a-zA-Z]*[ugCDhprtURT]$' ]] && shift w
+        done ;;
+      nice) shift w
+        while [[ $w[1] == -* ]]; do o=$w[1]; shift w; [[ $o == (-n|--adjustment) ]] && shift w; done ;;
+      env) shift w
+        while [[ $w[1] == -* ]]; do o=$w[1]; shift w; [[ $o == (-u|-C|-S|--unset|--chdir|--split-string) ]] && shift w; done ;;
+      time) shift w
+        while [[ $w[1] == -* ]]; do o=$w[1]; shift w; [[ $o == (-f|-o|--format|--output) ]] && shift w; done ;;
+      command|builtin|nohup|exec|noglob|*=*|-*) shift w ;;
+      *) break ;;
+    esac
+  done
+  print -r -- $w[1]
+}
 _df_cmd_precmd() {
   local ec=$? line=$_df_cmd_line exp=$_df_cmd_exp dir=$_df_cmd_dir t0=$_df_cmd_t0
   _df_cmd_line= _df_cmd_exp= _df_cmd_t0=
@@ -44,16 +70,9 @@ _df_cmd_precmd() {
   fi
   (( DF_CMD_NOTIFY_MIN > 0 && ms >= DF_CMD_NOTIFY_MIN * 1000 )) || return 0
   [[ -z $SSH_CONNECTION && -x $_df_cmd_notify ]] || return 0
-  local -a w=(${(z)exp}) extra
-  # the first real word: skip wrappers and their options (`sudo -E nvim`, `sudo -u root nvim`, `command nvim`, `FOO=1 nvim`)
-  while (( $#w )); do
-    case $w[1] in
-      sudo|doas) shift w; while [[ $w[1] == -* ]]; do [[ $w[1] == -[ugCDhprtURT] ]] && shift w; shift w; done ;;
-      env|nice|time|command|builtin|nohup|exec|noglob|*=*|-*) shift w ;;
-      *) break ;;
-    esac
-  done
-  (( ${DF_CMD_NOTIFY_IGNORE[(Ie)${w[1]:t}]} )) && return 0
+  local -a extra
+  local first; first=$(_df_cmd_first_word $exp)
+  (( ${DF_CMD_NOTIFY_IGNORE[(Ie)${first:t}]} )) && return 0
   (( secret )) && extra=(--hidden)
   DF_CMD=$line DF_CMD_DIR=$dir setsid -f $_df_cmd_notify notify --exit $ec --ms $ms --pid $$ $extra &>/dev/null
   return 0

@@ -15,7 +15,8 @@
 # of the active window of a client of its session). The window is found by walking the parent chain of the shell (or, in
 # tmux, of the clients attached to the pane's session) to the first process that owns a window. When one process owns
 # several windows (ghostty Ctrl+Shift+N) only the one titled `<session>:...` counts as the shell's window; without a title match
-# the window is not decidable, so it counts as "not found" (never "the focused sibling"). A tmux inside a tmux pane is followed to
+# the window is not decidable, so it counts as "not found" (never "the focused sibling"); outside tmux the shell's directory
+# decides first (pty_window: the terminal's child tree + the prompt title). A tmux inside a tmux pane is followed to
 # the outer server (the client's chain ends in the outer `tmux: server`; the pane's shell has the outer $TMUX/$TMUX_PANE in its
 # environment): in front = inner AND outer pane active, and the focus steps use the outer tmux. A shell whose window cannot be
 # found still gets the toast (no Focus action). Hyprland: $HYPRLAND_INSTANCE_SIGNATURE when it answers, else the newest instance in
@@ -89,6 +90,37 @@ pick_window() {
   printf '%s\n' "${all[0]}"
 }
 
+# pty_title DIR: the window title a ghostty shell (title shell feature) shows at its prompt: the directory, $HOME as ~
+pty_title() { local d=$1; [[ $d == "$HOME" || $d == "$HOME"/* ]] && d="~${d#"$HOME"}"; printf '%s' "$d"; }
+
+# pty_window OWNER SHELLPID: a shell outside tmux in a terminal process with several windows (ghostty Ctrl+Shift+N: one process, one
+# child per window, all windows have the same pid in Hyprland). The terminal's child tree names every shell of the process; the
+# window title at the prompt is the shell's directory, so the shell's window is the one titled with ITS directory, provided that
+# exactly one window has that title and no other shell of the process sits in the same directory. Anything less certain: return 1
+# (not decidable, same as before: toast, no Focus action).
+pty_window() {
+  local owner=$1 shellpid=$2 top=$1 p=$shellpid i ppid c cwd mine nshell=0 addr title naddr=0 found=''
+  for ((i = 0; i < 32 && p > 1; i++)); do
+    ppid=$(sed -E 's/^.*\) [^ ]+ ([0-9]+).*$/\1/' "/proc/$p/stat" 2>/dev/null) || return 1
+    [[ $ppid == "$owner" ]] && { top=$p; break; }
+    p=$ppid
+  done
+  [[ $top != "$owner" ]] || return 1
+  mine=$(readlink "/proc/$shellpid/cwd" 2>/dev/null) || return 1
+  [[ -n $mine ]] || return 1
+  mine=$(pty_title "$mine")
+  for c in $(pgrep -P "$owner" 2>/dev/null); do
+    cwd=$(readlink "/proc/$c/cwd" 2>/dev/null) || continue
+    [[ $(pty_title "$cwd") == "$mine" ]] && nshell=$((nshell + 1))
+  done
+  ((nshell == 1)) || return 1
+  while IFS=$'\t' read -r _ addr title; do
+    [[ -n $addr && $title == "$mine" ]] && { naddr=$((naddr + 1)); found=$addr; }
+  done < <(grep "^$owner"$'\t' <<<"$windows")
+  ((naddr == 1)) || return 1
+  printf '%s\n' "$found"
+}
+
 # outer_of PID SOCKET: a tmux client that runs inside a pane of ANOTHER tmux server (nested tmux): its parent chain ends in the
 # outer `tmux: server` (ppid 1), but the pane's shell has the outer $TMUX / $TMUX_PANE in its environment. Prints "socket TAB pane".
 outer_of() {
@@ -129,8 +161,15 @@ collect() {
   local n
   for n in "${!pids[@]}"; do
     cpid=${pids[n]}
-    if owner=$(owner_of "$cpid" "$windows") && addr=$(pick_window "$owner" "$prefix"); then
-      C_ADDR+=("$addr"); C_SOCK+=("$sock"); C_SESSION+=("$session"); C_WINDOW+=("$win"); C_PANE+=("${sock:+$pane}"); C_TTY+=("${ttys[n]}"); C_ACT+=("$act")
+    if owner=$(owner_of "$cpid" "$windows"); then
+      # a process that owns a window: that window (or, when it owns several and none is decidable, none). The outer-tmux walk below
+      # is only for a client that owns NO window; running it for an ambiguous one could name a wrong outer pane
+      addr=$(pick_window "$owner" "$prefix") || addr=''
+      # a shell outside tmux in a multi-window terminal process: the pty route (see pty_window)
+      [[ -z $addr && -z $sock ]] && addr=$(pty_window "$owner" "$cpid")
+      if [[ -n $addr ]]; then
+        C_ADDR+=("$addr"); C_SOCK+=("$sock"); C_SESSION+=("$session"); C_WINDOW+=("$win"); C_PANE+=("${sock:+$pane}"); C_TTY+=("${ttys[n]}"); C_ACT+=("$act")
+      fi
     elif [[ -n $sock ]] && ((depth < 3)) && outer=$(outer_of "$cpid" "$sock"); then
       IFS=$'\t' read -r osock opane <<<"$outer"
       collect "$osock" "$opane" $((depth + 1)) "$act" "$shellpid"

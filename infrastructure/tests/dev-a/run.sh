@@ -344,6 +344,30 @@ s2() {
   if ((!QUICK)) && have tmux && have fzf; then s2_tmux; fi
 }
 
+# FIX5-3: atuin's history_filter (Rust regex) and zsh's DF_SECRET_CMD_RE (ERE) must classify every row the same way, multi-line commands
+# included (`.` skips a newline in Rust but not in ERE: the `s` flag). PCRE (`grep -Pz`) stands in for the Rust regex when atuin is absent:
+# same `(?is)` flags, same POSIX classes, and `.` follows the `s` flag the same way.
+s2_dialect() {
+  have python3 && grep -P '' /dev/null 2>/dev/null; [[ $? -le 1 ]] || { echo "SKIP  FIX5-3 dialect check (grep -P missing)"; return; }
+  python3 -I -c 'import sys, tomllib; sys.stdout.write(tomllib.load(open(sys.argv[1], "rb"))["history_filter"][0])' "$REPO/.config/atuin/config.toml" >"$T/atuin.re"
+  local want line got bad="" n=0 ml row
+  while IFS= read -r row; do
+    want=${row%%@@*} line=${row#*@@} got=show
+    printf '%s' "$line" | grep -Pzq -f "$T/atuin.re" && got=hide
+    [[ $got == "$want" ]] || bad="$bad [$want] $line;"
+    n=$((n + 1))
+  done <"$T/secret.rows"
+  [[ -z $bad ]] && pass "FIX5-3: atuin's history_filter (as PCRE) classifies all $n rows like zsh" || fail "FIX5-3 atuin dialect:$bad"
+  # multi-line commands (a backslash continuation): both dialects must hide them
+  local -a mls=($'mysql -h db \\\n -pSecretPw2 db' $'docker login -u me \\\n -p s3cretpw r' $'curl https://x \\\n -u me:pw1234')
+  bad=""
+  for ml in "${mls[@]}"; do
+    printf '%s' "$ml" | grep -Pzq -f "$T/atuin.re" || bad="$bad atuin-shows:${ml//$'\n'/<NL>};"
+    zsh -f -c 'source '"$T"'/hooks.zsh; [[ ${(L)1} =~ $DF_SECRET_CMD_RE ]]' _ "$ml" || bad="$bad zsh-shows:${ml//$'\n'/<NL>};"
+  done
+  [[ -z $bad ]] && pass "FIX5-3: continued (multi-line) mysql / docker login / curl -u commands are hidden by both dialects" || fail "FIX5-3 multi-line:$bad"
+}
+
 # secret-looking command lines: "hide" must match DF_SECRET_CMD_RE, "show" (ordinary dev commands) must not
 secret_rows() {
   local gh="ghp_""abcdefghijklmnop1234" gl="glpat-""abcdefghijklmnopqrst" ant="sk-ant-""api03-abcdefghijklmnopqrstu" oai="sk-proj-""AbCdEfGhIjKlMnOpQrStUv"
@@ -354,6 +378,8 @@ secret_rows() {
     "hide@@mysql -uroot -pSecretPw db < dump.sql" \
     "hide@@mysqldump -u root -phunter22 db" \
     "hide@@docker login -u me -p s3cretpw registry.io" \
+    "hide@@docker login -p s3cretpw registry.io" \
+    "hide@@mysql -pSecretPw db" \
     "hide@@bw unlock hunter22pw" \
     "hide@@bw login me@x.com hunter22pw" \
     "hide@@export OPENAI_API_KEY=$oai" \
@@ -365,6 +391,11 @@ secret_rows() {
     "hide@@curl -H 'x-auth-token: ${FAKE_SECRET}x' https://x" \
     'hide@@curl -H "Authorization: Bearer abc" https://x' \
     "hide@@foo --password hunter22" \
+    "hide@@foo --password abc" \
+    "hide@@foo --password 'ab cd'" \
+    "hide@@curl -""u me:pw1234 https://x" \
+    "hide@@curl -sS --""user me:Zx9PlainPw https://x" \
+    "hide@@curl -""ume:pw1234 https://x" \
     "hide@@sshpass -p x ssh h" \
     'show@@git clone https://github.com/a/b' \
     'show@@git clone https://user:$TOKEN@github.com/a/b' \
@@ -375,6 +406,11 @@ secret_rows() {
     'show@@ls -plah' \
     'show@@docker login -u me --password-stdin' \
     'show@@bw unlock --check' \
+    'show@@bw login me@x.com' \
+    'show@@bw login --apikey' \
+    'show@@curl -u me https://host:8080/x' \
+    'show@@curl -u me:$PW https://x' \
+    'show@@curl https://host:8080/x -sS' \
     'show@@bw unlock $BW_PW' \
     'show@@rbw unlock' \
     'show@@grep -rn password: src/' \
@@ -400,11 +436,15 @@ s2_secrets() {
   rows=$(wc -l <"$T/secret.rows")
   [[ $out == "rows=$rows" ]] && pass "M2/L3: $rows secret and false-positive command lines classified as expected" || fail "M2/L3 secret table: $out"
   # atuin's history_filter is the same expression (live second layer, and what `atuin history prune` applies after the import)
-  expect "L2: config.toml history_filter is (?i) + DF_SECRET_CMD_RE" python3 -I -c '
+  expect "L2: config.toml history_filter is (?is) + DF_SECRET_CMD_RE" python3 -I -c '
 import subprocess, sys, tomllib
 cfg = tomllib.load(open(sys.argv[1], "rb"))
 rx = subprocess.run(["zsh", "-f", "-c", "source %s; print -rn -- $DF_SECRET_CMD_RE" % sys.argv[2]], capture_output=True, text=True).stdout
-sys.exit(0 if rx and cfg.get("history_filter") == ["(?i)" + rx] else 1)' "$REPO/.config/atuin/config.toml" "$T/hooks.zsh"
+sys.exit(0 if rx and cfg.get("history_filter") == ["(?is)" + rx] else 1)' "$REPO/.config/atuin/config.toml" "$T/hooks.zsh"
+  s2_dialect
+  if ! have atuin; then
+    echo "SKIP  L2: real atuin checks (import is unfiltered, prune drops the secret lines, live history_filter): atuin is not installed (sudo ./apply-system.sh --only install)"
+  fi
   if have atuin; then
     # the real atuin: the Rust regex accepts the expression, import is unfiltered, prune drops what it matches
     local cfg="$T/l2cfg" data="$T/l2data" cmds imp
@@ -663,6 +703,26 @@ s4() {
   [[ $(cat "$FAKE/notify.log") == *"Finished in 40s"* && $(cat "$FAKE/notify.log") != *"-A"* ]] && pass "M3: two windows of one process, none decidable: toast, no Focus action (the focused sibling does not count as in front)" || fail "M3 two windows: $(cat "$FAKE/notify.log")"
   expect "M3: locate says no window for an undecidable pair" bash -c "! bash '$CN' locate --pid '$SHELL_PID'"
   clients_json "$TERM_PID" 0xaaa "zsh"; echo 0xbbb >"$FAKE/active.txt"; reset_log
+  # FIX5 M3 pty route: ONE terminal process, two shells (one child each, other directories), two windows titled with their directories
+  local T2 shA shB shC
+  setsid bash -c 'cd /tmp; (exec sleep 600) & echo $! >"$1"; cd /var; (exec sleep 600) & echo $! >"$2"; cd /tmp; (exec sleep 600) & echo $! >"$3"; wait' _ "$T/shA.pid" "$T/shB.pid" "$T/shC.pid" >/dev/null 2>&1 &
+  T2=$!
+  for _ in $(seq 1 30); do [[ -s $T/shC.pid ]] && break; sleep 0.1; done
+  shA=$(<"$T/shA.pid"); shB=$(<"$T/shB.pid"); shC=$(<"$T/shC.pid")
+  # B is alone in /var: its window is the one titled /var. A and C share /tmp: not decidable for either
+  clients_json "$T2" 0xa11 "/tmp" "$T2" 0xb22 "/var"; echo 0xa11 >"$FAKE/active.txt"; reset_log
+  out=$(bash "$CN" locate --pid "$shB")
+  eq "FIX5 M3: a non-tmux shell in a multi-window process is matched by its directory (child tree + prompt title)" "$out" "0xb22"$'\t\t\t\t\t\t0'
+  DF_CMD='sleep 40' DF_CMD_DIR=/var bash "$CN" notify --exit 0 --ms 40000 --pid "$shB"
+  [[ $(cat "$FAKE/notify.log") == *"Finished in 40s"* && $(cat "$FAKE/notify.log") == *"-A"* ]] && pass "FIX5 M3: the sibling window is in front, the shell's own is not: toast with the Focus action" || fail "FIX5 M3 sibling in front: $(cat "$FAKE/notify.log")"
+  echo 0xb22 >"$FAKE/active.txt"; reset_log
+  DF_CMD='sleep 40' DF_CMD_DIR=/var bash "$CN" notify --exit 0 --ms 40000 --pid "$shB"
+  notified && fail "FIX5 M3: the shell's own window is in front: no toast" || pass "FIX5 M3: the shell's own window is in front: no toast"
+  expect "FIX5 M3: two shells in one directory: not decidable (no window)" bash -c "! bash '$CN' locate --pid '$shA' >/dev/null"
+  clients_json "$T2" 0xb22 "/var" "$T2" 0xb23 "/var"
+  expect "FIX5 M3: two windows with the shell's title: not decidable (no window)" bash -c "! bash '$CN' locate --pid '$shB' >/dev/null"
+  kill "$shA" "$shB" "$shC" "$T2" 2>/dev/null
+  clients_json "$TERM_PID" 0xaaa "zsh"; echo 0xbbb >"$FAKE/active.txt"; reset_log
   # no reachable Hyprland: silent
   out=$(HYPRLAND_INSTANCE_SIGNATURE='' XDG_RUNTIME_DIR="$T/run-empty" CMD_NOTIFY_HYPRCTL=/bin/false bash "$CN" notify --exit 0 --ms 40000 --pid "$SHELL_PID" 2>&1; echo "rc=$?")
   [[ $out == "rc=0" ]] && ! notified && pass "no reachable Hyprland: silent" || fail "no Hyprland: $out"
@@ -735,12 +795,18 @@ run3 "doas nvim x"
 run3 "command nvim x"
 run3 "nohup less x"
 run3 "env -i FOO=1 nvim x"
+run3 "sudo --user root nvim x"
+run3 "sudo --user=root nvim x"
+run3 "sudo -Eu root nvim x"
+run3 "nice -n 10 nvim x"
+run3 "env -u X nvim x"
+run3 "sudo --user root make all"
 run3 "sudo -E make all"
 run3 "mk" "make all"
 sleep 0.3
 EOF
     PATH="$T/bin:$real_path" XDG_CONFIG_HOME="$T/zcfg" FAKE_WORKER_LOG="$wl2" zsh -f "$T/s4b.zsh" >/dev/null 2>&1
-    eq "L5: only the two long non-interactive commands notify (alias lzd, sudo -E / -u, doas, command, nohup, env -i are ignored)" "$(sed 's/^[^|]*|//; s/|.*//' "$wl2" | tr '\n' ',')" "sudo -E make all,mk,"
+    eq "L5: only the two long non-interactive commands notify (alias lzd, sudo -E / -u / --user / -Eu, nice -n, env -u, doas, command, nohup, env -i are ignored)" "$(sed 's/^[^|]*|//; s/|.*//' "$wl2" | tr '\n' ',')" "sudo --user root make all,sudo -E make all,mk,"
   fi
 
   # --- tmux (full run): a real client in a fake terminal process
@@ -791,6 +857,22 @@ s4_tmux() {
   echo 0xddd >"$FAKE/active.txt"; reset_log; tm select-window -t main:0
   TMUX_PANE=$pane0 DF_CMD='make' DF_CMD_DIR=/tmp bash "$CN" notify --exit 0 --ms 40000 --pid 1
   notified && fail "M3: the session's own window is in front: no toast" || pass "M3: the session's own window is in front: no toast"
+  clients_json "$tpid" 0xddd "main:zsh"
+  # FIX5 M3: a client whose terminal owns several windows and none is decidable must NOT be walked as a nested tmux (outer_of is only
+  # for a client that owns no window at all): the outer server is never asked. The terminal process has an outer TMUX in its
+  # environment on purpose; a wrapper around tmux logs every call.
+  local osock="$T/tmux-outer-never.sock" apid apane
+  tm new-session -d -s amb "sleep 600"
+  apane=$(tm list-panes -t amb -F '#{pane_id}')
+  setsid env TMUX="$osock,1,0" TMUX_PANE=%0 bash -c 'echo $$ >"$1"; tail -f /dev/null | script -qfc "env -u TMUX tmux -S $2 attach -t amb" /dev/null' _ "$T/term2.pid" "$tsock" </dev/null >/dev/null 2>&1 &
+  for _ in $(seq 1 50); do [[ -s $T/term2.pid ]] && tm list-clients -t amb 2>/dev/null | grep -q . && break; sleep 0.1; done
+  apid=$(<"$T/term2.pid")
+  printf '#!/bin/sh\necho "$*" >>"%s/tmux.log"\nexec tmux "$@"\n' "$FAKE" >"$FAKE/tmux-wrap"; chmod +x "$FAKE/tmux-wrap"; : >"$FAKE/tmux.log"
+  clients_json "$apid" 0xe01 "p:zsh" "$apid" 0xe02 "q:zsh"; echo 0xe01 >"$FAKE/active.txt"
+  out=$(CMD_NOTIFY_TMUX="$FAKE/tmux-wrap" TMUX="$tsock,1,0" TMUX_PANE=$apane bash "$CN" locate --pid 1 2>&1)
+  expect "FIX5 M3: (control) the wrapper saw the session queries" test -s "$FAKE/tmux.log"
+  expect "FIX5 M3: an undecidable multi-window client does not make cmd-notify ask an outer tmux server (old code walked it as nested)" bash -c "! grep -q 'tmux-outer-never' '$FAKE/tmux.log'"
+  kill -- "-$apid" 2>/dev/null; pkill -g "$apid" 2>/dev/null; tm kill-session -t amb 2>/dev/null
   clients_json "$tpid" 0xddd "main:zsh"
   # L4: a tmux inside a pane of the outer tmux: the inner client's parent chain ends in the outer tmux server
   local isock="$T/tmux-inner.sock" iw ipane
