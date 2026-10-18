@@ -1191,11 +1191,14 @@ da_hp="$(git -C "$DOTFILES" config --get core.hooksPath 2>/dev/null)"
 da_bad=""
 [ "$da_hp" = ".githooks" ] || da_bad="$da_bad core.hooksPath is '$da_hp' (install.sh sets .githooks);"
 [ -x "$DOTFILES/.githooks/pre-commit" ] || da_bad="$da_bad .githooks/pre-commit is missing or not executable;"
+[ -x "$DOTFILES/.githooks/pre-push" ] || da_bad="$da_bad .githooks/pre-push is missing or not executable (commits made by merge/rebase/cherry-pick/am are only caught at push);"
 [ ! -e "$DOTFILES/.gitleaksignore" ] || da_bad="$da_bad a .gitleaksignore exists (the hook refuses it, allowlist entries go into .gitleaks.toml);"
-grep -q '^useDefault = true' "$DOTFILES/.gitleaks.toml" 2>/dev/null || da_bad="$da_bad .gitleaks.toml does not extend the default rules;"
+# the COMMITTED config is the one the hooks use: it must extend the default rules and hold no broad allowlist (paths, catch-all regex)
+da_cfgp="$( (. "$DOTFILES/.githooks/gitleaks-lib" && gl_committed_cfg_problems "$DOTFILES") 2>/dev/null | tr '\n' ';')"
+[ -z "$da_cfgp" ] || da_bad="$da_bad the committed .gitleaks.toml is too broad: $da_cfgp"
 command -v gitleaks >/dev/null 2>&1 || da_bad="$da_bad gitleaks is not installed (sudo ./apply-system.sh --only install): every commit is blocked;"
 if [ -z "$da_bad" ]; then
-  ok gitleaks-hook "pre-commit scans the staged changes (core.hooksPath=.githooks, committed .gitleaks.toml with the default rules, no .gitleaksignore)"
+  ok gitleaks-hook "pre-commit scans the staged changes, pre-push the pushed commits (core.hooksPath=.githooks, committed .gitleaks.toml with the default rules and exact allowlists only, no .gitleaksignore)"
 else
   bad gitleaks-hook "$da_bad"
 fi
@@ -1204,9 +1207,9 @@ if [ -e "$DOTFILES/.config/nvim/.git" ]; then
   [ "$da_nv" = "$DOTFILES/.githooks" ] || info gitleaks-nvim "the nvim submodule does not use the pre-commit hook yet: git -C ~/dotfiles/.config/nvim config core.hooksPath ~/dotfiles/.githooks (install.sh does it)"
 fi
 if command -v gitleaks >/dev/null 2>&1; then
-  da_out="$(cd "$DOTFILES" && gitleaks git --no-banner --redact -l error --exit-code 3 -c .gitleaks.toml . 2>&1)"; da_rc=$?
+  da_out="$( (. "$DOTFILES/.githooks/gitleaks-lib" && gl_history_scan "$DOTFILES") 2>&1)"; da_rc=$?   # committed .gitleaks.toml, not the working file
   case $da_rc in
-    0) ok gitleaks-history "no secrets in any commit of the history (default rules + .gitleaks.toml allowlist; staged-free scan of tracked history only)" ;;
+    0) ok gitleaks-history "no secrets in any commit of the history (default rules + the committed .gitleaks.toml allowlist; scan of tracked history only)" ;;
     3) bad gitleaks-history "gitleaks finds possible secrets in the history (values redacted): cd ~/dotfiles && gitleaks git --redact -v -c .gitleaks.toml ." ;;
     *) bad gitleaks-history "gitleaks failed to run (exit $da_rc): $(printf '%s' "$da_out" | tail -1)" ;;
   esac
