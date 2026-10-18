@@ -17,7 +17,7 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Desktop | [System, power, bar](#system-power-bar) | 12 |
 | Desktop | [Pointer from the keyboard](#pointer-from-the-keyboard) | 21 |
 | Desktop | [Other Hyprland binds](#other-hyprland-binds) | 16 |
-| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 156 |
+| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 157 |
 | Terminal | [tmux: this setup](#tmux-this-setup) | 55 |
 | Terminal | [tmux: stock prefix keys](#tmux-stock-prefix-keys) | 80 |
 | Terminal | [Terminal: ghostty](#terminal-ghostty) | 13 |
@@ -404,6 +404,7 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; n c` | Notifications: Actions |
 | `Super+; n d` | Notifications: Do not disturb |
 | `Super+; n h` | Notifications: History |
+| `Super+; n l` | Notifications: Long-command notifications |
 | `Super+; n q` | Notifications: Wi-Fi QR |
 | `Super+; n s` | Notifications: Speed test |
 | `Super+; n x` | Notifications: Dismiss |

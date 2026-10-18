@@ -7,11 +7,20 @@
 #                     timestamp option, so the stored time is the FINISH time of the command. Not recorded: a command with a
 #                     leading space and a command that holds a literal secret (DF_SECRET_CMD_RE). zsh's own ~/.zsh_history
 #                     keeps being written (fallback, autosuggestions).
+#   long-command toast  a command that ran at least DF_CMD_NOTIFY_MIN seconds (30; 0 = off in this shell) and finished while its
+#                     terminal is not in front starts ~/.config/hypr/scripts/cmd-notify.sh (it decides "in front", shows the
+#                     toast, a click focuses the terminal and the tmux pane). Never for: ssh logins (SSH_CONNECTION), a command with
+#                     a leading space, interactive programs (DF_CMD_NOTIFY_IGNORE: the first word after sudo/env/VAR=x). A
+#                     secret-looking command is shown as "(command hidden)". Switch: hub row "Long-command notifications"
+#                     (state file, live). Override any DF_* value in ~/.zshrc.local.
 [[ -o zle && -o interactive && -z $CLAUDECODE ]] || return 0
 
+: ${DF_CMD_NOTIFY_MIN:=30}          # seconds; 0 = off
+(( ${+DF_CMD_NOTIFY_IGNORE} )) || DF_CMD_NOTIFY_IGNORE=(nvim vim vi less man ssh tmux lazygit lazydocker htop btop yazi claude codex gemini top watch fzf hub)
 # literal secret values in a command line, matched lower-cased; variable references ($TOKEN, $(rbw get x)) do not count
 : ${DF_SECRET_CMD_RE:='(pass(word|wd)?|token|secret|api[_-]?key|credential|private[_-]?key)[a-z0-9_]*[[:space:]]*[=:][[:space:]]*["'\'']?[^$[:space:]"'\'']{4,}|auth[a-z0-9_]*=["'\'']?[^$[:space:]"'\'']{4,}|sshpass[[:space:]]+-p|authorization:[[:space:]]*(bearer|basic)[[:space:]]+[^$[:space:]]|(ghp|gho|ghs|github_pat|glpat|xox[abps]|sk)[-_][a-z0-9]{12,}|--(pass(word|wd)?|token|secret|api[_-]?key)[= ][^$[:space:]-][^[:space:]]{3,}'}
 
+_df_cmd_notify=${XDG_CONFIG_HOME:-$HOME/.config}/hypr/scripts/cmd-notify.sh
 zmodload zsh/datetime 2>/dev/null
 _df_cmd_preexec() { _df_cmd_line=$1 _df_cmd_dir=$PWD _df_cmd_t0=$EPOCHREALTIME }
 _df_cmd_precmd() {
@@ -25,6 +34,13 @@ _df_cmd_precmd() {
       id=$(ATUIN_SHELL=zsh atuin history start --hook -- "$line" 2>/dev/null) && [[ -n $id ]] &&
         atuin history end --hook --exit $ec --duration=$(( ms * 1000000 )) -- $id ) &>/dev/null &!
   fi
+  (( DF_CMD_NOTIFY_MIN > 0 && ms >= DF_CMD_NOTIFY_MIN * 1000 )) || return 0
+  [[ -z $SSH_CONNECTION && -x $_df_cmd_notify ]] || return 0
+  local -a w=(${(z)line}) extra
+  while [[ $w[1] == (sudo|env|nice|time|*=*) ]]; do shift w; done
+  (( ${DF_CMD_NOTIFY_IGNORE[(Ie)${w[1]:t}]} )) && return 0
+  (( secret )) && extra=(--hidden)
+  DF_CMD=$line DF_CMD_DIR=$dir setsid -f $_df_cmd_notify notify --exit $ec --ms $ms --pid $$ $extra &>/dev/null
   return 0
 }
 autoload -Uz add-zsh-hook
