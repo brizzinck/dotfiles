@@ -114,9 +114,10 @@ ee_problems() {
   fi
 }
 
-# problems: cards on "off" with a usable saved profile (class A, a restart helps), no hardware sink/source (class A when a card
-# exists), default source that is a monitor (class B, only reported), default source easyeffects_source with a microphone present
-# (class A, AUDIO2). Prints "A|B<TAB>text".
+# problems: CARD health only. Cards on "off" with a usable saved profile (class A, a WirePlumber restart helps), no hardware
+# sink/source (class A when a card exists), default source that is a monitor (class B, only reported). Prints "A|B<TAB>text".
+# The EasyEffects A line (default source easyeffects_source) is NOT a card problem: a restart of WirePlumber does not fix it
+# (a pin on easyeffects_source is cleared with `ee-ctl auto`), so only `check_problems` adds it.
 problems() {
   local cards sinks sources defsrc name prof saved
   cards="$(pactl --format=json list cards 2>/dev/null)" || { printf 'A\tPipeWire does not answer (pactl list cards failed)\n'; return; }
@@ -142,6 +143,11 @@ problems() {
   case "$defsrc" in
     *.monitor) printf 'B\tdefault source is a monitor (%s), not a microphone\n' "$defsrc" ;;
   esac
+}
+
+# check_problems: what --check prints (doctor `audio`): the card problems plus the EasyEffects A line
+check_problems() {
+  problems
   ! ee_applicable || ee_problems | grep '^A'
 }
 
@@ -225,7 +231,7 @@ if [ "$MODE" = mic ]; then
 fi
 
 if [ "$MODE" = check ]; then
-  out="$(problems)"
+  out="$(check_problems)"
   [ -z "$out" ] && exit 0
   printf '%s\n' "$out" | cut -f2
   exit 1
@@ -259,6 +265,9 @@ heal_cards() {
   fi
   log "restarting wireplumber: $(grep '^A' <<<"$out" | cut -f2 | paste -sd';' | sed 's/;/; /g')"
   systemctl --user restart wireplumber.service
+  # the "default" metadata lives in the WirePlumber process: its restart drops EasyEffects' per-stream targets, so running
+  # recorders would stay on the raw microphone until they reopen. EasyEffects re-moves every stream when it starts.
+  ee_applicable && systemctl --user try-restart easyeffects.service
   for _ in $(seq 1 20); do
     nap 0.5
     out="$(problems)"
@@ -287,11 +296,19 @@ ee_wait_ready() {
 
 # ee_chain_steps: (boot: forget the manual microphone choice,) start the unit, wait, check, restart once; notify only in boot mode
 ee_chain_steps() {
-  local out cleared
+  local out cleared pin
   if [ "$MODE" = boot ]; then
     cleared="$("$EE_CTL" auto 2>&1)"
     log "microphone choice: $cleared"
     nap 1 # WirePlumber re-selects the default source
+  else
+    # a pin on easyeffects_source (wiremix, pavucontrol) feeds EasyEffects with itself: always cleared, other pins are the owner's
+    pin="$("$EE_CTL" status --json 2>/dev/null | jq -r '.source_pin // empty' 2>/dev/null)"
+    if [ "$pin" = easyeffects_source ]; then
+      cleared="$("$EE_CTL" auto 2>&1)"
+      log "default source was pinned to easyeffects_source: $cleared"
+      nap 1
+    fi
   fi
   systemctl --user is-active --quiet easyeffects || "$EE_CTL" start
   ee_wait_ready

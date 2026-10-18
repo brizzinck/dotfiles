@@ -42,6 +42,8 @@ X
 cat >"$T/bin/pw-metadata" <<'X'
 #!/bin/sh
 echo "pw-metadata $*" >>"$FAKE/log"
+[ -x "$FAKE/on-metadata" ] && "$FAKE/on-metadata" "$@"
+exit 0
 X
 cat >"$T/bin/wpctl" <<'X'
 #!/bin/sh
@@ -479,6 +481,40 @@ if want 12; then
   out=$(TOGGLES_EE_BIN=/nonexistent "$TG" switch ns)
   [ "$(jq -r .text <<<"$out")" = "" ] && pass "12 toggles: without EasyEffects the switch is hidden" || fail "12 toggles hidden ($out)"
   unset TOGGLES_EE_BIN
+fi
+
+# ── 13. FIX3: pinned easyeffects_source, restart of EasyEffects after wireplumber, raw streams, stray EasyEffects, latency, grace ──
+if want 13; then
+  PINEE='[{"id":30,"type":"PipeWire:Interface:Metadata","props":{"metadata.name":"default"},"metadata":[{"subject":0,"key":"default.configured.audio.source","type":"Spa:String:JSON","value":{"name":"easyeffects_source"}},{"subject":0,"key":"default.audio.source","type":"Spa:String:JSON","value":{"name":"easyeffects_source"}}]}]'
+  mkhook() { # the fake pw-metadata -d clears the pin: default goes back to the hardware microphone
+    cat >"$F/on-metadata" <<X
+#!/bin/sh
+echo $HWSRC >"$F/default-source"
+echo '[{"id":30,"type":"PipeWire:Interface:Metadata","props":{"metadata.name":"default"},"metadata":[{"subject":0,"key":"default.audio.source","type":"Spa:String:JSON","value":{"name":"$HWSRC"}}]}]' >"$F/pw-dump.json"
+X
+    chmod +x "$F/on-metadata"
+  }
+  # A2: a pin on easyeffects_source is not a card failure (no wireplumber restart, no false notification) and is cleared in every mode
+  for mode in --boot fix; do
+    ae_fixture; echo easyeffects_source >"$F/default-source"; echo "$PINEE" >"$F/pw-dump.json"; mkhook
+    ee_stop; ee_start --preset mic-clean; ee_wait
+    if [ "$mode" = fix ]; then ae 2>"$F/err"; rc=$?; else ae --boot 2>"$F/err"; rc=$?; fi
+    ! logged "restart wireplumber" "$F/log" && ! grep -q '^notify' "$F/log" && pass "13 A2 $mode: pin on easyeffects_source = no wireplumber restart, no notification" || fail "13 A2 $mode restart/notify ($(cat "$F/log"))"
+    logged "pw-metadata -n default -d 0 default.configured.audio.source" "$F/log" && [ $rc -eq 0 ] && pass "13 A2 $mode: the pin is cleared with ee-ctl auto, run ends ok (rc $rc)" || fail "13 A2 $mode clear (rc $rc: $(cat "$F/err"))"
+  done
+  rm -f "$F/on-metadata"
+  # A3: every wireplumber restart is followed by a restart of a running EasyEffects (the metadata target of its streams is lost)
+  ae_fixture; ee_stop; ee_start --preset mic-clean; ee_wait
+  echo '[{"name":"alsa_card.pci-0000_04_00.6","active_profile":"off","profiles":{"HiFi":{"available":true}}}]' >"$F/cards.json"
+  printf '[default-profile]\nalsa_card.pci-0000_04_00.6=HiFi\n' >"$T/state/wireplumber/default-profile"
+  ae 2>"$F/err"
+  w=$(grep -n 'restart wireplumber.service' "$F/log" | head -1 | cut -d: -f1); e=$(grep -n 'try-restart easyeffects' "$F/log" | head -1 | cut -d: -f1)
+  [ -n "$w" ] && [ -n "$e" ] && [ "$e" -gt "$w" ] && pass "13 A3: wireplumber restart is followed by systemctl --user try-restart easyeffects" || fail "13 A3 order ($(cat "$F/log"))"
+  ae_fixture; ee_stop; ee_start --preset mic-clean; ee_wait
+  ae 2>"$F/err"
+  grep -q 'try-restart easyeffects' "$F/log" && fail "13 A3: no restart of EasyEffects when wireplumber was left alone" || pass "13 A3: no restart of EasyEffects when wireplumber was left alone"
+  rm -f "$T/state/wireplumber/default-profile"
+
 fi
 
 # ── 11. static files ──
