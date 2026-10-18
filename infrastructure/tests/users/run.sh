@@ -110,6 +110,7 @@ None|None" "$out"
 
 # ── usr: scratch publish, profile links, clipboard ACL ──────────────────────────
 export USR_SRV_DOTFILES="$T/srv"
+export USR_DEVTOOLS_SHARED="$T/no-devtools"   # a test must never start the real installer into the real /srv/devtools
 mkdir -p "$T/srv" "$T/home"
 export HOME="$T/home"
 export XDG_STATE_HOME="$T/home/.local/state"
@@ -326,6 +327,81 @@ case "$(cat "$STUB_LOG")" in *"machinectl "*"sudo -n -u nobody -H env "*) ok ;; 
 PATH="$T/bin:$PATH" STUB_MACHINECTL_FAIL=1 STUB_SUDO_FAIL=1 USR_MANAGED_TSV="$T/pick.tsv" "$USR" _session nobody shell >/dev/null 2>&1
 case "$(cat "$STUB_LOG")" in *"su - nobody -c "*) ok ;; *) bad "no su fallback when sudo fails too: $(cat "$STUB_LOG")" ;; esac
 unset XDG_RUNTIME_DIR WAYLAND_DISPLAY
+
+# ── USERS-SYNC C2: user-tools.sh --shared (dry-run argv, stamp, check) and usr devtools-sync ─────────────────────────────
+UT="$REPO/infrastructure/dev/user-tools.sh"
+DT="$T/devtools"
+dtd="$("$UT" --shared --prefix "$DT" --dry-run 2>&1)"
+for want in "env GOBIN=$DT/go/bin go install github.com/jorgerojas26/lazysql@v0.7.0" "env GOBIN=$DT/go/bin go install github.com/dlvhdr/gh-dash/v4@v4.26.2" \
+  "python3 -m venv --clear $DT/venv/posting" "-m pip install --disable-pip-version-check --no-cache-dir --require-hashes --no-deps -r $REPO/infrastructure/dev/posting-requirements.txt" \
+  "npm install --prefix $DT/npm --ignore-scripts --no-audit --no-fund --no-save gitlab-ci-local@4.76.1" \
+  "cargo install --locked --version 0.9.3 --root $DT/cargo glab-tui-crate" "cargo install --locked --version 0.1.276 --root $DT/cargo workmux" \
+  "would link: $DT/bin/lazysql -> ../go/bin/lazysql" "would link: $DT/bin/posting -> ../venv/posting/bin/posting" "would link: $DT/bin/workmux -> ../cargo/bin/workmux"; do
+  case "$dtd" in *"$want"*) ok ;; *) bad "user-tools.sh --shared --dry-run does not show: $want" ;; esac
+done
+[ -e "$DT" ] && bad "--shared --dry-run created $DT" || ok
+case "$dtd" in *"npm install -g"* | *"pipx "* | *"sudo"*) bad "--shared must not use npm -g, pipx or sudo" ;; *) ok ;; esac
+# the stamp follows the pins and the posting lock
+st1="$("$UT" --shared --stamp)"
+[ "${#st1}" = 64 ] && ok || bad "--stamp is not a sha256: $st1"
+mkdir -p "$T/ut2/infrastructure/dev"
+cp "$REPO/infrastructure/dev/"{user-tools.sh,posting-requirements.txt} "$T/ut2/infrastructure/dev/"
+expect "stamp of an identical copy" "$st1" "$("$T/ut2/infrastructure/dev/user-tools.sh" --shared --stamp)"
+sed -i 's/^WORKMUX_VERSION=0.1.276/WORKMUX_VERSION=0.1.277/' "$T/ut2/infrastructure/dev/user-tools.sh"
+[ "$st1" != "$("$T/ut2/infrastructure/dev/user-tools.sh" --shared --stamp)" ] && ok || bad "a changed pin does not change the stamp"
+cp "$REPO/infrastructure/dev/user-tools.sh" "$T/ut2/infrastructure/dev/user-tools.sh"
+echo "# x" >>"$T/ut2/infrastructure/dev/posting-requirements.txt"
+[ "$st1" != "$("$T/ut2/infrastructure/dev/user-tools.sh" --shared --stamp)" ] && ok || bad "a changed posting lock does not change the stamp"
+# --check reads the installed versions (a fake go answers `go version -m`); only a matching, current tree passes
+mkdir -p "$T/gobin" "$DT/go/bin"
+cat >"$T/gobin/go" <<'FAKE'
+#!/bin/sh
+# fake go: `go version -m FILE` prints the module line the file's name maps to
+[ "$1 $2" = "version -m" ] || exit 0
+case "$3" in *lazysql) printf '\tmod\tgithub.com/jorgerojas26/lazysql\t%s\n' "${FAKE_LAZYSQL:-v0.7.0}" ;; esac
+FAKE
+chmod +x "$T/gobin/go"
+printf '#!/bin/sh\n' >"$DT/go/bin/lazysql"; chmod +x "$DT/go/bin/lazysql"
+out="$(PATH="$T/gobin:$PATH" "$UT" --shared --prefix "$DT" --only lazysql --check)"; rc=$?
+expect "--check --only lazysql at the pin: exit 0, quiet" "0|" "$rc|$out"
+out="$(PATH="$T/gobin:$PATH" FAKE_LAZYSQL=v0.6.0 "$UT" --shared --prefix "$DT" --only lazysql --check)"; rc=$?
+expect "--check: an older lazysql is reported" "1|lazysql: 0.6.0 (pin 0.7.0)" "$rc|$out"
+out="$(PATH="$T/gobin:$PATH" "$UT" --shared --prefix "$DT" --check)"; rc=$?
+[ "$rc" = 1 ] && case "$out" in *"gh-dash: missing (pin 4.26.2)"*"posting: missing"*) true ;; *) false ;; esac && ok || bad "--check does not list the missing tools (rc $rc: $out)"
+# a prefix that does not exist or is not writable: nothing is attempted, exit 1 with the fix
+out="$("$UT" --shared --prefix "$T/not-there" 2>&1)"; rc=$?
+[ "$rc" = 1 ] && case "$out" in *"sudo ./apply-system.sh --only users"*) true ;; *) false ;; esac && ok || bad "--shared on a missing prefix (rc $rc: $out)"
+[ -e "$T/not-there" ] && bad "--shared created the missing prefix" || ok
+"$UT" --shared --prefix relative/dir >/dev/null 2>&1; expect "--shared with a relative prefix is refused" 2 "$?"
+"$UT" --check >/dev/null 2>&1; expect "--check without --shared is refused" 2 "$?"
+# usr devtools-sync: a current tree is left alone, a stale one runs the installer (fake script) in the foreground / background
+mkdir -p "$T/dtsync"
+cat >"$T/fake-user-tools.sh" <<'FAKE'
+#!/bin/sh
+echo "user-tools $*" >>"$FAKE_UT_LOG"
+case " $* " in *" --check "*) exit "${FAKE_UT_CHECK:-1}" ;; esac
+exit "${FAKE_UT_RC:-0}"
+FAKE
+chmod +x "$T/fake-user-tools.sh"
+export FAKE_UT_LOG="$T/ut.log" USR_DEVTOOLS_SCRIPT="$T/fake-user-tools.sh"
+: >"$FAKE_UT_LOG"
+out="$(USR_DEVTOOLS_SHARED="$T/dtsync" FAKE_UT_CHECK=0 "$USR" devtools-sync 2>&1)"
+case "$out" in *"up to date"*) ok ;; *) bad "devtools-sync on a current tree: $out" ;; esac
+expect "devtools-sync: current tree = only the check ran" "user-tools --shared --prefix $T/dtsync --check" "$(cat "$FAKE_UT_LOG")"
+: >"$FAKE_UT_LOG"
+USR_DEVTOOLS_SHARED="$T/dtsync" "$USR" devtools-sync >/dev/null 2>&1; rc=$?
+expect "devtools-sync: stale tree = installer ran, exit 0" "0|user-tools --shared --prefix $T/dtsync --check
+user-tools --shared --prefix $T/dtsync" "$rc|$(cat "$FAKE_UT_LOG")"
+USR_DEVTOOLS_SHARED="$T/dtsync" FAKE_UT_RC=1 "$USR" devtools-sync >/dev/null 2>&1; expect "devtools-sync: a failing installer = exit 1" 1 "$?"
+USR_DEVTOOLS_SHARED="$T/no-dtsync" "$USR" devtools-sync >/dev/null 2>&1; expect "devtools-sync: no tree = refused (exit 2)" 2 "$?"
+# `usr sync` starts it in the background only when the tree exists and is writable
+: >"$FAKE_UT_LOG"
+USR_DEVTOOLS_SHARED="$T/no-dtsync" "$USR" sync --worktree --quiet >/dev/null 2>&1
+sleep 0.3; [ ! -s "$FAKE_UT_LOG" ] && ok || bad "usr sync ran the dev-tool installer without /srv/devtools: $(cat "$FAKE_UT_LOG")"
+USR_DEVTOOLS_SHARED="$T/dtsync" "$USR" sync --worktree --quiet >/dev/null 2>&1
+for _ in $(seq 40); do grep -q -- "--prefix $T/dtsync\$" "$FAKE_UT_LOG" && break; sleep 0.1; done
+grep -qx "user-tools --shared --prefix $T/dtsync" "$FAKE_UT_LOG" && ok || bad "usr sync did not start devtools-sync in the background ($(cat "$FAKE_UT_LOG"))"
+unset FAKE_UT_LOG USR_DEVTOOLS_SCRIPT
 
 # ── nvim: which plugin/Mason root is chosen ─────────────────────────────────────
 if [ "$QUICK" = 0 ] && command -v nvim >/dev/null 2>&1; then

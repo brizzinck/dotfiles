@@ -1166,6 +1166,27 @@ if [ -r "$users_lib" ]; then
   else
     info users-nvim-shared "/srv/nvim-shared is not ready (usr nvim-sync; the users section starts it in the background)"
   fi
+  # shared dev tools (USERS-SYNC): /srv/devtools holds exactly the pinned versions, owned by the owner (or root) and not
+  # writable by group/other; td and yc put /srv/devtools/bin on their PATH only while that holds. INFO until the tree exists.
+  if [ -d /srv/devtools ]; then
+    users_dt_bad=""
+    users_dt_owner="$(stat -c %U /srv/devtools)"
+    { [ "$users_dt_owner" = "$USER" ] || [ "$users_dt_owner" = root ]; } || users_dt_bad="$users_dt_bad owner($users_dt_owner)"
+    [ "$(cat /srv/devtools/.owner 2>/dev/null)" = "$USER" ] || users_dt_bad="$users_dt_bad .owner(missing or not $USER: sudo ./apply-system.sh --only users)"
+    users_dt_w="$(find /srv/devtools -xdev ! -type l -perm /022 2>/dev/null | head -3 | paste -sd' ' -)"
+    [ -z "$users_dt_w" ] || users_dt_bad="$users_dt_bad group/other-writable($users_dt_w)"
+    if [ -z "$users_dt_bad" ]; then
+      if users_dt_out="$("$DOTFILES/infrastructure/dev/user-tools.sh" --shared --check 2>&1)"; then
+        ok users-devtools "/srv/devtools holds the pinned dev tools ($(ls /srv/devtools/bin 2>/dev/null | paste -sd' ' -)), $USER-owned, nobody else can write"
+      else
+        bad users-devtools "/srv/devtools is not current: $(printf '%s' "$users_dt_out" | paste -sd';' -) (infrastructure/dev/user-tools.sh --shared)"
+      fi
+    else
+      bad users-devtools "/srv/devtools:$users_dt_bad"
+    fi
+  else
+    info users-devtools "/srv/devtools does not exist yet (sudo ./apply-system.sh --only users, then infrastructure/dev/user-tools.sh --shared)"
+  fi
   # the clipboard: traverse-only on the runtime dir, rw on the Wayland socket, the other sockets closed
   users_clip=""
   for u in $(managed_users wayland); do

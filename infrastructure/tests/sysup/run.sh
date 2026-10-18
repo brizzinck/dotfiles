@@ -49,7 +49,7 @@ export XDG_STATE_HOME="$T/state" SYSUP_PKGCACHE="$T/cache" SYSUP_PRED="$T/pred" 
 mkdir -p "$XDG_RUNTIME_DIR"
 export SYSUP_TEST_HOME="$T/home"   # sysup takes HOME from the password database; this hook (scratch XDG_STATE_HOME only) replaces it
 
-expect "steps list in order" bash -c "[ \"\$($SYSUP steps | tr '\n' ' ')\" = 'space news prune keyring repo flatpak rust npm pipx go mise claude nvim zsh tmux report ' ]"
+expect "steps list in order" bash -c "[ \"\$($SYSUP steps | tr '\n' ' ')\" = 'space news prune keyring repo flatpak rust npm pipx go devtools mise claude nvim zsh tmux report ' ]"
 expect "dry run prints the plan and writes no log" bash -c "$SYSUP --dry-run | grep -q keyring && [ ! -e '$T/state/sysup/last.log' ]"
 
 "$SYSUP" check --quiet
@@ -74,6 +74,10 @@ expect "log file exists with the summary" grep -q 'summary' "$T/state/sysup/last
 expect "prune used paccache twice" bash -c "[ \$(grep -c 'paccache' '$FAKE_LOG') = 2 ]"
 expect "keyring runs before any upgrade" bash -c "grep -q 'pacman -Sy --needed --noconfirm archlinux-keyring' '$FAKE_LOG' && ! grep -q 'fake yay' '$FAKE_LOG'"
 expect "skipped steps are listed as skipped" bash -c "grep -q 'repo     skipped' <<<'$out'"
+
+# USERS-SYNC: the shared dev-tool tree is skipped quietly while /srv/devtools does not exist
+out=$(USR_DEVTOOLS_SHARED="$T/no-such-devtools" "$SYSUP" --only devtools --yes 2>&1)
+expect "devtools step: no tree = skipped without a failure" bash -c "grep -q 'shared dev tools skipped' <<<'$out' && grep -q 'devtools *ok' <<<'$out'"
 
 # a second run rotates the log
 "$SYSUP" --only space --yes >/dev/null 2>&1
@@ -103,7 +107,7 @@ mkdir -p "$T/home" "$T/proj"
 expect "mise step exits 0" test "$rc" = 0
 expect "mise step: plugins update, upgrade, prune in order" bash -c "[ \"\$(grep 'fake mise' '$FAKE_LOG' | sed 's/.*|//' | tr '\n' ',')\" = 'plugins update,upgrade --yes,prune --yes,' ]"
 expect "mise step runs from HOME, not the start directory" bash -c "grep 'fake mise' '$FAKE_LOG' | grep -q '$T/home|' && ! grep 'fake mise' '$FAKE_LOG' | grep -q '$T/proj'"
-expect "mise is listed after go in the dry run" bash -c "$SYSUP --dry-run | tr -s ' \n' ' ' | grep -q 'go mise claude'"
+expect "mise is listed after go in the dry run" bash -c "$SYSUP --dry-run | tr -s ' \n' ' ' | grep -q 'go devtools mise claude'"
 rm -f "$T/bin/mise"
 out=$(HOME="$T/home" PATH="$T/bin:/usr/bin:/bin" "$SYSUP" --only mise --yes 2>&1); rc=$?
 expect "mise step is skipped when mise is missing" bash -c "[ $rc = 0 ] && grep -q 'mise is not installed' <<<'$out'"

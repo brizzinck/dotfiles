@@ -46,7 +46,7 @@ PRED="${SYSUP_PRED:-/var/lib/dotfiles-predownload}"
 PKGCACHE="${SYSUP_PKGCACHE:-/var/cache/pacman/pkg}"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 WAYBAR_SCRIPTS="$HOME/.config/waybar/scripts"
-STEPS=(space news prune keyring repo flatpak rust npm pipx go mise claude nvim zsh tmux report)
+STEPS=(space news prune keyring repo flatpak rust npm pipx go devtools mise claude nvim zsh tmux report)
 
 mkdir -p "$STATE"
 
@@ -261,6 +261,17 @@ step_go() {
   done
   # a tool that cannot be fetched (private module, offline) is a warning, never a failed run
   ((bad)) && warn "some Go tools could not be updated (see above)"
+  return 0
+}
+
+# the shared dev-tool tree of td and yc (/srv/devtools, USERS-SYNC): `usr devtools-sync` installs the PINNED versions of
+# infrastructure/dev/user-tools.sh (nothing newer: the owner's own copies are moved forward by the go / npm / cargo steps), and is
+# a no-op while the tree is current; skipped without the tree. A failure is a warning like step_go.
+step_devtools() {
+  local usr="$HOME/.local/bin/usr" d="${USR_DEVTOOLS_SHARED:-/srv/devtools}"
+  [[ -d $d && -w $d ]] || { echo "no writable $d (sudo ./apply-system.sh --only users): shared dev tools skipped"; return 0; }
+  [[ -x $usr ]] || { echo "usr is not installed: shared dev tools skipped"; return 0; }
+  "$usr" devtools-sync || warn "the shared dev tools could not be updated (usr devtools-sync; log: ~/.local/state/usr/devtools-sync.log)"
   return 0
 }
 

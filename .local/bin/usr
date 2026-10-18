@@ -14,18 +14,21 @@
 #   usr sync [--quiet] [--worktree] [--dry-run]   publish the committed ~/dotfiles to /srv/dotfiles (no secrets), relink on
 #                                  profile changes; the git hooks in .githooks call it after every commit/merge/rewrite
 #   usr nvim-sync [--background] [--force]   install nvim plugins + Mason into /srv/nvim-shared (read by the managed users)
+#   usr devtools-sync [--background] [--force]   install the pinned dev tools into /srv/devtools (user-tools.sh --shared; `usr sync`
+#                                  starts it in the background when the pins changed)
 #   usr clipboard-acl              give the users flagged `clipboard` or `wayland` access to the Wayland socket and nothing else of
 #                                  $XDG_RUNTIME_DIR (Hyprland autostart runs it)
 #
 # No password anywhere: the sudoers drop-in and the polkit rule come from `sudo ./apply-system.sh --only users`. Terminals are
 # launched by hand only; closing the window ends the tmux session in it (destroy-unattached) and nothing lingers.
-# Env: USR_MANAGED_TSV, USR_SRV_DOTFILES, USR_NVIM_SHARED (paths; tests and unusual layouts).
+# Env: USR_MANAGED_TSV, USR_SRV_DOTFILES, USR_NVIM_SHARED, USR_DEVTOOLS_SHARED, USR_DEVTOOLS_SCRIPT (paths; tests and unusual layouts).
 set -u
 
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 REPO=$(cd "$(dirname "$SELF")/../.." && pwd)
 SRV="${USR_SRV_DOTFILES:-/srv/dotfiles}"
 NVIM_SHARED="${USR_NVIM_SHARED:-/srv/nvim-shared}"
+DEVTOOLS_SHARED="${USR_DEVTOOLS_SHARED:-/srv/devtools}"
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/usr"
 ME=$(command id -un)
 # shellcheck source=../../infrastructure/users/lib.sh
@@ -459,6 +462,8 @@ cmd_sync() {
     done
     if [ "$relink_ok" = 1 ]; then echo "$phash" >"$STATE/profiles.sha"; fi
   fi
+  # the pinned dev tools (lazysql, gh-dash, posting, ...) for the managed users: only when /srv/devtools exists and the pins moved
+  if [ -d "$DEVTOOLS_SHARED" ] && [ -w "$DEVTOOLS_SHARED" ]; then cmd_devtools_sync --background >>"$log" 2>&1 || true; fi
   return 0
 }
 
@@ -510,6 +515,42 @@ cmd_nvim_sync() {
   return "$rc"
 }
 
+# ───────────────────────────── shared dev tools ─────────────────────────────
+
+# installs the pins of infrastructure/dev/user-tools.sh into /srv/devtools (read by td and yc); a no-op while the tree is current
+cmd_devtools_sync() {
+  local bg=0 force=0 a script log rc
+  for a in "$@"; do
+    case "$a" in
+      --background) bg=1 ;;
+      --force) force=1 ;;
+      --_fg) ;;
+      *) die "devtools-sync: unknown option $a" ;;
+    esac
+  done
+  [ -d "$DEVTOOLS_SHARED" ] && [ -w "$DEVTOOLS_SHARED" ] || die "devtools-sync: $DEVTOOLS_SHARED is missing or not writable for $ME (sudo ./apply-system.sh --only users)"
+  script="${USR_DEVTOOLS_SCRIPT:-$SRV/infrastructure/dev/user-tools.sh}"   # the published (committed) copy, the same files td and yc get
+  [ -x "$script" ] || script="$REPO/infrastructure/dev/user-tools.sh"
+  [ -x "$script" ] || die "devtools-sync: user-tools.sh is missing"
+  mkdir -p "$STATE"
+  log="$STATE/devtools-sync.log"
+  if [ "$force" = 0 ] && "$script" --shared --prefix "$DEVTOOLS_SHARED" --check >/dev/null 2>&1; then note "devtools-sync: $DEVTOOLS_SHARED is up to date"; return 0; fi
+  if [ "$bg" = 1 ]; then
+    local fargs=()
+    [ "$force" = 1 ] && fargs=(--force)
+    setsid -f bash -c 'log=$1; shift; exec "$@" >>"$log" 2>&1' _ "$log" "$SELF" devtools-sync --_fg "${fargs[@]}" </dev/null >/dev/null 2>&1 || true
+    note "devtools-sync runs in the background: tail -f $log"
+    return 0
+  fi
+  exec 8>"$STATE/devtools-sync.lock"
+  flock -n 8 || { note "devtools-sync: another run holds the lock"; return 0; }
+  echo "$(date -Is) devtools-sync start ($script)"
+  "$script" --shared --prefix "$DEVTOOLS_SHARED"
+  rc=$?
+  if [ "$rc" = 0 ]; then echo "$(date -Is) devtools-sync done"; else echo "$(date -Is) devtools-sync FAILED (rc $rc); $DEVTOOLS_SHARED/.ready not updated"; fi
+  return "$rc"
+}
+
 # ───────────────────────────── main ─────────────────────────────
 
 cmd="${1:-list}"
@@ -528,7 +569,8 @@ case "$cmd" in
   _link) cmd__link "$@" ;;
   sync) cmd_sync "$@" ;;
   nvim-sync) cmd_nvim_sync "$@" ;;
+  devtools-sync) cmd_devtools_sync "$@" ;;
   clipboard-acl) cmd_clipboard_acl ;;
-  -h | --help | help) sed -n '2,24p' "$SELF" | sed 's/^# \{0,1\}//' ;;
+  -h | --help | help) sed -n '2,/^set -u/p' "$SELF" | sed '$d; s/^# \{0,1\}//' ;;
   *) die "unknown command: $cmd (usr --help)" ;;
 esac
