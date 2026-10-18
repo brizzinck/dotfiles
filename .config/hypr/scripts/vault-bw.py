@@ -976,10 +976,13 @@ def cmd_lock():
 
 # ───────────────────────────── clipboard, pickers, rbw ─────────────────────────────
 
+WL_COPY = "wl-copy"          # envs sets an absolute path (the secret goes to its stdin: never one a project's PATH can shadow)
+
+
 def copy(text, sensitive=True):
-    if not have("wl-copy"):
+    if not have(WL_COPY):
         die("wl-copy is not installed")
-    cmd = ["wl-copy", "--sensitive"] if sensitive else ["wl-copy"]
+    cmd = [WL_COPY, "--sensitive"] if sensitive else [WL_COPY]
     subprocess.run(cmd, input=text, text=True, check=True)
     if sensitive:
         subprocess.run([sys.executable, "-I", str(TOTP_PY), "arm-clear"], check=False)
