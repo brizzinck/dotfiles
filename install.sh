@@ -305,6 +305,10 @@ systemctl --user enable --now systemd-tmpfiles-clean.timer codex-prune-releases.
 log "Local LLM: token, on-demand socket, default model (1.3 GB, resumable, sha256-checked)"
 "$HOME/.local/bin/llm" token ensure || warn "llm token ensure failed"
 systemctl --user daemon-reload 2>/dev/null || true
+# oo7-daemon (Secret Service) must already run when greetd's pam_oo7 session hands it the login password, otherwise the
+# "Login" collection stays locked and the Bitwarden desktop app spins at its start; linger starts default.target at boot
+systemctl --user enable --now oo7-daemon.service 2>/dev/null \
+  || later "enable the Secret Service once logged in: systemctl --user enable --now oo7-daemon.service"
 systemctl --user enable --now llm.socket 2>/dev/null \
   || later "enable the local LLM socket once logged in: systemctl --user enable --now llm.socket"
 # vault-share (BW-ORG): the broker socket for td / yc; /run/vault-share comes from `sudo ./apply-system.sh --only users`, until then the socket fails to start

@@ -1414,6 +1414,12 @@ else
 fi
 if [ -e "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/idle-off" ]; then info hypridle-alive "idle is switched off on purpose (SUPER+CTRL+I)"; elif pgrep -x hypridle >/dev/null 2>&1; then ok hypridle-alive "hypridle runs"; else bad hypridle-alive "hypridle is not running (the hypridle-watch timer starts it within a minute, or SUPER+CTRL+I)"; fi
 if systemctl --user is-enabled hypridle-watch.timer >/dev/null 2>&1; then ok hypridle-watch "user timer hypridle-watch.timer restarts hypridle when it died"; else bad hypridle-watch "hypridle-watch.timer not enabled (stow ., systemctl --user enable --now hypridle-watch.timer)"; fi
+# Secret Service for the Bitwarden desktop app: pam_oo7 (greetd) can only unlock the Login collection when oo7-daemon
+# already runs at the login, so the unit must be enabled (linger starts it at boot)
+if [ -x /usr/lib/oo7-daemon ]; then
+  if [ "$(systemctl --user is-enabled oo7-daemon.service 2>/dev/null)" = enabled ]; then ok oo7-daemon "oo7-daemon.service enabled (runs before the login, pam_oo7 unlocks the Login collection)"
+  else bad oo7-daemon "oo7-daemon.service is not enabled: the Login collection stays locked and the Bitwarden app spins (systemctl --user enable --now oo7-daemon.service, then log in again)"; fi
+fi
 # stop timeouts (a hanging service must not hold a reboot): the owner's user manager reads user.conf.d (stowed), the
 # system side comes from apply-system.sh --only config
 st_bad=""
