@@ -159,9 +159,10 @@ SECRET_HINT = re.compile(r"KEY|SECRET|TOKEN|PASS|PWD|PRIVATE|CREDENTIAL|AUTH|DSN
 
 
 class Fail(Exception):
-    def __init__(self, msg, code=1):
+    def __init__(self, msg, code=1, *, native_code=None, native_stage=None, native_reason=None):
         super().__init__(msg)
         self.msg, self.code = msg, code
+        self.native_code, self.native_stage, self.native_reason = native_code, native_stage, native_reason
 
 
 def fail(msg, code=1):
@@ -1135,12 +1136,20 @@ def share(msg):
     sl = share_lib()
     try:
         return sl.Client(allow_self=bool(TEST_DIRS)).request(msg)
-    except sl.Locked as e:
-        fail(str(e), 3)
-    except sl.Policy as e:
-        fail(str(e), 4)
-    except sl.ShareError as e:
-        fail(str(e), 1)
+    except sl.ShareError as error:
+        if msg.get("op") == "env-put":
+            # The error body/message may contain backend output. Only fixed
+            # protocol categories and stages cross the native-write boundary.
+            extra = getattr(error, "extra", {})
+            category, stage = extras("native_error_fields", extra.get("code"), extra.get("stage"))
+            code = getattr(error, "exit_code", 1)
+            raise Fail("env write " + category + " (stage=" + stage + "); source retained", code,
+                       native_code=category, native_stage=stage) from None
+        if isinstance(error, sl.Locked):
+            fail(str(error), 3)
+        if isinstance(error, sl.Policy):
+            fail(str(error), 4)
+        fail(str(error), 1)
 
 
 def share_fields(item_id, names=None):
@@ -3128,6 +3137,7 @@ def build_parser():
     p.add_argument("--keep", action="store_true")
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--prod", action="store_true")
+    p.add_argument("--resume-pending", action="store_true", help="human: explicitly continue the same pending native import after terminal confirmation")
     scope_opts(p)
     p = sub.add_parser("export-example")
     p.add_argument("-o", "--output")

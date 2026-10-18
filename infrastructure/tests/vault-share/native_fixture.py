@@ -60,7 +60,9 @@ def main():
         def get(self, ident): return next(r for r in self.read()['items'] if r['id'] == ident)
         def create_folder(self, name):
             data = self.read(); row = {'id': str(uuid.uuid4()), 'name': name, 'object': 'folder'}
-            data['folders'].append(row); data['calls'].append('folder'); self.save(data); return row
+            data['folders'].append(row); data['calls'].append('folder'); self.save(data)
+            if (root / 'lose-folder-reply').exists(): raise broker.write_module.WriteError()
+            return row
         def create(self, doc):
             data = self.read(); row = dict(copy.deepcopy(doc), id=str(uuid.uuid4()))
             data['items'].append(row); data['calls'].append('create'); self.save(data)

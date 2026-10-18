@@ -65,7 +65,17 @@ def share(msg):
   if written and mode=='readback':values={name:'fixture-wrong-value' for name in values}
   return {'v':1,'ok':True,'id':hits[0]['id'],'values':values,'missing':[name for name in msg['fields'] if name not in values]}
  ns['fail']('unexpected fixture operation',1)
-ns['share']=share
+class FixtureShareError(Exception):
+ def __init__(self,message,**extra):
+  super().__init__(message);self.extra=extra;self.exit_code={'locked':3,'policy':4,'pending':4,'conflict':4,'unavailable':6,'rate_limited':5}.get(extra.get('code'),1)
+class FixtureClient:
+ def __init__(self,**kwargs):pass
+ def request(self,msg):
+  if msg['op']=='env-put' and os.environ.get('NATIVE_FAIL')=='diagnostic':
+   raise FixtureShareError('fixture-poison-secret-raw-error',code=os.environ.get('NATIVE_CODE'),stage=os.environ.get('NATIVE_STAGE'))
+  return share(msg)
+import types
+ns['_SHARE']=types.SimpleNamespace(Client=FixtureClient,ShareError=FixtureShareError,Locked=FixtureShareError,Policy=FixtureShareError)
 sys.exit(ns['main'](sys.argv[1:]))
 '''
 
@@ -174,6 +184,33 @@ class Native(unittest.TestCase):
         self.assertEqual(0,result.returncode,result.stderr)
         self.assertIn('NEXT_TOKEN=bw://Users/td/Env/global/default#NEXT_TOKEN',(self.root/'global/global.env').read_text())
         self.assertFalse((self.root/'state/envs/scoped-global-import.json').exists())
+
+    def test_fixed_diagnostics_survive_both_catches_without_raw_poison(self):
+        self.ref_file('NEW_TOKEN=fixture-native-secret\n');self.bind();source=self.project/'.env';before=source.read_bytes()
+        for category,expected in (('locked',3),('pending',4),('policy',4),('unavailable',6),('rate_limited',5),('bad_request',1),('conflict',4),('internal',1)):
+            result=self.run_envs('import','--secrets','NEW_TOKEN',env=dict(self.env,NATIVE_FAIL='diagnostic',NATIVE_CODE=category,NATIVE_STAGE='folder-visible'))
+            self.assertEqual(expected,result.returncode,result.stderr)
+            self.assertIn('env write '+category+' (stage=folder-visible); source retained',result.stderr)
+            self.assertNotIn('fixture-poison-secret',result.stdout+result.stderr)
+            self.assertEqual(before,source.read_bytes())
+        result=self.run_envs('import','--secrets','NEW_TOKEN',env=dict(self.env,NATIVE_FAIL='diagnostic',NATIVE_CODE='fixture-poison-secret',NATIVE_STAGE='fixture-poison-secret'))
+        self.assertNotEqual(0,result.returncode)
+        self.assertIn('env write unknown (stage=unknown)',result.stderr)
+        self.assertNotIn('fixture-poison-secret',result.stdout+result.stderr)
+
+    def test_resume_requires_existing_pending_tty_and_never_yes_or_agent_bypass(self):
+        self.ref_file('NEW_TOKEN=fixture-native-secret\n');self.bind();source=self.project/'.env';before=source.read_bytes()
+        result=self.run_envs('import','--secrets','NEW_TOKEN','--resume-pending','--yes')
+        self.assertEqual(4,result.returncode,result.stderr)
+        self.assertFalse(any(row['op']=='env-put' for row in self.native_log()))
+        failed=self.run_envs('import','--secrets','NEW_TOKEN',env=dict(self.env,NATIVE_FAIL='write'))
+        self.assertNotEqual(0,failed.returncode)
+        count=sum(row['op']=='env-put' for row in self.native_log())
+        for extra in ({},{'CLAUDECODE':'1'}):
+            result=self.run_envs('import','--secrets','NEW_TOKEN','--resume-pending','--yes',env=dict(self.env,**extra))
+            self.assertEqual(4,result.returncode,result.stderr)
+            self.assertEqual(count,sum(row['op']=='env-put' for row in self.native_log()))
+            self.assertEqual(before,source.read_bytes())
 
     def test_batch_boundary_64_succeeds_65_refuses_without_split_mutation(self):
         source=self.project/'.env'

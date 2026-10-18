@@ -8,6 +8,8 @@ import subprocess
 import sys
 import time
 import tempfile
+import pty
+import select
 import unittest
 
 spec=importlib.util.spec_from_file_location('socket_refs',Path(__file__).with_name('references_test.py'))
@@ -50,6 +52,76 @@ class NativeSocket(unittest.TestCase):
     def set_secret(self,value):
         return subprocess.run([sys.executable,'-I','-B','-c',f.BOOT,str(f.SOURCE),str(f.REPO/'.local/bin/envs'),'set','NEW_TOKEN','--stdin'],
                               cwd=self.project,env=self.env,input=value+'\n',capture_output=True,text=True,timeout=15)
+
+    def terminal_import(self, answer):
+        master,slave=pty.openpty()
+        command=[sys.executable,'-I','-B','-c',f.BOOT,str(f.SOURCE),str(f.REPO/'.local/bin/envs'),
+                 'import','--secrets','NEW_TOKEN','--resume-pending','--yes']
+        child=subprocess.Popen(command,cwd=self.project,env=self.env,stdin=slave,stdout=slave,stderr=slave)
+        os.close(slave);output=bytearray();answered=False;deadline=time.monotonic()+12
+        try:
+            while time.monotonic()<deadline:
+                if select.select([master],[],[],.05)[0]:
+                    try:chunk=os.read(master,65536)
+                    except OSError:break
+                    if not chunk:break
+                    output.extend(chunk)
+                    if b'Type resume to confirm:' in output and not answered:
+                        os.write(master,answer.encode()+b'\n');answered=True
+                elif child.poll() is not None:break
+            # PTY EOF can arrive just before waitpid observes process exit.
+            try:code=child.wait(timeout=max(.01,deadline-time.monotonic()))
+            except subprocess.TimeoutExpired:
+                child.kill();child.wait();self.fail('inert recovery fixture did not finish')
+            return code,output.decode(errors='replace'),answered
+        finally:
+            if child.poll() is None:child.kill();child.wait()
+            os.close(master)
+
+    def legacy_pending(self):
+        self.ref_file('NEW_TOKEN=fixture-legacy-recovery\n');self.bind()
+        marker=self.broker_root/'lose-folder-reply';marker.touch()
+        result=self.run_envs('import','--secrets','NEW_TOKEN');self.assertNotEqual(0,result.returncode)
+        marker.unlink()
+        directory=self.broker_root/'state/vault-share/env-write'
+        pending=[]
+        for path in directory.glob('*.json'):
+            row=json.loads(path.read_text())
+            if row.get('state')=='pending':
+                self.assertIsNone(row.get('id'));row.pop('phase',None)
+                path.write_text(json.dumps(row));path.chmod(0o600);pending.append(row)
+        self.assertEqual(1,len(pending))
+        return (self.project/'.env').read_bytes()
+
+    def test_legacy_absent_pending_requires_typed_resume_and_cancel_is_no_write(self):
+        before=self.legacy_pending();source=self.project/'.env'
+        ordinary=self.run_envs('import','--secrets','NEW_TOKEN')
+        self.assertEqual(4,ordinary.returncode,ordinary.stderr)
+        self.assertIn('env write pending (stage=recovery)',ordinary.stderr)
+        self.assertEqual(before,source.read_bytes())
+        calls=json.loads((self.broker_root/'vault.json').read_text())['calls']
+        refused,output,prompt=self.terminal_import('no')
+        self.assertTrue(prompt);self.assertEqual(4,refused,output)
+        self.assertIn('pending import recovery was cancelled; source retained',output)
+        self.assertEqual(before,source.read_bytes())
+        self.assertEqual(calls,json.loads((self.broker_root/'vault.json').read_text())['calls'])
+        resumed,output,prompt=self.terminal_import('resume')
+        self.assertTrue(prompt);self.assertEqual(0,resumed,output)
+        self.assertIn('NEW_TOKEN=bw://Users/td/Env/demo/dev#NEW_TOKEN',source.read_text())
+        vault=json.loads((self.broker_root/'vault.json').read_text())
+        self.assertEqual(1,vault['calls'].count('create'))
+        self.assertNotIn('fixture-legacy-recovery',output)
+
+    def test_confirmed_resume_cannot_change_original_hmac_bound_values(self):
+        self.legacy_pending();source=self.project/'.env'
+        source.write_text('NEW_TOKEN=fixture-changed-payload\n');before=source.read_bytes()
+        calls=json.loads((self.broker_root/'vault.json').read_text())['calls']
+        result,output,prompt=self.terminal_import('resume')
+        self.assertTrue(prompt);self.assertEqual(4,result,output)
+        self.assertIn('env write pending (stage=recovery)',output)
+        self.assertEqual(before,source.read_bytes())
+        self.assertEqual(calls,json.loads((self.broker_root/'vault.json').read_text())['calls'])
+        self.assertNotIn('fixture-changed-payload',output)
 
     def test_native_import_bind_run_then_set_without_toml(self):
         self.ref_file('NEW_TOKEN=fixture-socket-secret\nAPP_PORT=8080\n');self.bind()

@@ -425,7 +425,39 @@ def resolve_refs(cfg, env, specs, wanted, record):
     return values
 
 
-def managed_put(cfg, env, values, overwrite):
+NATIVE_ERROR_CODES = frozenset({"locked", "unavailable", "policy", "bad_request", "rate_limited", "conflict", "pending", "internal"})
+NATIVE_ERROR_STAGES = frozenset({"request", "policy", "storage", "backend-prepare", "backend-sync", "folder-list", "item-resolve",
+                                "preflight", "recovery", "folder-create", "folder-receipt", "folder-visible", "item-create",
+                                "item-edit", "item-verify", "read-visibility", "complete", "capacity"})
+
+
+def native_error_fields(category, stage):
+    return (category if isinstance(category, str) and category in NATIVE_ERROR_CODES else "unknown",
+            stage if isinstance(stage, str) and stage in NATIVE_ERROR_STAGES else "unknown")
+
+
+NATIVE_RECOVERY_REASONS = {
+    "missing-pending": "--resume-pending requires the original pending native request; source retained",
+    "no-terminal": "pending import recovery requires a terminal and typed confirmation; --yes cannot bypass it; source retained",
+    "cancelled": "pending import recovery was cancelled; source retained",
+}
+
+
+def native_resume_failure(reason):
+    raise E.Fail(NATIVE_RECOVERY_REASONS[reason], 4, native_code="policy", native_stage="recovery", native_reason=reason)
+
+
+def native_write_failure(error):
+    reason = getattr(error, "native_reason", None)
+    if isinstance(reason, str) and reason in NATIVE_RECOVERY_REASONS:
+        native_resume_failure(reason)
+    category, stage = native_error_fields(getattr(error, "native_code", None), getattr(error, "native_stage", None))
+    code = error.code if type(error.code) is int and error.code in (1, 3, 4, 5, 6) else 1
+    raise E.Fail("env write " + category + " (stage=" + stage + "); source retained", code,
+                 native_code=category, native_stage=stage) from None
+
+
+def managed_put(cfg, env, values, overwrite, resume_pending=False):
     """One self-scope batch, with metadata-only retry identity and independent scoped readback."""
     E.refuse_agent("write")
     if not E.managed_user() or not E.PROJECT_RE.fullmatch(cfg.project) or not E.ENV_RE.fullmatch(env):
@@ -455,6 +487,8 @@ def managed_put(cfg, env, values, overwrite):
         prior = records.get(key)
         if prior is not None and (not isinstance(prior, dict) or prior.get("phase") not in ("pending", "complete")):
             E.fail("native write recovery metadata requires review; source retained", 4)
+        if resume_pending and (not prior or prior["phase"] != "pending"):
+            native_resume_failure("missing-pending")
         if prior and prior["phase"] == "pending":
             request_id = prior.get("request_id")
             if prior.get("names") != names:
@@ -469,6 +503,12 @@ def managed_put(cfg, env, values, overwrite):
             request_id = str(uuid.uuid4())
         message = {"v": 1, "op": "env-put", "project": cfg.project, "env": env,
                    "values": values, "overwrite": overwrite, "request_id": request_id}
+        if resume_pending:
+            if not E.tty():
+                native_resume_failure("no-terminal")
+            if not E.typed_confirm("resume", "The earlier write has an unknown outcome. This explicitly authorizes completion of the same request if a fresh broker check finds no target note. Refusal keeps the source unchanged."):
+                native_resume_failure("cancelled")
+            message["resume_pending"] = True
         if len(json.dumps(message).encode()) + 1 > 256 * 1024:
             E.fail("native write batch exceeds request limits; source retained", 4)
         records[key] = {"phase": "pending", "request_id": request_id, "names": names}
@@ -497,9 +537,9 @@ def managed_put(cfg, env, values, overwrite):
             if result.get("id") != ident or result.get("values") != expected or result.get("missing") != []:
                 E.fail("native write readback differs", 1)
     except E.Fail as error:
-        E.fail("native vault write or readback incomplete; source retained; retry the original request", error.code)
+        native_write_failure(error)
     except (ValueError, TypeError, KeyError, AttributeError):
-        E.fail("native vault write or readback incomplete; source retained; retry the original request", 1)
+        native_write_failure(E.Fail("unverified native response", 1, native_code="unknown", native_stage="read-visibility"))
     with metadata_lock():
         records = read_state("native-writes.json")
         if records.get(key) != {"phase": "pending", "request_id": request_id, "names": names}:

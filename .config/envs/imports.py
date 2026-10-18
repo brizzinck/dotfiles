@@ -111,6 +111,9 @@ def shell_literal(value):
 def run(args, c):
     E, D = c.E, c.D
     E.refuse_agent("import")  # Before opening the source or examining any literal value.
+    resume_pending = getattr(args, "resume_pending", False)
+    if resume_pending and not E.managed_user():
+        E.fail("--resume-pending is available only for native managed imports; source retained", 4)
     global_ = getattr(args, "global_", False)
     cfg = E.load_global(augment=False) if global_ else E.load_cfg(augment=False)
     E.require_bound(cfg)
@@ -146,6 +149,8 @@ def run(args, c):
     if E.FOLDER_PREFIX and groups["plain"]:
         E.fail("--for/--shared plain exports require a target-user migration; source retained", 4)
     secrets, plain, dropped = groups["secrets"], groups["plain"], groups["drop"]
+    if resume_pending and not secrets:
+        E.fail("--resume-pending requires the original secret selections; source retained", 4)
     ref_values = {name: D.format_bw_ref(E.env_folder(cfg.project), env, name) for name in secrets}
     ref_target = E.global_dir() / "global.env"
     ref_snap = ref_doc = plain_snap = plain_doc = None
@@ -198,7 +203,7 @@ def run(args, c):
         if secrets:
             try:
                 if E.managed_user():
-                    c.managed_put(cfg, env, {name: values[name] for name in secrets}, args.overwrite)
+                    c.managed_put(cfg, env, {name: values[name] for name in secrets}, args.overwrite, resume_pending=resume_pending)
                 else:
                     manager = E.bw_open()
                     item = E.bw_env_item(manager, cfg.project, env, create=False)
@@ -221,7 +226,9 @@ def run(args, c):
                         E.fail("vault readback failed", 1)
                     manager.refresh_rbw()
             except E.Fail as error:
-                E.fail("vault write or verification failed; source retained", error.code if E.managed_user() else 1)
+                if E.managed_user():
+                    c.native_write_failure(error)
+                E.fail("vault write or verification failed; source retained", 1)
         transaction["phase"] = "vault-verified"
         c.write_state("import-status.json", transaction)
         snap.verify()
