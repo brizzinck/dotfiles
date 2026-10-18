@@ -4,8 +4,13 @@
 # This is the package's /etc/pam.d/greetd without `auth required pam_securetty.so`: greetd sets no PAM_TTY before the
 # authentication, so pam_securetty cannot find a tty and fails for root with "cannot determine user's tty" /
 # pam_authenticate SERVICE_ERR (it ignores everyone else). The package file is a pacman backup file and stays untouched.
+# pam_oo7 hands the login password to oo7-daemon (the Secret Service, org.freedesktop.secrets), which unlocks (or creates on
+# the first login) the "Login" collection with it. Without it the collection stays locked and anything that reads a
+# secret (the Bitwarden desktop app at start) waits for a prompt that never comes: the app showed only a spinner.
 
 auth       requisite    pam_nologin.so
 auth       include      system-local-login
+auth       optional     pam_oo7.so
 account    include      system-local-login
 session    include      system-local-login
+session    optional     pam_oo7.so auto_start
