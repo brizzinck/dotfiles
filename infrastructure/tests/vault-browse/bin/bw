@@ -15,9 +15,12 @@ case $cmd in
   status)
     if unlocked; then echo '{"status":"unlocked"}'; else echo '{"status":"locked"}'; fi ;;
   unlock)
-    var=""
-    for ((i = 1; i <= $#; i++)); do [[ ${!i} == --passwordenv ]] && { j=$((i + 1)); var=${!j}; }; done
-    [[ -n $var && ${!var:-} == master-pw ]] || { echo "Invalid master password." >&2; exit 1; }
+    # BW1-fix 11: the master password is read from a --passwordfile (a /dev/fd pipe); an environment variable does not work
+    pwfile="" pw=""
+    for ((i = 1; i <= $#; i++)); do [[ ${!i} == --passwordfile ]] && { j=$((i + 1)); pwfile=${!j}; }; done
+    [[ -n $pwfile ]] && IFS= read -r pw <"$pwfile"
+    env | grep -c 'master-pw' >"$FAKE_DIR/unlock-env-hits" || true   # does the bw process see the password in its environment?
+    [[ $pw == master-pw ]] || { echo "Invalid master password." >&2; exit 1; }
     touch "$FAKE_DIR/bw-unlocked"; printf '%s' "$KEY" ;;
   lock)
     # what the lock saw: was the session file already gone, was the server socket already gone, which key did it get

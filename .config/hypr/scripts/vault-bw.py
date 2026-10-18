@@ -38,13 +38,18 @@ path) and only when SO_PEERCRED says the server is this user's, before one byte 
 one client: REST over AF_UNIX (http.client), the CLI as fallback when the server cannot run
 or the call has no REST form (Send, import, passphrases).
 
-Secrets: the master password only travels pinentry -> this process -> the environment of ONE `bw unlock` child
-(--passwordenv), never argv, never a file. The session key lives in $XDG_RUNTIME_DIR/vault/bw-session (tmpfs, mode 600)
-and reaches `bw` as BW_SESSION in that child's environment. Item JSON (with the new password) and the Send password
+Secrets: the master password only travels pinentry -> this process -> a pipe that ONE `bw unlock` child reads
+(--passwordfile /dev/fd/N), never argv, never the environment, never a file. The session key lives in
+$XDG_RUNTIME_DIR/vault/bw-session (tmpfs, mode 600) and reaches `bw` as BW_SESSION in the environment of the bw child.
+Crash metadata: RLIMIT_CORE=0 only stops the core FILE; systemd-coredump still writes COREDUMP_ENVIRON (the whole
+environment) to the journal, which the wheel group can read (checked: a crash with RLIMIT_CORE 0 is logged with its
+environment). So every bw process that holds BW_SESSION also runs with PR_SET_DUMPABLE 0 (a tiny LD_PRELOAD library built
+with cc into ~/.cache/vault on first use; the kernel then dumps nothing and systemd-coredump is never called, and
+/proc/PID/environ is closed to other processes of this user too). Without a compiler it falls back to RLIMIT_CORE 0 only. Item JSON (with the new password) and the Send password
 go to bw on stdin, never argv. Generated and old passwords are copied with `wl-copy --sensitive` and cleared in 30 s.
 A Send link is meant to be shared, so it is copied plainly.
 Test hooks: BW_BIN, RBW_BIN, PINENTRY_BIN, VAULT_RBW_CONF, BW_DOWNLOAD_DIR, EDITOR, VAULT_BW_SERVE=0 (CLI only),
-VAULT_BW_LAUNCH=popen|systemd, VAULT_BW_IDLE (seconds; default the rbw lock_timeout
+VAULT_BW_LAUNCH=popen|systemd, VAULT_BW_NODUMP=0 (no dumpable-0 library), VAULT_BW_IDLE (seconds; default the rbw lock_timeout
 capped at 900), VAULT_BW_SERVE_POLL (supervisor tick, 2 s), VAULT_BW_RBW_POLL (how often it runs `rbw unlocked`, 20 s).
 vault-browse.py (the vault browser, SUPER+CTRL+SHIFT+P) imports this file for the bw session, the pickers and the
 actions above; run directly it is the command line behind the u6 hub rows.
@@ -88,6 +93,7 @@ CONF_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
 RBW_CONF = Path(os.environ.get("VAULT_RBW_CONF") or CONF_HOME / "rbw" / "config.json")
 DOWNLOADS = Path(os.environ.get("BW_DOWNLOAD_DIR") or Path.home() / "Downloads")
 TERMINAL_UNLOCK = False
+CACHE_HOME = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
 os.umask(0o077)
 
 
@@ -167,15 +173,60 @@ def drop_session():
 
 
 def no_core():
-    """preexec_fn: no core dump for this process and everything it starts (a crashing bw/node holding the session key must
-    not leave it in a core file: systemd-coredump would keep it on disk)."""
+    """No core FILE for this process and everything it starts (the limit is inherited, so one call at import replaces a
+    preexec_fn per child: preexec_fn is not safe in a threaded program such as the vault browser). It does NOT keep the
+    environment out of the journal: see NODUMP_C."""
     try:
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     except (OSError, ValueError):
         pass
 
 
-def bw_cli(*args, stdin=None, session=True, extra_env=None):
+no_core()
+
+NODUMP_C = """#include <sys/prctl.h>
+__attribute__((constructor)) static void vault_nodump(void) { prctl(PR_SET_DUMPABLE, 0, 0, 0, 0); }
+"""
+_nodump_lib = None
+
+
+def nodump_lib():
+    """Path of the LD_PRELOAD library that makes a process non-dumpable (no core, no systemd-coredump journal entry with the
+    environment, /proc/PID/environ closed to the rest of this user's processes), built once with cc, or None."""
+    global _nodump_lib
+    if _nodump_lib is not None:
+        return _nodump_lib or None
+    _nodump_lib = ""
+    if os.environ.get("VAULT_BW_NODUMP") == "0" or not have("cc"):
+        return None
+    import hashlib
+    d = CACHE_HOME / "vault"
+    lib = d / f"nodump-{hashlib.sha256(NODUMP_C.encode()).hexdigest()[:12]}.so"
+    try:
+        d.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if not lib.exists():
+            tmp = d / f".nodump.{os.getpid()}.so"
+            r = subprocess.run(["cc", "-shared", "-fPIC", "-O2", "-x", "c", "-o", str(tmp), "-"], input=NODUMP_C.encode(),
+                               capture_output=True)
+            if r.returncode != 0:
+                tmp.unlink(missing_ok=True)
+                return None
+            os.replace(tmp, lib)
+    except OSError:
+        return None
+    _nodump_lib = str(lib)
+    return _nodump_lib
+
+
+def with_nodump(env):
+    """env with the dumpable-0 library preloaded (for a child that holds a secret); unchanged without the library."""
+    lib = nodump_lib()
+    if lib:
+        env["LD_PRELOAD"] = lib + (":" + env["LD_PRELOAD"] if env.get("LD_PRELOAD") else "")
+    return env
+
+
+def bw_cli(*args, stdin=None, session=True, extra_env=None, pass_fds=()):
     """One `bw` process (about 1 s of start-up each): the fallback and the calls the server does not do."""
     env = dict(os.environ)
     env.pop("BW_SESSION", None)
@@ -186,8 +237,10 @@ def bw_cli(*args, stdin=None, session=True, extra_env=None):
         env["BW_SESSION"] = key
     if extra_env:
         env.update(extra_env)
+    if env.get("BW_SESSION"):
+        with_nodump(env)
     try:
-        return subprocess.run([BW, *args], input=stdin, capture_output=True, text=True, env=env, preexec_fn=no_core)
+        return subprocess.run([BW, *args], input=stdin, capture_output=True, text=True, env=env, pass_fds=pass_fds)
     except FileNotFoundError:
         die("bw is not installed (sudo ~/dotfiles/apply-system.sh --only install)")
 
@@ -346,7 +399,7 @@ def launch_serve():
             return None
     log = open(SERVE_LOG, "ab")
     return subprocess.Popen(serve_args(), stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
-                            env=dict(os.environ, **env), preexec_fn=no_core)
+                            env=dict(os.environ, **env))
 
 
 def start_serve(wait=20.0):
@@ -378,6 +431,8 @@ def start_serve(wait=20.0):
             return False
         deadline = time.time() + wait
         while time.time() < deadline:
+            if not read_session():   # a lock ran meanwhile (it waits for this flock): stop waiting, it stops the server
+                return False
             if SOCK.exists() and serve_up():
                 return True
             if child is not None and child.poll() is not None:
@@ -640,9 +695,8 @@ def rbw_unlocked():
 
 
 def die_with_parent():
-    """preexec_fn of the bw child: no core dump, and SIGTERM when the supervisor dies in any way (even SIGKILL), so no
-    orphan server keeps the key."""
-    no_core()
+    """preexec_fn of the bw child (the supervisor is single-threaded): SIGTERM when the supervisor dies in any way (even
+    SIGKILL), so no orphan server keeps the key. The core limit is inherited from `no_core()` at import."""
     try:
         import ctypes
         ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)   # PR_SET_PDEATHSIG
@@ -653,7 +707,6 @@ def die_with_parent():
 def cmd_serve():
     """The supervisor behind `_serve`: runs `bw serve` on the socket with the session key in ITS environment only, and ends
     it (and itself) on SIGTERM, when the session file is gone (lock), after the idle limit and when the rbw agent locked."""
-    no_core()
     key = read_session()
     if not key or not have(BW):
         return 1
@@ -662,7 +715,7 @@ def cmd_serve():
     SOCK.unlink(missing_ok=True)
     SERVE_PID.write_text(str(os.getpid()))
     touch_used()
-    env = dict(os.environ, BW_SESSION=key, BW_NOINTERACTION="true", NODE_NO_WARNINGS="1")
+    env = with_nodump(dict(os.environ, BW_SESSION=key, BW_NOINTERACTION="true", NODE_NO_WARNINGS="1"))
     key = None
     log = open(SERVE_LOG, "ab")
     child = subprocess.Popen([BW, "serve", "--hostname", f"unix://{SOCK}"], stdin=subprocess.DEVNULL, stdout=log,
@@ -793,7 +846,18 @@ def unlock():
         if pw is None:
             print("cancelled", file=sys.stderr)
             sys.exit(1)
-        p = bw_cli("unlock", "--raw", "--passwordenv", "BWV_MP", session=False, extra_env={"BWV_MP": pw})
+        # the master password goes through a pipe the child reads as /dev/fd/N: it is in no argv, no environment (a crash
+        # record of bw would list it), no file; a password is far below the pipe buffer, so writing first cannot block
+        rfd, wfd = os.pipe()
+        try:
+            os.write(wfd, pw.encode() + b"\n")
+            os.close(wfd)
+            wfd = -1
+            p = bw_cli("unlock", "--raw", "--passwordfile", f"/dev/fd/{rfd}", session=False, pass_fds=(rfd,))
+        finally:
+            os.close(rfd)
+            if wfd >= 0:
+                os.close(wfd)
         pw = None
         key = p.stdout.strip()
         if p.returncode == 0 and key:

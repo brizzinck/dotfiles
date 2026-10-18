@@ -10,7 +10,7 @@ case ${1:-} in
   unlocked) locked && exit 1; exit 0 ;;
   lock) touch "$FAKE_DIR/rbw-locked"; exit 0 ;;
   stop-agent) exit 0 ;;
-  sync) locked && exit 1; cp "$FAKE_DIR/vault.json" "$VIEW"; exit 0 ;;
+  sync) locked && exit 1; [[ -f $FAKE_DIR/rbw-sync-fail ]] && exit 1; cp "$FAKE_DIR/vault.json" "$VIEW"; exit 0 ;;
 esac
 locked && { echo "rbw: vault is locked" >&2; exit 1; }
 # shellcheck disable=SC2016  # a jq program

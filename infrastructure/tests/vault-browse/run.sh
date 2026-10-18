@@ -43,6 +43,7 @@ export EDITOR='$BIN/editor' VISUAL= VAULT_CLEAR_AFTER=2 BW_DOWNLOAD_DIR='$FAKE/d
 export HYPRLAND_INSTANCE_SIGNATURE=fake VAULT_TERMINAL='$BIN/faketerm'
 export FZF_MENU_NO_SERVER=1 VBTEST_TMUX='$SOCK'
 export VAULT_BW_LAUNCH=popen VAULT_BW_SERVE_POLL=0.3 VAULT_BW_RBW_POLL=0.3
+export VAULT_BW_NODUMP=0 XDG_CACHE_HOME='$FAKE/cache'   # a dumpable-0 child hides /proc/PID/environ from the checks below; quick_nodump turns it on
 unset TG_SKIP TMUX_PANE
 ENV
 echo '{"email":"test@example.com"}' >"$FAKE/rbw.json"
@@ -182,6 +183,27 @@ bw_count() { grep -ac "^$1" "$FAKE/argv.log" 2>/dev/null || true; }   # "bw " = 
 srv_pid() { cat "$RUN/vault/bw-serve.pid" 2>/dev/null; }
 srv_alive() { local p; p=$(srv_pid); [[ -n $p ]] && grep -aq '_serve' "/proc/$p/cmdline" 2>/dev/null; }
 wait_srv_gone() { local i; for ((i = 0; i < ${1:-40}; i++)); do ! srv_alive && [[ ! -S $RUN/vault/bw.sock ]] && return 0; sleep 0.2; done; return 1; }
+# the supervisors of THIS test (their environment names this test's runtime dir) and their children: a real bw server of the
+# owner (or another test) running at the same time is none of their business
+test_supervisors() {
+  local p
+  for p in $(pgrep -f '[v]ault-bw.py _serve' 2>/dev/null); do
+    tr '\0' '\n' <"/proc/$p/environ" 2>/dev/null | grep -qx "XDG_RUNTIME_DIR=$RUN" && echo "$p"
+  done
+}
+test_serve_pids() {
+  local p c
+  for p in $(test_supervisors); do
+    echo "$p"
+    for c in $(pgrep -P "$p" 2>/dev/null); do echo "$c"; done
+  done
+}
+one_supervisor() { [[ $(test_supervisors | grep -c '') == 1 ]]; }
+no_tcp_listener() {
+  local pids
+  pids=$(test_serve_pids | paste -sd'|' -)
+  [[ -n $pids ]] && ! ss -ltnpH 2>/dev/null | grep -Eq "pid=($pids)[,)]"
+}
 quick_bw1() {
   local V="$SCRIPTS/vault-bw.py" out p1 p2 key=SESSION-KEY-abc
   reset unlocked
@@ -195,7 +217,7 @@ quick_bw1() {
   python3 -I "$V" call list items --trash </dev/null >/dev/null
   check "server: later calls start no process" bash -c '[ "$(grep -ac "^bw " "$1/argv.log")" = 1 ] && grep -aq "^bw-serve GET /object/item/i-github" "$1/argv.log" && grep -aq "^bw-serve GET /list/object/items?trash=true" "$1/argv.log"' _ "$FAKE"
   check "socket: mode 600 (an umask-077 process), directory 700, owned by the owner" bash -c '[ "$(stat -c %a "$1/bw.sock")" = 600 ] && [ "$(stat -c %a "$1")" = 700 ] && [ "$(stat -c %U "$1/bw.sock")" = "$(id -un)" ]' _ "$RUN/vault"
-  check "socket: no TCP listener of the server (port 8087, any bw process)" bash -c '! ss -ltnpH 2>/dev/null | grep -Eq "\"bw\"|bw-serve|[:.]8087[[:space:]]"'
+  check "socket: no TCP listener of the server (port 8087; this test's supervisor and its bw child, not the owner's real server)" no_tcp_listener
   check "socket: nobody (another user) cannot reach it (acl-reach.py)" bash -c 'out=$(python3 -I "$1/infrastructure/users/acl-reach.py" "$(id -u nobody)" "$2" 2>&1); ! grep -q "bw.sock" <<<"$out"' _ "$REPO" "$RUN"
   p1=$(srv_pid)
   check "secret: the session key is in no argv (supervisor, bw child, argv log, start command)" bash -c 'for p in $(pgrep -f "^(/usr/bin/)?python3 .*(vault-bw.py _serve|bw-serve.py)"); do tr "\0" " " </proc/$p/cmdline | grep -q "$2" && exit 1; done; ! grep -aq "$2" "$1/argv.log"; exit 0' _ "$FAKE" "$key"
@@ -250,7 +272,7 @@ quick_bw1() {
   reset
   : >"$FAKE/argv.log"
   python3 -I "$V" unlock </dev/null >/dev/null
-  check "unlock: pinentry -> one bw unlock process -> server started -> sync is a request" bash -c 'grep -aqx "bw unlock --raw --passwordenv BWV_MP" "$1/argv.log" && grep -aq "^bw serve" "$1/argv.log" && grep -aq "^bw-serve POST /sync" "$1/argv.log" && ! grep -aq "^bw sync" "$1/argv.log"' _ "$FAKE"
+  check "unlock: pinentry -> one bw unlock process (password on a /dev/fd pipe, not in its environment) -> server started -> sync is a request" bash -c 'grep -aqE "^bw unlock --raw --passwordfile /dev/fd/[0-9]+$" "$1/argv.log" && [ "$(cat "$1/unlock-env-hits")" = 0 ] && grep -aq "^bw serve" "$1/argv.log" && grep -aq "^bw-serve POST /sync" "$1/argv.log" && ! grep -aq "^bw sync" "$1/argv.log"' _ "$FAKE"
   check "  a second ensure() costs no process at all" bash -c 'n=$(grep -ac "^bw " "$1/argv.log"); python3 -I "$2" unlock </dev/null; [ "$(grep -ac "^bw " "$1/argv.log")" = "$n" ]' _ "$FAKE" "$V"
   python3 -I "$V" lock </dev/null
   # rbw-first call sites
@@ -274,6 +296,9 @@ PY' _ "$V"
   quick_idle_limit
   quick_lock_order
   quick_slow_first_server
+  quick_nodump
+  quick_lock_midstart
+  quick_linux_pass_stale
 }
 
 # BW1-fix 8: a first server that was too slow to answer is stopped before the next start (it used to be orphaned)
@@ -297,7 +322,82 @@ print("pid1alive", os.path.exists(f"/proc/{p1}") and b"_serve" in open(f"/proc/{
 PY
 )
   check "slow first server: the first start times out, the second works" bash -c 'grep -qx "first False" <<<"$1" && grep -qx "second True" <<<"$1"' _ "$out"
-  check "  the slow first supervisor is gone (not orphaned) and only the new one is left" bash -c 'grep -qx "pid1alive False" <<<"$1" && [ "$(pgrep -fc "[v]ault-bw.py _serve")" = 1 ]' _ "$out"
+  check "  the slow first supervisor is gone (not orphaned) and only the new one is left" bash -c 'grep -qx "pid1alive False" <<<"$1"' _ "$out"
+  check "  and exactly one supervisor of this test is running" one_supervisor
+  stop_bw_servers
+}
+
+# FIX2 11 + 17: the environment of a crashing bw must stay out of the journal (a core limit of 0 does not: checked on this
+# machine, systemd-coredump still logs COREDUMP_ENVIRON), the core limit comes from one call at import
+quick_nodump() {
+  local V="$SCRIPTS/vault-bw.py" sup child out lib
+  reset unlocked
+  # shellcheck disable=SC1091
+  . "$FAKE/env.sh"
+  unset VAULT_BW_NODUMP
+  if ! command -v cc >/dev/null; then printf 'skip  nodump (no cc)\n'; return; fi
+  python3 -I "$V" call list folders </dev/null >/dev/null
+  sup=$(srv_pid); child=$(pgrep -P "$sup" | head -1)
+  lib=$(ls "$FAKE"/cache/vault/nodump-*.so 2>/dev/null | head -1)
+  check "nodump: the library is built once into the cache directory (700)" bash -c '[ -f "$1" ] && [ "$(stat -c %a "$(dirname "$1")")" = 700 ]' _ "$lib"
+  check "nodump: the library makes a process non-dumpable (PR_GET_DUMPABLE 0; a plain process reports 1)" bash -c 'a=$(LD_PRELOAD="$1" python3 -c "import ctypes; print(ctypes.CDLL(None).prctl(3,0,0,0,0))"); b=$(python3 -c "import ctypes; print(ctypes.CDLL(None).prctl(3,0,0,0,0))"); [ "$a" = 0 ] && [ "$b" = 1 ]' _ "$lib"
+  check "nodump: the bw server child holding BW_SESSION is non-dumpable (its /proc/PID/environ is closed to other processes)" bash -c '[ -n "$1" ] && ! cat /proc/$1/environ >/dev/null 2>&1' _ "$child"
+  stop_bw_servers
+  # a bw CLI process (the fallback) with the key gets it too
+  printf '#!/bin/sh\ncase "$LD_PRELOAD" in *nodump-*.so*) echo preloaded >"%s/cli-preload" ;; esac\nexec %s "$@"\n' "$FAKE" "$BIN/bw" >"$FAKE/preloadbw"; chmod +x "$FAKE/preloadbw"
+  rm -f "$FAKE/cli-preload"
+  BW_BIN="$FAKE/preloadbw" VAULT_BW_SERVE=0 python3 -I "$V" call list folders </dev/null >/dev/null
+  check "nodump: a bw CLI process that holds the key is started with the library" file_eq "$FAKE/cli-preload" preloaded
+  check "nodump: VAULT_BW_NODUMP=0 and a missing cc fall back to no library (the call still works)" bash -c 'rm -f "$1/cli-preload"; VAULT_BW_NODUMP=0 BW_BIN="$1/preloadbw" VAULT_BW_SERVE=0 python3 -I "$2" call list folders </dev/null >/dev/null && [ ! -e "$1/cli-preload" ]' _ "$FAKE" "$V"
+  # the core limit is set once at import for the whole process tree; no preexec_fn per child is left for it
+  out=$(ulimit -c unlimited 2>/dev/null; python3 -I - "$V" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("vb", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print([l for l in open("/proc/self/limits") if l.startswith("Max core")][0].split()[4:6])
+PY
+)
+  check "core: importing vault-bw.py sets RLIMIT_CORE 0 for the process (children inherit it)" bash -c '[ "$1" = "['"'"'0'"'"', '"'"'0'"'"']" ]' _ "$out"
+  check "core: no preexec_fn=no_core is left (not thread-safe in the threaded vault browser)" bash -c '! grep -q "preexec_fn=no_core" "$1"' _ "$V"
+}
+
+# FIX2 13: a lock that runs while a start waits for its socket ends the wait at once (it used to hold the flock for the full
+# 20 s, and lock waits for that flock)
+quick_lock_midstart() {
+  local V="$SCRIPTS/vault-bw.py" out
+  reset unlocked
+  # shellcheck disable=SC1091
+  . "$FAKE/env.sh"
+  out=$(python3 -I - "$V" "$RUN/vault/bw-session" <<'PY'
+import importlib.util, os, sys, threading, time
+spec = importlib.util.spec_from_file_location("vb", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+import subprocess
+# systemd launch mode: launch_serve returns None (no child to poll); the unit here is a server that never answers
+hang = subprocess.Popen(["sleep", "30"], start_new_session=True)
+m.launch_serve = lambda: None
+threading.Timer(0.6, lambda: os.unlink(sys.argv[2])).start()   # the lock drops the session file while the start waits
+t = time.time(); r = m.start_serve(wait=10)
+print("result", r, "waited", "short" if time.time() - t < 4 else "long")
+hang.kill()
+PY
+)
+  check "start_serve: a session that vanishes while waiting ends the wait (no 10 s hold of the flock)" bash -c 'grep -qx "result False waited short" <<<"$1"' _ "$out"
+  stop_bw_servers
+}
+
+# FIX2 16: `rbw sync` failed -> rbw's copy may be stale -> the folder is read through bw (an item made elsewhere must not be
+# asked for again / duplicated)
+quick_linux_pass_stale() {
+  local out
+  command -v script >/dev/null || { printf 'skip  linux-pass stale rbw (no script(1))\n'; return; }
+  reset unlocked
+  rbw list >/dev/null 2>&1
+  # rbw's local copy predates the item: remove skalse from the view the fake rbw reads
+  jq 'del(.items[] | select(.name == "skalse"))' "$FAKE/rbw-view.json" >"$FAKE/rbw-view.tmp" && mv "$FAKE/rbw-view.tmp" "$FAKE/rbw-view.json"
+  touch "$FAKE/rbw-sync-fail"
+  : >"$FAKE/argv.log"
+  out=$(lp_run)
+  check "linux-pass, rbw sync failed with a stale copy: the folder comes from bw, skalse is not asked for again" bash -c 'grep -q "skalse: already stored, skipped" <<<"$1" && ! grep -q "Linux password of skalse" <<<"$1" && grep -q "rbw sync failed" <<<"$1" && grep -aq "^bw-serve GET /list/object/items" "$2/argv.log"' _ "$out" "$FAKE"
+  rm -f "$FAKE/rbw-sync-fail"
   stop_bw_servers
 }
 
@@ -452,12 +552,14 @@ quick_linux_pass_unreadable() {
   # rbw AND bw unreadable: stop before asking anything, create nothing
   reset unlocked
   touch "$FAKE/rbw-locked"
-  printf 'import sys\na = sys.argv[1:]\nif a[:1] == ["state"]:\n    print("unlocked"); sys.exit(0)\nsys.exit(0 if a[:2] == ["call", "sync"] else 1)   # bw answers sync, nothing else\n' >"$FAKE/badvault.py"
+  # bw answers sync and the folder list (the folder exists) but fails to list its items: the folder is unreadable, which the
+  # old code took for an empty folder (and asked for / created every user again); a bw that fails earlier would stop for another reason
+  printf 'import sys\na = sys.argv[1:]\nif a[:1] == ["state"]:\n    print("unlocked"); sys.exit(0)\nif a[:3] == ["call", "list", "folders"]:\n    print("[{\\"id\\": \\"f-linux\\", \\"name\\": \\"Linux\\"}]"); sys.exit(0)\nsys.exit(0 if a[:2] == ["call", "sync"] else 1)\n' >"$FAKE/badvault.py"
   : >"$FAKE/argv.log"
   out=$(VAULT_BW="$FAKE/badvault.py" lp_run)
-  check "linux-pass setup, rbw and bw both failing: stops, asks no password, creates nothing" bash -c '! grep -q "Linux password of" <<<"$1" && grep -qE "bw list folders failed|could not read the folder" <<<"$1" && ! grep -q "LP_RC=0" <<<"$1"' _ "$out"
+  check "linux-pass setup, rbw and bw both failing: stops, asks no password, creates nothing" bash -c '! grep -q "Linux password of" <<<"$1" && grep -q "could not read the folder" <<<"$1" && ! grep -q "LP_RC=0" <<<"$1"' _ "$out"
   out=$(VAULT_BW="$FAKE/badvault.py" lp_run --update skalse)
-  check "linux-pass --update, rbw and bw both failing: no new item for an existing user" bash -c '! grep -q "no item yet, created" <<<"$1" && ! grep -q "LP_RC=0" <<<"$1"' _ "$out"
+  check "linux-pass --update, rbw and bw both failing: stops before asking for a password, no new item for an existing user" bash -c '! grep -q "Linux password of" <<<"$1" && grep -q "could not read the folder" <<<"$1" && ! grep -q "no item yet, created" <<<"$1" && ! grep -q "LP_RC=0" <<<"$1"' _ "$out"
   stop_bw_servers
 }
 

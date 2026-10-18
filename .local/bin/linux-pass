@@ -106,9 +106,10 @@ resolve_folder() {
 # fails (locked, agent down, cancelled pinentry) bw answers instead. Returns 1 when neither could read the folder: the
 # callers stop then, because an unreadable folder is not an empty folder (it used to create duplicate items).
 ITEMS='[]'
+RBW_STALE=0   # 1 when `rbw sync` failed: rbw's local copy may miss items made elsewhere, so the folder is read through bw
 load_items() {
   local out
-  if rbw_ready; then
+  if [[ $RBW_STALE != 1 ]] && rbw_ready; then
     if out=$("$RBW" list --raw 2>/dev/null) && ITEMS=$(jq -c --arg f "$FOLDER" '[.[] | select(.folder == $f) | {id, name}]' <<<"$out" 2>/dev/null); then
       return 0
     fi
@@ -179,7 +180,10 @@ show_list() { # re-reads the folder: it changed since the last load
 # rbw sees what the web vault / other devices changed after a sync (one network call, no bw)
 rbw_refresh() {
   rbw_ready || return 0
-  "$RBW" sync >/dev/null 2>&1 || say "(rbw sync failed: using its last copy of the vault)"
+  if ! "$RBW" sync >/dev/null 2>&1; then
+    RBW_STALE=1
+    say "(rbw sync failed: its copy of the vault may be stale, reading the folder through bw)"
+  fi
   return 0
 }
 
