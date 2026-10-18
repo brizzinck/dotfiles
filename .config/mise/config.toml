@@ -4,7 +4,8 @@
 idiomatic_version_file_enable_tools = ["node", "python"]   # .nvmrc / .node-version / .python-version
 auto_install = true             # mise exec / mise run / shims install a missing pinned version on first use
 not_found_auto_install = true
-trusted_config_paths = []       # never auto-trust: `mise trust` per project (envs init / envs bind do it)
+trusted_config_paths = []       # never auto-trust: `mise trust` per project (`envs trust` asks, lists the files and does it)
+disable_backends = ["asdf", "vfox"]   # third-party plugin code never runs on cd or inside `envs run` (verify the key on G7)
 jobs = 4
 
 [settings.status]

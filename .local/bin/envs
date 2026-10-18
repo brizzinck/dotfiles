@@ -1,10 +1,12 @@
-#!/usr/bin/env -S python3 -I
-"""envs: per-project environments with secrets from Bitwarden (DEV-b). Python 3 stdlib only; run as `python3 -I`.
+#!/usr/bin/python3 -I
+"""envs: per-project environments with secrets from Bitwarden (DEV-b). Python 3 stdlib only; the shebang is the absolute
+/usr/bin/python3 -I (never a PATH lookup: a project's pinned Python or `_.path` must not run in place of envs).
 
   envs                          the TUI: projects -> environments -> variables
   envs init [--project NAME] [--envs dev,stage,prod] [--default dev]
-                                write .envs.toml in the git top-level (or cwd), add .env* to .gitignore, mise trust, bind
-  envs bind                     confirm the root -> Env/<project> binding (+ mise trust); needs a terminal
+                                write .envs.toml in the git top-level (or cwd), add .env* to .gitignore, bind (mise trust only on request)
+  envs bind                     confirm the root -> Env/<project> binding; needs a terminal (never trusts mise by itself)
+  envs trust                    `mise trust` for this root, after a separate question that lists the config files
   envs status [--json]          project, root, binding, active env, declared names; with an unlocked vault per env: set /
                                 missing / extra (no values)
   envs use [ENV] [--prod] [--for 60m]   select the active env of this root (picker without ENV); the default env clears it
@@ -19,6 +21,7 @@
   envs diff [A B]               per name: set/missing in each, same/differs (compared in memory, never printed)
   envs env new|rename|delete ...    manage environments (item + .envs.toml list; delete = Bitwarden trash, typed confirmation)
   envs project rename NEW | delete  folder rename / items to the trash + folder delete, typed confirmation
+  envs convert NAME [--prod]    secret <-> plain (the value moves between Bitwarden and .mise*.toml; protected envs: typed name)
   envs import [FILE] [-e ENV] [--secrets A,B] [--plain C,D] [--keep]   move a .env file into Bitwarden / .mise.toml
   envs export-example [-o .env.example]   names only
   envs copy-value NAME [-e ENV] copy one value (wl-copy --sensitive, cleared after 30 s); no command prints a value
@@ -33,15 +36,18 @@ Secrets go ONLY into the command (`envs run`); nothing here prints a value, puts
 codex, gemini, ... as an ancestor process, or $CLAUDECODE) get names-only commands and nothing else. `prod`/`production` and
 `protected = [...]` need --prod (or a typed confirmation) and are logged to the journal (no values).
 Exit codes: 0 ok, 1 error, 2 usage, 3 vault locked and no tty, 4 refused (agent, protected without --prod, unbound), 130 cancel.
-Test hooks: ENVS_TOOL_PATH (directory with fake tools; also makes ENVS_TEST_ROOT_PID, ENVS_TEST_YES work), RBW_BIN, BW_BIN,
-PINENTRY_BIN, ENVS_NO_JOURNAL.
+Test hooks (only when ENVS_TOOL_PATH resolves below <repo>/infrastructure/tests/ AND XDG_STATE_HOME / XDG_RUNTIME_DIR point
+away from the real ones; otherwise every hook is dropped and rbw, bw, pinentry, wl-copy come from /usr/bin only): ENVS_TOOL_PATH
+(fake tools), ENVS_TEST_ROOT_PID, ENVS_TEST_YES, ENVS_NO_JOURNAL, RBW_BIN, BW_BIN, PINENTRY_BIN (inside that directory).
 """
 import contextlib
 import fcntl
 import json
 import os
+import pwd
 import re
 import select
+import shlex
 import shutil
 import subprocess
 import sys
@@ -55,21 +61,92 @@ os.umask(0o077)
 SELF = Path(__file__).resolve()
 REPO = SELF.parents[2]               # ~/dotfiles for the owner, /srv/dotfiles for managed users
 VAULT_BW = REPO / ".config/hypr/scripts/vault-bw.py"
-HOME = Path.home()
-TEST_DIR = os.environ.get("ENVS_TOOL_PATH") or ""      # test hook: a directory of fake tools
+HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)          # the account's home, not $HOME (a project [env] can set that)
 SAFE_DIRS = ["/usr/bin", "/usr/local/bin", str(HOME / ".local/bin")]
+PY = "/usr/bin/python3" if os.access("/usr/bin/python3", os.X_OK) else sys.executable
+ORIG_PATH = os.environ.get("PATH", "")                 # the user's PATH: only the final command gets it back
+
+
+def _under(path, root):
+    rp, rr = os.path.realpath(path), os.path.realpath(root)
+    return rp == rr or rp.startswith(rr + os.sep)
+
+
+def _verified_test_dirs():
+    """ENVS_TOOL_PATH counts only when every entry is below <repo>/infrastructure/tests AND the state and runtime directories
+    are not the real ones (the fakes must not write bindings or a bw session into the owner's account). Anything else: no
+    test mode, no hooks (an agent that sets them gets nothing, a project's [env] cannot switch the checks off)."""
+    dirs = [d for d in (os.environ.get("ENVS_TOOL_PATH") or "").split(":") if d]
+    if not dirs or not all(_under(d, REPO / "infrastructure/tests") for d in dirs):
+        return []
+    real = {os.path.realpath(HOME / ".local/state"), os.path.realpath(f"/run/user/{os.getuid()}")}
+    for var in ("XDG_STATE_HOME", "XDG_RUNTIME_DIR"):
+        v = os.environ.get(var)
+        if not v or os.path.realpath(v) in real:
+            return []
+    return [os.path.realpath(d) for d in dirs]
+
+
+TEST_DIRS = _verified_test_dirs()
+SECRET_TOOLS = {"rbw", "bw", "pinentry", "wl-copy"}    # these never resolve outside the test directory in test mode
+# names a test (or a project's [env]) could use to redirect the vault tools; dropped from our environment outside test mode
+# and put back for the command we run (envs must not change what a command sees)
+HOOK_ENV = ("ENVS_TOOL_PATH", "ENVS_TEST_ROOT_PID", "ENVS_TEST_YES", "ENVS_NO_JOURNAL", "RBW_BIN", "BW_BIN", "PINENTRY_BIN",
+            "BW_DOWNLOAD_DIR", "VAULT_RBW_CONF", "VAULT_BW_IDLE", "VAULT_BW_SERVE_POLL", "VAULT_BW_RBW_POLL", "VAULT_BW_NODUMP",
+            "VAULT_BW_NODUMP_SRC", "VAULT_BW_UNIT", "VAULT_BW_SYSTEMD_RUNTIME", "VAULT_BW_SERVE", "VAULT_BW_LAUNCH",
+            "VAULT_TERMINAL", "VAULT_CLEAR_AFTER")
+PINNED = {}                                            # name -> the value the shell had (None = unset)
+
+
+def harden_environment():
+    """Outside test mode: no hook variables, our own subprocesses find tools in SAFE_DIRS only, and the state, runtime and
+    config directories are the account's (a trusted project's mise [env] may set any variable)."""
+    if TEST_DIRS:
+        return
+    for k in HOOK_ENV:
+        if k in os.environ:
+            PINNED[k] = os.environ.pop(k)
+    for k, v in (("XDG_STATE_HOME", str(HOME / ".local/state")), ("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"),
+                 ("XDG_CONFIG_HOME", str(HOME / ".config"))):
+        if os.environ.get(k) != v:
+            PINNED[k] = os.environ.get(k)
+            os.environ[k] = v
+    os.environ["PATH"] = ":".join(SAFE_DIRS)
+
+
+def command_env(base):
+    """The environment of the final command: what the shell had (user PATH, hook variables) plus nothing of ours."""
+    out = dict(base)
+    for k, v in PINNED.items():
+        if v is None:
+            out.pop(k, None)
+        else:
+            out[k] = v
+    out["PATH"] = ORIG_PATH
+    return out
+
+
+def git_env():
+    """A clean environment for git: GIT_DIR / GIT_WORK_TREE / GIT_CONFIG_* from a project's [env] must not steer it."""
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
 TOML = ".envs.toml"
 MASK = "•" * 8
 
 NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 PROJECT_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
 ENV_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
-RESERVED = {"PATH", "HOME", "USER", "SHELL", "PWD", "TERM", "LANG", "IFS", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT",
-            "PYTHONPATH", "PYTHONSTARTUP", "NODE_OPTIONS", "BW_SESSION", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "WAYLAND_DISPLAY"}
-RESERVED_PREFIX = ("MISE_", "ENVS_", "__MISE")
+RESERVED = {"PATH", "HOME", "USER", "SHELL", "PWD", "TERM", "LANG", "IFS", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME",
+            "NODE_OPTIONS", "NODE_PATH", "BW_SESSION", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "XDG_STATE_HOME", "XDG_CONFIG_HOME",
+            "WAYLAND_DISPLAY", "BASH_ENV", "ENV", "ZDOTDIR", "GLIBC_TUNABLES", "GCONV_PATH", "PERL5OPT", "PERL5LIB", "RUBYOPT",
+            "RUBYLIB", "GIT_DIR", "GIT_WORK_TREE", "GIT_SSH_COMMAND", "GIT_EXEC_PATH", "GIT_ASKPASS", "BW_BIN", "RBW_BIN",
+            "PINENTRY_BIN"}
+RESERVED_PREFIX = ("MISE_", "ENVS_", "__MISE", "LD_", "GIT_CONFIG", "VAULT_BW_")
 ALWAYS_PROTECTED = {"prod", "production"}
 AGENTS = {"claude", "codex", "gemini", "claude-agent-ac", "claude-agent-acp", "codex-acp"}   # comm is cut at 15 characters
 AGENT_RUNNERS = {"node", "bun", "python3", "python", "deno"}                                 # a script run by an interpreter
+AGENT_PATHS = ("/claude-code/", "/gemini-cli/", "/@openai/codex/", "/claude-agent-acp/", "/codex-acp/")
 MISE_BASE = [".mise.toml", "mise.toml", ".config/mise.toml", "mise/config.toml"]
 MISE_MARKERS = MISE_BASE + [".tool-versions", ".nvmrc", ".node-version", ".python-version", ".mise/config.toml"]
 FIELD_LIMIT = 4000
@@ -99,21 +176,24 @@ def tty():
 
 
 def test_mode():
-    return bool(TEST_DIR)
+    return bool(TEST_DIRS)
 
 
 # ───────────────────────────── tools and agent check ─────────────────────────────
 
 def tool(name, env=None, required=True):
     """Absolute path of an external tool, from /usr/bin:/usr/local/bin:~/.local/bin only (a trusted project's [env] can
-    prepend PATH); tests point ENVS_TOOL_PATH at fakes. An absolute RBW_BIN / BW_BIN / PINENTRY_BIN override wins."""
-    if env:
+    prepend PATH). Test mode (verified ENVS_TOOL_PATH, see _verified_test_dirs) looks in the fake directory first and, for the
+    vault tools (rbw, bw, pinentry, wl-copy), ONLY there, so a test can never reach the real vault. An absolute RBW_BIN /
+    BW_BIN / PINENTRY_BIN counts only in test mode and only inside that directory; outside it the variables are ignored."""
+    if env and TEST_DIRS:
         v = os.environ.get(env)
-        if v and os.path.isabs(v) and os.access(v, os.X_OK):
-            return v
-        if v and not os.path.isabs(v):
+        if v and os.path.isabs(v):
+            if os.access(v, os.X_OK) and any(_under(v, d) for d in TEST_DIRS):
+                return v
+        elif v:
             name = os.path.basename(v)
-    dirs = [d for d in TEST_DIR.split(":") if d] + SAFE_DIRS
+    dirs = list(TEST_DIRS) + ([] if TEST_DIRS and name in SECRET_TOOLS else SAFE_DIRS)
     for d in dirs:
         p = os.path.join(d, name)
         if os.path.isfile(p) and os.access(p, os.X_OK):
@@ -147,7 +227,7 @@ def proc_argv(pid):
 
 def agent_context():
     """The name of the agent this process runs under (an ancestor's /proc comm up to pid 1, or an interpreter running an agent
-    script), or $CLAUDECODE. Tests stop the walk at ENVS_TEST_ROOT_PID (only with ENVS_TOOL_PATH)."""
+    script), or $CLAUDECODE. Tests stop the walk at ENVS_TEST_ROOT_PID (only in verified test mode)."""
     if os.environ.get("CLAUDECODE"):
         return "claude (CLAUDECODE)"
     stop = 0
@@ -164,10 +244,14 @@ def agent_context():
         if comm in AGENTS:
             return comm
         if comm in AGENT_RUNNERS:
-            for a in proc_argv(pid)[1:3]:
-                base = os.path.basename(a.decode("utf-8", "replace"))
+            for a in proc_argv(pid)[1:4]:
+                text = a.decode("utf-8", "replace")
+                base = os.path.basename(text)
                 if base in AGENTS or base.removesuffix(".js") in AGENTS or base.removesuffix(".mjs") in AGENTS:
                     return base
+                hit = next((m for m in AGENT_PATHS if m in text + "/"), None)    # node .../node_modules/@openai/codex/bin/codex.js
+                if hit:
+                    return hit.strip("/")
         pid = proc_ppid(pid)
         seen += 1
     return None
@@ -253,49 +337,69 @@ def active_get(root):
 def active_set(root, env, until=0, kind="-"):
     rows = [r for r in active_rows() if r[0] != str(root)]
     if env is not None:
-        rows.append([str(root), env, str(int(until)), kind])
+        rows.append([tsv_safe(root), env, str(int(until)), kind])
     write_tsv(state_dir() / "active.tsv", rows)
 
 
+def tsv_safe(text):
+    """Paths go into tab-separated state files: a tab or newline in one would forge extra rows."""
+    t = str(text)
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in t):
+        fail(f"{t!r} contains a control character (tab, newline ...): rename the directory", 1)
+    return t
+
+
 def git_common_dir(root):
-    """Realpath of the git common dir of ROOT (shared by every worktree of a repo), read from .git without a process; git is
-    the fallback for anything unusual."""
+    """(realpath of the git common dir shared by every worktree of the repo, top-level directory) read from .git without a
+    process, or (None, None) = not a git checkout we trust. A `.git` FILE counts only for a real linked worktree: its gitdir
+    must hold `commondir` and a `gitdir` back-link that resolves to this very file, so an unpacked archive whose `.git` says
+    `gitdir: ../billing/.git` (or a `.git` symlink) cannot borrow another checkout's binding. git itself is never asked: it
+    trusts the same file."""
     d = Path(root).resolve()
     for cand in [d, *d.parents]:
         g = cand / ".git"
         try:
+            if g.is_symlink():
+                return None, None
             if g.is_dir():
-                return os.path.realpath(g)
+                return os.path.realpath(g), cand
             if g.is_file():
                 line = g.read_text().strip()
-                if line.startswith("gitdir:"):
-                    gd = Path(line[7:].strip())
-                    gd = gd if gd.is_absolute() else (cand / gd)
-                    cd = gd / "commondir"
-                    if cd.is_file():
-                        c = Path(cd.read_text().strip())
-                        return os.path.realpath(c if c.is_absolute() else gd / c)
-                    return os.path.realpath(gd)
+                if not line.startswith("gitdir:"):
+                    return None, None
+                gd = Path(line[7:].strip())
+                gd = gd if gd.is_absolute() else (cand / gd)
+                cd, back = gd / "commondir", gd / "gitdir"
+                if not (cd.is_file() and back.is_file()):
+                    return None, None
+                b = Path(back.read_text().strip())
+                b = b if b.is_absolute() else (gd / b)
+                if os.path.realpath(b) != os.path.realpath(g):
+                    return None, None
+                c = Path(cd.read_text().strip())
+                return os.path.realpath(c if c.is_absolute() else gd / c), cand
         except OSError:
-            break
-    git = tool("git", required=False)
-    if git:
-        try:
-            p = subprocess.run([git, "-C", str(root), "rev-parse", "--git-common-dir"], capture_output=True, text=True,
-                               timeout=10, stdin=subprocess.DEVNULL)
-        except (OSError, subprocess.TimeoutExpired):
-            return None
-        if p.returncode == 0 and p.stdout.strip():
-            return os.path.realpath(os.path.join(root, p.stdout.strip()))
-    return None
+            return None, None
+    return None, None
 
 
 def binding_key(root):
-    return git_common_dir(root) or os.path.realpath(root)
+    """One binding per (repository, directory in it): the git common dir, plus `//relative/path` for a root below the
+    top-level (monorepo); a non-git root is its realpath."""
+    common, top = git_common_dir(root)
+    real = os.path.realpath(root)
+    if common is None:
+        return tsv_safe(real)
+    rel = os.path.relpath(real, os.path.realpath(top))
+    return tsv_safe(common if rel == "." else f"{common}//{rel}")
 
 
 def key_root(key):
-    return os.path.dirname(key) if os.path.basename(key) == ".git" else key
+    common, _, rel = key.partition("//")
+    if os.path.basename(common) == ".git":
+        base = os.path.dirname(common)
+        return os.path.join(base, rel) if rel else base
+    return key
 
 
 def bindings():
@@ -340,6 +444,7 @@ def find_root(start=None):
     d = Path(start or os.getcwd()).resolve()
     while True:
         if (d / TOML).is_file():
+            tsv_safe(d)
             return d
         if d.parent == d:
             fail(f"no {TOML} here or above: run `envs init` in the project", 1)
@@ -373,6 +478,27 @@ def mise_env_keys(root):
                 if k != "_":
                     keys.setdefault(k, []).append(p.name)
     return keys
+
+
+def parent_mise_overrides(cfg):
+    """[(name, file)]: declared secrets that a mise [env] ABOVE the root (parent directories, the global config) also sets;
+    `mise exec` would let that value win over the injected secret without a word."""
+    out, names = [], set(cfg.secrets)
+    if not names:
+        return out
+    cands = []
+    for d in Path(cfg.root).parents:
+        cands += [d / rel for rel in MISE_BASE[:3]]
+    cands.append(HOME / ".config/mise/config.toml")
+    for f in cands:
+        try:
+            doc = tomllib.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        env = doc.get("env")
+        if isinstance(env, dict):
+            out += [(k, str(f)) for k in env if k in names]
+    return out
 
 
 def has_mise_config(root):
@@ -437,6 +563,9 @@ def validate(data, root=None):
         for e in prot:
             if envs and e not in envs:
                 p.append(f"protected environment {e!r} is not in environments")
+        if isinstance(default, str) and (default in ALWAYS_PROTECTED or default in prot):
+            p.append(f"default {default!r} is protected: the default environment is the one every plain command uses, "
+                     "so a protected environment (prod ...) cannot be it")
     sec = data.get("secrets", {})
     if not isinstance(sec, dict):
         p.append("[secrets] must be a table of NAME = \"description\"")
@@ -750,6 +879,15 @@ def vbw():
         m.die = die
         m.BW = tool("bw", "BW_BIN", required=False) or m.BW
         m.RBW = tool("rbw", "RBW_BIN", required=False) or m.RBW
+        m.WL_COPY = tool("wl-copy", required=False) or m.WL_COPY      # the secret goes to its stdin: no PATH lookup
+        orig_pinentry = m.pinentry_bin
+
+        def pinentry_bin():                                           # the master password goes to its stdin
+            v = os.environ.get("PINENTRY_BIN")
+            if v and not (TEST_DIRS and os.path.isabs(v) and any(_under(v, d) for d in TEST_DIRS)):
+                os.environ.pop("PINENTRY_BIN", None)
+            return orig_pinentry()
+        m.pinentry_bin = pinentry_bin
         if not os.environ.get("WAYLAND_DISPLAY"):
             m.TERMINAL_UNLOCK = True
         elif not os.access(Path(os.environ.get("XDG_RUNTIME_DIR", "/x")) / os.environ["WAYLAND_DISPLAY"], os.W_OK):
@@ -892,12 +1030,27 @@ def read_value(name, stdin_flag):
 
 # ───────────────────────────── bind, guards, environment choice ─────────────────────────────
 
-def mise_trust(root):
+def trust_files(root):
+    """The mise config files `mise trust` would accept for this root (what can run commands)."""
+    out = [rel for rel in MISE_BASE + [".mise/config.toml"] if (root / rel).is_file()]
+    out += [p.name for p, env in mise_files(root) if env and p.name not in out]
+    return out
+
+
+def mise_trust(root, ask=True):
+    """`mise trust` for ROOT after its OWN question: a mise config can run commands (templates, hooks, `_.source`), with the
+    secrets of the environment present, and trust is path-based (a later `git pull` that edits the file is trusted too).
+    Never implied by bind or init, never repeated silently."""
     mise = tool("mise", required=False)
-    if mise and has_mise_config(root):
-        subprocess.run([mise, "trust"], cwd=str(root), stdin=subprocess.DEVNULL, capture_output=True)
-        return True
-    return False
+    files = trust_files(root)
+    if not mise or not files:
+        return False
+    if ask and not confirm(f"Trust the mise config of this project ({', '.join(files)})? mise can run commands from it, with "
+                           "this environment's secrets, and trusts later edits of the files too."):
+        warn("mise config not trusted (`envs trust` asks again); `mise exec` refuses an untrusted config")
+        return False
+    subprocess.run([mise, "trust"], cwd=str(root), stdin=subprocess.DEVNULL, capture_output=True)
+    return True
 
 
 def require_bound(cfg):
@@ -912,7 +1065,6 @@ def require_bound(cfg):
     if not confirm(f"Bind {cfg.root} to Bitwarden folder {cfg.folder}?"):
         fail("not bound", 4)
     bind_write(cfg.root, cfg.project)
-    mise_trust(cfg.root)
 
 
 def choose_env(cfg, explicit=None):
@@ -927,13 +1079,13 @@ def choose_env(cfg, explicit=None):
 
 
 def guard_protected(cfg, env, prod_flag, verb="run"):
+    """Gate for a protected env: --prod or a [y/N] on the terminal (a terminal prompt: see "what the fence is" in CLAUDE.md).
+    Every pass is logged (no values), so reading prod is never silent."""
     if not cfg.is_protected(env):
         return
-    if prod_flag:
-        return
-    if tty() and confirm(f"{env} is a protected environment. {verb.capitalize()} in {env}?"):
-        return
-    fail(f"{env} is protected: pass --prod to {verb} in it", 4)
+    if not prod_flag and not (tty() and confirm(f"{env} is a protected environment. {verb.capitalize()} in {env}?")):
+        fail(f"{env} is protected: pass --prod to {verb} in it", 4)
+    journal(f"{verb} project={cfg.project} env={env} (protected)")
 
 
 def parse_duration(s):
@@ -947,7 +1099,7 @@ def parse_duration(s):
 
 
 def journal(msg):
-    if os.environ.get("ENVS_NO_JOURNAL"):
+    if test_mode() and os.environ.get("ENVS_NO_JOURNAL"):
         return
     lg = tool("logger", required=False)
     if lg:
@@ -966,7 +1118,8 @@ def cmd_init(a):
     top = None
     git = tool("git", required=False)
     if git:
-        p = subprocess.run([git, "rev-parse", "--show-toplevel"], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        p = subprocess.run([git, "rev-parse", "--show-toplevel"], capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                       env=git_env())
         if p.returncode == 0:
             top = Path(p.stdout.strip())
     root = top or Path.cwd()
@@ -998,10 +1151,14 @@ def cmd_init(a):
             body += "\n"
         write_text(gi, body + "\n".join(missing) + "\n")
         say(f"added {', '.join(missing)} to .gitignore")
-    if mise_trust(root):
-        say("mise trust: done")
     bind_write(root, project)
     say(f"bound {root} to Bitwarden folder Env/{project}")
+    if trust_files(root) and tool("mise", required=False):
+        if tty():
+            if mise_trust(root):
+                say("mise trust: done")
+        else:
+            say("mise config present and not trusted: run `envs trust` in a terminal")
 
 
 def cmd_bind(a):
@@ -1011,15 +1168,31 @@ def cmd_bind(a):
     cfg = load_cfg()
     st, key, old = binding_state(cfg.root, cfg.project)
     if st == "bound":
-        mise_trust(cfg.root)
         say(f"already bound: {cfg.root} -> {cfg.folder}")
         return
     note = f" (was Env/{old})" if st == "changed" else ""
     if not confirm(f"Bind {cfg.root} to Bitwarden folder {cfg.folder}{note}?"):
         fail("not bound" + ("" if tty() else ": a terminal is needed to confirm"), 4)
     bind_write(cfg.root, cfg.project)
-    mise_trust(cfg.root)
     say(f"bound {cfg.root} -> {cfg.folder}")
+    if trust_files(cfg.root) and tool("mise", required=False):
+        mise_trust(cfg.root)                    # its own question: binding is not trust
+
+
+def cmd_trust(a):
+    refuse_agent("trust")
+    cfg = load_cfg()
+    if binding_state(cfg.root, cfg.project)[0] != "bound":
+        fail("this checkout is not bound: run `envs bind` first", 4)
+    if not trust_files(cfg.root):
+        fail("no mise config file here", 1)
+    if not tool("mise", required=False):
+        fail("mise is not installed", 1)
+    if not tty() and not test_mode():
+        fail("a terminal is needed to confirm", 4)
+    if not mise_trust(cfg.root):
+        fail("not trusted", 4)
+    say(f"mise config of {cfg.root.name} trusted")
 
 
 def vault_matrix(cfg):
@@ -1116,6 +1289,9 @@ def cmd_use(a):
     say(f"{cfg.root.name}: using {env}" + (f" for {secs // 60} min" if secs else ""))
 
 
+MISE_LOG_ENV = ("MISE_LOG_FILE", "MISE_LOG_FILE_LEVEL", "MISE_DEBUG", "MISE_TRACE", "MISE_VERBOSE")
+
+
 def mise_cmd(cfg, cmd, env):
     mise = tool("mise", required=False)
     if mise and has_mise_config(cfg.root):
@@ -1142,11 +1318,16 @@ def cmd_run(a, cmd):
         fields = None
     use_mise = not a.no_mise
     argv, mised = mise_cmd(cfg, cmd, env) if use_mise else (list(cmd), False)
-    child = dict(os.environ)
+    child = command_env(os.environ)
     child.update(values)
     child["ENVS_PROJECT"], child["ENVS_ENV"] = cfg.project, env
     if mised:
         child["MISE_ENV"] = env
+        for k in MISE_LOG_ENV:                    # mise may print or write its environment at debug/trace level
+            child.pop(k, None)
+        child["MISE_LOG_LEVEL"] = "warn"
+        for n, f in parent_mise_overrides(cfg):
+            warn(f"{n} is also set by mise [env] in {f}: that value overrides the secret")
     if cfg.is_protected(env):
         journal(f"run project={cfg.project} env={env} cmd={os.path.basename(cmd[0])} vars={len(values)}")
     sys.stdout.flush()
@@ -1167,7 +1348,9 @@ def cmd_set(a):
     refuse_agent("set")
     cfg = load_cfg()
     if "=" in a.name or a.extra:
-        fail("values never go on the command line: history and ps would see them. Use the hidden prompt or --stdin", 2)
+        fail("values never go on the command line: history and ps would see them. Use the hidden prompt or --stdin. "
+             "If you just typed a real value: rotate it and delete the line from the shell history (atuin: `atuin history "
+             "prune`, zsh: `fc -W` and edit ~/.zsh_history)", 2)
     why = bad_var_name(a.name)
     if why:
         fail(f"{a.name} {why}", 2)
@@ -1302,6 +1485,7 @@ def cmd_copy(a):
     if src == dst:
         fail("source and destination are the same environment", 2)
     guard_protected(cfg, dst, a.prod, "copy into")
+    guard_protected(cfg, src, a.prod, "copy from")      # reading prod is a read of prod, whoever the destination is
     ensure_rbw()
     sfields = env_fields(cfg.project, src)
     if sfields is None:
@@ -1398,6 +1582,8 @@ def cmd_env(a):
                 bw_save(m, item)
             envs = [new if e == old else e for e in cfg.envs]
             prot = [new if e == old else e for e in declared_protected(cfg)]
+            if cfg.is_protected(old) and new not in prot:      # a protected environment stays protected under any name
+                prot.append(new)
             cfg = cfg_set_envs(cfg, envs, new if cfg.default == old else None, prot)
             m.refresh_rbw()
         for p, env in mise_files(cfg.root):
@@ -1458,7 +1644,10 @@ def cmd_project(a):
             fid = m.folder_id(cfg.folder, create=False)
             if fid:
                 for it in m.bw_json("list", "items", "--folderid", fid):
-                    m.bw("delete", "item", it["id"])
+                    r = m.bw("delete", "item", it["id"])
+                    if r.returncode != 0:                      # a failed delete would leave the item outside Env/ with its secrets
+                        fail(f"bw delete item failed ({m.first_line(r.stderr or r.stdout)}): stopped before the folder; "
+                             "nothing else was removed, run it again", 1)
                 p = m.bw("delete", "folder", fid)
                 if p.returncode != 0:
                     fail("bw delete folder failed: " + m.first_line(p.stderr or p.stdout))
@@ -1545,7 +1734,7 @@ def find_env_files(root):
     for d, dirs, files in os.walk(root):
         dirs[:] = [x for x in dirs if x not in (".git", "node_modules", ".venv", "vendor", "target") and len(Path(d).parts) - base < 4]
         for f in files:
-            if re.fullmatch(r"\.env(\..+)?", f) and not f.endswith(".example"):
+            if re.fullmatch(r"\.env(\..+)?", f) and not f.endswith(".example") and not (Path(d) / f).is_symlink():
                 out.append(Path(d) / f)
     return sorted(out)
 
@@ -1570,7 +1759,7 @@ def tracked_in_git(root, path):
     if not git or not (root / ".git").exists():
         return False
     return subprocess.run([git, "-C", str(root), "ls-files", "--error-unmatch", "--", str(path)], capture_output=True,
-                          stdin=subprocess.DEVNULL).returncode == 0
+                          stdin=subprocess.DEVNULL, env=git_env()).returncode == 0
 
 
 def cmd_import(a):
@@ -1578,7 +1767,7 @@ def cmd_import(a):
     cfg = load_cfg()
     require_bound(cfg)
     if a.file:
-        path = Path(a.file).resolve()
+        path = Path(os.path.abspath(a.file))
     else:
         files = find_env_files(cfg.root)
         if (cfg.root / ".env") in files:
@@ -1592,8 +1781,14 @@ def cmd_import(a):
             path = cfg.root / got
         else:
             fail("no .env file found (up to 4 levels below the project root)", 1)
+    # a symlink (a build step can drop `.env -> ~/dotfiles/env.secret.sh`) or a file outside the project is never imported, and
+    # never shredded (shred -u follows links); the open itself refuses a link that appears after the check
+    if path.is_symlink() or not _under(path.parent, cfg.root) or _under(path.parent, cfg.root / ".git"):
+        fail(f"{path} is a symbolic link or outside the project root {cfg.root}: copy the file into the project first", 1)
     try:
-        text = path.read_text()
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "r") as fh:
+            text = fh.read()
     except OSError as e:
         fail(f"cannot read {path}: {e.strerror}")
     vals, warns, errs = parse_dotenv(text)
@@ -1756,10 +1951,12 @@ def check_root(cfg, out):
     git = tool("git", required=False)
     if git and (cfg.root / ".git").exists():
         tracked = subprocess.run([git, "-C", str(cfg.root), "ls-files", "--", ".env", ".env.*"], capture_output=True, text=True,
-                                 stdin=subprocess.DEVNULL).stdout.split()
+                                 stdin=subprocess.DEVNULL, env=git_env()).stdout.split()
         for t in tracked:
             if t != ".env.example":
                 add("error", f"{t} is tracked in git: its values are in the history; rotate them and `git rm --cached {t}`")
+    for n, f in parent_mise_overrides(cfg):
+        add("warn", f"{n} is also set by mise [env] in {f}: that value overrides the injected secret")
     for f in sorted(cfg.root.glob(".env*")):
         if f.is_file() and f.name != ".env.example" and not f.name.endswith(".example"):
             add("warn", f"{f.name} is a plain env file: `envs import` moves it into Bitwarden")
@@ -1771,7 +1968,7 @@ def check_root(cfg, out):
             p = subprocess.run([mise, "ls", "--current", "--missing"], cwd=str(cfg.root), capture_output=True, text=True,
                                stdin=subprocess.DEVNULL)
             if p.returncode != 0:
-                add("warn", "mise does not trust this config (run `envs bind` or `mise trust`) or reports an error")
+                add("warn", "mise does not trust this config (run `envs trust`) or reports an error")
             elif p.stdout.strip():
                 add("warn", f"mise tools are missing: {len(p.stdout.strip().splitlines())} (run `mise install`)")
             else:
@@ -1856,19 +2053,39 @@ REVEAL_SECONDS = 15
 
 
 def reveal_file():
-    return run_dir() / "reveal"
+    """The reveal flag of THIS TUI run: `reveal-<pid>-<random>` in the runtime dir, handed to its fzf (and so to the preview
+    commands) through ENVS_REVEAL_FILE and removed at exit. A preview started any other way has none: no value is ever shown.
+    (Same-uid processes can still read the path from /proc/PID/environ: the flag is per run, not a secret.)"""
+    p = os.environ.get("ENVS_REVEAL_FILE")
+    if not p:
+        return None
+    pp = Path(p)
+    if pp.parent != run_dir() or not re.fullmatch(r"reveal-\d+-[0-9a-f]{12}", pp.name):
+        return None
+    return pp
 
 
 def read_reveal():
     """(project, env, name) while a reveal is active, else None; an expired or foreign flag is removed."""
+    f = reveal_file()
+    if f is None:
+        return None
     try:
-        parts = reveal_file().read_text().split("\t")
+        parts = f.read_text().split("\t")
         if len(parts) == 4 and float(parts[3]) > time.time():
             return parts[0], parts[1], parts[2]
     except (OSError, ValueError):
         pass
-    reveal_file().unlink(missing_ok=True)
+    f.unlink(missing_ok=True)
     return None
+
+
+def stale_reveal_files():
+    """Flags of TUI runs that are gone (killed terminal): removed when a new TUI starts."""
+    for f in run_dir().glob("reveal-*"):
+        m = re.fullmatch(r"reveal-(\d+)-[0-9a-f]{12}", f.name)
+        if m and not Path(f"/proc/{m.group(1)}").exists():
+            f.unlink(missing_ok=True)
 
 
 def project_roots():
@@ -1920,42 +2137,56 @@ def tui_header(project=None, env=None, cfg=None):
     return f"{left} · {rb} · {bw}"
 
 
-def reveal_ticker(sock):
-    """Refresh the preview once when a reveal expires (the cursor moving refreshes it by itself)."""
+def reveal_ticker(sock, flag, key):
+    """Refresh the preview once when a reveal expires (the cursor moving refreshes it by itself). The fzf listener needs the
+    run's FZF_API_KEY: without it any process of this user could POST become(...) / execute(...) into the TUI."""
     import threading
     stop = threading.Event()
 
     def loop():
         while not stop.wait(1.0):
             try:
-                text = reveal_file().read_text().split("\t")
+                text = flag.read_text().split("\t")
                 expired = float(text[3]) <= time.time()
             except (OSError, ValueError, IndexError):
                 continue
-            if expired and os.path.exists(sock) and tool("curl", required=False):
-                subprocess.run([tool("curl"), "-s", "--max-time", "1", "--unix-socket", sock, "-X", "POST", "http://localhost",
-                                "-d", "refresh-preview"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            curl = tool("curl", required=False)
+            if expired and curl and os.path.exists(sock):
+                subprocess.run([curl, "-s", "--max-time", "1", "--unix-socket", sock, "-K", "-", "-X", "POST",
+                                "http://localhost", "-d", "refresh-preview"], input=f'header = "x-api-key: {key}"\n', text=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
     threading.Thread(target=loop, daemon=True).start()
     return stop
 
 
+_REVEAL = None                                   # this run's flag path (set by tui())
+
+
+def preview_command(level, project, root, env):
+    """The fzf --preview command line: every field quoted for `sh -c` (a checkout path can hold spaces or `$(...)`), the
+    interpreter and script absolute."""
+    fields = " ".join(shlex.quote(str(x)) for x in (level, project or "-", root or "-", env or "-"))
+    return f"{shlex.quote(PY)} -I {shlex.quote(str(SELF))} _preview {fields} {{1}}"
+
+
 def fzf_menu(rows, level, header, preview, here_row=None):
     """Run the list; returns (exit code, key/action, id). Actions are NORMAL letters (become) or Alt keys (--expect)."""
-    me = f"python3 -I {SELF}"
     binds = "\n".join(f'{k}:become(printf "%s\\n%s\\n%s\\n" {{q}} {a} {{1}})' for k, a in NORMAL_KEYS[level])
     args = ["--here", "-p", "envs", "--delimiter=\t", "--with-nth=2..", "--tabstop=4", "--ansi", "--print-query",
             "--expect=" + ",".join(ALT_KEYS[level]), f"--header={header}\n{HINTS[level]}"]
     if preview:
-        args += [f"--preview={me} _preview {preview} {{1}}", "--preview-window=right,50%,wrap,border-left"]
+        args += [f"--preview={preview}", "--preview-window=right,50%,wrap,border-left"]
     if here_row is not None:
         args.append(f"--bind=load:pos({here_row + 1})")
-    env = dict(os.environ, FZF_MENU_NORMAL_BINDS=binds)
+    env = dict(os.environ, FZF_MENU_NORMAL_BINDS=binds, FZF_API_KEY=os.urandom(16).hex())
+    if _REVEAL is not None:
+        env["ENVS_REVEAL_FILE"] = str(_REVEAL)
     stop = None
     if level == "vars":
         sock = str(run_dir() / f"fzf-{os.getpid()}.sock")
         args.append(f"--listen={sock}")
-        stop = reveal_ticker(sock)
+        stop = reveal_ticker(sock, _REVEAL, env["FZF_API_KEY"])
     try:
         p = subprocess.run([tool("fzf-menu")] + args, input="\n".join(rows) + "\n", stdout=subprocess.PIPE, text=True, env=env)
     finally:
@@ -1969,7 +2200,7 @@ def fzf_menu(rows, level, header, preview, here_row=None):
 
 def run_self(*args, cwd=None, pause=False):
     """Run one of our own subcommands in this terminal (prompts work), optionally waiting for Enter afterwards."""
-    p = subprocess.run([sys.executable, "-I", str(SELF), *args], cwd=str(cwd) if cwd else None)
+    p = subprocess.run([PY, "-I", str(SELF), *args], cwd=str(cwd) if cwd else None)
     if pause or p.returncode not in (0, 130):
         try:
             input("\n[Enter]")
@@ -2042,7 +2273,9 @@ def var_rows(cfg, fields, env):
 
 
 def cmd_preview(a):
-    """Internal: the preview pane. Masked values only, except the one a recent `v` revealed."""
+    """Internal: the preview pane of the TUI. Masked values only, except the one a `v` of THIS run revealed, and only for a
+    bound checkout. Never for an agent."""
+    refuse_agent("preview")
     level, project, ident = a.level, a.project, a.ident
     root = Path(a.root) if a.root and a.root != "-" else None
     if level == "projects":
@@ -2109,12 +2342,14 @@ def cmd_preview(a):
         if cfg and ident in cfg.secrets and cfg.secrets[ident]:
             say(cfg.secrets[ident])
         return
-    if r and r == (project, env, ident):
+    if r and r == (project, env, ident) and cfg and cfg.project == project \
+            and binding_state(cfg.root, cfg.project)[0] == "bound":
         say(fields[ident])
         say("")
         say(f"(shown for {REVEAL_SECONDS} s or until the cursor moves)")
     else:
-        reveal_file().unlink(missing_ok=True) if r and r != (project, env, ident) else None
+        if r and r != (project, env, ident) and reveal_file():
+            reveal_file().unlink(missing_ok=True)
         say(MASK)
         if cfg and cfg.secrets.get(ident):
             say("")
@@ -2122,22 +2357,34 @@ def cmd_preview(a):
     fields = None
 
 
-def convert_var(cfg, name):
-    """p: secret -> plain (commits the value) or plain -> secret, for every environment."""
-    root = cfg.root
+def cmd_convert(a):
+    """secret -> plain (the values are written to .mise*.toml and COMMITTED) or plain -> secret, for every environment. Protected
+    environments need --prod or their typed name, like any other read of them, and the read is logged."""
+    refuse_agent("convert")
+    cfg = load_cfg()
+    require_bound(cfg)
+    name, root = a.name, cfg.root
     if name in cfg.secrets:
         if not confirm(f"{name}: the value(s) will be written to .mise*.toml and COMMITTED in plain text. Continue?"):
-            return
+            fail("not confirmed" + ("" if tty() else ": a terminal is needed"), 130 if tty() else 4)
         ensure_rbw()
         with write_lock():
             m = bw_open()
+            found = {}
             for e in cfg.envs:
                 item = bw_env_item(m, cfg.project, e)
                 if item is None:
                     continue
                 val = next((f.get("value") for f in item.get("fields") or [] if f.get("name") == name), None)
-                if val is None:
-                    continue
+                if val is not None:
+                    found[e] = (item, val)
+            for e in found:
+                if cfg.is_protected(e):
+                    if not a.prod and not typed_confirm(e, f"{e} is protected: its value of {name} would go to a committed "
+                                                           "plain-text file."):
+                        fail(f"{e} is protected: pass --prod or type its name", 4 if not tty() else 130)
+                    journal(f"convert project={cfg.project} env={e} name={name} (protected, to plain)")
+            for e, (item, val) in found.items():
                 edit_mise(mise_target(root, e, cfg.default), lambda ed, v=val: ed.set("env", name, toml_str(v)))
                 item_drop_field(item, name)
                 bw_save(m, item)
@@ -2152,7 +2399,6 @@ def convert_var(cfg, name):
                 found.append((pth, fenv, v))
         if not found:
             fail(f"{name} is not a mise [env] variable", 1)
-        require_bound(cfg)
         with write_lock():
             m = bw_open()
             per_env = {fenv: v for _p, fenv, v in found if fenv}
@@ -2173,10 +2419,20 @@ def convert_var(cfg, name):
 
 
 def tui():
+    global _REVEAL
     refuse_agent("the TUI")
     if not tty():
         fail("the TUI needs a terminal: run `envs` in one (tmux prefix v, hub row, SUPER+; j e)", 2)
     tool("fzf-menu")
+    stale_reveal_files()
+    _REVEAL = run_dir() / f"reveal-{os.getpid()}-{os.urandom(6).hex()}"
+    try:
+        tui_loop()
+    finally:
+        _REVEAL.unlink(missing_ok=True)
+
+
+def tui_loop():
     cwd_cfg, cwd_project = None, None
     try:
         cwd_cfg = load_cfg(find_root(), strict=False)
@@ -2238,7 +2494,7 @@ def tui():
 
 
 def preview_arg(level, project, root, env):
-    return f"{level} {project or '-'} {root or '-'} {env or '-'}"
+    return preview_command(level, project, root, env)
 
 
 def tui_action(level, action, ident, project, env, cfg, root, cwd_project):
@@ -2311,7 +2567,12 @@ def tui_action(level, action, ident, project, env, cfg, root, cwd_project):
     elif action == "reveal":
         if plain:
             raise Fail(f"{ident} is a plain variable: it is not hidden")
-        atomic_write(reveal_file(), f"{project}\t{env}\t{ident}\t{time.time() + REVEAL_SECONDS}")
+        if cfg.is_protected(env):
+            if not typed_confirm(env, f"{env} is a protected environment: {ident} will be shown on this screen for "
+                                      f"{REVEAL_SECONDS} s."):
+                raise Fail(f"not confirmed: {ident} stays hidden", 4)
+            journal(f"reveal project={cfg.project} env={env} name={ident} (protected)")
+        atomic_write(_REVEAL, f"{project}\t{env}\t{ident}\t{time.time() + REVEAL_SECONDS}")
     elif action == "edit":
         run_self("set", ident, "-e", env, *(["--plain"] if plain else []), cwd=cfg.root)
     elif action == "add":
@@ -2335,11 +2596,7 @@ def tui_action(level, action, ident, project, env, cfg, root, cwd_project):
         elif got:
             run_self("unset", ident, "--all", "--undeclare", cwd=cfg.root, pause=True)
     elif action == "convert":
-        convert_var(cfg, ident)
-        try:
-            input("\n[Enter]")
-        except (EOFError, KeyboardInterrupt):
-            pass
+        run_self("convert", ident, cwd=cfg.root, pause=True)
     return level, project, env
 
 
@@ -2419,13 +2676,17 @@ def build_parser():
     p.add_argument("ident")
     p = sub.add_parser("check")
     p.add_argument("--all", action="store_true")
+    sub.add_parser("trust")
+    p = sub.add_parser("convert")
+    p.add_argument("name")
+    p.add_argument("--prod", action="store_true")
     return ap
 
 
 HANDLERS = {"init": cmd_init, "bind": cmd_bind, "status": cmd_status, "use": cmd_use, "set": cmd_set, "unset": cmd_unset,
             "rename": cmd_rename, "check": cmd_check, "copy": cmd_copy, "diff": cmd_diff, "env": cmd_env,
             "project": cmd_project, "import": cmd_import, "export-example": cmd_export_example,
-            "copy-value": cmd_copy_value, "_preview": cmd_preview}
+            "copy-value": cmd_copy_value, "_preview": cmd_preview, "trust": cmd_trust, "convert": cmd_convert}
 
 
 class RunArgs:
@@ -2472,6 +2733,7 @@ def run_main(argv):
 
 
 def main(argv):
+    harden_environment()
     if argv[:1] == ["run"]:
         return run_main(argv[1:])
     ap = build_parser()

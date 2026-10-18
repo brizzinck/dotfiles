@@ -162,6 +162,11 @@ class Handler(BaseHTTPRequestHandler):
                 save(v)
                 return self.ok(new)
             if method == "DELETE":
+                try:                                    # test hook: ids listed in $FAKE_DIR/fail-delete cannot be deleted
+                    if parts[2] in open(f"{FAKE}/fail-delete").read().split():
+                        return self.fail("Simulated delete failure.")
+                except OSError:
+                    pass
                 if q.get("permanent") == "true":
                     v["items"] = [i for i in v["items"] if i["id"] != parts[2]]
                 else:

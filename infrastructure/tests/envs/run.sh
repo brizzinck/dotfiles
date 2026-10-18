@@ -50,7 +50,8 @@ reset() {
   stop_bw
   rm -rf "${XDG_STATE_HOME:?}"/* "${XDG_RUNTIME_DIR:?}/envs" "${XDG_RUNTIME_DIR:?}"/vault/* "${CAP:?}"/* "${PROJ:?}" "${T:?}/wt"
   cp "$HERE/fixture.json" "$FAKE_DIR/vault.json"
-  rm -f "$FAKE_DIR"/{argv.log,rbw-view.json,rbw-locked,bw-unlocked,seq,notify.log,logger.log,mise.log,clip.txt,clip.args,clip.events,last-*}
+  rm -f "$FAKE_DIR"/{argv.log,rbw-view.json,rbw-locked,bw-unlocked,seq,notify.log,logger.log,mise.log,clip.txt,clip.args,clip.events,fail-delete,last-*}
+  rm -f "${T:?}/.mise.toml"
   mkdir -p "$PROJ"
   (cd "$PROJ" && git init -q . && cat >.envs.toml <<'T'
 project = "billing"
@@ -129,7 +130,7 @@ bad_cfg "unknown top-level key" "sed -i '1i colour = \"red\"' .envs.toml" "unkno
 bad_cfg "secret that is also a mise [env] key" "printf '[env]\nDATABASE_URL = \"x\"\n' >.mise.toml" "also a key of mise [env]"
 bad_cfg "per-env mise file conflict" "printf '[env]\nSTRIPE_SECRET_KEY = \"x\"\n' >.mise.stage.toml" ".mise.stage.toml"
 reset
-check "TomlText line editor keeps comments and order, quoted keys are refused" python3 -I "$HERE/edit_test.py" "$ENVS"
+check "TomlText line editor keeps comments and order, quoted keys are refused" python3 -I -B "$HERE/edit_test.py" "$ENVS"
 scan "section 1"
 
 # ───────────── 3 run
@@ -291,7 +292,7 @@ scan "section 9"
 
 # ───────────── 2 dotenv parser
 section "2 .env parser"
-check "dotenv parser: quotes, export, multi-line, inline comments, \${VAR}, bad lines reported without content" python3 -I "$HERE/dotenv_test.py" "$ENVS"
+check "dotenv parser: quotes, export, multi-line, inline comments, \${VAR}, bad lines reported without content" python3 -I -B "$HERE/dotenv_test.py" "$ENVS"
 
 # ───────────── 10 set / unset / rename / plain
 section "10 set, unset, rename, plain variables"
@@ -461,6 +462,288 @@ scan "section 14"
 
 }
 
+
+pycheck() { # name, script, args...: a python harness; its output is shown when it fails
+  local n=$1 out; shift
+  out=$(python3 -I -B "$@" 2>&1); local rc=$?
+  if ((rc == 0)); then ok "$n"; else bad "$n" "$out"; fi
+}
+
+sections_17() {
+# ───────────── 17 FIX-DEVb: the attacks of the review (REVIEW-DEV-b.md), each reproduced; all of these fail on the old code
+section "17 FIX-DEVb: review attacks"
+cp /bin/sh "$T/claude"
+
+# finding 1: `_preview` was a value oracle for anything that wrote the reveal flag
+reset
+mkdir -p "$XDG_RUNTIME_DIR/envs"; chmod 700 "$XDG_RUNTIME_DIR/envs"
+FUT=$(( $(date +%s) + 600 ))
+printf 'billing\tprod\tDATABASE_URL\t%s' "$FUT" >"$XDG_RUNTIME_DIR/envs/reveal"
+(cd / && CLAUDECODE=1 "$ENVS" _preview vars billing - prod DATABASE_URL >"$CAP/pv1.out" 2>"$CAP/pv1.err"); rc=$?
+check "1: _preview under an agent is refused (exit 4), nothing printed" bash -c "[ $rc = 4 ] && [ ! -s '$CAP/pv1.out' ]"
+(cd / && "$ENVS" _preview vars billing - prod DATABASE_URL >"$CAP/pv2.out" 2>&1)
+check "1: the old fixed-name reveal flag is not honoured by anyone (masked)" bash -c "! grep -q SECRET '$CAP/pv2.out' && grep -q '••••' '$CAP/pv2.out'"
+FLAG="$XDG_RUNTIME_DIR/envs/reveal-4242-0123456789ab"
+printf 'billing\tdev\tDATABASE_URL\t%s' "$FUT" >"$FLAG"
+(cd / && ENVS_REVEAL_FILE="$FLAG" "$ENVS" _preview vars billing "$PROJ" dev DATABASE_URL >"$CAP/pv3.out" 2>&1)
+check "1: this run's flag does not reveal for a checkout that is not bound" bash -c "! grep -q SECRET '$CAP/pv3.out' && grep -q '••••' '$CAP/pv3.out'"
+(cd / && ENVS_REVEAL_FILE="$FLAG" "$ENVS" _preview vars billing - dev DATABASE_URL >"$CAP/pv3b.out" 2>&1)
+check "1: ... nor without a checkout at all (project named on the command line)" bash -c "! grep -q SECRET '$CAP/pv3b.out'"
+bind_proj
+(cd / && ENVS_REVEAL_FILE="$FLAG" "$ENVS" _preview vars billing "$PROJ" dev DATABASE_URL >"$T/ctl.out" 2>&1)
+check "1: control: a bound checkout and this run's flag do reveal the value" grep -q SECRET-billing-dev-db "$T/ctl.out"
+rm -f "$T/ctl.out"
+printf 'billing\tdev\tDATABASE_URL\t%s' "$FUT" >"$T/reveal-1-0123456789ab"
+(cd / && ENVS_REVEAL_FILE="$T/reveal-1-0123456789ab" "$ENVS" _preview vars billing "$PROJ" dev DATABASE_URL >"$CAP/pv4.out" 2>&1)
+check "1: a flag outside the runtime directory is ignored" bash -c "! grep -q SECRET '$CAP/pv4.out'"
+scan "17.1"
+
+# finding 2: a forged .git file borrowed another checkout's binding
+reset; bind_proj
+(cd "$PROJ" && git add -A >/dev/null 2>&1 && git commit -qm init >/dev/null 2>&1 && git worktree add -q "$T/wt" -b wt >/dev/null 2>&1)
+ZIP="$T/downloaded-zip"; mkdir -p "$ZIP"; cp "$PROJ/.envs.toml" "$PROJ/.mise.toml" "$ZIP/"
+printf 'gitdir: %s/.git\n' "$PROJ" >"$ZIP/.git"
+EDIR="$ZIP" e status
+check "2: a .git FILE pointing at a bound clone's .git directory does not borrow its binding" grep -q 'binding  unbound' "$OUT"
+EDIR="$ZIP" e run -- true
+check "2: ... and envs run there is refused without a prompt (exit 4)" test $RC = 4
+printf 'gitdir: %s/.git/worktrees/wt\n' "$PROJ" >"$ZIP/.git"
+EDIR="$ZIP" e status
+check "2: a .git file pointing at a real worktree gitdir without its back-link is refused too" grep -q 'binding  unbound' "$OUT"
+rm -f "$ZIP/.git"; ln -s "$PROJ/.git" "$ZIP/.git"
+EDIR="$ZIP" e status
+check "2: a .git symlink to a bound clone does not borrow the binding" grep -q 'binding  unbound' "$OUT"
+EDIR="$T/wt" e run -- true
+check "2: a real linked worktree still shares the binding" test $RC = 0
+EDIR=""
+scan "17.2"
+
+# finding 13: one binding per repository AND directory (monorepo)
+reset; bind_proj
+mkdir -p "$PROJ/apps/api"
+printf 'project = "api"\nenvironments = ["dev"]\ndefault = "dev"\n' >"$PROJ/apps/api/.envs.toml"
+EDIR="$PROJ/apps/api" e run -- true
+check "13: a second project in a subdirectory of a bound repository starts unbound" test $RC = 4
+EDIR="$PROJ/apps/api" e bind --yes
+e run -- true
+check "13: binding it leaves the root's own binding alone (no flip to 'changed')" test $RC = 0
+EDIR="$PROJ/apps/api" e run -- true
+check "13: ... and both stay bound" test $RC = 0
+check "13: two rows in bindings.tsv" bash -c "[ \$(wc -l <'$XDG_STATE_HOME/envs/bindings.tsv') = 2 ]"
+EDIR=""
+e check --all
+check "13: check --all lists both roots" bash -c "grep -q '$PROJ\$' '$OUT' && grep -q '$PROJ/apps/api' '$OUT'"
+
+# finding 12: a tab or newline in the checkout path forges state rows
+reset
+TABDIR="$T/pro"$'\t'"j"
+mkdir -p "$TABDIR"; cp "$PROJ/.envs.toml" "$TABDIR/"
+EDIR="$TABDIR" e bind --yes
+check "12: a root with a tab in its path is refused, no row written" bash -c "[ $RC != 0 ] && [ ! -s '$XDG_STATE_HOME/envs/bindings.tsv' ] && grep -q 'control character' '$ERR'"
+NLDIR="$T/pro"$'\n'"k"
+mkdir -p "$NLDIR"; cp "$PROJ/.envs.toml" "$NLDIR/"
+EDIR="$NLDIR" e bind --yes
+check "12: and one with a newline" bash -c "[ $RC != 0 ] && [ ! -s '$XDG_STATE_HOME/envs/bindings.tsv' ]"
+EDIR=""
+rm -rf "$TABDIR" "$NLDIR"
+
+# finding 3: the test hooks cannot switch the agent check off, and cannot reach the real vault
+reset; bind_proj
+mkdir -p "$T/fakebin"
+printf '#!/bin/sh\necho called >>"%s/rbw-called"\nexit 0\n' "$T" >"$T/fakebin/rbw"; chmod +x "$T/fakebin/rbw"
+rm -f "$T/rbw-called"
+(cd "$PROJ" && "$T/claude" -c "ENVS_TOOL_PATH='$T/fakebin' ENVS_TEST_ROOT_PID=\$\$ ENVS_TEST_YES=1 RBW_BIN='$T/fakebin/rbw' \"$ENVS\" run -- true; exit \$?" >"$CAP/h1.out" 2>"$CAP/h1.err"); rc=$?
+check "3: under an agent, hooks + a rbw outside tests/ are refused (exit 4) and the fake rbw is never called" bash -c "[ $rc = 4 ] && [ ! -e '$T/rbw-called' ] && grep -q 'refused inside an agent' '$CAP/h1.err'"
+rm -f "$XDG_STATE_HOME/envs/bindings.tsv"
+(cd "$PROJ" && ENVS_TOOL_PATH="$T/fakebin" ENVS_TEST_YES=1 "$ENVS" bind >"$CAP/h2.out" 2>"$CAP/h2.err" </dev/null); rc=$?
+check "3: ENVS_TEST_YES with a tool directory outside tests/ binds nothing" bash -c "[ $rc = 4 ] && [ ! -s '$XDG_STATE_HOME/envs/bindings.tsv' ]"
+pycheck "3: test mode needs a tool dir below tests/ and isolated state; tool() never leaves it for the vault tools" "$HERE/hardening_test.py" "$ENVS" "$REPO"
+scan "17.3"
+
+# finding 4: absolute interpreter, user PATH only for the command, tools not shadowed through PATH
+reset; bind_proj
+check "4: the shebang is the absolute /usr/bin/python3 -I" test "$(head -1 "$ENVS")" = '#!/usr/bin/python3 -I'
+mkdir -p "$T/pybin" "$T/evilbin" "$T/fakehome/.local/bin"
+printf '#!/bin/sh\necho "No module named tomllib" >&2\necho used >>"%s/python-used"\nexit 99\n' "$T" >"$T/pybin/python3"; chmod +x "$T/pybin/python3"
+rm -f "$T/python-used"
+(cd "$PROJ" && PATH="$T/pybin:$PATH" "$ENVS" run -- sh -c 'printf %s "$PATH"' >"$CAP/py.out" 2>"$CAP/py.err"); rc=$?
+check "4: a python3 first in PATH (a project pinning Python 3.10) neither runs nor breaks envs" bash -c "[ $rc = 0 ] && [ ! -e '$T/python-used' ]"
+check "4: the command still gets the user's PATH unchanged" test "$(cat "$CAP/py.out")" = "$T/pybin:$PATH"
+printf '#!/bin/sh\necho EVIL >>"%s/evil-ran"\n' "$T" >"$T/evilbin/envs"
+printf '#!/bin/sh\necho "REAL $*" >>"%s/real-ran"\n' "$T" >"$T/fakehome/.local/bin/envs"
+chmod +x "$T/evilbin/envs" "$T/fakehome/.local/bin/envs"
+rm -f "$T/evil-ran" "$T/real-ran"
+fn=$(grep -E '^(er|ere|ert)\(\)' "$REPO/.zshrc")
+HOME="$T/fakehome" PATH="$T/evilbin:$PATH" zsh -f -c "$fn; er true; ere stage true; ert test" >/dev/null 2>&1
+check "4: er / ere / ert call ~/.local/bin/envs, never an envs found through PATH" bash -c "[ ! -e '$T/evil-ran' ] && [ \$(wc -l <'$T/real-ran') = 3 ]"
+printf '#!/bin/sh\necho evil >>"%s/wlcopy-evil"\ncat >/dev/null\n' "$T" >"$T/evilbin/wl-copy"; chmod +x "$T/evilbin/wl-copy"
+rm -f "$T/wlcopy-evil"
+(cd "$PROJ" && PATH="$T/evilbin:$PATH" "$ENVS" copy-value DATABASE_URL >"$CAP/wl.out" 2>"$CAP/wl.err"); rc=$?
+check "4: copy-value hands the secret to the real wl-copy path, not to a wl-copy first in PATH" bash -c "[ $rc = 0 ] && [ ! -e '$T/wlcopy-evil' ] && [ \"\$(cat '$FAKE_DIR/clip.txt')\" = SECRET-billing-dev-db ]"
+scan "17.4"
+
+# finding 5: the fzf API key (TUI section), and the documented limits
+rm -f "$T/evade.out"
+(cd "$PROJ" && "$T/claude" -c "setsid -f sh -c 'cd \"$PROJ\" && \"$ENVS\" run -- sh -c \"echo ran\" >\"$T/evade.out\" 2>&1' </dev/null >/dev/null 2>&1; exit 0")
+for _ in $(seq 50); do [[ -s $T/evade.out ]] && break; sleep 0.1; done
+check "5: KNOWN LIMIT (documented): a process that detaches from the agent (setsid -f) is not recognised as one" grep -qx ran "$T/evade.out"
+cat >"$T/evade2.sh" <<EOS
+#!/bin/sh
+cd "$PROJ"
+printf 'y\n' | script -qec '"$ENVS" run -e prod -- true' /dev/null >"$T/evade2.out" 2>&1
+echo "rc=\$?" >>"$T/evade2.out"
+EOS
+rm -f "$T/evade2.out"
+(cd "$PROJ" && "$T/claude" -c "setsid -f sh '$T/evade2.sh' </dev/null >/dev/null 2>&1; exit 0")
+for _ in $(seq 60); do grep -q "rc=" "$T/evade2.out" 2>/dev/null && break; sleep 0.1; done
+check "5: KNOWN LIMIT (documented): a pty answers the [y/N] of a protected run (the prompt stops accidents, not a determined process)" grep -q "rc=0" "$T/evade2.out"
+scan "17.5"
+
+# finding 6: mise trust is its own question, never implied
+reset
+etty 'y\nn\n' bind
+check "6: bind asks the trust question separately; n = bound but mise stays untrusted" bash -c "[ $RC = 0 ] && grep -q billing '$XDG_STATE_HOME/envs/bindings.tsv' && ! grep -q '|trust' '$FAKE_DIR/mise.log' && grep -q 'Trust the mise config' '$OUT' && grep -q '.mise.toml' '$OUT'"
+reset
+etty 'y\ny\n' bind
+check "6: y to both questions trusts" bash -c "[ $RC = 0 ] && grep -q '|trust' '$FAKE_DIR/mise.log'"
+: >"$FAKE_DIR/mise.log"
+e bind --yes
+check "6: bind on an already bound checkout never re-trusts" bash -c "[ $RC = 0 ] && grep -q 'already bound' '$OUT' && ! grep -q '|trust' '$FAKE_DIR/mise.log'"
+reset
+etty 'y\n' run -- true
+check "6: the first-run binding question (envs run) does not trust mise either" bash -c "[ $RC = 0 ] && grep -q billing '$XDG_STATE_HOME/envs/bindings.tsv' && ! grep -q '|trust' '$FAKE_DIR/mise.log'"
+e trust
+check "6: envs trust without a terminal does not trust (exit 4)" bash -c "[ $RC = 4 ] && ! grep -q '|trust' '$FAKE_DIR/mise.log'"
+(cd "$PROJ" && CLAUDECODE=1 "$ENVS" trust >/dev/null 2>&1 </dev/null); rc=$?
+check "6: envs trust is refused for an agent" test $rc = 4
+etty 'y\n' trust
+check "6: envs trust on a terminal lists the file and trusts after y" bash -c "[ $RC = 0 ] && grep -q '|trust' '$FAKE_DIR/mise.log' && grep -q '.mise.toml' '$OUT'"
+reset
+NEW="$T/newproj"; rm -rf "$NEW"; mkdir -p "$NEW"; (cd "$NEW" && git init -q . && printf '[tools]\n' >.mise.toml)
+EDIR="$NEW" e init --project newp
+check "6: init without a terminal binds but does not trust a mise config that is already there; it says how" bash -c "[ $RC = 0 ] && grep -q newp '$XDG_STATE_HOME/envs/bindings.tsv' && ! grep -q '|trust' '$FAKE_DIR/mise.log' && grep -q 'envs trust' '$OUT'"
+rm -rf "$NEW"; mkdir -p "$NEW"; (cd "$NEW" && git init -q . && printf '[tools]\n' >.mise.toml)
+EDIR="$NEW" etty 'y\nn\n' init --project newp2
+check "6: init on a terminal asks; n = not trusted" bash -c "[ $RC = 0 ] && ! grep -q '|trust' '$FAKE_DIR/mise.log' && grep -q 'Trust the mise config' '$OUT'"
+EDIR=""; rm -rf "$NEW"
+scan "17.6"
+
+# finding 8 and the TUI pieces
+reset; bind_proj
+( . "$HERE/env.sh" >/dev/null 2>&1; : ) 2>/dev/null
+pycheck "8/9: preview command quoting (spaces, \$(...), backticks in a checkout path) and the protected reveal" "$HERE/tui_test.py" "$ENVS" "$T/tuiwork"
+
+# finding 9: prod gate gaps
+reset; bind_proj
+e copy prod dev
+check "9: copy FROM prod without --prod (no terminal) is refused, dev untouched" bash -c "[ $RC = 4 ] && [ \"\$(jq -r '.items[]|select(.id==\"e-dev\")|.fields[]|select(.name==\"DATABASE_URL\")|.value' '$FAKE_DIR/vault.json')\" = SECRET-billing-dev-db ]"
+e copy prod dev --prod --overwrite
+check "9: copy from prod with --prod works and leaves a journald line" bash -c "[ $RC = 0 ] && grep -q 'copy from project=billing env=prod' '$FAKE_DIR/logger.log'"
+reset; bind_proj
+ETTY_DELAY=0.4 etty 'y\nwrong\n' convert STRIPE_SECRET_KEY
+check "9: secret -> plain with a prod value: a wrong typed name stops it, nothing was written or removed" bash -c "[ $RC != 0 ] && [ ! -e '$PROJ/.mise.prod.toml' ] && [ \"\$(jq -r '.items[]|select(.id==\"e-prod\")|.fields[]|select(.name==\"STRIPE_SECRET_KEY\")|.value' '$FAKE_DIR/vault.json')\" = SECRET-billing-prod-stripe ] && grep -q '^STRIPE_SECRET_KEY' '$PROJ/.envs.toml'"
+e convert STRIPE_SECRET_KEY
+check "9: ... and without a terminal it is refused" test $RC != 0
+(cd "$PROJ" && CLAUDECODE=1 "$ENVS" convert STRIPE_SECRET_KEY --prod >/dev/null 2>&1 </dev/null); rc=$?
+check "9: convert is refused for an agent" test $rc = 4
+ETTY_DELAY=0.4 etty 'y\nprod\n' convert STRIPE_SECRET_KEY
+check "9: typing prod lets the conversion through and it is logged" bash -c "[ $RC = 0 ] && grep -q 'STRIPE_SECRET_KEY' '$PROJ/.mise.prod.toml' && grep -q 'convert project=billing env=prod name=STRIPE_SECRET_KEY' '$FAKE_DIR/logger.log'"
+rm -f "$PROJ/.mise.prod.toml" "$PROJ/.mise.dev.toml"
+reset; bind_proj
+e env rename prod live
+check "9: renaming prod keeps it protected under the new name" bash -c "[ $RC = 0 ] && grep -q 'protected = \[\"live\"\]' '$PROJ/.envs.toml'"
+e status --json
+check "9: ... status lists live as protected" jq -e '.protected | index("live")' "$OUT"
+reset
+sed -i 's/default = "dev"/default = "prod"/' "$PROJ/.envs.toml"
+e status
+check "9: a protected default environment is a problem" grep -q 'is protected' "$OUT"
+reset
+sed -i 's/protected = \["prod"\]/protected = ["prod", "stage"]/; s/default = "dev"/default = "stage"/' "$PROJ/.envs.toml"
+e status
+check "9: ... also when protected = [...] names it" grep -q 'default .stage. is protected' "$OUT"
+scan "17.9"
+
+# finding 11: import never follows a symlink
+reset; bind_proj
+printf 'X_TOKEN=NEWVAL-import-4\n' >"$T/outside.env"
+ln -s "$T/outside.env" "$PROJ/.env"
+e import -e stage --secrets X_TOKEN
+check "11: a symlinked .env is not even found" test $RC = 1
+e import .env -e stage --secrets X_TOKEN
+check "11: naming the symlink is refused" bash -c "[ $RC = 1 ] && grep -q 'symbolic link' '$ERR'"
+etty 'y\n' import .env -e stage --secrets X_TOKEN
+check "11: on a terminal too (no Shred prompt is reached)" test $RC = 1
+e import "$T/outside.env" -e stage --secrets X_TOKEN
+check "11: a file outside the project root is refused" test $RC = 1
+check "11: the link target is intact and nothing reached the vault" bash -c "[ \"\$(cat '$T/outside.env')\" = 'X_TOKEN=NEWVAL-import-4' ] && ! grep -q NEWVAL-import-4 '$FAKE_DIR/vault.json'"
+rm -f "$PROJ/.env" "$T/outside.env"
+
+# finding 14: project delete stops at the first failed item delete
+reset; bind_proj
+echo e-stage >"$FAKE_DIR/fail-delete"
+etty 'billing\n' project delete
+check "14: a failing item delete stops project delete before the folder and the other items" bash -c "[ $RC = 1 ] && [ \"\$(jq -r '[.folders[]|select(.id==\"f-billing\")]|length' '$FAKE_DIR/vault.json')\" = 1 ] && [ \"\$(jq -r '.items[]|select(.id==\"e-prod\")|.deletedDate' '$FAKE_DIR/vault.json')\" = null ] && grep -q billing '$XDG_STATE_HOME/envs/bindings.tsv'"
+rm -f "$FAKE_DIR/fail-delete"
+etty 'billing\n' project delete
+check "14: run again once it works: everything goes" bash -c "[ $RC = 0 ] && [ \"\$(jq -r '[.folders[]|select(.id==\"f-billing\")]|length' '$FAKE_DIR/vault.json')\" = 0 ]"
+
+# finding 15: reserved names
+bad_cfg2() { reset; (cd "$PROJ" && eval "$2"); e status; if grep -qF -- "$3" "$OUT"; then ok "15: rejected: $1"; else bad "15: rejected: $1" "$(head -c 200 "$OUT")"; fi; }
+bad_cfg2 "LD_ prefix" "echo 'LD_DEBUG = \"\"' >>.envs.toml" "'LD_DEBUG' is a reserved name"
+bad_cfg2 "BASH_ENV" "echo 'BASH_ENV = \"\"' >>.envs.toml" "'BASH_ENV' is a reserved name"
+bad_cfg2 "NODE_PATH" "echo 'NODE_PATH = \"\"' >>.envs.toml" "'NODE_PATH' is a reserved name"
+bad_cfg2 "GLIBC_TUNABLES" "echo 'GLIBC_TUNABLES = \"\"' >>.envs.toml" "'GLIBC_TUNABLES' is a reserved name"
+bad_cfg2 "GIT_DIR" "echo 'GIT_DIR = \"\"' >>.envs.toml" "'GIT_DIR' is a reserved name"
+
+# finding 16: mise logging and overrides
+reset; bind_proj
+(cd "$PROJ" && MISE_LOG_FILE="$T/mise-trace.log" MISE_DEBUG=1 MISE_TRACE=1 MISE_LOG_LEVEL=trace "$ENVS" run -- sh -c 'echo "${MISE_LOG_FILE:-unset} ${MISE_DEBUG:-unset} ${MISE_TRACE:-unset} $MISE_LOG_LEVEL"' >"$CAP/ml.out" 2>"$CAP/ml.err")
+check "16: mise gets no log file, no debug/trace switch, and level warn" grep -qx 'unset unset unset warn' "$CAP/ml.out"
+printf '[env]\nDATABASE_URL = "from-parent"\n' >"$T/.mise.toml"
+e run -- true
+check "16: a mise [env] above the project that sets a declared secret is reported on stderr" grep -q "DATABASE_URL is also set by mise \[env\] in $T/.mise.toml" "$ERR"
+e check
+check "16: ... and by check" grep -q "DATABASE_URL is also set by mise \[env\]" "$OUT"
+rm -f "$T/.mise.toml"
+scan "17.16"
+
+# finding 18 (info): interpreter run agents, the set message
+reset; bind_proj
+cp /bin/sh "$T/node"
+(cd "$PROJ" && "$T/node" -c "\"$ENVS\" run -- true; exit \$?" /opt/lib/node_modules/@openai/codex/bin/codex.js >/dev/null 2>"$CAP/nd.err" </dev/null); rc=$?
+check "18: node running .../@openai/codex/... is recognised as an agent" bash -c "[ $rc = 4 ] && grep -q 'refused inside an agent' '$CAP/nd.err'"
+(cd "$PROJ" && "$T/node" -c "\"$ENVS\" run -- true; exit \$?" /usr/lib/gemini-cli/bundle/gemini.js >/dev/null 2>&1 </dev/null); rc=$?
+check "18: ... and gemini-cli" test $rc = 4
+e set DATABASE_URL=oops
+check "18: the value-on-the-command-line message tells to rotate it and clean the history" grep -q 'rotate it' "$ERR"
+rm -f "$T/node"
+}
+
+sections_18() {
+# ───────────── 18 mise.zsh: install on cd
+section "18 mise.zsh install-on-cd (fake mise)"
+reset
+MZ="$REPO/.config/zsh/mise.zsh"
+mkdir -p "$T/legacy" "$T/tomlproj" "$T/zhome"
+printf 'node 22\n' >"$T/legacy/.tool-versions"
+printf '[tools]\nnode = "22"\n' >"$T/tomlproj/.mise.toml"
+mz() { # dir -> stdout+stderr of a zsh that cd'ed into it (mise log in $FAKE_DIR/mise.log)
+  : >"$FAKE_DIR/mise.log"; printf 'node 22.1.0\n' >"$T/missing.txt"; rm -rf "$T/zrun"
+  (cd "$T" && DF_MISE_MODE=activate HOME="$T/zhome" XDG_RUNTIME_DIR="$T/zrun" XDG_CACHE_HOME="$T/zcache" XDG_DATA_HOME="$T/zdata" \
+    FAKE_MISE_MISSING="$T/missing.txt" zsh -f -c "source '$MZ'; cd '$1'; sleep 1" 2>&1)
+}
+out=$(mz "$T/tomlproj")
+check "7: a trusted mise.toml with missing tools starts the background install (control)" grep -q '|install' "$FAKE_DIR/mise.log"
+out=$(mz "$T/legacy")
+check "7: a .tool-versions alone does not start an install, it prints a hint" bash -c "! grep -q '|install' '$FAKE_DIR/mise.log' && grep -q 'not installed automatically' <<<'$out'"
+cat >"$T/legacy/.nvmrc" <<<'22'
+rm "$T/legacy/.tool-versions"
+out=$(mz "$T/legacy")
+check "7: same for .nvmrc" bash -c "! grep -q '|install' '$FAKE_DIR/mise.log' && grep -q 'not installed automatically' <<<'$out'"
+check "7: the global mise config disables the asdf and vfox plugin backends" grep -q '^disable_backends = \["asdf", "vfox"\]' "$REPO/.config/mise/config.toml"
+}
+
 sections_15_16() {
 if ((QUICK)); then
   printf '\n(--quick: the tmux TUI section and the timing section are skipped)\n'
@@ -489,6 +772,15 @@ key Enter
 check "Enter opens the variables of dev: secrets set, the undeclared field flagged" wait_scr 'DATABASE_URL +secret set' 8
 check "variables: the undeclared EXTRA_FIELD is listed as extra" scr_has 'EXTRA_FIELD +secret extra'
 screen_masked >/dev/null
+SOCKF=$(ls "$XDG_RUNTIME_DIR"/envs/fzf-*.sock 2>/dev/null | head -1)
+code_nokey=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 --unix-socket "$SOCKF" -X POST http://localhost -d 'refresh-preview' 2>/dev/null)
+check "5: the TUI's fzf listener refuses a POST without the run's API key (was: any process of this user could drive it)" bash -c "[ -S '$SOCKF' ] && [ '$code_nokey' != 200 ] && [ '$code_nokey' != 000 ]"
+FZFKEY=""
+for pid in $(pgrep -f -- "--listen=$SOCKF"); do
+  FZFKEY=$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | sed -n 's/^FZF_API_KEY=//p'); [[ -n $FZFKEY ]] && break
+done
+code_key=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 -H "x-api-key: $FZFKEY" --unix-socket "$SOCKF" -X POST http://localhost -d 'refresh-preview' 2>/dev/null)
+check "5: ... and accepts the key (the reveal ticker sends it; the key itself is only in the environment of that fzf)" bash -c "[ -n '$FZFKEY' ] && [ '$code_key' = 200 ]"
 key Escape
 KDELAY=0.9 key v
 check "v reveals the value of the current row in the preview" wait_scr 'SECRET-billing-dev-db' 8
@@ -560,7 +852,7 @@ fi
 
 }
 
-if [[ -z $ONLY ]]; then sections_1_14; fi
+if [[ -z $ONLY ]]; then sections_1_14; sections_17; sections_18; fi
 sections_15_16
 
 printf '\nenvs test: %d passed, %d failed\n' "$PASS" "$FAILS"

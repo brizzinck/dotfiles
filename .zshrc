@@ -203,11 +203,12 @@ of() {
 
 # Run a command with the project's secrets of the active environment (envs: they live in Bitwarden and reach only the command,
 # never this shell; a function or alias such as grun cannot be wrapped, use the real command: er go run .)
-er() { envs run -- "$@" }
+# (the absolute path: a project's mise `_.path` or a pinned tool dir can hold an `envs` of its own that would see the secrets)
+er() { $HOME/.local/bin/envs run -- "$@" }
 # Run a command with the project's secrets of environment ENV (ere stage go test ./...)
-ere() { local e=$1; shift; envs run -e "$e" -- "$@" }
+ere() { local e=$1; shift; $HOME/.local/bin/envs run -e "$e" -- "$@" }
 # Run a mise task with the project's secrets (ert test)
-ert() { envs run -- mise run "$@" }
+ert() { $HOME/.local/bin/envs run -- mise run "$@" }
 
 # was rg(): shadowed ripgrep (false "no matches" for agents via the shell snapshot)
 grun() {

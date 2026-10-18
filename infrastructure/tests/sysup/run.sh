@@ -107,5 +107,30 @@ rm -f "$T/bin/mise"
 out=$(HOME="$T/home" PATH="$T/bin:/usr/bin:/bin" "$SYSUP" --only mise --yes 2>&1); rc=$?
 expect "mise step is skipped when mise is missing" bash -c "[ $rc = 0 ] && grep -q 'mise is not installed' <<<'$out'"
 
+# FIX-DEVb: started inside an activated project, sysup runs with the project's PATH entries, [env] and __MISE_* gone
+cat >"$T/bin/mise" <<'X'
+#!/bin/sh
+echo "[env] GOBIN=${GOBIN:-unset} KEEPME=${KEEPME:-unset} PROJ_ONLY=${PROJ_ONLY:-unset} MISE_ENV=${MISE_ENV:-unset} SESSION=${__MISE_SESSION:-unset} PATH=$PATH" >>"$FAKE_LOG"
+exit 0
+X
+chmod +x "$T/bin/mise"
+mkdir -p "$T/mise/installs/go/1.22/bin" "$T/mise/shims"
+DIFF=$(python3 -I -B - <<'PY'
+import base64, json, zlib
+d = {"original": {"GOBIN": "/home/real/go/bin"}, "additions": {"GOBIN": "/proj/.bin", "PROJ_ONLY": "1"}, "deletions": {}}
+print(base64.urlsafe_b64encode(zlib.compress(json.dumps(d).encode())).decode().rstrip("="))
+PY
+)
+: >"$FAKE_LOG"
+(cd "$T/proj" && HOME="$T/home" KEEPME=mine GOBIN=/proj/.bin PROJ_ONLY=1 MISE_ENV=prod __MISE_SESSION=abc __MISE_DIFF="$DIFF" \
+  PATH="$T/mise/installs/go/1.22/bin:$T/mise/shims:$PATH" "$SYSUP" --only mise --yes >/dev/null 2>&1); rc=$?
+expect "project env: the mise install dirs and shims are out of PATH" bash -c "[ $rc = 0 ] && grep -q '^\[env\]' '$FAKE_LOG' && ! grep '^\[env\]' '$FAKE_LOG' | grep -q 'mise/installs\|mise/shims'"
+expect "project env: the [env] the project added is undone (GOBIN back to the original, PROJ_ONLY unset), other variables stay" bash -c "grep '^\[env\]' '$FAKE_LOG' | grep -q 'GOBIN=/home/real/go/bin KEEPME=mine PROJ_ONLY=unset'"
+expect "project env: MISE_ENV and __MISE_* are gone" bash -c "grep '^\[env\]' '$FAKE_LOG' | grep -q 'MISE_ENV=unset SESSION=unset'"
+expect "project env: PATH entries outside the project stay" bash -c "grep '^\[env\]' '$FAKE_LOG' | grep -q 'PATH=.*/usr/bin'"
+: >"$FAKE_LOG"
+(cd "$T/proj" && HOME="$T/home" GOBIN=/proj/.bin __MISE_DIFF="not-a-diff" "$SYSUP" --only mise --yes >/dev/null 2>&1); rc=$?
+expect "project env: an unreadable __MISE_DIFF is skipped, the run still works" bash -c "[ $rc = 0 ] && grep -q '^\[env\]' '$FAKE_LOG'"
+
 echo "sysup tests: $fails failure(s)"
 exit $((fails > 0))

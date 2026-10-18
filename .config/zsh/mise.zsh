@@ -38,7 +38,8 @@ if (( $+commands[usage] )); then
 fi
 
 # Install on cd: a new or changed mise config in this directory tree -> missing tools are installed in the background, only
-# for a config mise already trusts (an untrusted one makes the query fail: nothing is installed). The next prompt prints one
+# for a mise.toml mise already trusts (an untrusted one makes the query fail: nothing is installed; the legacy version files
+# that need no trust only print a hint). The next prompt prints one
 # line and refreshes the env. Humans only (interactive tty shells reach this point).
 [[ ${DF_MISE_AUTOINSTALL:-1} == 0 ]] && { unset _m _c _f; return 0; }
 zmodload -F zsh/stat b:zstat 2>/dev/null
@@ -60,6 +61,12 @@ _df_mise_chpwd() {
   _df_mise_seen[$key]=1
   out=$(command mise ls --current --missing 2>/dev/null) || return 0
   [[ -n $out ]] || return 0
+  # .tool-versions, .nvmrc, .node-version, .python-version need no `mise trust`: a fresh clone with one would otherwise start an
+  # install (a registry tool backed by an asdf/vfox plugin is third-party code) the moment you cd into it
+  case $f in .tool-versions|.nvmrc|.node-version|.python-version)
+    print -r -- "mise: tools from $f are missing; not installed automatically (that file needs no trust): run \`mise install\` once you trust this project"
+    return 0 ;;
+  esac
   mkdir -p -m 700 $_df_mise_dir 2>/dev/null
   rm -f $_df_mise_dir/done
   ( command mise install >| $_df_mise_dir/log 2>&1; print $? >| $_df_mise_dir/done ) &!

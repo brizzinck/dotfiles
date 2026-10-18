@@ -248,8 +248,9 @@ step_go() {
   return 0
 }
 
-# mise (DEV-b): only the global config counts (the run starts from $HOME, so a project's .mise.toml is never read); skipped
-# without mise. Failures are warnings like step_go.
+# mise (DEV-b): only the global config counts (the run starts from $HOME with the project environment undone, see
+# clean_project_env); skipped without mise. `mise plugins update` pulls third-party plugin code that later runs inside
+# `envs run` (with secrets): accepted, plugins are rarely used. Failures are warnings like step_go.
 step_mise() {
   have mise || { echo "mise is not installed"; return 0; }
   local bad=0
@@ -372,6 +373,44 @@ plan_has() {
   [[ ,$SKIP, != *,"$s",* ]]
 }
 
+# A shell inside a project (mise activate) has the project's install dirs first in PATH and its [env] exported (GOBIN,
+# NPM_CONFIG_PREFIX ...): take both out, so `go install`, `npm -g` and `mise upgrade` act on the system toolchains. The [env]
+# part reads mise's own record of what it changed (__MISE_DIFF: deflated JSON {original, additions, deletions}); a format
+# that does not parse is skipped (PATH, __MISE_* and MISE_ENV are removed in any case).
+clean_project_env() {
+  local p out="" parts=()
+  IFS=: read -ra parts <<<"$PATH"
+  for p in "${parts[@]}"; do
+    case $p in */mise/installs/*|*/mise/shims|*/mise/shims/) ;; *) out+="${out:+:}$p" ;; esac
+  done
+  PATH=$out
+  export PATH
+  if [[ -n ${__MISE_DIFF:-} ]] && have python3; then
+    eval "$(python3 -I - <<'PY' 2>/dev/null
+import base64, json, os, re, shlex, zlib
+raw = os.environ.get("__MISE_DIFF", "")
+try:
+    blob = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))
+    try:
+        doc = json.loads(zlib.decompress(blob))
+    except zlib.error:
+        doc = json.loads(zlib.decompress(blob, -15))
+    orig, add = doc.get("original") or {}, doc.get("additions") or {}
+    dele = doc.get("deletions") or {}
+    for k in sorted(set(add) | set(dele)):
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k) or k in ("PATH", "HOME", "PWD"):
+            continue
+        print(f"export {k}={shlex.quote(orig[k])}" if isinstance(orig.get(k), str) else f"unset {k}")
+except Exception:
+    pass
+PY
+)"
+  fi
+  local v
+  for v in $(compgen -e | grep -E '^(__MISE_|MISE_ENV$)'); do unset "$v"; done
+  unset ENVS_PROJECT ENVS_ENV
+}
+
 run_steps() {
   local s t0 rc status
   if [[ $DRY == 1 ]]; then
@@ -381,8 +420,10 @@ run_steps() {
     return 0
   fi
   sudo -v || { fail "sudo is needed"; exit 1; }
-  # never from a project directory: its pinned go/node/python (mise) must not be the one `go install` or `npm -g` uses
+  # never from a project directory: its pinned go/node/python (mise) must not be the one `go install` or `npm -g` uses; `cd`
+  # alone does not undo an activated project (its PATH and [env] stay in this environment), so undo that too
   cd "$HOME" || true
+  clean_project_env
   # keep the sudo timestamp alive for steps that call sudo themselves (yay has its own --sudoloop)
   ( while sleep 50; do sudo -n true 2>/dev/null || exit; done ) &
   KEEP=$!

@@ -8,8 +8,9 @@
 #
 #   bw-setup [--url URL] [--email MAIL]
 #
-# Lock policy: lock_timeout is one year, so the master password is asked once per login session. Hyprland runs
-# `vault.sh session-start` (rbw stop-agent) at every session start, which locks the vault again for the new login.
+# Lock policy: for the owner lock_timeout is one year, so the master password is asked once per login session. Hyprland
+# runs `vault.sh session-start` (rbw stop-agent) at every session start, which locks the vault again for the new login.
+# A managed user (the checkout belongs to someone else, e.g. td, yc via /srv/dotfiles) gets one hour.
 set -euo pipefail
 
 url=${BW_URL:-} email=${BW_EMAIL:-}
@@ -59,7 +60,11 @@ url=${url%/}
 rbw stop-agent >/dev/null 2>&1 || true
 rbw config set base_url "$url"
 rbw config set email "$email"
-rbw config set lock_timeout 31536000
+# The owner (the user whose account owns this checkout) unlocks once per login. A managed user (td, yc ...) holds the owner's
+# whole vault while unlocked and runs agents: one hour, then the master password again.
+repo_owner=${BW_SETUP_FAKE_OWNER:-$(stat -c %U "$self_dir/../.." 2>/dev/null || true)}   # BW_SETUP_FAKE_OWNER: test hook
+if [[ -z $repo_owner || $repo_owner == "$(id -un)" ]]; then lock_timeout=31536000; else lock_timeout=3600; fi
+rbw config set lock_timeout "$lock_timeout"
 rbw config set pinentry "$pinentry"
 echo "rbw configured (pinentry: $pinentry)."
 
