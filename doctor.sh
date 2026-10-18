@@ -1352,11 +1352,13 @@ if "$DOTFILES/.config/hub/hub" --list --all 2>/dev/null | grep -q ' envs '; then
 # FIX-DEVb: the hardening of the review stays in place (absolute interpreter, absolute er/ere/ert, no legacy-file auto-install, backends off)
 db_bad=""
 [ "$(head -1 "$DOTFILES/.local/bin/envs")" = '#!/usr/bin/python3 -I' ] || db_bad="$db_bad envs shebang is not the absolute #!/usr/bin/python3 -I;"
-for db_f in er ere ert; do grep -qE "^$db_f\(\) \{.*\\\$HOME/\.local/bin/envs run" "$DOTFILES/.zshrc" || db_bad="$db_bad $db_f() does not call \$HOME/.local/bin/envs;"; done
+grep -qE '^typeset -g _ENVS_BIN=\$HOME/\.local/bin/envs$' "$DOTFILES/.zshrc" || db_bad="$db_bad .zshrc does not fix _ENVS_BIN to ~/.local/bin/envs at startup;"
+for db_f in envs er ere ert; do grep -qE "^$db_f\(\) \{.*\\\$_ENVS_BIN" "$DOTFILES/.zshrc" || db_bad="$db_bad $db_f() does not call \$_ENVS_BIN;"; done
+grep -q 'MISE_AUTO_INSTALL' "$DOTFILES/.local/bin/envs" || db_bad="$db_bad envs run does not switch mise auto-install off;"
 grep -q 'not installed automatically' "$DOTFILES/.config/zsh/mise.zsh" || db_bad="$db_bad mise.zsh would auto-install for legacy version files;"
 grep -q '^disable_backends = \["asdf", "vfox"\]' "$DOTFILES/.config/mise/config.toml" || db_bad="$db_bad mise config does not disable the asdf/vfox backends;"
-grep -q 'clean_project_env' "$DOTFILES/.local/bin/sysup" || db_bad="$db_bad sysup does not undo an activated project;"
-if [ -n "$db_bad" ]; then bad envs-hardening "$db_bad"; else ok envs-hardening "envs: absolute interpreter and er/ere/ert, trust is its own question, install-on-cd skips legacy version files, sysup undoes a project env"; fi
+grep -q 'hook-env -s bash --force' "$DOTFILES/.local/bin/sysup" && ! grep -q 'MISE_DIFF.*json' "$DOTFILES/.local/bin/sysup" || db_bad="$db_bad sysup does not let mise undo an activated project (hook-env);"
+if [ -n "$db_bad" ]; then bad envs-hardening "$db_bad"; else ok envs-hardening "envs: absolute interpreter and er/ere/ert/envs fixed at shell start, no mise auto-install under envs run, trust is its own question, install-on-cd skips legacy version files, sysup lets mise undo a project env"; fi
 for db_f in ENVS_TOOL_PATH ENVS_TEST_YES ENVS_TEST_ROOT_PID RBW_BIN BW_BIN PINENTRY_BIN; do
   [ -z "$(printenv "$db_f" 2>/dev/null)" ] || info envs-hooks "$db_f is set in this shell: envs ignores test hooks outside tests/ (a project [env] may have exported it)"
 done
