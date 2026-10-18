@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# fake glab, "not logged in": the real /usr/bin/glab (installed since the dev tools stage) writes its config to
+# $XDG_CONFIG_HOME/glab-cli, and this suite points XDG_CONFIG_HOME at the repo's .config (X1: it created an untracked
+# .config/glab-cli with tokens there). Sections that need a logged-in glab put ./bin-glab in front of this one.
+echo "glab $*" >>"${FAKE_DIR:-/dev/null}/log"
+exit 1

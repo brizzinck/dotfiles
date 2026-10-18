@@ -10,3 +10,6 @@ package*.json
 __pycache__/
 # envs global scope: machine-local names and connections, never committed
 .config/envs/global.local.toml
+# tests that point XDG_CONFIG_HOME at this tree must never leave a forge CLI config here (X1)
+.config/glab-cli/
+.config/gh/

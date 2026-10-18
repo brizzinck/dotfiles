@@ -68,6 +68,8 @@ export HOME="$T/home" FAKE_DIR="$T" GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_C
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 export XDG_CONFIG_HOME="$REPO/.config" XDG_STATE_HOME="$T/xstate" XDG_CACHE_HOME="$T/xcache" XDG_RUNTIME_DIR="$T/run"
 mkdir -p "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"
+# no real forge CLI may write its config into the repo (XDG_CONFIG_HOME above is the repo's .config): the fakes come first on PATH, and these point the real ones away
+export GLAB_CONFIG_DIR="$T/glab-config" GH_CONFIG_DIR="$T/gh-config"
 export PJ_CONFIG="$T/config.toml" PJ_STATE_DIR="$T/state" PJ_CACHE_DIR="$T/cache"
 export PJ_TMUX="tmux -L $SOCK -f $T/tmux.conf" PJ_ZOXIDE="$BIN/zoxide" PJ_HYPRCTL="$BIN/hyprctl" PJ_HYPRD="$BIN/hyprd"
 export PJ_TERMINAL="$BIN/ghostty" PJ_NOTIFY="$BIN/notify-send" PJ_HYPR=0
@@ -491,7 +493,7 @@ out=$(FZF_MENU_HERE=1 PJ_GH="$T/bin-fail-gh" pjx clone --here --client "$ccl" 2>
 expect "clone: a failing clone is reported (the tool's own output stays visible in the terminal)" bash -c 'printf "%s\n" "$1" | grep -q "fatal: could not read from remote" && printf "%s\n" "$1" | grep -q "clone failed"' _ "$out"
 # glab rows when glab exists and is logged in
 rm -rf "$T/cache"/*
-out=$(PATH="$BIN:$BIN_GLAB:$MIN_PATH" "$PJ" _remote-rows --refresh)
+out=$(PATH="$BIN_GLAB:$BIN:$MIN_PATH" "$PJ" _remote-rows --refresh)
 expect "clone: glab rows join when glab is installed and logged in" bash -c 'printf "%s\n" "$1" | grep -q "^c:glab:grp/labrepo	glab .*On gitlab"' _ "$out"
 expect "clone: gh and glab missing = a login row, the c key is hidden" bash -c 'PJ_GH=/nonexistent/gh PJ_GLAB=/nonexistent/glab FZF_MENU_HERE=1 FAKE_PICK= PATH="$1:$2" "$3" --here >/dev/null 2>&1; ! grep "^fzf-menu .*-p project" "$4/log" | tail -1 | grep -q "c clone"' _ "$BIN" "$MIN_PATH" "$PJ" "$T"
 # L8: glab pages its list (-P 100 -p N, until a short page); a subgroup project is matched by its whole path
@@ -499,7 +501,7 @@ python3 -I -c 'import json; print(json.dumps([{"path_with_namespace": f"grp/sub/
 mkgit "$T/job/repo7"; git -C "$T/job/repo7" remote add origin https://gitlab.com/grp/sub/repo7.git
 mkgit "$T/job/repo8"; git -C "$T/job/repo8" remote add origin git@gitlab.com:grp/sub/repo8.git
 rm -rf "$T/cache"/*; : >"$T/log"
-out=$(PATH="$BIN:$BIN_GLAB:$MIN_PATH" "$PJ" _remote-rows --refresh)
+out=$(PATH="$BIN_GLAB:$BIN:$MIN_PATH" "$PJ" _remote-rows --refresh)
 expect "L8: all 230 glab projects are listed (3 pages of 100)" bash -c 'test "$(printf "%s\n" "$1" | grep -c "^c:glab:")" = 230 && test "$(grep -c "^glab repo list" "$FAKE_DIR/log")" = 3 && grep "^glab repo list" "$FAKE_DIR/log" | head -1 | grep -q -- "-P 100 -p 1"' _ "$out"
 expect "L8: a subgroup project (grp/sub/repo7, https and ssh origin) is marked [cloned]" bash -c 'printf "%s\n" "$1" | grep "grp/sub/repo7 " | grep -q "\[cloned\]" && printf "%s\n" "$1" | grep "grp/sub/repo8 " | grep -q "\[cloned\]" && ! printf "%s\n" "$1" | grep "grp/sub/repo9 " | grep -q "\[cloned\]"' _ "$out"
 export PJ_CONFIG="$T/config.toml"

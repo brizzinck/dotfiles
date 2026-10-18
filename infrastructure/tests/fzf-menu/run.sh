@@ -33,6 +33,8 @@ mkdir -p "$T/xdg" "$T/ft"
 chmod 700 "$T/xdg"
 RUN="$T/xdg/fzf-menu"
 export FT_DIR="$T/ft" FT_SOCK="$S" XDG_RUNTIME_DIR="$T/xdg" XDG_CONFIG_HOME="$REPO/.config" HYPRLAND_INSTANCE_SIGNATURE=fake
+# XDG_CONFIG_HOME is the repo's .config: no real CLI may write its own config there (X1: glab-cli)
+export GLAB_CONFIG_DIR="$T/glab-config" GH_CONFIG_DIR="$T/gh-config"
 export FZF_MENU_TERMINAL="$HERE/bin/fake-term" FZF_MENU_SERVER_ADDR=0xserver TERM=xterm-256color
 export PATH="$HERE/bin:$PATH"
 reset_logs() { : >"$FT_DIR/term.log"; : >"$FT_DIR/hypr.log"; rm -f "$FT_DIR/shown" "$FT_DIR/hide" "$FT_DIR/map-hide.log" "$FT_DIR"/ws-menu-*; }
