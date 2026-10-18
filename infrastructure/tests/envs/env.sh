@@ -5,6 +5,10 @@
 _E_HERE=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
 _E_BIN="$_E_HERE/bin" _E_VB="$_E_HERE/../vault-browse/bin"
 ENVS_TEST_ROOT=${ENVS_TEST_ROOT:-$(mktemp -d "${TMPDIR:-/tmp}/envs-test.XXXXXX")}
+if ((${#ENVS_TEST_ROOT} > 80)); then   # bw-serve listens on a unix socket `<root>/run/vault/bw.sock`: sun_path holds 107 bytes
+  echo "env.sh: $ENVS_TEST_ROOT is too long for the bw-serve unix socket (AF_UNIX path limit); use a short TMPDIR or ENVS_TEST_ROOT=/tmp/ev.XXXX" >&2
+  return 1 2>/dev/null || exit 1
+fi
 export ENVS_TEST_ROOT
 export FAKE_DIR="$ENVS_TEST_ROOT/fake" XDG_RUNTIME_DIR="$ENVS_TEST_ROOT/run" XDG_STATE_HOME="$ENVS_TEST_ROOT/state" \
   XDG_CACHE_HOME="$ENVS_TEST_ROOT/cache"   # XDG_CONFIG_HOME stays real: fzf-menu reads ~/.config/fzf/vimfzf.sh from it

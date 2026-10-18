@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
 . "$(dirname "$0")/_dev.sh"
-dev_log "ssh $*"
+dev_log "ssh ${1:-} alias-len=${#3}"   # never the alias itself: a test host name may carry a sentinel
+# `ssh -G ALIAS`: the resolved config; FAKE_SSH_HOSTNAME is the HostName of the alias
+[[ ${1:-} == -G && -n ${FAKE_SSH_HOSTNAME:-} ]] && printf 'host %s\nhostname %s\nuser git\n' "${3:-x}" "$FAKE_SSH_HOSTNAME"
 maybe_sleep
+exit 0

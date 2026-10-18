@@ -724,7 +724,7 @@ Functions of .zshrc that carry a comment, plus the commands of this setup.
 
 | Keys | Action |
 |---|---|
-| `glab` | Glab with the GitLab token from Bitwarden (Env/global): the token never sits in the shell or in a glab config (`glab auth login` is not used); GITLAB_HOST comes from the same item. An agent is refused by envs, like for every secret. |
+| `glab` | Glab with the GitLab token from Bitwarden (Env/global): the token never sits in the shell or in a glab config (`glab auth login` is not used); GITLAB_HOST comes from the same item. An agent is refused by envs, like for every secret. Only those two names are injected (`--only`: the other Env/global secrets, e.g. a database password, never reach glab) and /usr/bin/glab is the binary (no PATH lookup that a project's mise `_.path` could shadow). |
 | `er` | Run a command with the project's secrets of the active environment (envs: they live in Bitwarden and reach only the command, never this shell; a function or alias such as grun cannot be wrapped, use the real command: er go run .) |
 | `ere` | Run a command with the project's secrets of environment ENV (ere stage go test ./...) |
 | `ert` | Run a mise task with the project's secrets (ert test) |

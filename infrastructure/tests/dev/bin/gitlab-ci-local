@@ -5,6 +5,13 @@
 dev_log "gcl $*"
 dev_log "gcl cwd=$PWD"
 vf=""
+for a in "$@"; do   # --preview: the expanded pipeline (the launcher asks it whether any job has an image); $FAKE_DIR/gcl.preview replaces it
+  if [[ $a == --preview ]]; then
+    dev_log "gcl preview"
+    if [[ -f $FAKE_DIR/gcl.preview ]]; then cat "$FAKE_DIR/gcl.preview"; else printf -- '---\nstages:\n  - test\nbuild-shell:\n  script:\n    - echo hi\n'; fi
+    exit 0
+  fi
+done
 for ((i = 1; i <= $#; i++)); do
   [[ ${!i} == --list-csv ]] && { printf 'name;stage;when;allowFailure;environment;needs\nbuild-shell;build;on_success;false;;\ntest-docker;test;on_success;false;;\n'; exit 0; }
   if [[ ${!i} == --variables-file ]]; then j=$((i + 1)); vf=${!j}; fi

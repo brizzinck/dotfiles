@@ -214,8 +214,10 @@ fi
 envs() { $_ENVS_BIN "$@" }
 
 # glab with the GitLab token from Bitwarden (Env/global): the token never sits in the shell or in a glab config (`glab auth login`
-# is not used); GITLAB_HOST comes from the same item. An agent is refused by envs, like for every secret.
-glab() { $_ENVS_BIN run -g -- glab "$@" }
+# is not used); GITLAB_HOST comes from the same item. An agent is refused by envs, like for every secret. Only those two names
+# are injected (`--only`: the other Env/global secrets, e.g. a database password, never reach glab) and /usr/bin/glab is the
+# binary (no PATH lookup that a project's mise `_.path` could shadow).
+glab() { $_ENVS_BIN run -g --only GITLAB_TOKEN,GITLAB_HOST -- /usr/bin/glab "$@" }
 # lazysql: no telemetry and no update check for runs by hand (`db` sets them for its own runs; go install builds have no collector)
 export LAZYSQL_NO_TELEMETRY=1 LAZYSQL_NO_UPDATE_CHECK=1
 

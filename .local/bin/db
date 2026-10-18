@@ -53,11 +53,20 @@ LOCATIONS = ("docker", "container", "host", "path", "url")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]{1,253}$")
 DBUSER_RE = re.compile(r"^[A-Za-z0-9_.$-]{1,64}$")
-TUNNEL_RE = re.compile(r"^[A-Za-z0-9._@-]{1,64}$")
+TUNNEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$")   # never a leading dash: it is the last ssh argument (-J, -E, -F)
 DOCKER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 IMAGE_KIND = re.compile(r"(?:^|/)(mariadb|mysql|postgres|clickhouse(?:-server)?)(?::|@|$)")
 LBL_SERVICE, LBL_WORKDIR = "com.docker.compose.service", "com.docker.compose.project.working_dir"
 LBL_FILES = "com.docker.compose.project.config_files"
+
+
+CTRL_RE = re.compile("[\\x00-\\x1f\\x7f-\\x9f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]")
+
+
+def clean(v):
+    """A field of a foreign .envs.toml made safe to print: control characters (ESC sequences, newline, bidi marks) become `?`.
+    Names and hosts are printed before they are validated, so a quoted TOML key with a newline could forge a menu row."""
+    return CTRL_RE.sub("?", str(v))
 
 
 def usage_error(msg):
@@ -85,8 +94,14 @@ def load_scope(root=None, is_global=False, strict=False):
 
 
 def is_ip(host):
+    """An IP literal, optionally in one pair of brackets. An IPv6 SCOPE ID (`fe80::1%eth0`) is refused: Python accepts any
+    character after the `%` (`;`, backtick, newline), which ended up in lazysql's `sh -c` tunnel command."""
+    if "%" in host:
+        return False
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
     try:
-        ipaddress.ip_address(host.strip("[]"))
+        ipaddress.ip_address(host)
         return True
     except ValueError:
         return False
@@ -131,7 +146,7 @@ def validate_conn(name, c, secrets, root, is_global):
             p.append(f"{pre}: {k} must match ^[A-Za-z0-9_.$-]{{1,64}}$")
     if "tunnel" in c:
         if not (isinstance(c["tunnel"], str) and TUNNEL_RE.match(c["tunnel"])):
-            p.append(f"{pre}: tunnel must match ^[A-Za-z0-9._@-]{{1,64}}$ (an ssh host alias)")
+            p.append(f"{pre}: tunnel must match ^[A-Za-z0-9][A-Za-z0-9._@-]{{0,63}}$ (an ssh host alias)")
         if "host" not in c:
             p.append(f"{pre}: tunnel needs `host` (the address the bastion connects to)")
     for k in ("password", "user_secret", "url"):
@@ -342,7 +357,9 @@ def commands_block(c, extra, host, port):
         if env_name in extra:
             cmds.append(f'{{ Command = {D.toml_str(f"printf %s \"${env_name}\"")}, SaveOutputTo = {D.toml_str(var)} }}')
     if "tunnel" in c:
-        ssh = (f"ssh -N -o ExitOnForwardFailure=yes -o BatchMode=yes -L ${{port}}:{hostport(host, port)} {c['tunnel']}")
+        # lazysql runs a Command through `sh -c`: the validated parts are quoted anyway (defence in depth), and `--` ends the options
+        ssh = ("ssh -N -o ExitOnForwardFailure=yes -o BatchMode=yes -L ${port}:" + shlex.quote(hostport(host, port))
+               + " -- " + shlex.quote(c["tunnel"]))
         cmds.append(f'{{ Command = {D.toml_str(ssh)}, WaitForPort = {D.toml_str("${port}")} }}')
     if not cmds:
         return ""
@@ -401,7 +418,7 @@ def pick_scope_conn(a):
 def check_conn(sc, name, c):
     probs = [x for x in validate_conn(name, c, sc.cfg.secrets, None if sc.is_global else sc.root, sc.is_global)]
     if probs:
-        D.fail("\n".join(probs), 1)
+        D.fail("\n".join(clean(x) for x in probs), 1)
 
 
 def cmd_open(a):
@@ -549,14 +566,16 @@ def cmd_list(a):
     rows = []
     for sc in scopes:
         for n, c in sc.conns.items():
-            rows.append(dict(name=n, driver=c.get("driver"), where=where_of(c), envs=c.get("envs") or "all",
-                             read_only=bool(c.get("read_only")), source=sc.label, root=str(sc.root), secrets=needed_secrets(c)))
+            ok = not validate_conn(n, c, sc.cfg.secrets, None if sc.is_global else sc.root, sc.is_global)
+            rows.append(dict(name=n, driver=c.get("driver"), where=where_of(c) if ok else "invalid: run `db check`",
+                             envs=c.get("envs") or "all", read_only=bool(c.get("read_only")), source=sc.label, root=str(sc.root),
+                             secrets=needed_secrets(c) if ok else []))
     if a.json:
         print(json.dumps(rows, indent=1))
         return
-    for r in rows:
-        envs_s = ",".join(r["envs"]) if isinstance(r["envs"], list) else r["envs"]
-        print(f"{r['name']:<16} {str(r['driver']):<10} {envs_s:<14} {r['where']:<34} {'[ro]' if r['read_only'] else '    '} {r['source']}")
+    for r in rows:                                            # text output: only validated connections show their fields
+        envs_s = ",".join(map(str, r["envs"])) if isinstance(r["envs"], list) else r["envs"]
+        print(clean(f"{r['name']:<16} {str(r['driver']):<10} {envs_s:<14} {r['where']:<34} {'[ro]' if r['read_only'] else '    '} {r['source']}"))
     if not rows:
         print("no connections: `db add` creates one")
 
@@ -582,9 +601,9 @@ def cmd_check(a):
         scopes = [s for s in scopes if s.is_global]
     for sc in scopes:
         probs = scope_problems(sc)
-        print(f"{sc.label}  {sc.root}  {len(sc.conns)} connection(s)")
+        print(clean(f"{sc.label}  {sc.root}  {len(sc.conns)} connection(s)"))
         for p in probs:
-            print(f"  error {p}")
+            print(clean(f"  error {p}"))
             bad += 1
         if not probs:
             print("  ok")
@@ -754,6 +773,10 @@ def menu_rows(state):
     for sc in scopes:
         for n, c in sc.conns.items():
             n_conn += 1
+            if validate_conn(n, c, sc.cfg.secrets, None if sc.is_global else sc.root, sc.is_global):
+                # not validated = not trusted: no id (Enter does nothing), no field of it is shown, only the cleaned name
+                rows.append(("-", f"{clean(n)[:32]:<14}      invalid: run `db check` in {clean(sc.label)}"))
+                continue
             where = where_of(c)
             if any(k in c for k in ("docker", "container")) and c.get("driver") in DRIVERS:
                 row = find_container(c, None if sc.is_global else sc.root, ps)
@@ -810,16 +833,16 @@ def cmd__preview(a):
     if c is None:
         print(f"{name}: not found")
         return
-    print(f"{name}   [{sc.label}]\n")
+    probs = validate_conn(name, c, sc.cfg.secrets, None if sc.is_global else sc.root, sc.is_global)
+    print(clean(f"{name}   [{sc.label}]") + "\n")
     for k in ("driver", "docker", "container", "host", "port", "path", "database", "user", "tunnel", "envs", "read_only"):
         if k in c:
-            print(f"{k:<12} {c[k]}")
+            print(clean(f"{k:<12} {c[k]}"))
     for k in ("user_secret", "password", "url"):
         if k in c:
-            print(f"{k:<12} secret {c[k]}  (value from Bitwarden, never shown)")
-    probs = validate_conn(name, c, sc.cfg.secrets, None if sc.is_global else sc.root, sc.is_global)
+            print(clean(f"{k:<12} secret {c[k]}  (value from Bitwarden, never shown)"))
     for p in probs:
-        print(f"problem      {p}")
+        print(clean(f"problem      {p}"))
     if any(k in c for k in ("docker", "container")) and not probs:
         row = find_container(c, None if sc.is_global else sc.root)
         print(f"\ncontainer    {row['name'] + ' (' + row['state'] + ')' if row else 'not created'}")

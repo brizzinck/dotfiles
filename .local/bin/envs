@@ -11,7 +11,7 @@
   envs status [--json]          project, root, binding, active env, declared names; with an unlocked vault per env: set /
                                 missing / extra (no values)
   envs use [ENV] [--prod] [--for 60m]   select the active env of this root (picker without ENV); the default env clears it
-  envs run [-e ENV] [--prod] [--sync] [--no-mise] [--allow-missing] -- CMD [ARGS...]
+  envs run [-e ENV] [--prod] [--sync] [--no-mise] [--allow-missing] [--only NAME,NAME] -- CMD [ARGS...]
                                 run CMD with the declared secrets of the env in ITS environment only (exec, nothing stays)
   envs set NAME [-e ENV | --all] [--plain] [--stdin] [--description TEXT]
                                 secret: value from a hidden prompt (asked twice) or --stdin, into the env item(s); --plain:
@@ -442,9 +442,34 @@ def stored_identity(row):
     return row[3] if len(row) > 3 and row[3] else "-"
 
 
+def same_lineage(root, stored):
+    """Does the repository at ROOT hold one of the STORED root commits (comma separated)? Either it is among the root commits
+    now, or the commit still exists here: a shallow clone reports its shallow boundary as a root, and that set changes after a
+    `git fetch --depth` or `--unshallow` (the same repository, a different set)."""
+    ids = [i for i in stored.split(",") if re.fullmatch(r"[0-9a-f]{40,64}", i)]
+    if not ids:
+        return False
+    if set(ids) & set(repo_identity(root).split(",")):
+        return True
+    common, _top = git_common_dir(root)
+    git = tool("git", required=False)
+    if common is None or not git:
+        return False
+    for i in ids:
+        try:
+            p = subprocess.run([git, "--git-dir", common, "cat-file", "-e", f"{i}^{{commit}}"], capture_output=True,
+                               stdin=subprocess.DEVNULL, env=git_env(), timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        if p.returncode == 0:
+            return True
+    return False
+
+
 def binding_state(root, project):
     """('bound'|'unbound'|'changed'|'moved', key, old project): `changed` = the project name differs from the bound one,
-    `moved` = same name, but the repository here is not the one that was bound (root commit differs)."""
+    `moved` = same name, but the repository here is not the one that was bound (root commit differs). The identity is the
+    LINEAGE of the repository, not trust: a fork or clone shares the root commit (documented limit)."""
     if is_global_root(root):                      # the global scope has no checkout to bind (see load_global)
         return "bound", str(root), project
     key = binding_key(root)
@@ -454,24 +479,41 @@ def binding_state(root, project):
     if b[1] != project:
         return "changed", key, b[1]
     stored = stored_identity(b)
-    if stored != "-" and not (set(stored.split(",")) & set(repo_identity(root).split(","))):
+    if stored != "-" and not same_lineage(root, stored):
         return "moved", key, b[1]
     return "bound", key, b[1]
 
 
-def bound_elsewhere(root, project):
-    """Roots (other than ROOT's own binding) that are bound to Env/PROJECT."""
+def moved_keys(root, project):
+    """Keys of rows for Env/PROJECT whose root is GONE and whose stored root commit is in the repository at ROOT: the same
+    repository moved or renamed (`~/job/billing` -> `~/work/billing`), not a second place that holds the project's secrets."""
     key = binding_key(root)
-    return [key_root(k) for k, r in bindings().items() if r[1] == project and k != key]
+    out = []
+    for k, r in bindings().items():
+        if r[1] != project or k == key or os.path.exists(key_root(k)):
+            continue
+        st = stored_identity(r)
+        if st != "-" and same_lineage(root, st):
+            out.append(k)
+    return out
+
+
+def bound_elsewhere(root, project):
+    """Roots (other than ROOT's own binding) that are bound to Env/PROJECT; a move of this very repository (see moved_keys)
+    is not one."""
+    key = binding_key(root)
+    moved = set(moved_keys(root, project))
+    return [key_root(k) for k, r in bindings().items() if r[1] == project and k != key and k not in moved]
 
 
 def bind_write(root, project, locked=False):
     """Record the binding; LOCKED = the caller already holds write_lock (flock on a second descriptor would deadlock)."""
     key = binding_key(root)
     ident = repo_identity(root)
+    moved = set(moved_keys(root, project))        # the old row of a repository that moved here is replaced, not kept
 
     def write():
-        rows = [r for r in bindings().values() if r[0] != key]
+        rows = [r for r in bindings().values() if r[0] != key and r[0] not in moved]
         rows.append([key, project, time.strftime("%Y-%m-%dT%H:%M:%S%z"), ident])
         write_tsv(state_dir() / "bindings.tsv", rows)
     if locked:
@@ -1234,12 +1276,16 @@ def mise_trust(root, ask=True):
     return True
 
 
+def root_label(o):
+    return short_path(o) + ("" if os.path.exists(o) else " (gone)")
+
+
 def other_binding_note(cfg):
     """A line that names where Env/<project> is already bound, '' when nowhere else."""
     others = bound_elsewhere(cfg.root, cfg.project)
     if not others:
         return ""
-    shown = ", ".join(short_path(o) for o in others[:3]) + (f" (+{len(others) - 3})" if len(others) > 3 else "")
+    shown = ", ".join(root_label(o) for o in others[:3]) + (f" (+{len(others) - 3})" if len(others) > 3 else "")
     return (f"{cfg.folder} is already bound to {shown}. If this is not a clone of that repository, binding gives it that "
             "project's secrets.")
 
@@ -1350,7 +1396,7 @@ def cmd_init(a):
         say(f"added {', '.join(missing)} to .gitignore")
     elsewhere = bound_elsewhere(root, project)
     if elsewhere:
-        warn(f"Env/{project} is already bound to {', '.join(short_path(o) for o in elsewhere[:3])}: not binding this one "
+        warn(f"Env/{project} is already bound to {', '.join(root_label(o) for o in elsewhere[:3])}: not binding this one "
              "(a clone that names an existing project would get its secrets); run `envs bind` in a terminal to confirm")
     else:
         bind_write(root, project)
@@ -1522,16 +1568,20 @@ def cmd_run(a, cmd):
     require_bound(cfg)
     env = choose_env(cfg, a.env)
     guard_protected(cfg, env, a.prod)
+    only = a.only.split(",") if isinstance(a.only, str) else (a.only or [])
+    if [n for n in only if n not in cfg.secrets]:
+        fail(f"--only names {', '.join(n for n in only if n not in cfg.secrets)}, which {'is' if len([n for n in only if n not in cfg.secrets]) == 1 else 'are'} not declared in [secrets]", 2)
     values = {}
     if cfg.secrets:
         ensure_rbw(a.sync)
         fields = env_fields(cfg.project, env)
         fields = fields or {}
-        missing = [n for n in cfg.secrets if fields.get(n, "") == ""]
+        wanted = [n for n in cfg.secrets if not only or n in only]
+        missing = [n for n in wanted if fields.get(n, "") == ""]
         if missing and not a.allow_missing:
             fail(f"{env}: missing {', '.join(missing)}: set them with `envs set NAME {'-g' if cfg.is_global else '-e ' + env}` "
                  "(or run with --allow-missing)", 1)
-        values = {n: fields[n] for n in cfg.secrets if fields.get(n, "") != ""}
+        values = {n: fields[n] for n in wanted if fields.get(n, "") != ""}
         fields = None
     use_mise = not a.no_mise and not cfg.is_global
     argv, mised = mise_cmd(cfg, cmd, env) if use_mise else (list(cmd), False)
@@ -2884,6 +2934,7 @@ def build_parser():
     p.add_argument("--sync", action="store_true")
     p.add_argument("--no-mise", action="store_true")
     p.add_argument("--allow-missing", action="store_true")
+    p.add_argument("--only")
     p = sub.add_parser("set")
     p.add_argument("-g", "--global", dest="global_", action="store_true")
     p.add_argument("name")
@@ -2954,11 +3005,11 @@ HANDLERS = {"init": cmd_init, "bind": cmd_bind, "status": cmd_status, "use": cmd
 
 
 class RunArgs:
-    env, prod, sync, no_mise, allow_missing, global_ = None, False, False, False, False, False
+    env, prod, sync, no_mise, allow_missing, global_, only = None, False, False, False, False, False, None
 
 
 def usage_error(msg):
-    print(f"envs: {msg}\nusage: envs run [-g] [-e ENV] [--prod] [--sync] [--no-mise] [--allow-missing] -- CMD [ARGS...]", file=sys.stderr)
+    print(f"envs: {msg}\nusage: envs run [-g] [-e ENV] [--prod] [--sync] [--no-mise] [--allow-missing] [--only NAME,NAME] -- CMD [ARGS...]", file=sys.stderr)
     return 2
 
 
@@ -2988,6 +3039,9 @@ def run_main(argv):
             a.allow_missing = True
         elif o in ("-g", "--global"):
             a.global_ = True
+        elif o == "--only" and k + 1 < len(opts):
+            a.only = [n for n in opts[k + 1].split(",") if n]
+            k += 1
         else:
             return usage_error(f"unknown option {o}")
         k += 1

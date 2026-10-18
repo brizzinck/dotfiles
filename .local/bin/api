@@ -4,7 +4,8 @@ Bitwarden through `envs run`. Python 3 stdlib only; absolute shebang (this proce
 
   api                          posting on the collection (api/), env files base.env + <env>.env of the active environment
   api test [FILES...] [-e ENV] [--prod] [--report]
-                               hurl --test over api/tests/**/*.hurl (or FILES); --report writes api/tests/report/ (HTML)
+                               hurl --test over api/tests/**/*.hurl (or FILES); --report writes an HTML report under
+                               $XDG_STATE_HOME/api/<project>/report (full responses: never inside the repository)
   api init                     skeleton: api/env/base.env + <env>.env, api/tests/health.hurl, api/health.posting.yaml, .gitignore line
   api check                    directories exist, env files hold no secret value, no .env file inside api/
   api _posting | _hurl         internal: the `envs run` children
@@ -22,6 +23,7 @@ Exit codes: 0 ok, 1 error, 2 usage, 4 refused (agent, unbound, protected without
 """
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -55,9 +57,61 @@ def api_cfg(cfg):
     return out
 
 
-def env_files(paths, env):
-    """base.env and <env>.env of the env dir that exist."""
-    return [f for f in (paths["env_dir"] / "base.env", paths["env_dir"] / f"{env}.env") if f.is_file()]
+def safe_read(path, root):
+    """(text, problem): the contents of a plain file of the project. A symlink (a clone can ship `base.env -> ~/dotfiles/
+    env.secret.sh`), a file whose real path leaves the project root and a file with a second hard link are refused: what
+    this reads goes into hurl's variables and posting's `--env` list, and a collection request can send them away."""
+    try:
+        if os.path.islink(path):
+            return None, f"{path}: a symbolic link (copy the file into the project)"
+        real, base = os.path.realpath(path), os.path.realpath(root)
+        if not real.startswith(base + os.sep):
+            return None, f"{path}: outside the project root"
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "r") as fh:
+            st = os.fstat(fh.fileno())
+            if not stat.S_ISREG(st.st_mode):
+                return None, f"{path}: not a regular file"
+            if st.st_nlink > 1:
+                return None, f"{path}: more than one hard link (the same file is reachable under another name)"
+            return fh.read(1 << 20), None
+    except OSError as e:
+        return None, f"{path}: {e.strerror}"
+
+
+def outside_links(paths, root):
+    """Symlinks below the collection, env and tests directories whose target leaves the project root (hurl follows them in a
+    `file,link;` body and in the *.hurl glob; posting reads the collection files)."""
+    base = os.path.realpath(root)
+    bad = []
+    for d in {paths["collection"], paths["env_dir"], paths["tests"]}:
+        if not d.is_dir():
+            continue
+        for dirpath, dirs, files in os.walk(d, followlinks=False):
+            for n in dirs + files:
+                f = os.path.join(dirpath, n)
+                if os.path.islink(f):
+                    real = os.path.realpath(f)
+                    if real != base and not real.startswith(base + os.sep):
+                        bad.append(f"{os.path.relpath(f, root)}: a symbolic link that leaves the project root")
+    return sorted(bad)
+
+
+def env_files(paths, env, root):
+    """base.env and <env>.env of the env dir that exist (plain files only: a symlink or a file outside the root stops the
+    command with the reason instead of being read)."""
+    out, probs = [], []
+    for f in (paths["env_dir"] / "base.env", paths["env_dir"] / f"{env}.env"):
+        if not (f.exists() or f.is_symlink()):
+            continue
+        _t, why = safe_read(f, root)
+        if why:
+            probs.append(why)
+        else:
+            out.append(f)
+    if probs:
+        D.fail("refusing an env file: " + "; ".join(probs), 1)
+    return out
 
 
 def entry_env(a, cfg):
@@ -88,7 +142,7 @@ def cmd_posting(a):
         sys.stdout.flush()
         os.execv(PY, [PY, "-I", str(SELF), "_posting", "--scratch"])
     cfg = E.load_cfg(root)
-    api_cfg(cfg)                                               # [api] problems stop here, before any vault access
+    check_links(api_cfg(cfg), cfg.root)                      # [api] problems and links out of the project stop here, before any vault access
     env = entry_env(a, cfg)
     exec_envs(cfg, env, ["_posting", "--root", str(cfg.root), "--env", env], a.prod)
 
@@ -123,7 +177,8 @@ def cmd__posting(a):
             D.fail(f"no collection at {paths['collection']}: `api init` creates the skeleton", 1)
         names = [n for n in os.environ.get("ENVS_SECRETS", "").split() if n in cfg.secrets]
         env = scrubbed_env(names)
-        files = env_files(paths, a.env)
+        check_links(paths, cfg.root)
+        files = env_files(paths, a.env, cfg.root)
         if names:                                              # `${NAME}` in a request resolves through the scrubbed environment
             files.append(D.write_private(run / "secrets.env", "".join(f"{n}=${{{n}}}\n" for n in names)))
         argv = ["posting", "--collection", str(paths["collection"])]
@@ -140,12 +195,21 @@ def cmd__posting(a):
 
 # ───────────────────────────── api test (hurl) ─────────────────────────────
 
-def plain_vars(files, run, secret_names):
+def check_links(paths, root):
+    bad = outside_links(paths, root)
+    if bad:
+        D.fail("refusing the collection: " + "; ".join(bad), 1)
+
+
+def plain_vars(files, run, secret_names, root):
     """A hurl variables file of the plain `NAME=value` lines: comments, blank lines, `${...}` references and every declared
     secret name are dropped (a line that would define a secret as a literal must never reach hurl)."""
     lines = []
     for f in files:
-        for raw in f.read_text().splitlines():
+        text, why = safe_read(f, root)
+        if why:
+            D.fail(f"refusing an env file: {why}", 1)
+        for raw in text.splitlines():
             line = raw.strip()
             if not line or line.startswith("#") or "${" in line or "=" not in line:
                 continue
@@ -163,6 +227,7 @@ def cmd_test(a):
         D.fail("api test needs a project (.envs.toml): run it inside one", 2)
     cfg = E.load_cfg(root)
     paths = api_cfg(cfg)
+    check_links(paths, cfg.root)                             # before any vault access
     env = entry_env(a, cfg)
     files = []
     for f in a.files:
@@ -186,10 +251,14 @@ def cmd__hurl(a):
     env = dict(os.environ)
     for n in names:                                            # the secret reaches hurl as HURL_SECRET_<NAME>: redacted in logs and reports
         env[f"HURL_SECRET_{n}"] = env.pop(n)
-    vars_file = plain_vars(env_files(paths, a.env), run, set(cfg.secrets))
+    check_links(paths, cfg.root)
+    vars_file = plain_vars(env_files(paths, a.env, cfg.root), run, set(cfg.secrets), cfg.root)
     argv = ["hurl", "--test", "--color", "--variables-file", str(vars_file), "--file-root", str(cfg.root)]
-    if a.report:
-        argv += ["--report-html", str(paths["tests"] / "report")]
+    if a.report:                                               # full responses: never inside the repository (a commit could take them)
+        rep = Path(os.environ.get("XDG_STATE_HOME") or E.HOME / ".local/state") / "api" / re.sub(r"[^A-Za-z0-9._-]", "_", cfg.project) / "report"
+        rep.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        print(f"api: HTML report -> {rep}", file=sys.stderr)
+        argv += ["--report-html", str(rep)]
     if a.files:
         argv += a.files
     else:
@@ -239,8 +308,13 @@ def cmd_check(a):
         if not paths[k].is_dir():
             bad.append(f"{label} directory {paths[k]} does not exist (`api init`)")
     secret = set(cfg.secrets)
+    bad += outside_links(paths, cfg.root)
     for f in sorted(paths["env_dir"].glob("*.env")) if paths["env_dir"].is_dir() else []:
-        for n, raw in enumerate(f.read_text().splitlines(), 1):
+        text, why = safe_read(f, cfg.root)
+        if why:
+            bad.append(f"{f.name}: {why}")
+            continue
+        for n, raw in enumerate(text.splitlines(), 1):
             line = raw.strip().removeprefix("export ").strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue

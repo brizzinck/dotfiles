@@ -13,6 +13,8 @@ ONLY=""
 for a in "$@"; do case $a in --quick) QUICK=1 ;; --keep) KEEP=1 ;; --only=*) ONLY=${a#--only=} ;; *) echo "usage: run.sh [--quick] [--keep] [--only=15]" >&2; exit 2 ;; esac; done
 
 ENVS_TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/envs-test.XXXXXX")
+# the bw-serve unix socket lives under it (`<root>/run/vault/bw.sock`, 108 bytes at most): a long TMPDIR would break every vault write
+((${#ENVS_TEST_ROOT} > 70)) && { rmdir "$ENVS_TEST_ROOT"; ENVS_TEST_ROOT=$(mktemp -d /tmp/envs-test.XXXXXX); }
 # shellcheck source=env.sh
 . "$HERE/env.sh" >/dev/null || exit 1
 T=${ENVS_TEST_ROOT:?}
@@ -841,6 +843,35 @@ check "19.9: ... typing the project name binds it" bash -c "[ $RC = 0 ] && [ \$(
 rm -rf "$CL"
 EDIR=""
 scan "19.9"
+
+# REVIEW-DEV-d #12: a shallow clone's root commits are its shallow boundary: they change after `git fetch --unshallow`, but it is the
+# same repository and stays bound (the stored commit still exists)
+reset
+(cd "$PROJ" && git add -A >/dev/null 2>&1 && git commit -qm one >/dev/null 2>&1 && echo 2 >f2 && git add f2 && git commit -qm two >/dev/null 2>&1 && echo 3 >f3 && git add f3 && git commit -qm three >/dev/null 2>&1)
+SH="$T/shallow"; ORIGIN="$T/origin"; rm -rf "$SH" "$ORIGIN"; mv "$PROJ" "$ORIGIN"; git clone -q --depth 1 "file://$ORIGIN" "$SH" >/dev/null 2>&1
+PROJ_KEEP=$PROJ; PROJ=$SH
+bind_proj
+e run -- true
+check "19.10: a bound SHALLOW clone runs" test $RC = 0
+(cd "$SH" && git fetch -q --unshallow >/dev/null 2>&1)
+e run -- true
+check "19.10: after git fetch --unshallow the same repository is still bound (exit 0; it was refused as moved, exit 4, before)" bash -c "[ $RC = 0 ] && ! grep -q 'not the one that was bound' '$ERR'"
+PROJ=$PROJ_KEEP; rm -rf "$ORIGIN" "$SH"
+scan "19.10"
+
+# REVIEW-DEV-d #13: the same repository moved (~/job/billing -> ~/work/billing): the old row is gone, a plain y rebinds, the old row is replaced
+reset
+(cd "$PROJ" && git add -A >/dev/null 2>&1 && git commit -qm init >/dev/null 2>&1)
+bind_proj
+MV="$T/moved"; rm -rf "$MV"; mv "$PROJ" "$MV"
+EDIR="$MV" etty 'y\n' bind
+check "19.11: a moved repository (old root gone, same root commit): y is enough, no typed project name" bash -c "[ $RC = 0 ] && ! grep -qa 'already bound to' '$ERR' '$OUT'"
+check "19.11: ... and the old row is replaced, not kept (one binding)" bash -c "[ \$(wc -l <'$XDG_STATE_HOME/envs/bindings.tsv') = 1 ] && grep -q 'moved' '$XDG_STATE_HOME/envs/bindings.tsv'"
+rm -rf "$MV"; mkdir -p "$PROJ"
+(cd "$PROJ" && git init -q . && printf 'project = "billing"\nenvironments = ["dev"]\ndefault = "dev"\n[secrets]\nX = ""\n' >.envs.toml; echo other >o && git add -A >/dev/null 2>&1 && git commit -qm other >/dev/null 2>&1)
+etty 'y\n' bind
+check "19.11: a DIFFERENT repository with the same project name while the old root is gone still needs the typed name, and the note says (gone)" bash -c "[ $RC = 4 ] && grep -qa '(gone)' '$ERR' '$OUT'"
+scan "19.11"
 }
 
 sections_20() {

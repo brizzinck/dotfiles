@@ -2,7 +2,9 @@
 """forge: the git forge dashboard of this repository (DEV-d): gh-dash for GitHub, glab-tui for GitLab. Python 3 stdlib only;
 absolute shebang (the GitLab path receives the token through `envs run -g`). Docs: CLAUDE.md "Dev tools".
 
-  forge [github|gitlab] [--root DIR]   the host of the `origin` remote decides: github.com -> gh-dash, anything else -> glab-tui;
+  forge [github|gitlab] [--root DIR]   the host of the `origin` remote decides: github.com (also an ssh alias of it such as
+                                       `github.com-work`, or a host whose `ssh -G` HostName is github.com) -> gh-dash, anything else
+                                       -> glab-tui;
                                        outside a repository a picker offers the GitHub dashboard, the GitLab dashboard and the
                                        bound checkouts
   forge check                          what is installed and which tool a remote would pick (no vault, no network)
@@ -12,8 +14,11 @@ GitHub: gh-dash with a per-run config on tmpfs = ~/.config/gh-dash/base.yml + th
 `.gh-dash.yml` is not read.
 GitLab: `envs run -g -- glab-tui`: GITLAB_TOKEN and GITLAB_HOST come from Bitwarden (Env/global, `envs set GITLAB_TOKEN -g`),
 never from a glab config or the shell; glab-tui runs `glab`, which inherits them. glab-tui reads a repo-local
-.glab-tui/config.toml (custom key commands = code): open only trusted repositories. The self-update key `u` of glab-tui cannot be
-remapped (cargo owns the binary; sysup updates it).
+.glab-tui/config.toml (custom key commands = code, no trust prompt of its own). So glab-tui starts INSIDE the repository only when the
+origin host is GITLAB_HOST (otherwise in the run directory: the token never meets another host's repository), and when the repo
+holds `.glab-tui/` or `.config/glab-tui/` you are asked first (`[y/N]`; refused without a terminal). glab-tui's self-update key `u`
+(hard-wired, no confirmation, downloads the latest release with `gh release download` over `~/.cargo/bin/glab-tui`) is disarmed:
+glab-tui gets a run-directory `bin/gh` that always fails, first on its PATH; the cargo pin and sysup stay in charge of the binary.
 Exit codes: 0 ok, 1 error, 2 usage, 4 refused (agent), 127 tool missing.
 """
 import os
@@ -57,12 +62,46 @@ def git_top(start):
     return Path(t) if t else None
 
 
+def ssh_hostname(alias):
+    """HostName that `ssh -G ALIAS` resolves (no connection is made; reads the ssh config), or None."""
+    ssh = D.tool("ssh", required=False)
+    if not ssh or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", alias or ""):
+        return None
+    try:
+        p = subprocess.run([ssh, "-G", "--", alias], capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in p.stdout.splitlines():
+        if line.lower().startswith("hostname "):
+            return line.split(None, 1)[1].strip().lower()
+    return None
+
+
+def is_github_host(host):
+    if host == "github.com" or re.match(r"^github\.com[.-]", host):
+        return True                                            # github.com-work: an ssh alias of GitHub
+    if re.match(r"^github[.-]", host):
+        return True                                            # a GitHub Enterprise host (github.corp.example)
+    return ssh_hostname(host) == "github.com"
+
+
 def kind_of(root):
     """'github' / 'gitlab' by the host of origin; None without a remote."""
     host, _path = parse_remote(git(root, "remote", "get-url", "origin"))
     if host is None:
         return None
-    return "github" if host == "github.com" else "gitlab"
+    return "github" if is_github_host(host) else "gitlab"
+
+
+def origin_host(root):
+    return parse_remote(git(root, "remote", "get-url", "origin"))[0]
+
+
+def gitlab_host_name(value):
+    """host name of a GITLAB_HOST value (`gitlab.example.com`, `https://gitlab.example.com:8443/`)."""
+    v = (value or "").strip().lower()
+    v = re.sub(r"^[a-z]+://", "", v).split("/", 1)[0]
+    return v.rsplit("@", 1)[-1].split(":", 1)[0]
 
 
 def theme_text():
@@ -112,15 +151,40 @@ def run_gitlab(root, inner=False):
             env.pop(n, None)
     if not env.get("GITLAB_TOKEN") or not env.get("GITLAB_HOST"):
         D.fail("GITLAB_TOKEN / GITLAB_HOST are not set: `envs set GITLAB_TOKEN -g` and `envs set GITLAB_HOST -g`", 1)
-    env["PATH"] = ":".join(E.SAFE_DIRS + [str(E.HOME / ".cargo/bin"), str(E.HOME / ".local/bin")])
+    run = D.run_dir("forge")
+    stub = run / "bin"                                         # glab-tui's `u` runs `gh release download` over its own binary
+    stub.mkdir(mode=0o700)
+    D.write_private(stub / "gh", "#!/bin/sh\necho 'gh is disabled for glab-tui (forge): self-update is off' >&2\nexit 1\n")
+    os.chmod(stub / "gh", 0o700)
+    env["PATH"] = ":".join([str(stub)] + E.SAFE_DIRS + [str(E.HOME / ".cargo/bin"), str(E.HOME / ".local/bin")])
+    start = run                                                # glab-tui merges <git root>/.glab-tui/config.toml (shell commands)
     if root:
-        os.chdir(root)
+        oh = origin_host(root)
+        if oh and oh == gitlab_host_name(env["GITLAB_HOST"]):
+            local = [d for d in (".glab-tui", ".config/glab-tui") if os.path.lexists(os.path.join(root, d))]
+            if local and not trust_local_config(root, local):
+                D.fail(f"not confirmed: {', '.join(local)} in {root} holds key commands that glab-tui would run", 4)
+            start = root
+        else:
+            D.warn("forge", f"origin host {oh or '(none)'} is not GITLAB_HOST: glab-tui starts in the run directory, not in the repository "
+                   "(it would see no GitLab remote; the token stays away from other hosts' repositories)")
+    os.chdir(start)
     D.switch_layout()
     sys.stdout.flush()
     try:
         os.execve(gt, ["glab-tui"], env)
     except OSError as e:
         D.fail(f"cannot run glab-tui: {e.strerror}", 127)
+
+
+def trust_local_config(root, found):
+    """[y/N]: the repo ships glab-tui config; its [[custom_keybindings.*]] are shell commands that run with GITLAB_TOKEN."""
+    if not D.tty():
+        return False
+    sys.stderr.write(f"{', '.join(found)} in {root} can define key commands that glab-tui runs with your GitLab token "
+                     "(no trust prompt of its own). Only continue for a repository you trust. Continue? [y/N] ")
+    sys.stderr.flush()
+    return sys.stdin.readline().strip().lower().startswith("y")
 
 
 def pick_target():

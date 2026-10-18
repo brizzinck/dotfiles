@@ -2,4 +2,4 @@
 # fake glab: logs argv and the hash of GITLAB_TOKEN (`glab ci view` of the hub row)
 . "$(dirname "$0")/_dev.sh"
 dev_log "glab $*"
-dev_log "glab hashes $(hashes GITLAB_TOKEN GITLAB_HOST)"
+dev_log "glab hashes $(hashes GITLAB_TOKEN GITLAB_HOST) names=$(env | cut -d= -f1 | grep -E '^(GITLAB_TOKEN|GITLAB_HOST|TD_PW|DB_PASSWORD|OPENAI_API_KEY)$' | sort | tr '\n' ' ')"

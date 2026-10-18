@@ -10,14 +10,23 @@ absolute shebang (this process receives secrets through `envs run`). Docs: CLAUD
   ci _run ...                          internal: the `envs run` child
 
 Detection from the git top-level: .github/workflows/*.y*ml -> act, .gitlab-ci.yml -> gitlab-ci-local, both -> the menu asks.
-`[ci]` in .envs.toml (at the top-level): secrets = ["NPM_TOKEN"] (declared secrets passed to the run, default none) and
-github_token = false (act: pass `gh auth token` as GITHUB_TOKEN). With neither, nothing touches the vault.
+`[ci]` in .envs.toml (at the top-level): secrets = ["NPM_TOKEN"] (declared secrets passed to the run, default none),
+github_token = false (act: pass `gh auth token` as GITHUB_TOKEN; it is a secret like any other, so the checkout must be BOUND
+(`envs bind`) first; the token has gh's full scopes and act hands github.token to every third-party action: prefer a
+fine-grained token as `secrets = ["GITHUB_TOKEN"]`), docker_socket = false (act: bind the host docker socket into the job
+containers; off by default, a workflow with the socket has root on the host) and docker_secrets = false (see below). With no
+secret and no token, nothing touches the vault.
 
 Hostile-repo hardening: the tools run from a tmpfs run directory with -C / --cwd pointing at the repository, so a repo `.actrc`
 is never read (act reads ./.actrc); act gets EMPTY --env-file / --secret-file / --var-file / --input-file (a repo .env, .secrets,
 .vars is never used); gitlab-ci-local gets its own --variables-file (a repo .gitlab-ci-local-variables.yml is never used) and a
 repo `.gitlab-ci-local-env` (which can set CLI defaults such as volumes or privileged) stops the run unless you confirm it.
-The only secrets file is gitlab-ci-local's variables.yml: 0600 on tmpfs, removed when the run ends (also on INT/TERM/HUP).
+The only secrets file is gitlab-ci-local's variables.yml: 0600 on tmpfs, removed when the run ends (also on INT/TERM/HUP); after a
+run with secrets `.gitlab-ci-local/output/` (the job logs, unmasked) is deleted too. A gitlab-ci-local job that runs in a
+CONTAINER (it has `image:` / `services:`, or `i` / --container-mode) gets its variables as `-e NAME=value` on the argv of
+`docker create` (and in the container's Config.Env), where every local user can read them with `ps` unless /proc is mounted with
+hidepid=invisible (not set up by the dotfiles yet). So `[ci] secrets` with such a job is REFUSED unless hidepid is active, or
+`docker_secrets = true` / `--docker-secrets` accepts it.
 CI jobs are CODE from the repository: act runs them in containers; gitlab-ci-local jobs WITHOUT an `image:` run ON THIS MACHINE
 (shell executor): `i` switches to containers. The log of the last run is $XDG_RUNTIME_DIR/devtools/ci-last.log (tmpfs, 0600).
 Exit codes: 0 ok, 1 error, 2 usage, 4 refused (agent, unbound), 127 tool missing; the tool's own status for a run.
@@ -69,23 +78,32 @@ def detect(root):
     return out
 
 
+class CiCfg:
+    def __init__(self, secrets=(), github_token=False, docker_socket=False, docker_secrets=False, cfg=None):
+        self.secrets, self.github_token, self.docker_socket, self.docker_secrets, self.cfg = \
+            list(secrets), github_token, docker_socket, docker_secrets, cfg
+
+
 def ci_config(root):
-    """(secrets list, github_token flag) from the [ci] table of the .envs.toml at ROOT (the project itself, no search upward)."""
+    """CiCfg of the [ci] table of the .envs.toml at ROOT (the project itself, no search upward)."""
     f = root / E.TOML
     if not f.is_file():
-        return [], False, None
+        return CiCfg()
     cfg = E.load_cfg(root)
     raw = cfg.data.get("ci") if isinstance(cfg.data.get("ci"), dict) else {}
+    keys = ("secrets", "github_token", "docker_socket", "docker_secrets")
     for k in raw:
-        if k not in ("secrets", "github_token"):
-            D.fail(f"[ci] unknown key {k!r} (allowed: secrets, github_token)", 1)
+        if k not in keys:
+            D.fail(f"[ci] unknown key {k!r} (allowed: {', '.join(keys)})", 1)
     secrets = raw.get("secrets", [])
     if not (isinstance(secrets, list) and all(isinstance(x, str) and x in cfg.secrets for x in secrets)):
         D.fail("[ci] secrets must be a list of names declared in [secrets]", 1)
-    gt = raw.get("github_token", False)
-    if not isinstance(gt, bool):
-        D.fail("[ci] github_token must be true or false", 1)
-    return list(secrets), gt, cfg
+    flags = {}
+    for k in keys[1:]:
+        flags[k] = raw.get(k, False)
+        if not isinstance(flags[k], bool):
+            D.fail(f"[ci] {k} must be true or false", 1)
+    return CiCfg(secrets, cfg=cfg, **flags)
 
 
 def choose_root(a):
@@ -127,8 +145,10 @@ def state_dir():
     return D.run_root()
 
 
-def act_base(root, run, files=None):
-    """act with everything a repo could steer pinned: workdir -C ROOT, empty env/secret/var/input files, explicit cache paths."""
+def act_base(root, run, docker_socket=False):
+    """act with everything a repo could steer pinned: workdir -C ROOT, empty env/secret/var/input files, explicit cache paths,
+    and no docker socket in the job containers (act binds the host's /var/run/docker.sock into them by default: a foreign
+    workflow would have root on the host) unless [ci] docker_socket = true."""
     act = D.tool("act", hint=D.REPO_PKG_HINT)
     empties = []
     for name in ("none.env", "none.secrets", "none.vars", "none.input"):
@@ -136,7 +156,7 @@ def act_base(root, run, files=None):
     cd = cache_dir()
     return [act, "-C", str(root), "--env-file", str(empties[0]), "--secret-file", str(empties[1]), "--var-file", str(empties[2]),
             "--input-file", str(empties[3]), "--action-cache-path", str(cd), "--cache-server-path", str(cd / "cache"),
-            "--artifact-server-path", str(cd / "artifacts"), "--pull=false"]
+            "--artifact-server-path", str(cd / "artifacts"), "--pull=false"] + ([] if docker_socket else ["--container-daemon-socket", "-"])
 
 
 def parse_act_list(text):
@@ -183,6 +203,8 @@ def _rm(d):
 def cmd_list(a):
     root = choose_root(a)
     system = choose_system(root, a.system)
+    if system == "gcl":
+        gcl_env_gate(root, a.yes)                              # listing already loads the repository's defaults and its includes
     jobs = list_jobs(system, root)
     if a.json:
         print(json.dumps(dict(system=system, root=str(root), jobs=jobs), indent=1))
@@ -252,6 +274,58 @@ def gcl_env_gate(root, yes):
         D.fail("not confirmed", 4)
 
 
+def hidepid_active():
+    """True when /proc is mounted with hidepid=invisible (other users' processes, and so their argv, are invisible)."""
+    path = "/proc/self/mountinfo"
+    if E.TEST_DIRS and os.environ.get("DEVTOOLS_MOUNTINFO"):   # test hook (verified test mode only)
+        path = os.environ["DEVTOOLS_MOUNTINFO"]
+    try:
+        for line in open(path).read().splitlines():
+            f = line.split(" - ", 1)
+            pre = f[0].split()
+            if len(pre) > 4 and pre[4] == "/proc" and len(f) == 2:
+                return re.search(r"(?:^|,)hidepid=(?:2|invisible)(?:,|$)", f[1].split()[-1]) is not None
+    except OSError:
+        pass
+    return False
+
+
+GCL_CONTAINER_RE = re.compile(r"^\s+(?:image|services):", re.M)
+
+
+def gcl_uses_containers(root, container_mode, run=None):
+    """Would gitlab-ci-local start a container for this pipeline? Yes with --container-mode, or when the expanded pipeline
+    (`--preview`: includes, `default:` and `extends` resolved) has any `image:` or `services:`. Unknown (the preview fails) counts
+    as yes: the question guards secrets. RUN = the caller's run directory (it must not be recreated), else a temporary one."""
+    if container_mode:
+        return True
+    own = run is None
+    if own:
+        run = D.run_dir("ci")
+    try:
+        gcl = D.tool("gitlab-ci-local", hint=D.USER_TOOLS_HINT)
+        vf = D.write_private(run / "probe.yml", "---\n")
+        p = subprocess.run([gcl, "--cwd", os.path.relpath(root, run), "--variables-file", str(vf), "--preview"], capture_output=True,
+                           text=True, stdin=subprocess.DEVNULL, cwd=str(run), timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return True
+    finally:
+        if own:
+            _rm(run)
+    return p.returncode != 0 or GCL_CONTAINER_RE.search(p.stdout) is not None
+
+
+def rm_gcl_output(root):
+    """Delete `<root>/.gitlab-ci-local/output` (job logs, unmasked) unless a link is anywhere on the way (rmtree through a
+    `.gitlab-ci-local -> ~` link would delete the owner's `~/output`)."""
+    d = root / ".gitlab-ci-local"
+    if d.is_symlink() or not d.is_dir():
+        return
+    out = d / "output"
+    if not out.is_symlink() and out.is_dir() and os.path.realpath(out) == os.path.join(os.path.realpath(root), ".gitlab-ci-local", "output"):
+        _rm(out)
+
+
 def yaml_variables(values):
     """A gitlab-ci-local variables file: every value a double-quoted, escaped scalar (a quote or newline cannot add a key)."""
     return "---\n" + "".join(f"{n}: {D.yaml_dq(v)}\n" for n, v in values.items())
@@ -300,10 +374,13 @@ def cmd__run(a):
     E.harden_environment()
     root = Path(a.root)
     system = a.system
-    secrets, gh_token, cfg = ci_config(root)
+    cc = ci_config(root)
+    secrets, gh_token, cfg = cc.secrets, cc.github_token, cc.cfg
     names = [n for n in os.environ.get("ENVS_SECRETS", "").split() if n in secrets]
     if names or gh_token:
         E.refuse_agent("ci run with secrets")
+    if gh_token:
+        E.require_bound(cfg)                                   # `ci _run` called by hand: the token needs the binding too
     run = D.run_dir("ci")
     runner = Runner(run)
     env = dict(os.environ)
@@ -315,7 +392,7 @@ def cmd__run(a):
         log = run_log()
         if system == "act":
             ensure_images(a.yes)
-            base = act_base(root, run)
+            base = act_base(root, run, cc.docker_socket)
             tail = []
             if a.workflow:
                 tail += ["-W", str(a.workflow)]
@@ -339,6 +416,8 @@ def cmd__run(a):
         else:
             gcl = D.tool("gitlab-ci-local", hint=D.USER_TOOLS_HINT)
             gcl_env_gate(root, a.yes)
+            if names and not a.dry_run:
+                gcl_docker_gate(root, a, cc, run)              # `ci _run` called by hand: the argv rule holds here too
             values = {n: os.environ[n] for n in names if n in os.environ}
             vf = D.write_private(run / "variables.yml", yaml_variables(values))
             for n in names:
@@ -354,7 +433,21 @@ def cmd__run(a):
             rc = runner.go(argv, env, log)
     finally:
         _rm(run)
+        if system == "gcl" and names:
+            rm_gcl_output(root)                                # the job logs hold whatever a job echoed, unmasked
     return rc
+
+
+def gcl_docker_gate(root, a, cc, run=None):
+    """Refuse [ci] secrets for a pipeline with container jobs: gitlab-ci-local puts every variable on the argv of `docker create`."""
+    if cc.docker_secrets or a.docker_secrets or hidepid_active():
+        return
+    if gcl_uses_containers(root, a.container_mode, run):
+        D.fail("gitlab-ci-local starts these jobs in containers (an `image:`/`services:` in the pipeline, or --container-mode), "
+               "and then passes every variable as `-e NAME=value` on the argv of `docker create` (and keeps it in the container's "
+               "Config.Env): other local users can read it with `ps`. Refused for [ci] secrets. Options: mount /proc with "
+               "hidepid=invisible, run only image-less jobs, or accept it for this "
+               "repository with `docker_secrets = true` in [ci] (or --docker-secrets).", 4)
 
 
 def cmd_run(a):
@@ -363,11 +456,19 @@ def cmd_run(a):
     for j in a.jobs:
         if not JOB_RE.match(j) or j.startswith("-"):
             D.fail(f"job name {j!r} is not accepted", 2)
-    secrets, gh_token, cfg = ci_config(root)
+    cc = ci_config(root)
+    secrets, gh_token, cfg = cc.secrets, cc.github_token, cc.cfg
     if secrets or gh_token:
         E.refuse_agent("ci run with secrets")
+    if gh_token and not secrets:                               # with secrets, `envs run` below checks the binding
+        E.require_bound(cfg)
+    if system == "gcl":
+        gcl_env_gate(root, a.yes)                              # before gitlab-ci-local reads anything of the repository
+        a.yes = True                                           # confirmed once: the child does not ask again
+        if secrets and not a.dry_run:                          # --preview starts nothing
+            gcl_docker_gate(root, a, cc)
     inner = ["_run", "--root", str(root), "--system", system, "--event", a.event] + (["--dry-run"] if a.dry_run else []) \
-        + (["--yes"] if a.yes else []) + (["--container-mode"] if a.container_mode else []) \
+        + (["--yes"] if a.yes else []) + (["--container-mode"] if a.container_mode else []) + (["--docker-secrets"] if a.docker_secrets else []) \
         + (["-W", str(a.workflow)] if a.workflow else []) + ["--", *a.jobs]
     if cfg is not None and a.env and a.env not in cfg.envs:
         D.fail(f"unknown environment {a.env!r} (have: {', '.join(cfg.envs)})", 2)
@@ -420,6 +521,8 @@ def cmd_menu(a):
     root = choose_root(a)
     system = choose_system(root, a.system)
     st = dict(event="push", workflow=None, container=False)
+    if system == "gcl":
+        gcl_env_gate(root, False)                              # before the first listing
     while True:
         jobs = list_jobs(system, root)
         rows = menu_rows(jobs, system) or [("-", "(no jobs found)")]
@@ -514,6 +617,7 @@ def build_parser():
     p.add_argument("--system", choices=["act", "gcl"])
     p.add_argument("--root")
     p.add_argument("--json", action="store_true")
+    p.add_argument("--yes", "--trust-env-file", dest="yes", action="store_true")
     for name in ("run", "_run"):
         p = sub.add_parser(name)
         p.add_argument("jobs", nargs="*")
@@ -524,6 +628,7 @@ def build_parser():
         p.add_argument("--dry-run", action="store_true")
         p.add_argument("--yes", "--trust-env-file", dest="yes", action="store_true")
         p.add_argument("--container-mode", action="store_true")
+        p.add_argument("--docker-secrets", action="store_true")
         p.add_argument("--prod", action="store_true")
         p.add_argument("-e", "--env")
     return ap

@@ -88,8 +88,11 @@ def run_root():
     return d
 
 
+RUN_PREFIXES = ("db", "api", "ci", "forge")
+
+
 def clean_stale(prefix):
-    """Per-run directories `<prefix>-<pid>` of processes that are gone (a killed terminal)."""
+    """Per-run directories `<prefix>-<pid>` of processes that are gone (a killed terminal, SIGKILL, an OOM kill)."""
     for d in run_root().glob(f"{prefix}-*"):
         m = re.fullmatch(rf"{re.escape(prefix)}-(\d+)", d.name)
         if m and d.is_dir() and not Path(f"/proc/{m.group(1)}").exists():
@@ -102,8 +105,10 @@ def _rmtree(d):
 
 
 def run_dir(prefix):
-    """A fresh 0700 directory `<runtime>/devtools/<prefix>-<pid>` (stale ones are removed first). Files in it are 0600."""
-    clean_stale(prefix)
+    """A fresh 0700 directory `<runtime>/devtools/<prefix>-<pid>` (stale ones are removed first, those of every launcher: a
+    SIGKILLed `ci` leaves its variables.yml until any launcher starts). Files in it are 0600."""
+    for p in dict.fromkeys((prefix, *RUN_PREFIXES)):
+        clean_stale(p)
     d = run_root() / f"{prefix}-{os.getpid()}"
     if d.exists():
         _rmtree(d)

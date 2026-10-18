@@ -66,7 +66,7 @@ url, extra = m.build_url(c, "10.0.0.5", 3306, {"DB_PASSWORD": "x"})
 cb = m.commands_block(c, extra, "10.0.0.5", 3306)
 expect("2: tunnel: the URL uses localhost:${port}", url == "mysql://u:${pw}@localhost:${port}/", url)
 expect("2: tunnel: Commands carry the ssh forward and WaitForPort (no secret in them)",
-       "ssh -N -o ExitOnForwardFailure=yes -o BatchMode=yes -L ${port}:10.0.0.5:3306 bastion" in cb and "WaitForPort" in cb
+       "ssh -N -o ExitOnForwardFailure=yes -o BatchMode=yes -L ${port}:10.0.0.5:3306 -- bastion" in cb and "WaitForPort" in cb
        and 'printf %s \\"$DB_PW\\"' in cb and "SaveOutputTo" in cb, cb)
 # the generated config parses as TOML and holds placeholders only
 cfg = m.lazysql_config("main (dev)", {"driver": "mariadb", "database": "app"}, "mysql://app:${pw}@127.0.0.1:32768/app", {"DB_PW": "x"},

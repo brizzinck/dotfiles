@@ -4,4 +4,6 @@
 dev_log "glab-tui $*"
 dev_log "glab-tui cwd=$PWD"
 dev_log "glab-tui hashes $(hashes GITLAB_TOKEN GITLAB_HOST) names=$(env | cut -d= -f1 | grep -E '^(GITLAB_TOKEN|GITLAB_HOST|TD_PW|DB_PASSWORD|OPENAI_API_KEY)$' | sort | tr '\n' ' ')"
+# the `u` key of the real glab-tui runs `gh release download`: the launcher must have put a failing stub first on the PATH
+dev_log "glab-tui gh=$(command -v gh 2>/dev/null) gh-rc=$(gh release download latest >/dev/null 2>&1; echo $?)"
 maybe_sleep
