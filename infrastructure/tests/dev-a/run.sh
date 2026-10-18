@@ -57,8 +57,11 @@ s1() {
   tok2="ghp_$(printf '%s' 'Zq8wE5gH7jK9mN1pQ3sT5vW7yZ9bC1dE3fG5')"
   mkdir -p "$r/.githooks" && git -C "$r" init -q && git -C "$r" config user.email t@t && git -C "$r" config user.name t
   git -C "$r" config core.hooksPath .githooks
-  cp "$REPO/.githooks/pre-commit" "$r/.githooks/pre-commit"; cp "$REPO/.gitleaks.toml" "$r/.gitleaks.toml"
+  cp "$REPO/.githooks/pre-commit" "$REPO/.githooks/gitleaks-lib" "$r/.githooks/"; cp "$REPO/.gitleaks.toml" "$r/.gitleaks.toml"
   expect "hook is executable" test -x "$REPO/.githooks/pre-commit"
+  expect "pre-push hook is executable" test -x "$REPO/.githooks/pre-push"
+  expect "the docs do not call --no-verify the only bypass (merge, rebase, cherry-pick, am and edited hooks skip pre-commit too)" bash -c "! grep -q 'The only bypass is' '$REPO/CLAUDE.md' '$REPO/.githooks/pre-commit'"
+  expect "the docs name GitHub push protection as the backstop" grep -q 'push protection' "$REPO/CLAUDE.md"
   git -C "$r" add .githooks/pre-commit .gitleaks.toml
   expect "first commit of the config passes (working-tree config)" git -C "$r" commit -q -m cfg
   printf 'token = "%s"\n' "$tok1" >"$r/f1.txt"; git -C "$r" add f1.txt
@@ -99,6 +102,80 @@ s1() {
   expect "the committed allowlist covers the known false positives" bash -c "cd '$REPO' && gitleaks git --no-banner --redact -l error --exit-code 3 -c .gitleaks.toml . >/dev/null 2>&1"
   expect ".gitleaks.toml extends the default rules" grep -q '^useDefault = true' "$REPO/.gitleaks.toml"
   expect ".gitleaks.toml is not stowed" grep -q 'gitleaks' "$REPO/.stow-local-ignore"
+  s1_push
+}
+
+# the pre-push hook: commits that never ran pre-commit (--no-verify, merge, cherry-pick, rebase, am, an evil merge) are caught
+# when they are pushed. Scratch repo + bare remote.
+s1_push() {
+  local r="$T/pp" rem="$T/pp-remote.git" out rc t n=0 c
+  tok_new() { n=$((n + 1)); printf 'ghp_%s%02d' 'Kq8wE5gH7jK9mN1pQ3sT5vW7yZ9bC1dE3f' "$n"; }
+  git init -q --bare -b main "$rem"
+  mkdir -p "$r/.githooks" && git init -q -b main "$r" && git -C "$r" config user.email t@t && git -C "$r" config user.name t
+  git -C "$r" config commit.gpgsign false; git -C "$r" config core.hooksPath .githooks; git -C "$r" remote add origin "$rem"
+  cp "$REPO/.githooks/pre-commit" "$REPO/.githooks/pre-push" "$REPO/.githooks/gitleaks-lib" "$r/.githooks/"; cp "$REPO/.gitleaks.toml" "$r/.gitleaks.toml"
+  git -C "$r" add .githooks .gitleaks.toml; git -C "$r" commit -q -m base
+  expect "pre-push: a clean first push (whole history) passes" git -C "$r" push -q -u origin main
+  # back to the remote state, side branches dropped
+  s1_reset() {
+    git -C "$r" merge --abort 2>/dev/null; git -C "$r" rebase --abort 2>/dev/null; git -C "$r" cherry-pick --abort 2>/dev/null; git -C "$r" am --abort 2>/dev/null
+    git -C "$r" checkout -q -f main; git -C "$r" reset -q --hard origin/main; git -C "$r" clean -qfd
+    for c in $(git -C "$r" for-each-ref --format='%(refname:short)' refs/heads/ | grep -v '^main$'); do git -C "$r" branch -q -D "$c"; done
+  }
+  # a commit that skips pre-commit
+  nv_commit() { t=$(tok_new); printf 'token = "%s"\n' "$t" >"$r/$1"; git -C "$r" add "$1"; git -C "$r" commit -q --no-verify -m "$1"; }
+  push_blocked() { # NAME REFSPEC
+    out=$(git -C "$r" push origin "$2" 2>&1); rc=$?
+    if ((rc != 0)) && [[ $out == *"pre-push: gitleaks found possible secrets"* && $out == *REDACTED* && $out != *"${t:4}"* ]]; then
+      pass "pre-push blocks: $1"
+    else fail "pre-push blocks: $1 (rc=$rc) $out"; fi
+    if [[ $2 != main ]] && git -C "$r" ls-remote --exit-code origin "refs/heads/$2" >/dev/null 2>&1; then fail "pre-push: $1 reached the remote"; fi
+    return 0
+  }
+  git -C "$r" checkout -q -b side; nv_commit f-side.txt
+  push_blocked "a --no-verify commit on a new branch" side
+  git -C "$r" checkout -q main; git -C "$r" merge -q --no-ff -m merge side >/dev/null
+  expect "(the merge landed on main without any hook)" bash -c "git -C '$r' log --format=%s -3 | grep -q f-side.txt"
+  push_blocked "a merge of a --no-verify branch" main
+  s1_reset
+  git -C "$r" checkout -q -b side2; nv_commit f-cp.txt; git -C "$r" checkout -q main; git -C "$r" cherry-pick side2 >/dev/null 2>&1
+  expect "(the cherry-pick landed without a hook)" bash -c "git -C '$r' log --format=%s -1 | grep -q f-cp.txt"
+  push_blocked "a cherry-pick" main
+  s1_reset
+  git -C "$r" checkout -q -b side3; nv_commit f-rb.txt; git -C "$r" checkout -q main
+  printf 'm\n' >"$r/m.txt"; git -C "$r" add m.txt; git -C "$r" commit -q -m m
+  git -C "$r" checkout -q side3; git -C "$r" rebase -q main >/dev/null 2>&1
+  push_blocked "a rebased --no-verify branch" side3
+  s1_reset
+  git -C "$r" checkout -q -b side4; nv_commit f-am.txt; git -C "$r" format-patch -q -1 -o "$T/pp-patch" >/dev/null; git -C "$r" checkout -q main
+  git -C "$r" am -q "$T/pp-patch"/*.patch >/dev/null 2>&1
+  expect "(git am landed without pre-commit)" bash -c "git -C '$r' log --format=%s -1 | grep -q f-am.txt"
+  push_blocked "git am" main
+  rm -rf "$T/pp-patch"; s1_reset
+  git -C "$r" checkout -q -b side5; printf 'x\n' >"$r/x5.txt"; git -C "$r" add x5.txt; git -C "$r" commit -q -m x5
+  git -C "$r" checkout -q main; printf 'm\n' >"$r/m5.txt"; git -C "$r" add m5.txt; git -C "$r" commit -q -m m5
+  git -C "$r" merge -q --no-ff --no-commit side5 >/dev/null 2>&1
+  t=$(tok_new); printf 'token = "%s"\n' "$t" >"$r/evil.txt"; git -C "$r" add evil.txt; git -C "$r" commit -q --no-verify -m "evil merge"
+  push_blocked "a merge commit that adds a secret of its own (checked against every parent)" main
+  s1_reset
+  # an uncommitted broad allowlist does not silence the scan (the committed config is used)
+  git -C "$r" checkout -q -b side6; nv_commit f-al.txt
+  printf '\n[[allowlists]]\nregexTarget = "secret"\nregexes = [ %s ]\n' "'''^ghp_.*'''" >>"$r/.gitleaks.toml"
+  push_blocked "a secret while the working-tree .gitleaks.toml allowlists it (only the committed one counts)" side6
+  git -C "$r" checkout -q -- .gitleaks.toml
+  # fail closed, then the documented bypass
+  mkdir -p "$T/nogl2"; for c in git bash env readlink dirname mktemp rm cat head sed; do ln -sf "$(command -v $c)" "$T/nogl2/$c"; done
+  out=$(PATH="$T/nogl2" git -C "$r" push origin side6 2>&1); rc=$?
+  ((rc != 0)) && [[ $out == *"gitleaks is not installed"* ]] && pass "pre-push: missing gitleaks blocks the push (fail closed)" || fail "pre-push fail closed (rc=$rc): $out"
+  out=$(git -C "$r" push --no-verify origin side6 2>&1); rc=$?
+  ((rc == 0)) && pass "pre-push: --no-verify is the documented bypass" || fail "pre-push --no-verify: $out"
+  expect "pre-push: deleting a remote branch sends no commits and passes" git -C "$r" push -q origin --delete side6
+  s1_reset
+  git -C "$r" checkout -q -b clean1; printf 'ok\n' >"$r/ok.txt"; git -C "$r" add ok.txt; git -C "$r" commit -q -m ok
+  expect "pre-push: a clean new branch passes" git -C "$r" push -q origin clean1
+  printf 'ok2\n' >"$r/ok2.txt"; git -C "$r" add ok2.txt; git -C "$r" commit -q -m ok2
+  expect "pre-push: a clean fast-forward passes" git -C "$r" push -q origin clean1
+  s1_reset
 }
 
 # ── 2 atuin ──────────────────────────────────────────────────────────────────────────────────────────────────

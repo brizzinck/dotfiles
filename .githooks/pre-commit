@@ -1,29 +1,16 @@
 #!/usr/bin/env bash
 # pre-commit (core.hooksPath = .githooks, set by install.sh; the .config/nvim submodule points here too): scan the STAGED
 # changes of this public repo for secrets with gitleaks (~25 ms). Runs in linked worktrees too (agents commit there).
-# The only bypass is `git commit --no-verify`: `gitleaks:allow` comments and .gitleaksignore files are not honoured, and the
-# allowlist comes from the COMMITTED .gitleaks.toml, so a false positive needs a .gitleaks.toml commit of its own first.
+# This guards against ACCIDENTS, it is not a lock: `git commit --no-verify` skips it, commits made by merge, rebase, cherry-pick or
+# am never run it, and anything that can edit files (every agent) can edit this hook. The scan that catches those is
+# .githooks/pre-push (the pushed commits) and the real backstop is GitHub push protection (owner step in MORNING.md).
+# `gitleaks:allow` comments and .gitleaksignore files are not honoured, and the allowlist comes from the COMMITTED
+# .gitleaks.toml, so a false positive needs a .gitleaks.toml commit of its own first.
 set -u
-top=$(git rev-parse --show-toplevel) || exit 1
-hookrepo=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
-if ! command -v gitleaks >/dev/null 2>&1; then
-  printf 'pre-commit: gitleaks is not installed, the secret scan cannot run.\n  sudo pacman -S gitleaks   (or, deliberately: git commit --no-verify)\n' >&2
-  exit 1
-fi
-if [ -e "$top/.gitleaksignore" ]; then
-  printf 'pre-commit: remove %s/.gitleaksignore; allowlist entries go into .gitleaks.toml (committed on its own).\n' "$top" >&2
-  exit 1
-fi
-cfg=$(mktemp) || exit 1; trap 'rm -f "$cfg"' EXIT
-# the committed config of the scanned repo, else of the repo that holds this hook (the nvim submodule has none), else the
-# working file (first commit of the file); an empty file is never passed (it would have NO rules)
-load_cfg() {
-  git -C "$top" show HEAD:.gitleaks.toml >"$cfg" 2>/dev/null && [ -s "$cfg" ] && return 0
-  git -C "$hookrepo" show HEAD:.gitleaks.toml >"$cfg" 2>/dev/null && [ -s "$cfg" ] && return 0
-  cat "$top/.gitleaks.toml" >"$cfg" 2>/dev/null && [ -s "$cfg" ] && return 0
-  cat "$hookrepo/.gitleaks.toml" >"$cfg" 2>/dev/null && [ -s "$cfg" ]
-}
-load_cfg || : >"$cfg"
+# shellcheck source=gitleaks-lib
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/gitleaks-lib" || exit 1
+gl_init pre-commit
+trap 'rm -f "$cfg"' EXIT
 args=(git --staged --no-banner --redact --ignore-gitleaks-allow --exit-code 3 -l warn -v)
 [ -s "$cfg" ] && args+=(-c "$cfg")
 [ -t 2 ] || args+=(--no-color)

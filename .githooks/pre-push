@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# pre-push (core.hooksPath = .githooks; the .config/nvim submodule points here too): scan the commits that are about to leave
+# the machine for secrets with gitleaks, whatever way they were made: `commit --no-verify`, merge (also a merge commit of its own:
+# `-m` diffs it against every parent), rebase, cherry-pick, am. Fail closed (gitleaks missing or crashing blocks the push).
+# Same rules as pre-commit: default rules + the COMMITTED .gitleaks.toml, `gitleaks:allow` and .gitleaksignore not honoured,
+# values redacted. This is a second local gate, still not a lock (`git push --no-verify`, or editing the hook); the one gate an
+# agent cannot edit is GitHub secret scanning push protection (owner step in MORNING.md).
+#   stdin (git): <local ref> <local sha> <remote ref> <remote sha>, one line per pushed ref
+set -u
+# shellcheck source=gitleaks-lib
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/gitleaks-lib" || exit 1
+gl_init pre-push
+trap 'rm -f "$cfg"' EXIT
+remote=${1:-}
+zero=0000000000000000000000000000000000000000
+args=(git --no-banner --redact --ignore-gitleaks-allow --exit-code 3 -l warn -v)
+[ -s "$cfg" ] && args+=(-c "$cfg")
+[ -t 2 ] || args+=(--no-color)
+bad=0 failed=0
+while read -r lref lsha rref rsha; do
+  [ -n "${lsha:-}" ] || continue
+  case $lsha in "$zero"*) continue ;; esac            # deleting a ref sends no commits
+  # what the remote does not have yet: remote..local; a new ref (or a remote sha we do not know) = everything not on a
+  # remote-tracking ref of this remote; no such ref at all (first push) = the whole history
+  if [ "${rsha#"$zero"}" != "$rsha" ] || ! git -C "$top" cat-file -e "${rsha}^{commit}" 2>/dev/null; then
+    if [ -n "$remote" ] && [ -n "$(git -C "$top" for-each-ref "refs/remotes/$remote/" 2>/dev/null | head -n1)" ]; then
+      range="$lsha --not --remotes=$remote"
+    else
+      range=$lsha
+    fi
+  else
+    range="$rsha..$lsha"
+  fi
+  gitleaks "${args[@]}" --log-opts="-m $range" "$top" >&2; rc=$?
+  case $rc in
+    0) ;;
+    3) bad=1 ;;
+    *) failed=$rc ;;
+  esac
+done
+if [ "$bad" = 1 ]; then
+  printf '%s\n' '' 'pre-push: gitleaks found possible secrets in the commits being pushed (values redacted above).' \
+    '  Real secret: remove it from the history (git rebase -i / git filter-repo), rotate it, push again. It is not on the remote yet.' \
+    '  False positive: add an exact entry to .gitleaks.toml, commit that file alone, then push again.' \
+    '  Deliberate bypass (never for a real secret): git push --no-verify' >&2
+  exit 1
+fi
+if [ "$failed" != 0 ]; then
+  printf 'pre-push: gitleaks failed to run (exit %s); fix the config or bypass deliberately with --no-verify\n' "$failed" >&2
+  exit 1
+fi
+exit 0

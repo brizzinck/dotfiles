@@ -1,0 +1,26 @@
+# Shared by pre-commit and pre-push (sourced, not a hook): the gitleaks checks both hooks make before scanning.
+#   gl_init HOOK    sets top (work tree), hookrepo (repo that holds the hooks), cfg (temp file with the COMMITTED .gitleaks.toml;
+#                   the caller removes it); exits 1 with a message when gitleaks is missing or a .gitleaksignore exists
+# The config comes from the committed file of the scanned repo, else of the repo that holds the hooks (the nvim submodule has
+# none), else the working file (first commit of the file); an empty file is never passed (it would have NO rules).
+gl_init() {
+  local hook=$1
+  top=$(git rev-parse --show-toplevel) || exit 1
+  hookrepo=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[1]}")")/.." && pwd)
+  if ! command -v gitleaks >/dev/null 2>&1; then
+    printf '%s: gitleaks is not installed, the secret scan cannot run.\n  sudo pacman -S gitleaks   (or, deliberately: --no-verify)\n' "$hook" >&2
+    exit 1
+  fi
+  if [ -e "$top/.gitleaksignore" ]; then
+    printf '%s: remove %s/.gitleaksignore; allowlist entries go into .gitleaks.toml (committed on its own).\n' "$hook" "$top" >&2
+    exit 1
+  fi
+  cfg=$(mktemp) || exit 1
+  gl_load_cfg || : >"$cfg"
+}
+gl_load_cfg() {
+  git -C "$top" show HEAD:.gitleaks.toml >"$cfg" 2>/dev/null && [ -s "$cfg" ] && return 0
+  git -C "$hookrepo" show HEAD:.gitleaks.toml >"$cfg" 2>/dev/null && [ -s "$cfg" ] && return 0
+  cat "$top/.gitleaks.toml" >"$cfg" 2>/dev/null && [ -s "$cfg" ] && return 0
+  cat "$hookrepo/.gitleaks.toml" >"$cfg" 2>/dev/null && [ -s "$cfg" ]
+}
