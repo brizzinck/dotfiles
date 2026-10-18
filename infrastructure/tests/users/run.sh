@@ -127,7 +127,7 @@ expect "tmux link replaced" "$T/srv/.config/tmux" "$(readlink "$T/h/td/.config/t
 expect "old gitconfig backed up" "old" "$(cat "$T"/h/td/.local/state/usr/backup-*/.gitconfig 2>/dev/null)"
 case "$(cat "$T/h/td/.zshrc.local" 2>/dev/null)" in *'PROMPT="%F{#ea9e77}td%f ${PROMPT}"'*) ok ;; *) bad "zshrc.local accent block missing" ;; esac
 case "$(cat "$T/h/td/.tmux.local.conf" 2>/dev/null)" in *'#ea9e77'*) ok ;; *) bad "tmux.local.conf accent block missing" ;; esac
-case "$(run_link)" in *"0 linked, 12 already linked"*) ok ;; *) bad "second link run is not a no-op" ;; esac
+case "$(run_link)" in *"0 linked, 13 already linked"*) ok ;; *) bad "second link run is not a no-op" ;; esac
 run_link --restore >/dev/null
 expect "restore gitconfig" "old" "$(cat "$T/h/td/.gitconfig" 2>/dev/null)"
 expect "restore tmux link" "../dotfiles/.config/tmux" "$(readlink "$T/h/td/.config/tmux")"

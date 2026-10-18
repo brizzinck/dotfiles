@@ -1147,6 +1147,81 @@ fi
 if o1_out="$("$DOTFILES/infrastructure/tests/o1/run.sh" 2>&1)"; then ok o1-tests "desktop helpers (displays, zoom, brightness, restart, lock, media, transcode): $(printf '%s' "$o1_out" | tail -1)"; else bad o1-tests "$(printf '%s' "$o1_out" | grep -m1 '^FAIL') (infrastructure/tests/o1/run.sh)"; fi
 if sc_copy_out="$("$DOTFILES/infrastructure/tests/selfcopy/run.sh" 2>&1)"; then ok selfcopy-tests "doctor/apply-system private copy: removed on Ctrl+C and SIGTERM, /tmp as root: $(printf '%s' "$sc_copy_out" | tail -1)"; else bad selfcopy-tests "$(printf '%s' "$sc_copy_out" | grep -m1 '^FAIL') (infrastructure/tests/selfcopy/run.sh)"; fi
 if edit_out="$("$DOTFILES/infrastructure/tests/edit/run.sh" 2>&1)"; then ok edit-tests "edit anywhere (SUPER+CTRL+E): $(printf '%s' "$edit_out" | tail -1)"; else bad edit-tests "$(printf '%s' "$edit_out" | grep -m1 '^FAIL') (infrastructure/tests/edit/run.sh)"; fi
+# DEV-a: gitleaks pre-commit hook, atuin (local history), carapace gap filler, difftastic, long-command toast
+da_hp="$(git -C "$DOTFILES" config --get core.hooksPath 2>/dev/null)"
+da_bad=""
+[ "$da_hp" = ".githooks" ] || da_bad="$da_bad core.hooksPath is '$da_hp' (install.sh sets .githooks);"
+[ -x "$DOTFILES/.githooks/pre-commit" ] || da_bad="$da_bad .githooks/pre-commit is missing or not executable;"
+[ ! -e "$DOTFILES/.gitleaksignore" ] || da_bad="$da_bad a .gitleaksignore exists (the hook refuses it, allowlist entries go into .gitleaks.toml);"
+grep -q '^useDefault = true' "$DOTFILES/.gitleaks.toml" 2>/dev/null || da_bad="$da_bad .gitleaks.toml does not extend the default rules;"
+command -v gitleaks >/dev/null 2>&1 || da_bad="$da_bad gitleaks is not installed (sudo ./apply-system.sh --only install): every commit is blocked;"
+if [ -z "$da_bad" ]; then
+  ok gitleaks-hook "pre-commit scans the staged changes (core.hooksPath=.githooks, committed .gitleaks.toml with the default rules, no .gitleaksignore)"
+else
+  bad gitleaks-hook "$da_bad"
+fi
+if [ -e "$DOTFILES/.config/nvim/.git" ]; then
+  da_nv="$(git -C "$DOTFILES/.config/nvim" config --get core.hooksPath 2>/dev/null)"
+  [ "$da_nv" = "$DOTFILES/.githooks" ] || info gitleaks-nvim "the nvim submodule does not use the pre-commit hook yet: git -C ~/dotfiles/.config/nvim config core.hooksPath ~/dotfiles/.githooks (install.sh does it)"
+fi
+if command -v gitleaks >/dev/null 2>&1; then
+  da_out="$(cd "$DOTFILES" && gitleaks git --no-banner --redact -l error --exit-code 3 -c .gitleaks.toml . 2>&1)"; da_rc=$?
+  case $da_rc in
+    0) ok gitleaks-history "no secrets in any commit of the history (default rules + .gitleaks.toml allowlist; staged-free scan of tracked history only)" ;;
+    3) bad gitleaks-history "gitleaks finds possible secrets in the history (values redacted): cd ~/dotfiles && gitleaks git --redact -v -c .gitleaks.toml ." ;;
+    *) bad gitleaks-history "gitleaks failed to run (exit $da_rc): $(printf '%s' "$da_out" | tail -1)" ;;
+  esac
+else
+  info gitleaks-history "gitleaks is not installed (sudo ./apply-system.sh --only install)"
+fi
+if command -v atuin >/dev/null 2>&1; then
+  da_bad=""
+  for da_kv in auto_sync=false update_check=false ai.enabled=false daemon.enabled=false logs.enabled=false; do
+    [ "$(ATUIN_SESSION=doctor atuin config get -r "${da_kv%%=*}" 2>/dev/null)" = "${da_kv#*=}" ] || da_bad="$da_bad ${da_kv%%=*} is not ${da_kv#*=};"
+  done
+  case "$(ATUIN_SESSION=doctor atuin config get -r sync_address 2>/dev/null)" in http://127.0.0.1*) ;; *) da_bad="$da_bad sync_address is not the unroutable local address;" ;; esac
+  [ ! -e "$HOME/.atuin" ] || da_bad="$da_bad ~/.atuin exists (logs.enabled must stay false);"
+  pgrep -u "$(id -u)" -f 'atuin daemon' >/dev/null 2>&1 && da_bad="$da_bad an atuin daemon is running (it must stay off);"
+  if [ -n "$da_bad" ]; then
+    bad atuin "$da_bad (.config/atuin/config.toml)"
+  elif [ -e "${XDG_DATA_HOME:-$HOME/.local/share}/atuin/history.db" ]; then
+    ok atuin "local only (no sync, AI, daemon, logs), history database present; Ctrl+R lists it"
+  else
+    info atuin "installed, local only; the database appears (with the zsh history imported) when you open the next terminal"
+  fi
+else
+  info atuin "not installed: sudo ./apply-system.sh --only install (Ctrl+R keeps the zsh history list meanwhile)"
+fi
+if [ -r "$DOTFILES/.config/zsh/completion.zsh" ] && grep -q 'compdef _df_carapace_default -default-' "$DOTFILES/.config/zsh/completion.zsh" && grep -q 'completion' "$DOTFILES/.zshrc"; then
+  if command -v carapace >/dev/null 2>&1; then
+    da_cc="${XDG_CACHE_HOME:-$HOME/.cache}/zsh/carapace.zsh"
+    if [ ! -e "$da_cc" ]; then info carapace "installed; the completion cache is built on the first Tab of a command without a zsh completion (lazygit, glab, k9s, ...)"
+    elif [ "$(command -v carapace)" -nt "$da_cc" ]; then info carapace "completion cache is older than the carapace binary; it is rebuilt on the next use"
+    elif zsh -n "$da_cc" 2>/dev/null; then ok carapace "gap filler for commands without a zsh completion (-default-), cache is current and valid zsh"
+    else bad carapace "$da_cc is not valid zsh (delete it, it is rebuilt)"; fi
+  else
+    info carapace "not installed (AUR carapace-bin: sudo ./apply-system.sh --only install); the completion menu works without it"
+  fi
+else
+  bad carapace "completion.zsh or its .zshrc hook is missing (-default- gap filler)"
+fi
+da_bad=""
+[ "$(git -C "$DOTFILES" config --get difftool.difftastic.cmd 2>/dev/null)" = 'difft "$LOCAL" "$REMOTE"' ] || da_bad="$da_bad .gitconfig difftool.difftastic.cmd;"
+git -C "$DOTFILES" config -f "$DOTFILES/.gitconfig" --get alias.dlog >/dev/null 2>&1 || da_bad="$da_bad .gitconfig alias dlog;"
+grep -q 'name: difftastic' "$DOTFILES/.config/lazygit/config.yml" 2>/dev/null || da_bad="$da_bad the lazygit difftastic renderer;"
+if [ -n "$da_bad" ]; then bad difftastic "missing:$da_bad"
+elif command -v difft >/dev/null 2>&1; then ok difftastic "git dft / dlog / dshow and the lazygit renderer are configured, difft installed ($(difft --version 2>/dev/null | head -1))"
+else info difftastic "configured, but difft is not installed (sudo ./apply-system.sh --only install); lazygit shows an error only when you cycle to it"; fi
+da_bad=""
+[ -x "$DOTFILES/.config/hypr/scripts/cmd-notify.sh" ] || da_bad="$da_bad cmd-notify.sh is not executable;"
+[ -r "$DOTFILES/.config/zsh/cmd-hooks.zsh" ] && grep -q 'add-zsh-hook precmd _df_cmd_precmd' "$DOTFILES/.config/zsh/cmd-hooks.zsh" || da_bad="$da_bad cmd-hooks.zsh has no precmd hook;"
+grep -q 'cmd-hooks history completion' "$DOTFILES/.zshrc" 2>/dev/null || da_bad="$da_bad .zshrc does not source the hook files;"
+[ "$(readlink -f "$HOME/.config/zsh/cmd-hooks.zsh" 2>/dev/null)" = "$(readlink -f "$DOTFILES/.config/zsh/cmd-hooks.zsh")" ] || da_bad="$da_bad cmd-hooks.zsh is not linked into ~/.config/zsh (cd ~/dotfiles && stow .);"
+command -v jq >/dev/null 2>&1 || da_bad="$da_bad jq is missing;"
+if [ -n "$da_bad" ]; then bad cmd-notify "$da_bad"
+elif [ -e "${XDG_STATE_HOME:-$HOME/.local/state}/cmd-notify/off" ]; then info cmd-notify "installed, switched off (hub row Long-command notifications)"
+else ok cmd-notify "long-command toast installed (>= 30 s, terminal not in front; hub toggle, state file read live)"; fi
+if da_t="$("$DOTFILES/infrastructure/tests/dev-a/run.sh" --quick 2>&1)"; then ok dev-a-tests "gitleaks hook, atuin, carapace, cmd-notify, hook overhead: $(printf '%s' "$da_t" | tail -1)"; else bad dev-a-tests "$(printf '%s' "$da_t" | grep -m1 '^FAIL') (infrastructure/tests/dev-a/run.sh)"; fi
 if [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && command -v hyprctl >/dev/null 2>&1; then
   o1_rate="$(hyprctl getoption input:repeat_rate -j 2>/dev/null | jq -r '.int // empty')"
   o1_delay="$(hyprctl getoption input:repeat_delay -j 2>/dev/null | jq -r '.int // empty')"
