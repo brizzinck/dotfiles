@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2016,SC2015,SC1007,SC2174,SC2034
+# shellcheck disable=SC2016,SC2015,SC1007,SC2174,SC2034,SC2181,SC2010
 # Offline tests of the AUDIO2 microphone chain: ee-ctl (socket trust, prepare, load, ns, auto, status), the audio-ensure EasyEffects
 # checks and boot/fix modes, the raw/chain mic probes, the input picker, and the static files (preset, WirePlumber priority rules,
 # unit). Fakes only: a fake EasyEffects control server (fake-ee.py), fake pactl / pw-dump / pw-metadata / wpctl / pw-record /
@@ -79,7 +79,7 @@ cat >"$T/bin/systemctl" <<'X'
 echo "systemctl $*" >>"$FAKE/log"
 shift   # --user
 case "$1" in
-  is-active) s=$(cat "$FAKE/unit-state" 2>/dev/null || echo inactive); echo "$s"; [ "$s" = active ]; exit ;;
+  is-active) s=$(cat "$FAKE/unit-state" 2>/dev/null || echo inactive); [ "$2" = --quiet ] || echo "$s"; [ "$s" = active ]; exit ;;
   start|restart) [ -e "$FAKE/unit-start-fails" ] && exit 1; echo active >"$FAKE/unit-state"
     [ -x "$FAKE/on-unit-start" ] && "$FAKE/on-unit-start"; exit 0 ;;
   stop) echo inactive >"$FAKE/unit-state" ;;
@@ -256,6 +256,165 @@ X
   reset_log
   out=$("$EE" auto); rc=$?
   [ $rc -eq 0 ] && ! grep -q '^pw-metadata' "$F/log" && pass "5 auto: no pin, nothing run ($out)" || fail "5 auto without pin"
+fi
+
+# ── audio-ensure fixtures ──
+cat >"$T/bin/pw-record" <<'X'
+#!/bin/sh
+# fake pw-record: logs argv, writes a 16 kHz mono s16 wav (mode in $FAKE/rec-mode: live | constant | zeros) to the last argument
+echo "pw-record $*" >>"$FAKE/log"
+for a; do out=$a; done
+python3 -I - "$out" "$(cat "$FAKE/rec-mode" 2>/dev/null || echo live)" <<'PY'
+import array, math, sys
+mode = sys.argv[2]
+n = 24000
+if mode == "live":
+    s = [int(3000 * math.sin(i * 0.05) + (i * 7919 % 400)) for i in range(n)]
+elif mode == "constant":
+    s = [-30000 + (i % 3) for i in range(n)]
+else:
+    s = [0] * n
+a = array.array("h", s)
+open(sys.argv[1], "wb").write(b"RIFF" + b"\0" * 40 + a.tobytes())
+PY
+X
+chmod +x "$T/bin/pw-record"
+export AE_EE_BIN=/bin/sh AE_EE_UNIT="$T/home/easyeffects.service" EE_CTL="$EE" AE_FAST=1 AE_WAIT_N=3 XDG_STATE_HOME="$T/state"
+: >"$AE_EE_UNIT"
+mkdir -p "$T/state/wireplumber"
+HWSRC=alsa_input.pci-0000_04_00.6.analog-stereo
+ae_fixture() { # healthy world: cards on their profile, hw sink+source, default = hw, good rc, no pin, no links, unit active
+  echo '[{"name":"alsa_card.pci-0000_04_00.6","active_profile":"HiFi","profiles":{"HiFi":{"available":true}}}]' >"$F/cards.json"
+  echo '[{"name":"alsa_output.pci-0000_04_00.6.analog-stereo"},{"name":"easyeffects_sink"}]' >"$F/sinks.json"
+  printf '[{"name":"%s"},{"name":"easyeffects_source"},{"name":"alsa_output.x.monitor"}]\n' "$HWSRC" >"$F/sources.json"
+  echo "$HWSRC" >"$F/default-source"
+  echo '[{"id":30,"type":"PipeWire:Interface:Metadata","props":{"metadata.name":"default"},"metadata":[{"subject":0,"key":"default.audio.source","type":"Spa:String:JSON","value":{"name":"'"$HWSRC"'"}}]}]' >"$F/pw-dump.json"
+  echo active >"$F/unit-state"
+  rm -f "$F/unit-start-fails" "$F/rec-mode" "$T/state/wireplumber/stream-properties"
+  mkdir -p "$EE_CONFIG_DIR/db"
+  cat >"$EE_CONFIG_DIR/db/easyeffectsrc" <<'X2'
+[EffectsPipelines]
+processAllInputs=true
+
+[StreamInputs]
+useDefaultInputDevice=true
+listenToMic=false
+plugins=rnnoise#0
+X2
+  reset_log
+}
+ae() { "$AE" "$@"; }
+
+# ── 6. audio-ensure --ee ──
+if want 6; then
+  ae_fixture; ee_stop; ee_start --preset mic-clean; ee_wait
+  out=$(ae --ee); rc=$?
+  [ $rc -eq 0 ] && [ -z "$out" ] && pass "6 --ee: healthy chain = exit 0, no lines" || fail "6 --ee healthy (rc $rc: $out)"
+  ae --check >/dev/null; [ $? -eq 0 ] && pass "6 --check: healthy = exit 0" || fail "6 --check healthy"
+  echo easyeffects_source >"$F/default-source"
+  out=$(ae --ee); rc=$?
+  [ $rc -eq 1 ] && grep -q 'default source is easyeffects_source' <<<"$out" && pass "6 --ee: default = easyeffects_source with a microphone present (A)" || fail "6 --ee A (rc $rc: $out)"
+  ae --check | grep -q 'default source is easyeffects_source' && pass "6 --check carries the A line" || fail "6 --check A line"
+  echo "$HWSRC" >"$F/default-source"
+  echo inactive >"$F/unit-state"
+  out=$(ae --ee); rc=$?
+  [ $rc -eq 1 ] && grep -q 'unit is not active' <<<"$out" && pass "6 --ee: unit inactive (C)" || fail "6 --ee unit (rc $rc: $out)"
+  echo active >"$F/unit-state"
+  ee_stop; ee_start --preset other-preset; ee_wait
+  out=$(ae --ee); rc=$?
+  [ $rc -eq 1 ] && grep -q 'preset is "other-preset"' <<<"$out" && pass "6 --ee: wrong preset (C)" || fail "6 --ee preset (rc $rc: $out)"
+  ee_stop; ee_start --preset mic-clean --global 1; ee_wait
+  out=$(ae --ee); rc=$?
+  [ $rc -eq 1 ] && grep -q 'global bypass is on' <<<"$out" && pass "6 --ee: global bypass on (C)" || fail "6 --ee global (rc $rc: $out)"
+  ee_stop; ee_start --preset mic-clean --bypass true; ee_wait
+  out=$(ae --ee); rc=$?
+  [ $rc -eq 0 ] && grep -q '^note: noise suppression is switched off' <<<"$out" && pass "6 --ee: rnnoise bypass = owner's toggle, info only" || fail "6 --ee bypass (rc $rc: $out)"
+  ee_stop; ee_start --preset mic-clean; ee_wait
+  sed -i 's/processAllInputs=true/processAllInputs=false/' "$EE_CONFIG_DIR/db/easyeffectsrc"
+  out=$(ae --ee); rc=$?
+  [ $rc -eq 1 ] && grep -q 'processAllInputs is "false"' <<<"$out" && pass "6 --ee: processAllInputs=false (C)" || fail "6 --ee processAll (rc $rc: $out)"
+  sed -i 's/processAllInputs=false/processAllInputs=true/; s/^plugins=.*/plugins=rnnoise#0,pitch#0/' "$EE_CONFIG_DIR/db/easyeffectsrc"
+  out=$(ae --ee); rc=$?
+  [ $rc -eq 1 ] && grep -q 'old pitch/autotune/autogain chain' <<<"$out" && pass "6 --ee: old pitch plugin in the rc (C)" || fail "6 --ee pitch (rc $rc: $out)"
+  sed -i 's/^plugins=.*/plugins=rnnoise#0/; s/^listenToMic=.*/listenToMic=true/' "$EE_CONFIG_DIR/db/easyeffectsrc"
+  out=$(ae --ee); rc=$?
+  [ $rc -eq 1 ] && grep -q 'listenToMic is true' <<<"$out" && pass "6 --ee: listenToMic (C)" || fail "6 --ee listenToMic (rc $rc: $out)"
+  sed -i 's/^listenToMic=.*/listenToMic=false/' "$EE_CONFIG_DIR/db/easyeffectsrc"
+  cat >"$F/pw-dump.json" <<X2
+[{"id":30,"type":"PipeWire:Interface:Metadata","props":{"metadata.name":"default"},"metadata":[
+  {"subject":0,"key":"default.configured.audio.source","type":"Spa:String:JSON","value":{"name":"alsa_input.usb-fifine"}}]}]
+X2
+  out=$(ae --ee); rc=$?
+  [ $rc -eq 0 ] && grep -q '^note: microphone is pinned by a manual choice (alsa_input.usb-fifine)' <<<"$out" && pass "6 --ee: a source pin is info only (exit 0)" || fail "6 --ee pin (rc $rc: $out)"
+  ae_fixture
+  printf '[stream-properties]\nInput/Audio:application.name:Foo={"target":"alsa_input.usb-x"}\nOutput/Audio:application.name:Bar={"target":"easyeffects_sink"}\n' >"$T/state/wireplumber/stream-properties"
+  out=$(ae --ee); rc=$?
+  [ $rc -eq 0 ] && grep -q '^note: WirePlumber stream-properties stores a capture target' <<<"$out" && pass "6 --ee: stored capture target = info (G5)" || fail "6 --ee G5 (rc $rc: $out)"
+  AE_EE_BIN=/nonexistent ae --ee >/dev/null; [ $? -eq 3 ] && pass "6 --ee: EasyEffects not installed = exit 3" || fail "6 --ee n/a"
+  AE_EE_UNIT=/nonexistent ae --ee >/dev/null; [ $? -eq 3 ] && pass "6 --ee: unit file missing = exit 3" || fail "6 --ee n/a unit"
+  grep -q '^notify' "$F/log" && fail "6 check modes never notify" || pass "6 check modes never notify"
+  ee_stop
+fi
+
+# ── 7. audio-ensure --boot / fix ──
+if want 7; then
+  PIN='[{"id":30,"type":"PipeWire:Interface:Metadata","props":{"metadata.name":"default"},"metadata":[{"subject":0,"key":"default.configured.audio.source","type":"Spa:String:JSON","value":{"name":"alsa_input.usb-fifine"}}]}]'
+  ae_fixture; echo inactive >"$F/unit-state"; echo "$PIN" >"$F/pw-dump.json"; ee_stop; ee_start --preset mic-clean; ee_wait
+  ae --boot 2>"$F/err"; rc=$?
+  [ $rc -eq 0 ] && logged "pw-metadata -n default -d 0 default.configured.audio.source" "$F/log" && pass "7 --boot clears the source pin" || fail "7 --boot pin (rc $rc)"
+  logged "systemctl --user start easyeffects" "$F/log" && pass "7 --boot starts the unit" || fail "7 --boot start"
+  [ "$(grep -c 'mic chain ok' "$F/err")" -eq 1 ] && grep -q "mic chain ok: $HWSRC -> easyeffects (RNNoise) -> apps" "$F/err" && pass "7 --boot healthy: one 'mic chain ok' line" || fail "7 --boot healthy line ($(cat "$F/err"))"
+  grep -q '^notify' "$F/log" && fail "7 --boot healthy never notifies" || pass "7 --boot healthy never notifies"
+  # broken: the preset never takes -> one restart, exactly one notification
+  ae_fixture; echo inactive >"$F/unit-state"; ee_stop; ee_start --sticky-preset other-preset; ee_wait
+  ae --boot 2>"$F/err"; rc=$?
+  [ $rc -eq 1 ] && [ "$(grep -c 'systemctl --user restart easyeffects' "$F/log")" -eq 1 ] && pass "7 --boot broken: the unit is restarted exactly once" || fail "7 --boot restart count (rc $rc)"
+  [ "$(grep -c '^notify' "$F/log")" -eq 1 ] && grep -q 'noise suppression is not running' "$F/log" && pass "7 --boot broken: exactly one notification" || fail "7 --boot notification ($(grep -c '^notify' "$F/log"))"
+  # fix mode: pin kept, no notification, unit started
+  ae_fixture; echo inactive >"$F/unit-state"; echo "$PIN" >"$F/pw-dump.json"; ee_stop; ee_start --sticky-preset other-preset; ee_wait
+  ae 2>"$F/err"; rc=$?
+  grep -q 'pw-metadata' "$F/log" && fail "7 fix mode never clears the pin" || pass "7 fix mode never clears the pin"
+  logged "systemctl --user start easyeffects" "$F/log" && pass "7 fix mode starts a stopped unit" || fail "7 fix start"
+  grep -q '^notify' "$F/log" && fail "7 fix mode never notifies" || pass "7 fix mode never notifies"
+  # card heal still works: a card on off with an available saved profile restarts wireplumber once
+  ae_fixture; ee_stop; ee_start --preset mic-clean; ee_wait
+  echo '[{"name":"alsa_card.pci-0000_04_00.6","active_profile":"off","profiles":{"HiFi":{"available":true}}}]' >"$F/cards.json"
+  printf '[default-profile]\nalsa_card.pci-0000_04_00.6=HiFi\n' >"$T/state/wireplumber/default-profile"
+  ae --check | grep -q 'is on profile off' && pass "7 --check still reports a card stuck on off" || fail "7 --check card"
+  ae 2>"$F/err"; grep -q 'restarting wireplumber' "$F/err" && logged "systemctl --user restart wireplumber.service" "$F/log" && pass "7 fix mode still restarts wireplumber for a stuck card" || fail "7 card heal"
+  rm -f "$T/state/wireplumber/default-profile"
+  ee_stop
+fi
+
+# ── 8. mic probes ──
+if want 8; then
+  ae_fixture; ee_stop
+  ae --mic >"$F/out"; rc=$?
+  [ $rc -eq 0 ] && grep -q '^live signal' "$F/out" && pass "8 --mic: live signal = exit 0" || fail "8 --mic live (rc $rc)"
+  grep -q "pw-record -P { node.dont-move = true } --target $HWSRC" "$F/log" && pass "8 --mic: the raw probe carries node.dont-move and the default source" || fail "8 --mic argv ($(cat "$F/log"))"
+  echo constant >"$F/rec-mode"; ae --mic >/dev/null; [ $? -eq 1 ] && pass "8 --mic: constant rail = exit 1" || fail "8 --mic constant"
+  echo zeros >"$F/rec-mode"; ae --mic >/dev/null; [ $? -eq 2 ] && pass "8 --mic: digital silence = exit 2" || fail "8 --mic zeros"
+  rm -f "$F/rec-mode"
+  CHAINOK='{"id":1,"type":"PipeWire:Interface:Node","info":{"props":{"node.name":"'"$HWSRC"'"}}},
+ {"id":2,"type":"PipeWire:Interface:Node","info":{"props":{"node.name":"ee_sie_rnnoise#0"}}},
+ {"id":3,"type":"PipeWire:Interface:Node","info":{"props":{"node.name":"easyeffects_source"}}},
+ {"id":4,"type":"PipeWire:Interface:Node","info":{"props":{"node.name":"pw-record"}}},
+ {"id":10,"type":"PipeWire:Interface:Link","info":{"output-node-id":1,"input-node-id":2}},
+ {"id":11,"type":"PipeWire:Interface:Link","info":{"output-node-id":3,"input-node-id":4}}'
+  echo "[$CHAINOK]" >"$F/pw-dump.json"
+  reset_log
+  out=$(ae --mic --chain); rc=$?
+  [ $rc -eq 0 ] && grep -q "^live signal .* via $HWSRC\$" <<<"$out" && pass "8 --mic --chain: live signal via the default microphone, exit 0" || fail "8 --mic --chain (rc $rc: $out)"
+  grep -q 'pw-record --target easyeffects_source' "$F/log" && ! grep -q 'dont-move' "$F/log" && pass "8 --mic --chain records easyeffects_source (no dont-move)" || fail "8 --mic --chain argv"
+  echo "[${CHAINOK//\"output-node-id\":1,/\"output-node-id\":5,}, {\"id\":5,\"type\":\"PipeWire:Interface:Node\",\"info\":{\"props\":{\"node.name\":\"alsa_input.usb-other\"}}}]" >"$F/pw-dump.json"
+  out=$(ae --mic --chain); rc=$?
+  [ $rc -eq 4 ] && grep -q 'EasyEffects reads alsa_input.usb-other, default is' <<<"$out" && pass "8 --mic --chain: EE linked to a non-default node = exit 4" || fail "8 --mic --chain non-default (rc $rc: $out)"
+  echo '[]' >"$F/pw-dump.json"
+  ae --mic --chain >/dev/null; [ $? -eq 4 ] && pass "8 --mic --chain: nothing linked = exit 4" || fail "8 --mic --chain unlinked"
+  printf '[{"name":"%s"}]\n' "$HWSRC" >"$F/sources.json"
+  ae --mic --chain >/dev/null; [ $? -eq 3 ] && pass "8 --mic --chain: no easyeffects_source = exit 3" || fail "8 --mic --chain n/a"
+  ae --chain >/dev/null 2>&1; [ $? -eq 2 ] && pass "8 --chain without --mic is a usage error" || fail "8 --chain usage"
+  ls "$T/run" | grep -q audio-mic && fail "8 probes leave no temp audio" || pass "8 probes leave no temp audio"
 fi
 
 # ── 11. static files ──

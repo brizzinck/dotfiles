@@ -6,7 +6,14 @@
 #   audio-ensure --mic        read-only: record ~1.5 s from the default source, print only level statistics (never keep or play
 #                             audio) and tell a live microphone from a dead one: exit 0 live, 1 constant non-zero signal (dead
 #                             or railed input), 2 digital silence (cannot tell), 3 no microphone / no PipeWire (doctor audio-mic)
-#   audio-ensure --boot       what the Hyprland autostart runs: wait for PipeWire and the cards (up to ~10 s), then as above
+#   audio-ensure --mic --chain  read-only: the same statistics from easyeffects_source while pw-dump proves the links
+#                             <default microphone> -> EasyEffects (ee_sie_*) -> easyeffects_source -> recorder; adds exit 4 = chain
+#                             not linked to the default microphone (doctor audio-ee-signal)
+#   audio-ensure --ee [--verbose]  read-only EasyEffects chain check: one line per problem, exit 0 ok, 1 broken, 3 not applicable
+#                             (EasyEffects or its unit not installed, no hardware microphone); --verbose adds `ee-ctl status`
+#   audio-ensure --boot       what the Hyprland autostart runs: wait for PipeWire and the cards (up to ~10 s), then as above, then
+#                             forget the manual microphone choice, start the EasyEffects unit and check the chain (one restart,
+#                             one notification only when it still fails)
 #
 # Why: the user manager of a lingering account (loginctl enable-linger) starts pipewire + wireplumber at boot, long before
 # greetd hands seat0 to the owner, so /dev/snd has no uaccess ACL for the owner yet and the ALSA probe fails ("Failed to
@@ -19,6 +26,13 @@
 # Mic on the LENOVO 83HY: alsa-ucm-conf names the (unconnected) ACP PDM capture "Mic1" and hides the Conexant codec's real internal
 # digital mic, so the default source was a constant rail; ~/.config/wireplumber/wireplumber.conf.d/51-hda-no-ucm.conf turns UCM
 # off for that card (see the header there) and --mic proves a source delivers a varying signal.
+#
+# Mic chain (AUDIO2, CLAUDE.md "Audio"): the default source stays the best REAL microphone (WirePlumber priorities in
+# 52-mic-priority.conf), EasyEffects (unit easyeffects.service, managed by ee-ctl) follows it and moves every recording app into
+# easyeffects_source (RNNoise); if EasyEffects is gone the apps fall back to the raw default microphone by themselves. This script
+# starts the unit after the cards are healed (the unit is not WantedBy=default.target: linger would start it before the seat ACL)
+# and checks the chain. Problem classes: A = a WirePlumber restart helps, C = EasyEffects chain broken (restart the unit),
+# B = default source is a monitor, I = info only (manual microphone choice, noise suppression switched off, stream with a target).
 set -u
 
 MODE=fix
@@ -26,16 +40,83 @@ case "${1:-}" in
   "") ;;
   --check) MODE=check ;;
   --mic) MODE=mic ;;
+  --ee) MODE=ee ;;
   --boot) MODE=boot ;;
-  -h | --help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-  *) echo "usage: audio-ensure [--check|--mic|--boot]" >&2; exit 2 ;;
+  -h | --help) awk 'NR > 1 { if ($0 == "#") exit; sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
+  *) echo "usage: audio-ensure [--check|--mic [--chain]|--ee [--verbose]|--boot]" >&2; exit 2 ;;
 esac
+CHAIN=0 VERBOSE=0
+[ $# -gt 0 ] && shift
+for a in "$@"; do
+  case "$a" in
+    --chain) [ "$MODE" = mic ] && CHAIN=1 || { echo "audio-ensure: --chain only with --mic" >&2; exit 2; } ;;
+    --verbose) [ "$MODE" = ee ] && VERBOSE=1 || { echo "audio-ensure: --verbose only with --ee" >&2; exit 2; } ;;
+    *) echo "usage: audio-ensure [--check|--mic [--chain]|--ee [--verbose]|--boot]" >&2; exit 2 ;;
+  esac
+done
 
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/wireplumber/default-profile"
+WPSTATE="${XDG_STATE_HOME:-$HOME/.local/state}/wireplumber"
+EE_BIN="${AE_EE_BIN:-/usr/bin/easyeffects}"
+EE_UNIT="${AE_EE_UNIT:-$HOME/.config/systemd/user/easyeffects.service}"
+EE_CTL="${EE_CTL:-$(dirname "$0")/ee-ctl}"
 log() { logger -t audio-ensure -- "$*" 2>/dev/null; printf '%s\n' "$*" >&2; }
+nap() { [ -n "${AE_FAST:-}" ] || sleep "$@"; } # AE_FAST: tests skip the waits
+
+# hardware sources: everything that is neither a monitor nor an easyeffects node
+hw_sources() { jq -r 'map(select((.name | endswith(".monitor") | not) and (.name | startswith("easyeffects") | not))) | .[].name' 2>/dev/null; }
+
+ee_applicable() { [ -x "$EE_BIN" ] && [ -e "$EE_UNIT" ]; }
+
+# ee_problems: A (default source is easyeffects_source although a microphone exists), C (EasyEffects chain broken), I (info).
+# Prints "A|C|I<TAB>text". One `ee-ctl status --json` gives unit, socket, preset, rc keys, pin and links.
+ee_problems() {
+  local st defsrc sources hw unit preset rcv v pin links
+  sources="$(pactl --format=json list sources 2>/dev/null)"
+  hw="$(hw_sources <<<"$sources" | head -1)"
+  defsrc="$(pactl get-default-source 2>/dev/null)"
+  if [ -n "$hw" ] && [ "$defsrc" = easyeffects_source ]; then
+    printf 'A\tdefault source is easyeffects_source although the microphone %s exists (priority rule missing or WirePlumber not restarted)\n' "$hw"
+  fi
+  st="$("$EE_CTL" status --json 2>/dev/null)" || st=""
+  [ -n "$st" ] || { printf 'C\tee-ctl status failed\n'; return; }
+  unit="$(jq -r '.unit' <<<"$st")"
+  [ "$unit" = active ] || printf 'C\tEasyEffects unit is not active (%s)\n' "$unit"
+  if [ "$(jq -r '.socket // empty' <<<"$st")" = "" ]; then
+    printf 'C\tEasyEffects control socket not found\n'
+  else
+    preset="$(jq -r '.preset // empty' <<<"$st")"
+    [ "$preset" = mic-clean ] || printf 'C\tEasyEffects preset is "%s", not mic-clean\n' "$preset"
+    case "$(jq -r '.global_bypass // empty' <<<"$st")" in
+      1) printf 'C\tEasyEffects global bypass is on (every pipeline passes audio through)\n' ;;
+      "") printf 'C\tEasyEffects does not answer on its control socket\n' ;;
+    esac
+    case "$(jq -r '.rnnoise_bypass // empty' <<<"$st")" in
+      true) printf 'I\tnoise suppression is switched off (rnnoise bypass, until the next login)\n' ;;
+    esac
+  fi
+  v="$(jq -r '.rc.processAllInputs // empty' <<<"$st")"; [ "$v" = true ] || printf 'C\trc processAllInputs is "%s", apps would not be moved into easyeffects_source\n' "$v"
+  v="$(jq -r '.rc.useDefaultInputDevice // empty' <<<"$st")"; [ "$v" = true ] || printf 'C\trc useDefaultInputDevice is "%s", EasyEffects would not follow the default microphone\n' "$v"
+  v="$(jq -r '.rc.listenToMic // empty' <<<"$st")"; [ "$v" != true ] || printf 'C\trc listenToMic is true (microphone feedback loop)\n'
+  rcv="$(jq -r '.rc.plugins // empty' <<<"$st")"
+  case "$rcv" in
+    *pitch* | *autotune* | *autogain*) printf 'C\trc plugin list "%s" holds the old pitch/autotune/autogain chain\n' "$rcv" ;;
+  esac
+  pin="$(jq -r '.source_pin // empty' <<<"$st")"
+  [ -z "$pin" ] || printf 'I\tmicrophone is pinned by a manual choice (%s); Automatic in the input picker or ee-ctl auto undoes it\n' "$pin"
+  links="$(jq -r '.input_links | join(" ")' <<<"$st")"
+  if [ -n "$links" ] && [ -n "$defsrc" ] && [ "$defsrc" != easyeffects_source ]; then
+    case " $links " in *" $defsrc "*) ;; *) printf 'I\tEasyEffects reads from %s, not from the default source %s\n' "$links" "$defsrc" ;; esac
+  fi
+  # a stored per-application capture target would take that app out of EasyEffects silently
+  if grep -E '^Input/Audio:.*"target":"' "$WPSTATE/stream-properties" 2>/dev/null | grep -v '"target":"easyeffects_source"' | grep -q .; then
+    printf 'I\tWirePlumber stream-properties stores a capture target for an Input/Audio application (it bypasses easyeffects_source)\n'
+  fi
+}
 
 # problems: cards on "off" with a usable saved profile (class A, a restart helps), no hardware sink/source (class A when a card
-# exists), default source that is a monitor (class B, only reported). Prints "A|B<TAB>text".
+# exists), default source that is a monitor (class B, only reported), default source easyeffects_source with a microphone present
+# (class A, AUDIO2). Prints "A|B<TAB>text".
 problems() {
   local cards sinks sources defsrc name prof saved
   cards="$(pactl --format=json list cards 2>/dev/null)" || { printf 'A\tPipeWire does not answer (pactl list cards failed)\n'; return; }
@@ -54,28 +135,19 @@ problems() {
   if [ "$(jq 'length' <<<"$cards")" -gt 0 ]; then
     jq -e 'map(select(.name | startswith("easyeffects") | not)) | length > 0' <<<"$sinks" >/dev/null 2>&1 \
       || printf 'A\tno hardware sink (only easyeffects_sink)\n'
-    jq -e 'map(select((.name | endswith(".monitor") | not) and (.name | startswith("easyeffects") | not))) | length > 0' <<<"$sources" >/dev/null 2>&1 \
+    [ -n "$(hw_sources <<<"$sources")" ] \
       || printf 'A\tno hardware source (no microphone)\n'
   fi
   defsrc="$(pactl get-default-source 2>/dev/null)"
   case "$defsrc" in
     *.monitor) printf 'B\tdefault source is a monitor (%s), not a microphone\n' "$defsrc" ;;
   esac
+  ! ee_applicable || ee_problems | grep '^A'
 }
 
-# mic_probe: exit codes as in the header. Audio goes to a file in a 0700 dir on tmpfs that is deleted at once; only numbers are printed.
-mic_probe() {
-  local src tmp rc=0 out
-  command -v pw-record >/dev/null 2>&1 && command -v pactl >/dev/null 2>&1 && pactl info >/dev/null 2>&1 \
-    || { echo "no PipeWire tools or server"; return 3; }
-  src="$(pactl get-default-source 2>/dev/null)"
-  case "$src" in
-    "") echo "no default source"; return 3 ;;
-    *.monitor | easyeffects_*) echo "default source $src is not a microphone"; return 3 ;;
-  esac
-  tmp="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/audio-mic.XXXXXX")" || { echo "no temp dir"; return 3; }
-  timeout -s INT 1.7 pw-record --target "$src" --rate 16000 --channels 1 --format s16 "$tmp/m.wav" >/dev/null 2>&1
-  out="$(python3 -I - "$tmp/m.wav" "$src" <<'PY'
+# mic_stats FILE SRC: statistics of a 16 kHz mono s16 wav; exit codes as in the header (0 live, 1 constant, 2 silence, 3 no samples)
+mic_stats() {
+  python3 -I - "$1" "$2" <<'PY'
 import array, sys
 data = open(sys.argv[1], "rb").read()
 a = array.array("h")
@@ -93,8 +165,56 @@ if abs(mean) > 256:
     print("constant signal, input is dead or railed (%s)" % st); sys.exit(1)
 print("digital silence, cannot tell (%s)" % st); sys.exit(2)
 PY
-)" || rc=$?
+}
+
+# chain_check DUMP DEFAULT: links default microphone -> ee_sie_* ... -> easyeffects_source -> a recording stream. Prints the
+# microphone that feeds EasyEffects; exit 0 linked to the default microphone, 4 not linked (message on stdout).
+chain_check() {
+  python3 -I - "$1" "$2" <<'PY'
+import json, sys
+objs = json.load(open(sys.argv[1]))
+default = sys.argv[2]
+names = {o["id"]: o.get("info", {}).get("props", {}).get("node.name", "") for o in objs if o.get("type") == "PipeWire:Interface:Node"}
+links = [(names.get(o["info"].get("output-node-id"), ""), names.get(o["info"].get("input-node-id"), ""))
+         for o in objs if o.get("type") == "PipeWire:Interface:Link"]
+feeders = [s for s, d in links if d.startswith("ee_sie_") and not s.startswith(("ee_", "easyeffects"))]
+if not feeders:
+    print("chain not linked: nothing feeds EasyEffects' input plugins (ee_sie_*)"); sys.exit(4)
+if default not in feeders:
+    print("chain not linked to the default microphone: EasyEffects reads %s, default is %s" % (", ".join(feeders), default)); sys.exit(4)
+if not any(s == "easyeffects_source" and not d.startswith(("ee_", "easyeffects")) for s, d in links):
+    print("chain not linked: easyeffects_source has no recording stream"); sys.exit(4)
+print(default)
+PY
+}
+
+# mic_probe: exit codes as in the header. Audio goes to a file in a 0700 dir on tmpfs that is deleted at once; only numbers are printed.
+# The raw probe carries node.dont-move so EasyEffects (processAllInputs) cannot take it and it measures the real microphone.
+mic_probe() {
+  local src tmp rc=0 out via=""
+  command -v pw-record >/dev/null 2>&1 && command -v pactl >/dev/null 2>&1 && pactl info >/dev/null 2>&1 \
+    || { echo "no PipeWire tools or server"; return 3; }
+  src="$(pactl get-default-source 2>/dev/null)"
+  case "$src" in
+    "") echo "no default source"; return 3 ;;
+    *.monitor | easyeffects_*) echo "default source $src is not a microphone"; return 3 ;;
+  esac
+  tmp="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/audio-mic.XXXXXX")" || { echo "no temp dir"; return 3; }
+  if [ "$CHAIN" = 1 ]; then
+    if ! pactl --format=json list sources 2>/dev/null | jq -e 'any(.[]; .name == "easyeffects_source")' >/dev/null 2>&1; then
+      rm -rf "$tmp"; echo "easyeffects_source does not exist (EasyEffects not running)"; return 3
+    fi
+    timeout -s INT 1.7 pw-record --target easyeffects_source --rate 16000 --channels 1 --format s16 "$tmp/m.wav" >/dev/null 2>&1 &
+    nap 0.7 # EasyEffects links after its 100 ms link delay
+    pw-dump >"$tmp/dump.json" 2>/dev/null
+    wait
+    via="$(chain_check "$tmp/dump.json" "$src")" || { rm -rf "$tmp"; printf '%s\n' "$via"; return 4; }
+  else
+    timeout -s INT 1.7 pw-record -P '{ node.dont-move = true }' --target "$src" --rate 16000 --channels 1 --format s16 "$tmp/m.wav" >/dev/null 2>&1
+  fi
+  out="$(mic_stats "$tmp/m.wav" "$src")" || rc=$?
   rm -rf "$tmp"
+  [ "$CHAIN" = 1 ] && out="$out via $via"
   printf '%s\n' "$out"
   return "$rc"
 }
@@ -111,31 +231,89 @@ if [ "$MODE" = check ]; then
   exit 1
 fi
 
-if [ "$MODE" = boot ]; then
-  # the autostart fires before PipeWire / WirePlumber have settled: wait for the server, then for the first card
-  for _ in $(seq 1 20); do pactl info >/dev/null 2>&1 && break; sleep 0.5; done
-  for _ in $(seq 1 20); do [ "$(pactl --format=json list cards 2>/dev/null | jq 'length' 2>/dev/null)" -gt 0 ] 2>/dev/null && break; sleep 0.5; done
-  sleep 2 # let WirePlumber finish applying profiles and default nodes before judging
-fi
-
-out="$(problems)"
-if ! grep -q '^A' <<<"$out"; then
-  [ -n "$out" ] && log "audio ok but: $(grep '^B' <<<"$out" | cut -f2)" || log "audio ok: cards on their saved profiles"
+if [ "$MODE" = ee ]; then
+  ee_applicable || { echo "EasyEffects or its unit is not installed"; exit 3; }
+  [ -n "$(pactl --format=json list sources 2>/dev/null | hw_sources)" ] || { echo "no hardware microphone"; exit 3; }
+  out="$(ee_problems)"
+  printf '%s\n' "$out" | grep '^[AC]' | cut -f2
+  printf '%s\n' "$out" | grep '^I' | cut -f2 | sed 's/^/note: /'
+  [ "$VERBOSE" = 1 ] && "$EE_CTL" status
+  grep -q '^[AC]' <<<"$out" && exit 1
   exit 0
 fi
 
-log "restarting wireplumber: $(grep '^A' <<<"$out" | cut -f2 | paste -sd';' | sed 's/;/; /g')"
-systemctl --user restart wireplumber.service
-for _ in $(seq 1 20); do
-  sleep 0.5
-  out="$(problems)"
-  grep -q '^A' <<<"$out" || break
-done
-if grep -q '^A' <<<"$out"; then
-  log "still broken after the restart: $(grep '^A' <<<"$out" | cut -f2 | paste -sd';' | sed 's/;/; /g')"
-  # only the login autostart notifies, and only when the restart did not help; manual runs just log
-  [ "$MODE" = boot ] && notify-send -a audio -u normal "Audio" "sound cards did not come up (journalctl -t audio-ensure)" 2>/dev/null
-  exit 1
+# ---- fix / boot ----
+if [ "$MODE" = boot ]; then
+  # the autostart fires before PipeWire / WirePlumber have settled: wait for the server, then for the first card
+  for _ in $(seq 1 20); do pactl info >/dev/null 2>&1 && break; nap 0.5; done
+  for _ in $(seq 1 20); do [ "$(pactl --format=json list cards 2>/dev/null | jq 'length' 2>/dev/null)" -gt 0 ] 2>/dev/null && break; nap 0.5; done
+  nap 2 # let WirePlumber finish applying profiles and default nodes before judging
 fi
-log "restored: cards on their saved profiles, hardware sink and source present"
-exit 0
+
+heal_cards() {
+  local out
+  out="$(problems)"
+  if ! grep -q '^A' <<<"$out"; then
+    [ -n "$out" ] && log "audio ok but: $(grep '^B' <<<"$out" | cut -f2)" || log "audio ok: cards on their saved profiles"
+    return 0
+  fi
+  log "restarting wireplumber: $(grep '^A' <<<"$out" | cut -f2 | paste -sd';' | sed 's/;/; /g')"
+  systemctl --user restart wireplumber.service
+  for _ in $(seq 1 20); do
+    nap 0.5
+    out="$(problems)"
+    grep -q '^A' <<<"$out" || break
+  done
+  if grep -q '^A' <<<"$out"; then
+    log "still broken after the restart: $(grep '^A' <<<"$out" | cut -f2 | paste -sd';' | sed 's/;/; /g')"
+    # only the login autostart notifies, and only when the restart did not help; manual runs just log
+    [ "$MODE" = boot ] && notify-send -a audio -u normal "Audio" "sound cards did not come up (journalctl -t audio-ensure)" 2>/dev/null
+    return 1
+  fi
+  log "restored: cards on their saved profiles, hardware sink and source present"
+  return 0
+}
+
+# ee_wait_ready: up to 20 s until the unit is active and the preset is loaded (ns status: rnnoise active, global bypass off)
+ee_wait_ready() {
+  local _
+  for _ in $(seq 1 "${AE_WAIT_N:-40}"); do
+    systemctl --user is-active --quiet easyeffects && "$EE_CTL" ns status --quiet && return 0
+    nap 0.5
+  done
+  # a switched-off noise suppression (owner's toggle) is not a failure of the chain: the unit and the preset are what matters
+  systemctl --user is-active --quiet easyeffects && [ "$("$EE_CTL" status --json 2>/dev/null | jq -r '.preset // empty')" = mic-clean ]
+}
+
+# ee_chain_steps: (boot: forget the manual microphone choice,) start the unit, wait, check, restart once; notify only in boot mode
+ee_chain_steps() {
+  local out cleared
+  if [ "$MODE" = boot ]; then
+    cleared="$("$EE_CTL" auto 2>&1)"
+    log "microphone choice: $cleared"
+    nap 1 # WirePlumber re-selects the default source
+  fi
+  systemctl --user is-active --quiet easyeffects || "$EE_CTL" start
+  ee_wait_ready
+  out="$(ee_problems | grep '^[AC]')"
+  if [ -n "$out" ]; then
+    log "EasyEffects chain broken, restarting the unit once: $(cut -f2 <<<"$out" | paste -sd';' | sed 's/;/; /g')"
+    "$EE_CTL" restart
+    ee_wait_ready
+    out="$(ee_problems | grep '^[AC]')"
+  fi
+  if [ -n "$out" ]; then
+    log "still broken after the restart: $(cut -f2 <<<"$out" | paste -sd';' | sed 's/;/; /g')"
+    [ "$MODE" = boot ] && notify-send -a audio -u normal "Audio" "noise suppression is not running, apps get the raw mic (journalctl -t audio-ensure)" 2>/dev/null
+    return 1
+  fi
+  log "mic chain ok: $(pactl get-default-source 2>/dev/null) -> easyeffects (RNNoise) -> apps"
+  return 0
+}
+
+rc=0
+heal_cards || rc=1
+if ee_applicable; then
+  ee_chain_steps || rc=1
+fi
+exit "$rc"

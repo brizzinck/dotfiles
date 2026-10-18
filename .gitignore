@@ -8,6 +8,3 @@ package*.json
 .local/share/rbw/
 .cache/rofi-rbw*
 __pycache__/
-
-# EasyEffects runtime lock
-.config/easyeffects/db/*.lock

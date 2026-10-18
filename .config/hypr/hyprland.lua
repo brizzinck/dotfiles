@@ -65,9 +65,10 @@ hl.on("hyprland.start", function()
     hl.exec_cmd("~/.config/hypr/scripts/vault.sh session-start")
     hl.exec_cmd("~/.local/bin/fzf-menu --server-start")
     -- the lingering user manager starts pipewire + wireplumber at boot, before greetd gives this user seat0 (no /dev/snd ACL
-    -- yet), so the sound cards can come up on profile off; audio-ensure restarts wireplumber once if that happened (journalctl -t audio-ensure)
+    -- yet), so the sound cards can come up on profile off; audio-ensure restarts wireplumber once if that happened, clears the
+    -- manual microphone choice, starts the easyeffects.service unit (RNNoise in front of every microphone) and checks the chain
+    -- (journalctl -t audio-ensure)
     hl.exec_cmd("~/.local/bin/audio-ensure --boot")
-    hl.exec_cmd("easyeffects --service-mode --hide-window")
     hl.exec_cmd("udiskie --automount --notify --no-tray")
     hl.exec_cmd("Telegram -startintray")
     hl.exec_cmd(wallpaper)
