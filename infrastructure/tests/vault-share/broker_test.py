@@ -197,7 +197,7 @@ def run(lab):
     check("4.2 td list: exactly the in-scope ids (Shared, Users/td, Work/Acme); no Linux/td, no Users/yc, no Globex, no folderless",
           ids(r) == sorted(["s-wifi", "s-note", "dup1", "dup2", "td-env", "acme-host", "acme-plain", "ssh-ok", "ssh-no", "card"]), str(ids(r)))
     r2 = lab.ask({"v": 1, "op": "list"}, "yc")
-    check("4.2 yc list: its own scope (never TrafficDevils-like Work/Acme)", "acme-host" not in ids(r2) and "yc-env" in ids(r2) and "globex" in ids(r2))
+    check("4.2 yc list: its own scope (never Work/Acme)", "acme-host" not in ids(r2) and "yc-env" in ids(r2) and "globex" in ids(r2))
     r3 = lab.ask({"v": 1, "op": "list", "folder": "Shared/Net"}, "td")
     check("4.2 list --folder: that folder and below, inside the scope", ids(r3) == ["card", "dup1", "dup2", "s-note", "s-wifi"], str(ids(r3)))
     r4 = lab.ask({"v": 1, "op": "list", "folder": "Users/yc"}, "td")
