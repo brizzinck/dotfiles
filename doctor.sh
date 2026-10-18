@@ -397,6 +397,83 @@ if [ -r "$DOTFILES/.config/hypr/scripts/vault-browse.py" ]; then
 else
   bad vault-browse ".config/hypr/scripts/vault-browse.py missing"
 fi
+# BW-ORG: the vault reorganisation (vault-audit) and the vault-share broker for td / yc. Names never leave these checks: counts only.
+vo_audit="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/vault/org/audit.json"
+vo_plan="${XDG_STATE_HOME:-$HOME/.local/state}/vault/org-plan.tsv"
+vo_journal="${XDG_STATE_HOME:-$HOME/.local/state}/vault/org-journal.tsv"
+if [ -r "$DOTFILES/.config/hypr/scripts/vault-org.py" ]; then
+  vo_msg=""
+  if [ -r "$vo_audit" ]; then
+    vo_msg="$(jq -r '"last audit \(.created): \(.items|length) items, \(.groups|length) duplicate groups, \(.findings.no_folder|length) without a folder, \(.findings.empty_folder|length) empty folders, \(.findings.tool_folder|length) tool-folder problems, \(.findings.near_dup_folder|length + (.findings.near_dup_name|length)) near-duplicates"' "$vo_audit" 2>/dev/null)"
+  fi
+  [ -n "$vo_msg" ] || vo_msg="no audit in memory (it is dropped on lock and login; not run yet: vault-audit)"
+  if [ -r "$vo_plan" ]; then
+    vo_msg="$vo_msg; plan: $(awk -F'\t' '!/^#/ && NF >= 5 && $4 != "keep" {n++} END {print n + 0}' "$vo_plan") changes pending"
+  fi
+  if [ -r "$vo_journal" ]; then
+    vo_msg="$vo_msg; journal: $(awk -F'\t' '!/^#/ && $4 ~ /^ok/ {o++} !/^#/ && $4 !~ /^ok/ {f++} END {print o + 0 " ok, " f + 0 " skipped or failed"}' "$vo_journal")"
+  fi
+  info vault-org "$vo_msg"
+  if vo_out="$("$DOTFILES/infrastructure/tests/vault-org/run.sh" --quick 2>&1)"; then
+    ok vault-org-test "offline test with the fake vault: $(printf '%s' "$vo_out" | tail -1)"
+  else
+    bad vault-org-test "offline test failed (infrastructure/tests/vault-org/run.sh --quick): $(printf '%s' "$vo_out" | grep -m1 '^FAIL')"
+  fi
+else
+  bad vault-org ".config/hypr/scripts/vault-org.py missing"
+fi
+vs_py="$DOTFILES/.config/hypr/scripts/vault-share.py"
+vs_file=/etc/vault-share/scopes.tsv
+if [ -r "$vs_py" ]; then
+  if [ -e "$vs_file" ]; then
+    vs_bad="" vs_grp="$(id -gn)" vs_me="$(id -un)"
+    [ "$(stat -c '%U:%G %a' "$vs_file" 2>/dev/null)" = "root:$vs_grp 640" ] || vs_bad="$vs_file is '$(stat -c '%U:%G %a' "$vs_file" 2>/dev/null)', want 'root:$vs_grp 640'"
+    python3 -I -B "$vs_py" check-scopes "$vs_file" --owner "$vs_me" >/dev/null 2>&1 || vs_bad="$vs_bad; $vs_file fails check-scopes"
+    [ "$(stat -c '%U:%G %a' /etc/vault-share 2>/dev/null)" = "root:root 755" ] || vs_bad="$vs_bad; /etc/vault-share is not root:root 755"
+    if [ "$(stat -c '%U:%G %a' /run/vault-share 2>/dev/null)" != "$vs_me:$vs_grp 755" ]; then vs_bad="$vs_bad; /run/vault-share is '$(stat -c '%U:%G %a' /run/vault-share 2>/dev/null)', want '$vs_me:$vs_grp 755'"; fi
+    if command -v getfacl >/dev/null 2>&1 && getfacl -cp /run/vault-share 2>/dev/null | grep -qE '^(user|group):[^:]+:'; then vs_bad="$vs_bad; /run/vault-share has an ACL"; fi
+    if [ -S /run/vault-share/sock ]; then
+      [ "$(stat -c '%a %U' /run/vault-share/sock 2>/dev/null)" = "666 $vs_me" ] || vs_bad="$vs_bad; the socket is not 0666 owned by $vs_me"
+    fi
+    systemctl --user is-active vault-share.socket >/dev/null 2>&1 || vs_bad="$vs_bad; vault-share.socket is not active (systemctl --user enable --now vault-share.socket)"
+    if python3 -I -B "$vs_py" selftest >/dev/null 2>&1; then :; else vs_bad="$vs_bad; selftest: the broker does not answer 'refused' with the real owner uid (a user namespace? journalctl --user -u vault-share)"; fi
+    for vs_u in $(awk -F'\t' '!/^[[:space:]]*#/ && NF {print $1}' "$DOTFILES/infrastructure/users/managed.tsv" 2>/dev/null); do
+      id -u "$vs_u" >/dev/null 2>&1 || continue
+      vs_reach="$(python3 -I -B "$DOTFILES/infrastructure/users/acl-reach.py" "$(id -u "$vs_u")" "/run/user/$(id -u)" 2>/dev/null | grep 'rbw/socket' | head -1)"
+      [ -n "$vs_reach" ] && vs_bad="$vs_bad; $vs_u can reach the rbw agent socket ($vs_reach)"
+    done
+    if [ -n "$vs_bad" ]; then bad vault-share "${vs_bad#; }"; else ok vault-share "scopes root:$vs_grp 640 and valid, /run/vault-share $vs_me:$vs_grp 755 without an ACL, socket 0666, selftest refused the owner with his real uid, no managed user reaches the rbw agent"; fi
+    if command -v rbw >/dev/null 2>&1 && rbw unlocked >/dev/null 2>&1; then
+      info vault-share-scope "$(python3 -I -B "$vs_py" report 2>/dev/null | paste -sd';' | sed 's/;/; /g') (counts only, from the unlocked rbw)"
+    else
+      info vault-share-scope "not counted (rbw locked); vault-share report shows the items in scope per user"
+    fi
+  else
+    info vault-share "not applied yet: sudo ./apply-system.sh --only users renders /etc/vault-share/scopes.tsv and creates /run/vault-share"
+  fi
+  if vs_out="$("$DOTFILES/infrastructure/tests/vault-share/run.sh" --quick 2>&1)"; then
+    ok vault-share-test "offline test (scope grammar, broker with a fake rbw): $(printf '%s' "$vs_out" | tail -1)"
+  else
+    bad vault-share-test "offline test failed (infrastructure/tests/vault-share/run.sh --quick): $(printf '%s' "$vs_out" | grep -m1 '^FAIL')"
+  fi
+  # td / yc from before the broker: their own rbw copy is an encrypted copy of the owner's vault (paths only; the fix is the owner's choice)
+  vs_old=""
+  for vs_u in $(awk -F'\t' '!/^[[:space:]]*#/ && NF && $3 !~ /service/ {print $1}' "$DOTFILES/infrastructure/users/managed.tsv" 2>/dev/null); do
+    vs_home="$(getent passwd "$vs_u" | cut -d: -f6)"
+    [ -n "$vs_home" ] || continue
+    for vs_p in "$vs_home/.config/rbw/config.json" "$vs_home/.cache/rbw" "$vs_home/.config/Bitwarden CLI"; do
+      [ -e "$vs_p" ] && vs_old="$vs_old $vs_p"
+    done
+    pgrep -u "$vs_u" rbw-agent >/dev/null 2>&1 && vs_old="$vs_old (rbw-agent of $vs_u runs)"
+  done
+  if [ -n "$vs_old" ]; then
+    info vault-share-stale "old vault data of a managed user (an encrypted copy of your vault):${vs_old}; remove with: usr exec td -- rbw purge; usr exec td -- rm -rf ~/.config/rbw ~/.cache/rbw ~/.config/'Bitwarden CLI'"
+  else
+    info vault-share-stale "no rbw or bw data of a managed user left"
+  fi
+else
+  bad vault-share ".config/hypr/scripts/vault-share.py missing"
+fi
 # BW1: the per-session bw server of vault-bw.py (bw serve on a unix socket): never a TCP listener, socket 0600 in a 0700 directory
 # owned by the owner, unreachable for the other users of this machine (managed users, service users, greeter)
 bw_run="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/vault"
