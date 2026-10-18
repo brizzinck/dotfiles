@@ -1,0 +1,16 @@
+[Unit]
+Description=vault-share broker socket (td and yc read their part of the owner's vault; started on the first connection)
+Documentation=file://%h/dotfiles/CLAUDE.md
+
+[Socket]
+# /run/vault-share is created by `sudo ./apply-system.sh --only users` (systemd-tmpfiles: owner-owned, 0755), because a user
+# manager cannot create a directory in /run. The socket itself is 0666: who may ask is decided by SO_PEERCRED on every
+# connection (scopes in /etc/vault-share/scopes.tsv), not by the file mode.
+ListenStream=/run/vault-share/sock
+SocketMode=0666
+Service=vault-share.service
+# a stopped socket leaves no stale file behind (the client treats a connect error as "broker is down")
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

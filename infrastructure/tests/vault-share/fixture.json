@@ -1,0 +1,328 @@
+{
+ "folders": [
+  {
+   "id": "f-net",
+   "name": "Shared/Net"
+  },
+  {
+   "id": "f-keys",
+   "name": "Shared/Keys"
+  },
+  {
+   "id": "f-tdenv",
+   "name": "Users/td/Env/demo"
+  },
+  {
+   "id": "f-ycenv",
+   "name": "Users/yc/Env/demo"
+  },
+  {
+   "id": "f-linux",
+   "name": "Linux"
+  },
+  {
+   "id": "f-acme",
+   "name": "Work/Acme"
+  },
+  {
+   "id": "f-globex",
+   "name": "Work/Globex"
+  },
+  {
+   "id": "f-work",
+   "name": "Work"
+  }
+ ],
+ "items": [
+  {
+   "id": "s-wifi",
+   "type": 1,
+   "name": "Office Wi-Fi",
+   "folderId": "f-net",
+   "notes": null,
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "login": {
+    "username": "guest",
+    "password": "WIFIPASS-1",
+    "totp": null,
+    "uris": [
+     {
+      "uri": "https://router.example.test",
+      "match": null
+     }
+    ]
+   }
+  },
+  {
+   "id": "s-note",
+   "type": 2,
+   "name": "Shared note",
+   "folderId": "f-net",
+   "notes": "SHAREDNOTE-1",
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "secureNote": {
+    "type": 0
+   }
+  },
+  {
+   "id": "dup1",
+   "type": 1,
+   "name": "Printer",
+   "folderId": "f-net",
+   "notes": null,
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "login": {
+    "username": "p1",
+    "password": "PRINTPASS-1",
+    "totp": null,
+    "uris": []
+   }
+  },
+  {
+   "id": "dup2",
+   "type": 1,
+   "name": "Printer",
+   "folderId": "f-net",
+   "notes": null,
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "login": {
+    "username": "p2",
+    "password": "PRINTPASS-2",
+    "totp": null,
+    "uris": []
+   }
+  },
+  {
+   "id": "td-env",
+   "type": 2,
+   "name": "dev",
+   "folderId": "f-tdenv",
+   "notes": null,
+   "fields": [
+    {
+     "name": "API_KEY",
+     "value": "TDKEY-777",
+     "type": 1
+    },
+    {
+     "name": "PLAIN",
+     "value": "plain-1",
+     "type": 0
+    }
+   ],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "secureNote": {
+    "type": 0
+   }
+  },
+  {
+   "id": "yc-env",
+   "type": 2,
+   "name": "dev",
+   "folderId": "f-ycenv",
+   "notes": null,
+   "fields": [
+    {
+     "name": "API_KEY",
+     "value": "YCKEY-888",
+     "type": 1
+    }
+   ],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "secureNote": {
+    "type": 0
+   }
+  },
+  {
+   "id": "lx-td",
+   "type": 1,
+   "name": "td",
+   "folderId": "f-linux",
+   "notes": null,
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "login": {
+    "username": "td",
+    "password": "LINUXPASS-td",
+    "totp": null,
+    "uris": []
+   }
+  },
+  {
+   "id": "acme-host",
+   "type": 1,
+   "name": "Hosting",
+   "folderId": "f-acme",
+   "notes": null,
+   "fields": [
+    {
+     "name": "vault-share",
+     "value": "totp",
+     "type": 0
+    }
+   ],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "login": {
+    "username": "acme-user",
+    "password": "ACMEPASS-1",
+    "totp": "otpauth://totp/Acme:u?secret=JBSWY3DPEHPK3PXP&period=30&digits=6",
+    "uris": [
+     {
+      "uri": "https://panel.acme-corp.test",
+      "match": null
+     }
+    ]
+   }
+  },
+  {
+   "id": "acme-plain",
+   "type": 1,
+   "name": "Billing",
+   "folderId": "f-acme",
+   "notes": null,
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "login": {
+    "username": "bill",
+    "password": "ACMEPASS-2",
+    "totp": "otpauth://totp/Acme:u?secret=JBSWY3DPEHPK3PXP&period=30&digits=6",
+    "uris": [
+     {
+      "uri": "https://billing.acme-corp.test",
+      "match": null
+     }
+    ]
+   }
+  },
+  {
+   "id": "globex",
+   "type": 1,
+   "name": "Globex panel",
+   "folderId": "f-globex",
+   "notes": null,
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "login": {
+    "username": "gx",
+    "password": "GLOBEXPASS-1",
+    "totp": null,
+    "uris": []
+   }
+  },
+  {
+   "id": "nofolder",
+   "type": 1,
+   "name": "Loose login",
+   "folderId": null,
+   "notes": null,
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "login": {
+    "username": "loose",
+    "password": "NOFOLDER-1",
+    "totp": null,
+    "uris": []
+   }
+  },
+  {
+   "id": "work-top",
+   "type": 1,
+   "name": "Work top",
+   "folderId": "f-work",
+   "notes": null,
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "login": {
+    "username": "w",
+    "password": "WORKTOP-1",
+    "totp": null,
+    "uris": []
+   }
+  },
+  {
+   "id": "ssh-ok",
+   "type": 5,
+   "name": "deploy key",
+   "folderId": "f-keys",
+   "notes": null,
+   "fields": [
+    {
+     "name": "vault-share",
+     "value": "ssh",
+     "type": 0
+    }
+   ],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "sshKey": {
+    "privateKey": "SSHPRIV-OK",
+    "publicKey": "ssh-ed25519 AAAA pub-ok",
+    "keyFingerprint": "SHA256:fp-ok"
+   }
+  },
+  {
+   "id": "ssh-no",
+   "type": 5,
+   "name": "other key",
+   "folderId": "f-keys",
+   "notes": null,
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "sshKey": {
+    "privateKey": "SSHPRIV-NO",
+    "publicKey": "ssh-ed25519 AAAA pub-no",
+    "keyFingerprint": "SHA256:fp-no"
+   }
+  },
+  {
+   "id": "card",
+   "type": 3,
+   "name": "Team card",
+   "folderId": "f-net",
+   "notes": null,
+   "fields": [],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null,
+   "card": {
+    "cardholderName": "T Team",
+    "brand": "visa",
+    "number": "4111111111111111",
+    "expMonth": "12",
+    "expYear": "2030",
+    "code": "CVV-123"
+   }
+  }
+ ]
+}

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# vault-share: what td and yc may read from the owner's vault (broker in the owner's session). See `vault-share --help`
+# (.config/hypr/scripts/vault-share.py). Also linked for managed users from /srv/dotfiles.
+exec /usr/bin/python3 -I "$(dirname "$(readlink -f "$0")")/../../.config/hypr/scripts/vault-share.py" "$@"

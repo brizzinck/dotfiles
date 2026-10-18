@@ -1,0 +1,24 @@
+[Unit]
+Description=vault-share broker (scoped reads of the owner's unlocked vault for td and yc)
+Documentation=file://%h/dotfiles/CLAUDE.md
+Requires=vault-share.socket
+After=vault-share.socket
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -I %h/.config/hypr/scripts/vault-share.py serve
+SyslogIdentifier=vault-share
+# The broker exits after 10 idle minutes; the socket stays with systemd and starts it again on the next connection.
+Restart=on-failure
+RestartSec=2
+LimitCORE=0
+UMask=0077
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
+# PITFALL (checked by the tests and by `vault-share.py serve`): in a USER unit, ProtectSystem, ProtectHome, PrivateTmp, PrivateDevices,
+# PrivateNetwork, PrivateUsers and the Protect* kernel options imply PrivateUsers=yes. Inside that user namespace SO_PEERCRED maps td and
+# yc both to 65534, so the broker could not tell them apart (and would refuse the owner's uid check). None of them may be added here;
+# the broker refuses to serve unless /proc/self/uid_map is the identity map.

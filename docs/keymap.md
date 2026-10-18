@@ -17,7 +17,7 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Desktop | [System, power, bar](#system-power-bar) | 12 |
 | Desktop | [Pointer from the keyboard](#pointer-from-the-keyboard) | 21 |
 | Desktop | [Other Hyprland binds](#other-hyprland-binds) | 16 |
-| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 176 |
+| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 177 |
 | Terminal | [tmux: this setup](#tmux-this-setup) | 58 |
 | Terminal | [tmux: stock prefix keys](#tmux-stock-prefix-keys) | 80 |
 | Terminal | [Terminal: ghostty](#terminal-ghostty) | 13 |
@@ -399,6 +399,7 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; v r` | Vault: Reorganise |
 | `Super+; v s` | Vault: Sync |
 | `Super+; v u` | Vault: User password |
+| `Super+; v w` | Vault: Sharing |
 | `Super+; t b` | Theme: Black |
 | `Super+; t n` | Theme: Night |
 | `Super+; t t` | Theme: Toggle |

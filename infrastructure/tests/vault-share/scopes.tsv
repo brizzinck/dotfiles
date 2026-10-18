@@ -1,0 +1,7 @@
+# test scopes (invented)
+td	Shared/**
+td	Users/td/**
+td	Work/Acme/**
+yc	Shared/**
+yc	Users/yc/**
+yc	Work/Globex/**

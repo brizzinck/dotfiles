@@ -59,7 +59,17 @@ section2() {
   rm -rf "$d"
 }
 
+section4() {
+  local out rc
+  out=$(BROKER_QUICK=$QUICK python3 -I -B "$HERE/broker_test.py" 2>&1); rc=$?
+  PASS=$((PASS + $(grep -c '^ok' <<<"$out")))
+  FAILS=$((FAILS + $(grep -c '^FAIL' <<<"$out")))
+  grep -E '^(ok|FAIL|      timing)' <<<"$out"
+  ((rc == 0)) || { FAILS=$((FAILS + 1)); echo "FAIL  broker_test.py exit $rc"; grep -v -E '^(ok|FAIL)' <<<"$out" | tail -15; }
+}
+
 want 2 && section2
+want 4 && section4
 
 echo
 echo "passed $PASS, failed $FAILS"
