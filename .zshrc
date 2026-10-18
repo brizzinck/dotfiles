@@ -201,9 +201,16 @@ of() {
   done
 }
 
-# The absolute path of envs, fixed when the shell starts: a project's mise `_.path` or a pinned tool dir can hold an `envs` of
-# its own that would see the secrets, and its [env] can set HOME after this line ran. `envs`, `er`, `ere`, `ert` all use it.
-typeset -g _ENVS_BIN=$HOME/.local/bin/envs
+# The absolute path of envs, fixed when the shell starts and READONLY: a project's mise `_.path` or a pinned tool dir can hold an
+# `envs` of its own that would see the secrets, and its [env] can set HOME (or even _ENVS_BIN) after this line ran. The home is
+# the account's from the password database (`~user`), not $HOME, and an _ENVS_BIN imported from the environment is dropped.
+# `envs`, `er`, `ere`, `ert` all use it.
+zmodload zsh/parameter
+if [[ ${parameters[_ENVS_BIN]-} != *readonly* ]]; then
+  unset _ENVS_BIN
+  [[ $USERNAME =~ '^[A-Za-z0-9_.-]+$' ]] && eval "typeset -gr _ENVS_BIN=~${USERNAME}/.local/bin/envs"
+  [[ -n ${_ENVS_BIN-} ]] || typeset -g _ENVS_BIN=$HOME/.local/bin/envs
+fi
 envs() { $_ENVS_BIN "$@" }
 
 # Run a command with the project's secrets of the active environment (envs: they live in Bitwarden and reach only the command,

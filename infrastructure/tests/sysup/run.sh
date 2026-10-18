@@ -20,7 +20,7 @@ expect() { # name, condition command...
 
 cat >"$T/bin/sudo" <<'X'
 #!/bin/sh
-echo "[fake sudo] $*" >>"$FAKE_LOG"
+echo "[fake sudo] $* GOBIN=${GOBIN:-unset} PATH=$PATH" >>"$FAKE_LOG"
 exit 0
 X
 cat >"$T/bin/checkupdates" <<'X'
@@ -47,6 +47,7 @@ touch "$T/cache/beta-2:3.1-1-x86_64.pkg.tar.zst" "$T/cache/alpha-1.1-1-x86_64.pk
 printf '1700000000\n2\nok\n' >"$T/pred/state"
 export XDG_STATE_HOME="$T/state" SYSUP_PKGCACHE="$T/cache" SYSUP_PRED="$T/pred" XDG_RUNTIME_DIR="$T/run" PATH="$T/bin:$PATH"
 mkdir -p "$XDG_RUNTIME_DIR"
+export SYSUP_TEST_HOME="$T/home"   # sysup takes HOME from the password database; this hook (scratch XDG_STATE_HOME only) replaces it
 
 expect "steps list in order" bash -c "[ \"\$($SYSUP steps | tr '\n' ' ')\" = 'space news prune keyring repo flatpak rust npm pipx go mise claude nvim zsh tmux report ' ]"
 expect "dry run prints the plan and writes no log" bash -c "$SYSUP --dry-run | grep -q keyring && [ ! -e '$T/state/sysup/last.log' ]"
@@ -133,8 +134,9 @@ ln -s "$FAKEMISE" "$T/bin2/mise"   # the `mise` step finds it on PATH; hook-env 
 ORIGPATH="$T/bin2:$PATH"
 printf 'GOBIN=%s\nNPM_CONFIG_PREFIX\nPROJ_ONLY\nPATH=%s\n' "$T/real/gobin" "$ORIGPATH" >"$T/diff.state"
 mkdir -p "$T/mise/installs/go/1.22/bin" "$T/mise/shims"
-projrun() { # extra env assignments... : sysup --only npm,go,mise from an "activated project"
-  (cd "$T/proj" && env HOME="$T/home" GOPATH_FAKE="$T/gopath" GOBIN="$T/proj/.bin" NPM_CONFIG_PREFIX="$T/proj/.npm" PROJ_ONLY=1 KEEPME=mine \
+PROJ_UNSET=()     # `-u NAME` options for env, set for single cases
+projrun() { # extra env assignments... (PROJ_UNSET = -u options) : sysup --only npm,go,mise from an "activated project"
+  (cd "$T/proj" && env "${PROJ_UNSET[@]}" HOME="$T/home" GOPATH_FAKE="$T/gopath" GOBIN="$T/proj/.bin" NPM_CONFIG_PREFIX="$T/proj/.npm" PROJ_ONLY=1 KEEPME=mine \
     MISE_ENV=prod __MISE_SESSION=abc __MISE_DIFF="$T/diff.state" PATH="$T/projbin:$T/mise/installs/go/1.22/bin:$T/mise/shims:$ORIGPATH" \
     "$@" "$SYSUP" --only npm,go,mise --yes 2>&1)
 }
@@ -170,6 +172,24 @@ fi
 : >"$FAKE_LOG"
 out=$(cd "$T/proj" && env HOME="$T/home" GOPATH_FAKE="$T/gopath" GOBIN="$T/real/gobin" SYSUP_MISE="$FAKEMISE" PATH="$ORIGPATH" "$SYSUP" --only go --yes 2>&1); rc=$?
 expect "no mise activation in this shell: hook-env is not called and the owner's own GOBIN stays" bash -c "[ $rc = 0 ] && ! grep -q '^\[hook-env\]' '$FAKE_LOG' && grep '^\[go install\]' '$FAKE_LOG' | grep -q 'GOBIN=$T/real/gobin '"
+
+# REVIEW-ENVS-FINAL #5: a project's [env] HOME must not steer the undo; MISE_EXPERIMENTAL=0 for hook-env; the undo runs before sudo -v;
+# only /usr/bin/mise (never a mise found through PATH) does the undo
+PWHOME=$(getent passwd "$(id -u)" | cut -d: -f6)
+: >"$FAKE_LOG"; rm -f "$T/project-tool-ran"
+PROJ_UNSET=(-u SYSUP_TEST_HOME)
+out=$(projrun SYSUP_MISE="$FAKEMISE" HOME="$T/evilhome"); rc=$?
+PROJ_UNSET=()
+expect "5a: an [env] HOME of the project does not decide where hook-env runs (the passwd home does)" bash -c "[ $rc = 0 ] && grep -q '^\[hook-env\] $PWHOME|' '$FAKE_LOG' && ! grep -q 'evilhome' '$FAKE_LOG'"
+expect "5c: hook-env runs with MISE_EXPERIMENTAL=0" grep -q '^\[hook-env-env\] EXP=0' "$FAKE_LOG"
+expect "5b: sudo -v runs AFTER the project environment is undone (original GOBIN, no project PATH entry)" bash -c "grep '^\[fake sudo\] -v' '$FAKE_LOG' | head -1 | grep -q 'GOBIN=$T/real/gobin ' && ! grep '^\[fake sudo\] -v' '$FAKE_LOG' | head -1 | grep -q '$T/projbin'"
+if [[ ! -x /usr/bin/mise ]]; then
+  # a `mise` earlier on PATH than /usr/bin (a project's `_.path` entry) must not be run for the undo
+  mkdir -p "$T/evilbin"; printf '#!/bin/sh\necho EVIL-MISE >>"%s/project-tool-ran"\n' "$T" >"$T/evilbin/mise"; chmod +x "$T/evilbin/mise"
+  : >"$FAKE_LOG"; rm -f "$T/project-tool-ran"
+  (cd "$T/proj" && env HOME="$T/home" GOBIN="$T/proj/.bin" __MISE_SESSION=abc __MISE_DIFF="$T/diff.state" PATH="$T/evilbin:$ORIGPATH" "$SYSUP" --only go --yes >"$T/out.txt" 2>&1); rc=$?
+  expect "5c: a mise found through PATH is not run (no /usr/bin/mise: the run stops, the project's mise never executed)" bash -c "[ $rc = 1 ] && [ ! -e '$T/project-tool-ran' ]"
+fi
 
 echo "sysup tests: $fails failure(s)"
 exit $((fails > 0))

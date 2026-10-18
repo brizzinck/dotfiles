@@ -19,11 +19,14 @@ import contextlib, importlib.machinery, importlib.util, io, os, sys
 envs, fake, kind, flag, env = sys.argv[1:6]
 l = importlib.machinery.SourceFileLoader("envs_mod", envs)
 m = importlib.util.module_from_spec(importlib.util.spec_from_loader("envs_mod", l)); l.exec_module(m)
-real = m.proc_argv
+real, real_exe = m.proc_argv, m.proc_exe
 tui = [m.PY.encode(), b"-I", str(m.SELF).encode(), b""]
 argv = {"tui": tui, "extra-arg": tui[:3] + [b"run", b""], "other-script": [tui[0], b"-I", b"/tmp/other", b""],
-        "no-dash-I": [tui[0], tui[2], b""], "not-python": [b"/bin/sh", b"-I", tui[2], b""]}[kind]
+        "no-dash-I": [tui[0], tui[2], b""], "not-python": [b"/bin/sh", b"-I", tui[2], b""],
+        "bad-exe": tui, "relative": [tui[0], b"-I", b"envs", b""]}[kind]
+exe = {"not-python": "/bin/sh", "bad-exe": "/usr/bin/perl"}.get(kind, m.PY)    # the kernel's view of the process
 m.proc_argv = lambda pid: argv if pid == int(fake) else real(pid)
+m.proc_exe = lambda pid: os.path.realpath(exe) if pid == int(fake) else real_exe(pid)
 os.environ["ENVS_REVEAL_FILE"] = flag
 out = io.StringIO()
 with contextlib.redirect_stdout(out):
@@ -79,7 +82,9 @@ expect("control: an ancestor that runs the TUI (argv = python -I envs) reveals t
 LOG.write_text("") if LOG.exists() else None
 out = case("self-sh", "tui", "prod")
 expect("a revealed protected value is journaled", SECRET_PROD in out and "preview shows project=billing env=prod" in logged())
-for kind in ("extra-arg", "other-script", "no-dash-I", "not-python"):
+# REVIEW-ENVS-FINAL #1: argv0 spoofed through `exec -a` (the kernel's /proc/PID/exe is something else) and a relative script path
+# (resolved against a cwd the process can change) do not count either
+for kind in ("extra-arg", "other-script", "no-dash-I", "not-python", "bad-exe", "relative"):
     out = case("self-sh", kind)
     expect(f"an ancestor that is not the TUI ({kind}) reveals nothing", SECRET_DEV not in out and "••••" in out)
 LOG.write_text("") if LOG.exists() else None

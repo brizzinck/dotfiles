@@ -7,6 +7,7 @@
 case "${1:-}" in
   hook-env)
     echo "[hook-env] $PWD|$*" >>"$FAKE_LOG"
+    echo "[hook-env-env] EXP=${MISE_EXPERIMENTAL:-unset}" >>"$FAKE_LOG"
     [[ ${FAKE_MISE_FAIL:-} == 1 ]] && { echo "mise ERROR fake failure" >&2; exit 1; }
     if [[ -f ${__MISE_DIFF:-} ]]; then
       while IFS= read -r l; do

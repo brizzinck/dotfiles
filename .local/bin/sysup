@@ -24,6 +24,17 @@
 # Rollback: pacman keeps the previous two versions in /var/cache/pacman/pkg; hub row "Downgrade a package" (AUR downgrade).
 set -u
 
+# HOME is the account's home from the password database, never the environment's: a project's mise [env] can set HOME, and
+# the undo below (cd "$HOME" + hook-env) would then run inside the project. SYSUP_TEST_HOME is the test hook; it counts only
+# when XDG_STATE_HOME points away from the real state directory (a scratch state dir is what every test sets).
+_pw_home=$(getent passwd "$(id -u)" | cut -d: -f6)
+HOME=${_pw_home:-$HOME}
+if [[ -n ${SYSUP_TEST_HOME:-} && -n ${XDG_STATE_HOME:-} && $XDG_STATE_HOME != "$HOME/.local/state" ]]; then
+  HOME=$SYSUP_TEST_HOME
+fi
+export HOME
+unset _pw_home
+
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/sysup"
 PENDING="$STATE/pending.json"
 LOG="$STATE/last.log"
@@ -379,8 +390,8 @@ plan_has() {
 # is mise's business and is never decoded here. Instead mise undoes its own environment: `mise hook-env -s bash --force` run
 # from $HOME prints the reversal of the old diff (variables, PATH) plus whatever applies to $HOME, and we eval that. When mise
 # cannot be found or fails, an activated project environment is NOT left in place: the run stops and says what to do.
-# /usr/bin/mise is preferred over PATH (a project's `_.path` could shadow it); SYSUP_MISE is a test hook that counts only for
-# a file below <repo>/infrastructure/tests/.
+# Only /usr/bin/mise runs here (a PATH lookup would find a project's `_.path` mise); SYSUP_MISE is a test hook that counts
+# only for a file below <repo>/infrastructure/tests/. The hook-env undo runs with MISE_EXPERIMENTAL=0 (no experimental hooks).
 mise_binary() {
   local m=${SYSUP_MISE:-} root
   if [[ -n $m ]]; then
@@ -389,14 +400,14 @@ mise_binary() {
     [[ $m == "$root"* && -x $m ]] && { echo "$m"; return 0; }
   fi
   [[ -x /usr/bin/mise ]] && { echo /usr/bin/mise; return 0; }
-  command -v mise
+  return 1
 }
 
 clean_project_env() {
   local p out="" parts=() mise undo
   if [[ -n ${__MISE_DIFF:-}${__MISE_SESSION:-} ]]; then
     mise=$(mise_binary) || mise=""
-    if [[ -n $mise ]] && undo=$(cd "$HOME" && timeout 30 "$mise" hook-env -s bash --force --quiet 2>/dev/null </dev/null); then
+    if [[ -n $mise ]] && undo=$(cd "$HOME" && MISE_EXPERIMENTAL=0 timeout 30 "$mise" hook-env -s bash --force --quiet 2>/dev/null </dev/null); then
       eval "$undo"
     elif [[ ${SYSUP_KEEP_PROJECT_ENV:-} == 1 ]]; then
       warn "mise could not undo the project environment: continuing with it (SYSUP_KEEP_PROJECT_ENV=1)"
@@ -425,11 +436,12 @@ run_steps() {
     echo "log: $LOG (inhibitors: sleep, idle, lid switch)"
     return 0
   fi
-  sudo -v || { fail "sudo is needed"; exit 1; }
   # never from a project directory: its pinned go/node/python (mise) must not be the one `go install` or `npm -g` uses; `cd`
-  # alone does not undo an activated project (its PATH and [env] stay in this environment), so undo that too
+  # alone does not undo an activated project (its PATH and [env] stay in this environment), so undo that too. This comes
+  # BEFORE sudo -v: nothing of a project (PATH, mise output) may run with a fresh sudo timestamp
   cd "$HOME" || true
   clean_project_env
+  sudo -v || { fail "sudo is needed"; exit 1; }
   # keep the sudo timestamp alive for steps that call sudo themselves (yay has its own --sudoloop)
   ( while sleep 50; do sudo -n true 2>/dev/null || exit; done ) &
   KEEP=$!

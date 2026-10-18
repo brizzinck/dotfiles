@@ -571,7 +571,9 @@ printf '#!/bin/sh\necho EVIL >>"%s/evil-ran"\n' "$T" >"$T/evilbin/envs"
 printf '#!/bin/sh\necho "REAL $*" >>"%s/real-ran"\n' "$T" >"$T/fakehome/.local/bin/envs"
 chmod +x "$T/evilbin/envs" "$T/fakehome/.local/bin/envs"
 rm -f "$T/evil-ran" "$T/real-ran"
-fn=$(grep -E '^(typeset -g _ENVS_BIN=|envs\(\)|er\(\)|ere\(\)|ert\(\))' "$REPO/.zshrc")
+# the functions of .zshrc with the startup line replaced by one that follows the fake $HOME (the real line takes the home from
+# the password database; it has its own case below)
+fn=$(printf 'typeset -g _ENVS_BIN=$HOME/.local/bin/envs\n'; grep -E '^(envs\(\)|er\(\)|ere\(\)|ert\(\))' "$REPO/.zshrc")
 HOME="$T/fakehome" PATH="$T/evilbin:$PATH" zsh -f -c "$fn; er true; ere stage true; ert test; envs run true" >/dev/null 2>&1
 check "4: er / ere / ert / a typed envs call ~/.local/bin/envs, never an envs found through PATH" bash -c "[ ! -e '$T/evil-ran' ] && [ \$(wc -l <'$T/real-ran') = 4 ]"
 # FIX-DEVb2 #6: a project's mise [env] changes HOME (and PATH) AFTER the shell started: the functions keep the path of startup
@@ -580,6 +582,11 @@ printf '#!/bin/sh\necho EVILHOME >>"%s/evil-ran"\n' "$T" >"$T/evilhome/.local/bi
 rm -f "$T/evil-ran" "$T/real-ran"
 HOME="$T/fakehome" zsh -f -c "$fn; HOME='$T/evilhome'; PATH='$T/evilbin':\$PATH; envs run true; er true; ere stage true; ert test" >/dev/null 2>&1
 check "19.6: HOME and PATH changed after startup (a project's [env]) do not redirect envs, er, ere, ert" bash -c "[ ! -e '$T/evil-ran' ] && [ \$(wc -l <'$T/real-ran') = 4 ]"
+# REVIEW-ENVS-FINAL #7 (FINAL re-check): the real startup block: home from passwd (not $HOME), readonly, an imported _ENVS_BIN is dropped, re-sourcing is fine
+blk=$(sed -n '/^# The absolute path of envs/,/^fi$/p' "$REPO/.zshrc")
+pwhome=$(getent passwd "$(id -u)" | cut -d: -f6)
+got=$(HOME=/nonexistent-evil _ENVS_BIN=/evil/envs zsh -f -c "$blk; $blk; print -r -- \$_ENVS_BIN; _ENVS_BIN=x" 2>&1)
+check "17.7: _ENVS_BIN is the passwd home's envs (not \$HOME, not an imported value) and readonly, also when sourced twice" bash -c "[ \"\$(head -1 <<<'$got')\" = '$pwhome/.local/bin/envs' ] && grep -q 'read-only variable' <<<'$got'"
 printf '#!/bin/sh\necho evil >>"%s/wlcopy-evil"\ncat >/dev/null\n' "$T" >"$T/evilbin/wl-copy"; chmod +x "$T/evilbin/wl-copy"
 rm -f "$T/wlcopy-evil"
 (cd "$PROJ" && PATH="$T/evilbin:$PATH" "$ENVS" copy-value DATABASE_URL >"$CAP/wl.out" 2>"$CAP/wl.err"); rc=$?
@@ -781,6 +788,9 @@ reset; bind_proj
 check "19.4: mise exec runs with auto-install and not-found auto-install off, whatever the shell had" bash -c "[ $rc = 0 ] && [ \"\$(cat '$CAP/ai.out')\" = 0/0 ]"
 (cd "$PROJ" && "$ENVS" run --no-mise -- sh -c 'echo "${MISE_AUTO_INSTALL:-unset}"' >"$CAP/ai2.out" 2>/dev/null)
 check "19.4: --no-mise leaves the environment alone" test "$(cat "$CAP/ai2.out")" = unset
+# REVIEW-ENVS-FINAL #6: exec and task-run auto-install switches (ert runs `mise run` inside envs run)
+(cd "$PROJ" && MISE_EXEC_AUTO_INSTALL=1 MISE_TASK_RUN_AUTO_INSTALL=1 "$ENVS" run -- sh -c 'echo "${MISE_EXEC_AUTO_INSTALL:-unset}/${MISE_TASK_RUN_AUTO_INSTALL:-unset}"' >"$CAP/ai3.out" 2>/dev/null)
+check "19.4: MISE_EXEC_AUTO_INSTALL and MISE_TASK_RUN_AUTO_INSTALL are 0 for the mise child too" test "$(cat "$CAP/ai3.out")" = 0/0
 
 # #5: a hard-linked .env is never imported or shredded
 reset; bind_proj
@@ -796,6 +806,39 @@ printf 'X_TOKEN=NEWVAL-import-5\n' >"$PROJ/.env"
 etty 'y\ny\n' import .env -e stage --secrets X_TOKEN
 check "19.5: control: a plain single-link .env is still imported" bash -c "[ $RC = 0 ] && grep -q NEWVAL-import-5 '$FAKE_DIR/vault.json'"
 scan "19.5"
+
+# REVIEW-ENVS-FINAL #2/#3: a different repository that lands on a bound path is not the bound one (root commit stored in bindings.tsv)
+reset; bind_proj
+(cd "$PROJ" && git add -A >/dev/null 2>&1 && git commit -qm one >/dev/null 2>&1)
+e run -- true
+ID1=$(awk -F'\t' '{print $4}' "$XDG_STATE_HOME/envs/bindings.tsv")
+check "19.8: the first use of a binding without identity records the root commit (column 4)" bash -c "[ $RC = 0 ] && [[ '$ID1' =~ ^[0-9a-f]{40}$ ]]"
+rm -rf "$PROJ/.git"
+(cd "$PROJ" && git init -q . && echo second >other.txt && git add -A >/dev/null 2>&1 && git commit -qm two >/dev/null 2>&1)
+e run -- sh -c 'echo $DATABASE_URL'
+check "19.8: another repository at the bound path is refused (exit 4, no secret, names envs bind)" bash -c "[ $RC = 4 ] && ! grep -q SECRET '$OUT' && grep -q 'not the one that was bound' '$ERR' && grep -q 'envs bind' '$ERR'"
+e status
+check "19.8: status says moved" grep -q 'binding  moved' "$OUT"
+etty 'billing\n' bind
+check "19.8: envs bind (typed project name) accepts the new repository" bash -c "[ $RC = 0 ] && ! grep -q '$ID1' '$XDG_STATE_HOME/envs/bindings.tsv'"
+e run -- true
+check "19.8: and it runs again" test $RC = 0
+scan "19.8"
+
+# REVIEW-ENVS-FINAL #4: Env/<project> already bound elsewhere: loud, typed project name, never inline in `envs run`
+reset; bind_proj
+CL="$T/clone2"; rm -rf "$CL"; mkdir -p "$CL"; cp "$PROJ/.envs.toml" "$PROJ/.mise.toml" "$CL/"; (cd "$CL" && git init -q .)
+EDIR="$CL" e run -- sh -c 'echo $DATABASE_URL'
+check "19.9: envs run in a second checkout of a bound project name: exit 4, says where it is bound, no inline prompt" bash -c "[ $RC = 4 ] && ! grep -q SECRET '$OUT' && grep -q 'already bound to' '$ERR' && grep -q 'envs bind' '$ERR'"
+EDIR="$CL" ENVS_TEST_YES=1 e run -- true
+check "19.9: even the test hook that says yes does not bind it inline" test $RC = 4
+EDIR="$CL" etty 'y\n' bind
+check "19.9: envs bind: y is not enough (the warning names the other path, exit 4, nothing bound)" bash -c "[ $RC = 4 ] && grep -qa 'already bound to' '$ERR' '$OUT' && [ \$(wc -l <'$XDG_STATE_HOME/envs/bindings.tsv') = 1 ]"
+EDIR="$CL" etty 'billing\n' bind
+check "19.9: ... typing the project name binds it" bash -c "[ $RC = 0 ] && [ \$(wc -l <'$XDG_STATE_HOME/envs/bindings.tsv') = 2 ]"
+rm -rf "$CL"
+EDIR=""
+scan "19.9"
 }
 
 sections_15_16() {

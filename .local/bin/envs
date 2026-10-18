@@ -5,7 +5,8 @@
   envs                          the TUI: projects -> environments -> variables
   envs init [--project NAME] [--envs dev,stage,prod] [--default dev]
                                 write .envs.toml in the git top-level (or cwd), add .env* to .gitignore, bind (mise trust only on request)
-  envs bind                     confirm the root -> Env/<project> binding; needs a terminal (never trusts mise by itself)
+  envs bind                     confirm the root -> Env/<project> binding; needs a terminal (never trusts mise by itself); the project
+                                name is typed when Env/<project> is already bound elsewhere or the repository at a bound path changed
   envs trust                    `mise trust` for this root, after a separate question that lists the config files
   envs status [--json]          project, root, binding, active env, declared names; with an unlocked vault per env: set /
                                 missing / extra (no values)
@@ -218,6 +219,14 @@ def proc_ppid(pid):
         return 0
 
 
+def proc_exe(pid):
+    """realpath of the executable of PID (the kernel's view: it cannot be spoofed through argv[0] or exec -a)."""
+    try:
+        return os.path.realpath(os.readlink(f"/proc/{pid}/exe"))
+    except OSError:
+        return ""
+
+
 def proc_argv(pid):
     try:
         return Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
@@ -412,28 +421,80 @@ def bindings():
     return {r[0]: r for r in read_tsv(state_dir() / "bindings.tsv") if len(r) >= 3}
 
 
+def repo_identity(root):
+    """The root commit(s) of the repository ROOT belongs to (comma separated, at most 8), or `-` when it is not a git checkout
+    we trust, has no commit yet or git cannot say. Stored with a binding: a different repository that later lands on a bound
+    path (the old one deleted or moved) does not have the old one's root commit."""
+    common, _top = git_common_dir(root)
+    git = tool("git", required=False)
+    if common is None or not git:
+        return "-"
+    try:
+        p = subprocess.run([git, "--git-dir", common, "rev-list", "--max-parents=0", "--all"], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, env=git_env(), timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return "-"
+    ids = sorted(set(re.findall(r"^[0-9a-f]{40,64}$", p.stdout, re.M)))[:8]
+    return ",".join(ids) or "-"
+
+
+def stored_identity(row):
+    return row[3] if len(row) > 3 and row[3] else "-"
+
+
 def binding_state(root, project):
-    """('bound'|'unbound'|'changed', key, old project)"""
+    """('bound'|'unbound'|'changed'|'moved', key, old project): `changed` = the project name differs from the bound one,
+    `moved` = same name, but the repository here is not the one that was bound (root commit differs)."""
     key = binding_key(root)
     b = bindings().get(key)
     if not b:
         return "unbound", key, None
-    return ("bound" if b[1] == project else "changed"), key, b[1]
+    if b[1] != project:
+        return "changed", key, b[1]
+    stored = stored_identity(b)
+    if stored != "-" and not (set(stored.split(",")) & set(repo_identity(root).split(","))):
+        return "moved", key, b[1]
+    return "bound", key, b[1]
+
+
+def bound_elsewhere(root, project):
+    """Roots (other than ROOT's own binding) that are bound to Env/PROJECT."""
+    key = binding_key(root)
+    return [key_root(k) for k, r in bindings().items() if r[1] == project and k != key]
 
 
 def bind_write(root, project, locked=False):
     """Record the binding; LOCKED = the caller already holds write_lock (flock on a second descriptor would deadlock)."""
     key = binding_key(root)
+    ident = repo_identity(root)
 
     def write():
         rows = [r for r in bindings().values() if r[0] != key]
-        rows.append([key, project, time.strftime("%Y-%m-%dT%H:%M:%S%z")])
+        rows.append([key, project, time.strftime("%Y-%m-%dT%H:%M:%S%z"), ident])
         write_tsv(state_dir() / "bindings.tsv", rows)
     if locked:
         write()
     else:
         with write_lock():
             write()
+
+
+def upgrade_identity(root, project):
+    """A binding written before identities existed (or before the first commit) learns the repository's root commit the
+    first time it is used while bound: from then on a different repository at this path is `moved`."""
+    key = binding_key(root)
+    b = bindings().get(key)
+    if not b or b[1] != project or stored_identity(b) != "-":
+        return
+    ident = repo_identity(root)
+    if ident == "-":
+        return
+    with write_lock():
+        b = bindings().get(key)
+        if b and b[1] == project and stored_identity(b) == "-":
+            rows = [r for r in bindings().values() if r[0] != key]
+            rows.append([key, project, b[2], ident])
+            write_tsv(state_dir() / "bindings.tsv", rows)
 
 
 # ───────────────────────────── .envs.toml and mise files ─────────────────────────────
@@ -1059,13 +1120,29 @@ def mise_trust(root, ask=True):
     return True
 
 
+def other_binding_note(cfg):
+    """A line that names where Env/<project> is already bound, '' when nowhere else."""
+    others = bound_elsewhere(cfg.root, cfg.project)
+    if not others:
+        return ""
+    shown = ", ".join(short_path(o) for o in others[:3]) + (f" (+{len(others) - 3})" if len(others) > 3 else "")
+    return (f"{cfg.folder} is already bound to {shown}. If this is not a clone of that repository, binding gives it that "
+            "project's secrets.")
+
+
 def require_bound(cfg):
     st, key, old = binding_state(cfg.root, cfg.project)
     if st == "bound":
+        upgrade_identity(cfg.root, cfg.project)
         return
     if st == "changed":
         fail(f"project name changed: this checkout was bound to Env/{old}, .envs.toml now says Env/{cfg.project}; "
              "run `envs bind` to confirm the change (a cloned repo must not pull another project's secrets)", 4)
+    if st == "moved":
+        fail(f"this path is bound to {cfg.folder}, but the repository here is not the one that was bound (its root commit "
+             "differs: replaced or re-cloned); run `envs bind` to confirm it", 4)
+    if other_binding_note(cfg):                  # never offered inline: the typed confirmation lives in `envs bind`
+        fail(f"{cfg.root} is not bound, and {other_binding_note(cfg)} Run `envs bind` in a terminal.", 4)
     if not tty() and not (test_mode() and os.environ.get("ENVS_TEST_YES") == "1"):
         fail(f"{cfg.root} is not bound to Bitwarden folder {cfg.folder}: run `envs bind` in a terminal", 4)
     if not confirm(f"Bind {cfg.root} to Bitwarden folder {cfg.folder}?"):
@@ -1157,9 +1234,14 @@ def cmd_init(a):
             body += "\n"
         write_text(gi, body + "\n".join(missing) + "\n")
         say(f"added {', '.join(missing)} to .gitignore")
-    bind_write(root, project)
-    say(f"bound {root} to Bitwarden folder Env/{project}")
-    if trust_files(root) and tool("mise", required=False):
+    elsewhere = bound_elsewhere(root, project)
+    if elsewhere:
+        warn(f"Env/{project} is already bound to {', '.join(short_path(o) for o in elsewhere[:3])}: not binding this one "
+             "(a clone that names an existing project would get its secrets); run `envs bind` in a terminal to confirm")
+    else:
+        bind_write(root, project)
+        say(f"bound {root} to Bitwarden folder Env/{project}")
+    if not elsewhere and trust_files(root) and tool("mise", required=False):
         if tty():
             if mise_trust(root):
                 say("mise trust: done")
@@ -1176,8 +1258,16 @@ def cmd_bind(a):
     if st == "bound":
         say(f"already bound: {cfg.root} -> {cfg.folder}")
         return
-    note = f" (was Env/{old})" if st == "changed" else ""
-    if not confirm(f"Bind {cfg.root} to Bitwarden folder {cfg.folder}{note}?"):
+    note = f" (was Env/{old})" if st == "changed" else (" (the repository here is not the one bound before)" if st == "moved" else "")
+    elsewhere = other_binding_note(cfg) if st != "changed" else ""
+    if elsewhere or st == "moved":
+        # a clone of something that names a project you already have, or a replaced repository: the secrets of that project
+        # go to this code, so `y` is not enough: the project name is typed (same rule as `project delete`)
+        if elsewhere:
+            warn(elsewhere)
+        if not typed_confirm(cfg.project, f"Bind {cfg.root} to {cfg.folder}{note}?"):
+            fail("not bound" + ("" if tty() else ": a terminal is needed to confirm"), 4)
+    elif not confirm(f"Bind {cfg.root} to Bitwarden folder {cfg.folder}{note}?"):
         fail("not bound" + ("" if tty() else ": a terminal is needed to confirm"), 4)
     bind_write(cfg.root, cfg.project)
     say(f"bound {cfg.root} -> {cfg.folder}")
@@ -1250,7 +1340,7 @@ def cmd_status(a):
         return
     say(f"project  {cfg.project}")
     say(f"root     {cfg.root}")
-    say(f"binding  {st}" + (f" (was Env/{old})" if st == "changed" else ""))
+    say(f"binding  {st}" + (f" (was Env/{old})" if st == "changed" else (" (another repository than the bound one)" if st == "moved" else "")))
     if env:
         extra = f" (active selection, {left} min left)" if act and left is not None and act[1] else \
             (" (active selection)" if act else " (default)")
@@ -1331,7 +1421,8 @@ def cmd_run(a, cmd):
         child["MISE_ENV"] = env
         # a legacy file (.tool-versions, .nvmrc ...) needs no `mise trust`, so mise would install what it names (npm:/cargo:/
         # pipx: lifecycle and build scripts) with the secrets already in this environment: a missing tool stops the command
-        child["MISE_AUTO_INSTALL"] = child["MISE_NOT_FOUND_AUTO_INSTALL"] = "0"
+        for k in ("MISE_AUTO_INSTALL", "MISE_NOT_FOUND_AUTO_INSTALL", "MISE_EXEC_AUTO_INSTALL", "MISE_TASK_RUN_AUTO_INSTALL"):
+            child[k] = "0"             # newer mise has separate switches for `exec` and `run`: ert runs `mise run` in here
         for k in MISE_LOG_ENV:                    # mise may print or write its environment at debug/trace level
             child.pop(k, None)
         child["MISE_LOG_LEVEL"] = "warn"
@@ -1960,6 +2051,7 @@ def check_root(cfg, out):
         return
     st, key, old = binding_state(cfg.root, cfg.project)
     add("ok" if st == "bound" else "warn", f"binding: {st}" + (f" (was Env/{old})" if old and st == "changed" else "")
+        + (" (another repository than the bound one)" if st == "moved" else "")
         + ("" if st == "bound" else "; run `envs bind`"))
     git = tool("git", required=False)
     if git and (cfg.root / ".git").exists():
@@ -2080,7 +2172,7 @@ def reveal_file():
 
 
 def tui_ancestor(pid):
-    """True when `pid` is an ancestor of this process AND runs the TUI (`PY -I SELF`, no arguments). The flag name carries the
+    """True when `pid` is an ancestor of this process AND runs the TUI (executable PY, argv `-I /abs/SELF`, no arguments). The flag name carries the
     pid of the run that wrote it, so a preview started by anything else (setsid, tmux, systemd-run: a process of its own that
     writes a flag and calls `_preview`) is not a reveal, and neither is a flag naming some other ancestor."""
     me, seen = os.getpid(), 0
@@ -2094,12 +2186,11 @@ def tui_ancestor(pid):
     argv = proc_argv(pid)
     if len(argv) != 4 or argv[3] != b"" or argv[1] != b"-I":
         return False
-    try:
-        cwd = os.readlink(f"/proc/{pid}/cwd")
-        a0, a2 = (a.decode("utf-8", "replace") for a in (argv[0], argv[2]))
-        return os.path.realpath(a0) == os.path.realpath(PY) and os.path.realpath(os.path.join(cwd, a2)) == str(SELF)
-    except OSError:
-        return False
+    # the executable is what the kernel runs (/proc/PID/exe), never argv[0] (`exec -a` spoofs it, and a script that perl or
+    # sh reads from stdin looks like `python3 -I envs`); the script path must be absolute and be this file (a relative one is
+    # resolved against a cwd that the process can change after it started)
+    a2 = argv[2].decode("utf-8", "replace")
+    return proc_exe(pid) == os.path.realpath(PY) and os.path.isabs(a2) and os.path.realpath(a2) == str(SELF)
 
 
 def read_reveal():

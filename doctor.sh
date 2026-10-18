@@ -1352,7 +1352,7 @@ if "$DOTFILES/.config/hub/hub" --list --all 2>/dev/null | grep -q ' envs '; then
 # FIX-DEVb: the hardening of the review stays in place (absolute interpreter, absolute er/ere/ert, no legacy-file auto-install, backends off)
 db_bad=""
 [ "$(head -1 "$DOTFILES/.local/bin/envs")" = '#!/usr/bin/python3 -I' ] || db_bad="$db_bad envs shebang is not the absolute #!/usr/bin/python3 -I;"
-grep -qE '^typeset -g _ENVS_BIN=\$HOME/\.local/bin/envs$' "$DOTFILES/.zshrc" || db_bad="$db_bad .zshrc does not fix _ENVS_BIN to ~/.local/bin/envs at startup;"
+grep -qF 'typeset -gr _ENVS_BIN=~${USERNAME}/.local/bin/envs' "$DOTFILES/.zshrc" || db_bad="$db_bad .zshrc does not fix _ENVS_BIN (readonly, passwd home) to ~/.local/bin/envs at startup;"
 for db_f in envs er ere ert; do grep -qE "^$db_f\(\) \{.*\\\$_ENVS_BIN" "$DOTFILES/.zshrc" || db_bad="$db_bad $db_f() does not call \$_ENVS_BIN;"; done
 grep -q 'MISE_AUTO_INSTALL' "$DOTFILES/.local/bin/envs" || db_bad="$db_bad envs run does not switch mise auto-install off;"
 grep -q 'not installed automatically' "$DOTFILES/.config/zsh/mise.zsh" || db_bad="$db_bad mise.zsh would auto-install for legacy version files;"
