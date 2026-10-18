@@ -1295,6 +1295,20 @@ users_render_vs_scopes() {
 users_check_vs_scopes() {
   [ -s "$1" ] && ! grep -vE $'^(#.*|[a-z_][a-z0-9_-]{0,30}\t[^\t]+)$' "$1" | grep -q .
 }
+users_render_vs_env_write() {
+  local u uid rows=""
+  for u in $(managed_users env-write); do
+    uid="$(id -u "$u")" || return 1
+    [[ $uid =~ ^[0-9]+$ ]] && [ "$uid" -ge 1000 ] && [ "$uid" -le 59999 ] || return 1
+    rows+="$u"$'\t'"$uid"$'\n'
+  done
+  cat "$INFRA/vault-share/env-write.tsv.in"
+  printf '%s' "$rows"
+}
+users_check_vs_env_write() {
+  [ "$(head -n 1 "$1")" = '# vault-share env-write v1' ] &&
+    awk -F'\t' '/^#/ {next} NF!=2 || $1!="td" || $2!~/^[0-9]+$/ || $2<1000 || $2>59999 || seen++ {bad=1} END {exit bad}' "$1"
+}
 users_vault_share() {
   local grp tmp_run_changed=0 uid
   grp="$(id -gn "$OWNER")"
@@ -1321,6 +1335,13 @@ users_vault_share() {
     run chown "root:$grp" "$USERS_VS_ETC/scopes.tsv"
     run chmod 640 "$USERS_VS_ETC/scopes.tsv"
     changed "$USERS_VS_ETC/scopes.tsv is root:$grp 640 (the broker, running as $OWNER, reads it through the group; td and yc cannot)"
+  fi
+  # Explicit self-write capability is separate from read scopes; no policy grants another user's namespace.
+  users_install_rendered users_render_vs_env_write "$USERS_VS_ETC/env-write.tsv" 640 users_check_vs_env_write || true
+  if [ -e "$USERS_VS_ETC/env-write.tsv" ] && [ "$(stat -c '%U:%G %a' "$USERS_VS_ETC/env-write.tsv")" != "root:$grp 640" ]; then
+    run chown "root:$grp" "$USERS_VS_ETC/env-write.tsv"
+    run chmod 640 "$USERS_VS_ETC/env-write.tsv"
+    changed "$USERS_VS_ETC/env-write.tsv is root:$grp 640 (explicit td self-write capability)"
   fi
   # 3. the owner's socket unit (his manager must run for that; install.sh enables it at the first login otherwise)
   uid="$(id -u "$OWNER")"

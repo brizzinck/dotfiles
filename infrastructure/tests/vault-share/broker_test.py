@@ -424,7 +424,13 @@ def run(lab):
     # 4.16 journal
     log = lab.err()
     lab.ask({"v": 1, "op": "get", "id": "s-wifi", "fields": ["password", "field:Region"]}, "td")
-    log = lab.err()
+    # The response is drained before handle's finally emits the audit row.
+    deadline = time.monotonic() + 1
+    while True:
+        log = lab.err()
+        if 'id=s-wifi fields=password,field:Region result=ok' in log or time.monotonic() >= deadline:
+            break
+        time.sleep(0.01)
     check("4.16 audit lines carry op, user, uid, id, fields and result", "op=get user=td" in log and "id=s-wifi" in log and "fields=password,field:Region" in log and "result=ok" in log, log[-300:])
     secrets = ["WIFIPASS-1", "TDKEY-777", "YCKEY-888", "ACMEPASS", "SSHPRIV", "JBSWY", "Office", "Shared note", "Hosting", "Billing", "deploy key", "Globex panel"]
     check("4.16 ...and no value and no item name anywhere in the broker's journal output", not any(s in log for s in secrets), next((s for s in secrets if s in log), ""))

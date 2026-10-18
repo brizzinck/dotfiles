@@ -2,7 +2,7 @@
 # Shared reader of managed.tsv (sourced by apply-system.sh, .local/bin/usr, doctor.sh). No side effects when sourced.
 #   managed_tsv                    path of the registry (USR_MANAGED_TSV overrides it, used by the tests)
 #   managed_users [CAP]            names, one per line; CAP filters by a capability:
-#                                  interactive | service | become | acl | clipboard | wayland | create | profile
+#                                  interactive | service | become | acl | clipboard | wayland | create | profile | env-write
 #   managed_has USER CAP           exit 0 when USER has the capability
 #   managed_field USER NAME        profile | flags | accent | note
 #   managed_validate OWNER         print one problem per line (empty output = valid)
@@ -46,6 +46,7 @@ managed_has() {
     clipboard) [[ $flags == *,clipboard,* ]] ;;
     wayland) [[ $flags == *,wayland,* || $flags == *,clipboard,* ]] ;;   # a clipboard user reaches the Wayland socket too
     create) [[ $flags == *,create,* ]] ;;
+    env-write) [[ $user == td && $flags == *,env-write,* && $flags != *,service,* ]] ;;
     profile) profile="$(managed_field "$user" profile)"; [ -n "$profile" ] && [ "$profile" != - ] ;;
     *) return 2 ;;
   esac
@@ -75,8 +76,11 @@ managed_validate() {
     if [ "$profile" != - ] && [ ! -r "$dir/profiles/$profile.txt" ]; then echo "$u: profile $profile has no profiles/$profile.txt"; fi
     local f
     for f in ${flags//,/ }; do
-      case "$f" in service | noacl | nobecome | clipboard | wayland | create | interactive | -) ;; *) echo "$u: unknown flag $f" ;; esac
+      case "$f" in service | noacl | nobecome | clipboard | wayland | create | interactive | env-write | -) ;; *) echo "$u: unknown flag $f" ;; esac
     done
+    if [[ ,$flags, == *,env-write,* ]] && { [ "$u" != td ] || [[ ,$flags, == *,service,* ]]; }; then
+      echo "$u: env-write is restricted to the interactive td account"
+    fi
   done < <(_managed_rows)
 }
 

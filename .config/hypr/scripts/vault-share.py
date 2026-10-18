@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """vault-share: the scopes of the Bitwarden vault that td and yc may read, and the broker that serves
-them. Python 3 stdlib only, runs under `python3 -I`; `vault-share` (.local/bin/vault-share) is the command.
+them, plus root-authorized td self Env writes. Python 3 stdlib only, runs under `python3 -I`; `vault-share` (.local/bin/vault-share) is the command.
 
 SCOPES. /etc/vault-share/scopes.tsv (root-owned, rendered by `sudo ./apply-system.sh --only users`) holds one rule per line,
 `user<TAB>rule`, `#` starts a comment:
@@ -23,10 +23,17 @@ in the repo). `Linux/<user>` is in no scope: the Linux passwords stay the owner'
 BROKER. `serve` is the owner's user unit vault-share.service (socket-activated by vault-share.socket on
 /run/vault-share/sock, mode 0666). It answers td and yc (SO_PEERCRED uid -> user name -> rules above) with values from the OWNER's
 unlocked rbw, only for items inside their scope; the owner, root and every other user get `refused` before anything is read. It
-never starts the rbw agent and never asks for a password: a locked vault is the answer `locked`. No cache of its own: every request
-is one `rbw list --raw` or one `rbw get --raw ID`, and the scope is checked on the folder and name of that same response.
+never starts the rbw agent and never asks for a password: a locked vault is the answer `locked`. Reads use
+`rbw list --raw` or `rbw get --raw ID`, checking scope on the folder and name of that same response.
+Native env-put writes require the separate fresh root-owned /etc/vault-share/env-write.tsv td UID capability.
+The exact project/env/values/overwrite/request_id schema writes only machine-marked personal notes in
+Users/<peer>/Env/<project>, through the owner UNIX server without CLI/unlock fallback. An existing unlocked
+owner session is required. Avoid concurrent external edits of that same note: this is not server CAS.
+Pending/spent IDs and keyed request fingerprints persist in the owner private state directory; capacity
+refuses new work without evicting recovery. apply-system --only users installs policy; restart vault-share.service afterward.
 
-Protocol v1: one JSON line in, one JSON line out per connection (4096 bytes at most, 5 s to send it).
+Protocol v1: one JSON line in, one JSON line out per connection (reads 4096 bytes, 5 s to send it).
+A freshly authorized write peer may submit env-put frames up to 256 KiB, max 64 hidden fields; receipts contain metadata only.
   {"v":1,"op":"whoami"}                        {"v":1,"op":"list"[,"folder":"Shared/Net"]}
   {"v":1,"op":"describe",ITEM}                 {"v":1,"op":"get",ITEM,"fields":["password","field:API_KEY"]}
   {"v":1,"op":"totp",ITEM}                     ITEM = "id":"<id>"  or  "folder":"F","name":"N"
@@ -34,7 +41,7 @@ Field names: username password notes uris; card: cardholder_name brand number ex
 keys; ssh: public_key fingerprint, private_key only for items marked ssh; custom fields as field:<name>. Never served: the TOTP
 seed and the password history. The marker is a custom field named `vault-share` whose value lists `totp` and/or `ssh`; only the
 owner can set it. A code (op totp) needs the marker `totp`. Errors: locked not_found ambiguous policy refused rate_limited
-bad_request unavailable internal. not_found is the same answer for an item outside the scope and one that does not exist.
+bad_request unavailable internal conflict pending. not_found is the same answer for an item outside the scope and one that does not exist.
 Every request is one journald line (op, user, uid, pid, comm, id, field names, result, ms), never a value or an item name.
 
 CLIENT (td, yc):  vault-share status | list [--folder F] [--json] | copy ITEM [--field F] | code ITEM [--print] | get ITEM --field F
@@ -224,6 +231,7 @@ SOCK_DIR = Path("/run/vault-share")
 SOCK_PATH = SOCK_DIR / "sock"
 SCOPES_PATH = Path("/etc/vault-share/scopes.tsv")
 MAX_REQUEST = 4096
+MAX_WRITE_REQUEST = 256 * 1024
 MARKER = "vault-share"
 
 
@@ -244,7 +252,7 @@ def _verified_test_mode():
     real = [str(SOCK_DIR), "/etc", f"/run/user/{os.getuid()}", str(Path.home() / ".local/state")]
     if any(_under(scratch, r) for r in real):
         return None
-    for var in ("VAULT_SHARE_SOCK", "VAULT_SHARE_SCOPES", "VAULT_SHARE_RUNTIME"):
+    for var in ("VAULT_SHARE_SOCK", "VAULT_SHARE_SCOPES", "VAULT_SHARE_RUNTIME", "VAULT_SHARE_WRITE_POLICY"):
         v = os.environ.get(var)
         if v and not _under(v, scratch):
             return None
@@ -384,7 +392,8 @@ def totp_now(seed, now=None):
 
 # ───────────────────────────── rate limits ─────────────────────────────
 
-WINDOWS = {"meta": ((60, 60), (1200, 3600)), "read": ((120, 60), (1200, 3600)), "totp": ((10, 60),)}
+WINDOWS = {"meta": ((60, 60), (1200, 3600)), "read": ((120, 60), (1200, 3600)), "totp": ((10, 60),),
+           "write": ((6, 60), (60, 3600))}
 MISS_LIMIT, PAUSE = 20, 900.0
 
 
@@ -415,10 +424,12 @@ class Rates:
             pass
 
     def entry(self, uid):
-        return self.data.setdefault(str(uid), {"meta": [], "read": [], "totp": [], "miss": [], "paused": 0})
+        row = self.data.setdefault(str(uid), {"meta": [], "read": [], "totp": [], "miss": [], "paused": 0})
+        row.setdefault("write", [])
+        return row
 
     def prune(self, e, now):
-        for k in ("meta", "read", "totp", "miss"):
+        for k in ("meta", "read", "totp", "write", "miss"):
             e[k] = [t for t in e[k] if now - t < 3600]
 
     def paused(self, uid):
@@ -551,6 +562,54 @@ class Broker:
         self.idle = tune("VAULT_SHARE_IDLE", 600.0)
         self.max_stale = tune("VAULT_SHARE_MAX_STALE", 600.0)
         self.peer_file = os.environ.get("VAULT_SHARE_TEST_PEER_FILE") if TEST else None
+        spec = importlib.util.spec_from_file_location('vault_share_write', HERE / 'vault-share-write.py')
+        self.write_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.write_module)
+        self.write_policy = self.write_module.WritePolicy(
+            cfg_path('VAULT_SHARE_WRITE_POLICY', '/etc/vault-share/env-write.tsv'),
+            test_root=TEST['scratch'] if TEST else None)
+        self.write_lock = asyncio.Lock()
+
+    async def verify_write(self, ident, uid, name, msg, deadline):
+        await self.prompt_guard()
+        if not await self.unlocked():
+            raise self.write_module.WriteError('locked')
+        rc, _ = await self.rbw('sync', timeout=min(15, max(0.01, deadline - time.monotonic())))
+        if rc != 0:
+            raise self.write_module.WriteError()
+        resolved, rec = await self.resolve({'id': ident}, name)
+        if (resolved != ident or rec.get('folder') != 'Users/' + name + '/Env/' + msg['project']
+                or rec.get('name') != msg['env'] or rec_type(rec) != 'note'):
+            raise self.write_module.WriteError('pending')
+        for key, value in msg['values'].items():
+            if self.value_of(rec, 'field:' + key)[0] != value:
+                raise self.write_module.WriteError('pending')
+
+    async def op_env_put(self, msg, uid, name):
+        module = self.write_module
+        try:
+            module.request_data(msg)
+            if not self.write_policy.allows(uid, name):
+                raise module.WriteError('policy')
+            wait = self.rates.take(uid, 'write')
+            if wait is not None:
+                raise Err('rate_limited', 'too many writes', retry_after=int(wait) + 1)
+            async with self.write_lock:
+                loop = asyncio.get_running_loop()
+                def verify(ident, peer_uid, peer_name, request, deadline):
+                    future = asyncio.run_coroutine_threadsafe(self.verify_write(ident, peer_uid, peer_name, request, deadline), loop)
+                    try:
+                        future.result(timeout=max(0.01, deadline - time.monotonic()))
+                    except BaseException:
+                        future.cancel()
+                        raise module.WriteError('pending') from None
+                # Pending operations and spent UUIDs survive broker/session restarts and reboots.
+                state = Path(os.environ.get('XDG_STATE_HOME') or (Path.home() / '.local/state'))
+                engine = module.Writer(state / 'vault-share/env-write', self.write_policy.allows, verify=verify)
+                body = await asyncio.to_thread(engine.run, msg, uid, name)
+                return body, body['id'], ','.join(body['names'])
+        except module.WriteError as error:
+            raise Err(error.code, 'env write ' + error.code) from None
 
     # identity -----------------------------------------------------------------------------------
     def identity(self, writer):
@@ -821,6 +880,10 @@ class Broker:
         if msg.get("v") != 1:
             raise Err("bad_request", "v must be 1")
         op = msg.get("op")
+        if op == 'env-put':
+            if self.rates.paused(uid):
+                raise Err('rate_limited', 'paused after too many refused requests')
+            return await self.op_env_put(msg, uid, name)
         if op not in ("whoami", "list", "describe", "get", "totp"):
             raise Err("bad_request", "unknown op")
         wait = self.rates.paused(uid)
@@ -880,11 +943,15 @@ class Broker:
                 self.total += 1
                 gate = uid
                 try:
+                    cap = MAX_WRITE_REQUEST if self.write_policy.allows(uid, name) else MAX_REQUEST
+                    reader._limit = cap
                     line = await asyncio.wait_for(reader.readline(), 5)
-                    if len(line) > MAX_REQUEST or not line.endswith(b"\n"):
+                    if len(line) > cap or not line.endswith(b"\n"):
                         raise ValueError
                     msg = json.loads(line)
                     if not isinstance(msg, dict):
+                        raise ValueError
+                    if msg.get('op') != 'env-put' and len(line) > MAX_REQUEST:
                         raise ValueError
                 except (ValueError, asyncio.TimeoutError, asyncio.LimitOverrunError):
                     msg = None
@@ -944,14 +1011,14 @@ class Broker:
             s = socket.socket(fileno=3)
             s.setblocking(False)
             # systemd owns the pathname; closing our inherited descriptor must not unlink it.
-            server = await asyncio.start_unix_server(self.handle, sock=s, limit=MAX_REQUEST, cleanup_socket=False)
+            server = await asyncio.start_unix_server(self.handle, sock=s, limit=MAX_WRITE_REQUEST, cleanup_socket=False)
         elif TEST:
             path = sock_path()
             path.parent.mkdir(parents=True, exist_ok=True)
             path.unlink(missing_ok=True)
             old = os.umask(0o111)
             try:
-                server = await asyncio.start_unix_server(self.handle, path=str(path), limit=MAX_REQUEST)
+                server = await asyncio.start_unix_server(self.handle, path=str(path), limit=MAX_WRITE_REQUEST)
             finally:
                 os.umask(old)
             os.chmod(path, 0o666)
@@ -1032,6 +1099,7 @@ class Unavailable(ShareError):
 
 
 ERRORS = {"locked": Locked, "not_found": NotFound, "ambiguous": NotFound, "policy": Policy, "refused": Policy,
+          "conflict": Policy, "pending": Policy,
           "rate_limited": RateLimited, "unavailable": Unavailable, "bad_request": ShareError, "internal": ShareError}
 
 
@@ -1056,6 +1124,12 @@ class Client:
         self.allow_self = allow_self or bool(TEST and os.environ.get("VAULT_SHARE_TEST_AS"))
 
     def request(self, msg, timeout=30):
+        raw = json.dumps(msg).encode() + b'\n'
+        writing = msg.get('op') == 'env-put'
+        if len(raw) > (MAX_WRITE_REQUEST if writing else MAX_REQUEST):
+            raise ShareError('request is too large')
+        if writing and timeout == 30:
+            timeout = 90
         d = self.path.parent
         try:
             st = os.lstat(d)
@@ -1073,7 +1147,7 @@ class Client:
             _pid, uid, _gid = struct.unpack("3i", s.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))
             if uid != st.st_uid:
                 raise Unavailable(f"{self.path} is served by uid {uid}, not by the owner of {d}")
-            s.sendall(json.dumps(msg).encode() + b"\n")
+            s.sendall(raw)
             buf = b""
             while not buf.endswith(b"\n") and len(buf) < 4 * 1024 * 1024:
                 chunk = s.recv(65536)

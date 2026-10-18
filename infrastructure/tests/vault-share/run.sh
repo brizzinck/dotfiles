@@ -70,6 +70,10 @@ section4() {
 
 check "broker subprocess timeout drains pipes and reaps child" python3 -I -B "$HERE/process_test.py"
 check "broker idle preserves inherited activation socket and cleans standalone socket" python3 -I -B "$HERE/socket_idle_test.py" "$SCRIPTS/vault-share.py"
+check "td self-write capability policy metadata and rendering" python3 -I -B "$HERE/write_policy_test.py"
+check "bounded owner UNIX backend without CLI fallback" python3 -I -B "$HERE/write_backend_test.py"
+check "serialized self-write batch and recovery engine" python3 -I -B "$HERE/write_engine_test.py"
+check "actual broker self-write socket and scoped read visibility" python3 -I -B "$HERE/write_socket_test.py"
 
 want 2 && section2
 want 4 && section4

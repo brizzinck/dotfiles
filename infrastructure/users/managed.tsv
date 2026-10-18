@@ -14,6 +14,7 @@
 #              create      apply-system.sh creates the account when it does not exist (shell /usr/bin/nologin, password
 #                          locked, home 0700); existing accounts (td, yc) are never created, re-shelled or re-grouped
 #              interactive accepted for readability, it is the default for every non-service user
+#              env-write   td only: broker-managed personal Env notes in td's own namespace (root policy required)
 #   accent   palette token of the user's colour (themes/palette/everforest.json `shared`): tmux status and zsh prompt marker
 #   note     free text
 #
@@ -21,7 +22,7 @@
 # Every managed user, whatever the flags, has NO access to the owner's home (the owner's ACL entries for it are removed).
 #
 # user	profile	flags	accent	note
-td	cli	interactive,clipboard	orange	AI agents; terminals only by hand (SUPER+SHIFT+T), the window owns its processes
+td	cli	interactive,clipboard,env-write	orange	AI agents; terminals only by hand (SUPER+SHIFT+T), the window owns its processes
 yc	cli	interactive	blue	work account, dormant since 2026-04-19
 aimcp	-	service,noacl,nobecome,create	purple	Telegram MCP service (127.0.0.1:8765), read-only; the owner reaches it only with a sudo password
 tgconfirm	-	service,noacl,nobecome,create,wayland	aqua	Telegram send confirmation broker: shows the per-message popup on the owner's Wayland socket and holds the send token; the owner reaches it only with a sudo password
