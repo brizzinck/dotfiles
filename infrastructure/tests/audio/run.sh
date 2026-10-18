@@ -624,6 +624,7 @@ PY
   TG="$REPO/.config/waybar/scripts/toggles.sh"
   mkdir -p "$T/home/.local/bin"; ln -sf "$EE" "$T/home/.local/bin/ee-ctl"
   export TOGGLES_EE_BIN=/bin/sh
+  export MCP_TGSEND_STATE="$T/no-tgsend-state"   # the live Telegram-send switch (broker state file) must not decide the summary class
   out=$(TOGGLES_LOGIN_AGE=5 "$TG" switch ns); sum=$(TOGGLES_LOGIN_AGE=5 "$TG" summary-raw)
   grep -q 'EasyEffects is starting' <<<"$out" && [ "$(jq -r .class <<<"$sum")" = dim ] && pass "13 A7: 5 s after login a missing EasyEffects shows no warning in the summary" || fail "13 A7 grace ($out | $sum)"
   out=$(TOGGLES_LOGIN_AGE=300 "$TG" switch ns); sum=$(TOGGLES_LOGIN_AGE=300 "$TG" summary-raw)
@@ -631,7 +632,7 @@ PY
   ee_start --preset mic-clean --bypass true; ee_wait
   sum=$(TOGGLES_LOGIN_AGE=5 "$TG" summary-raw)
   [ "$(jq -r .class <<<"$sum")" = warning ] && pass "13 A7: a switched-off noise suppression warns even inside the grace period" || fail "13 A7 off in grace ($sum)"
-  ee_stop; unset TOGGLES_EE_BIN
+  ee_stop; unset TOGGLES_EE_BIN MCP_TGSEND_STATE
   # A7: the picker reports an ee-ctl auto failure
   AP="$REPO/.config/hypr/scripts/audio-picker.sh"
   mkdir -p "$T/bin3"; printf '#!/bin/sh\nexit 1\n' >"$T/bin3/ee-ctl"; chmod +x "$T/bin3/ee-ctl"
