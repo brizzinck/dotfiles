@@ -571,9 +571,15 @@ printf '#!/bin/sh\necho EVIL >>"%s/evil-ran"\n' "$T" >"$T/evilbin/envs"
 printf '#!/bin/sh\necho "REAL $*" >>"%s/real-ran"\n' "$T" >"$T/fakehome/.local/bin/envs"
 chmod +x "$T/evilbin/envs" "$T/fakehome/.local/bin/envs"
 rm -f "$T/evil-ran" "$T/real-ran"
-fn=$(grep -E '^(er|ere|ert)\(\)' "$REPO/.zshrc")
-HOME="$T/fakehome" PATH="$T/evilbin:$PATH" zsh -f -c "$fn; er true; ere stage true; ert test" >/dev/null 2>&1
-check "4: er / ere / ert call ~/.local/bin/envs, never an envs found through PATH" bash -c "[ ! -e '$T/evil-ran' ] && [ \$(wc -l <'$T/real-ran') = 3 ]"
+fn=$(grep -E '^(typeset -g _ENVS_BIN=|envs\(\)|er\(\)|ere\(\)|ert\(\))' "$REPO/.zshrc")
+HOME="$T/fakehome" PATH="$T/evilbin:$PATH" zsh -f -c "$fn; er true; ere stage true; ert test; envs run true" >/dev/null 2>&1
+check "4: er / ere / ert / a typed envs call ~/.local/bin/envs, never an envs found through PATH" bash -c "[ ! -e '$T/evil-ran' ] && [ \$(wc -l <'$T/real-ran') = 4 ]"
+# FIX-DEVb2 #6: a project's mise [env] changes HOME (and PATH) AFTER the shell started: the functions keep the path of startup
+mkdir -p "$T/evilhome/.local/bin"
+printf '#!/bin/sh\necho EVILHOME >>"%s/evil-ran"\n' "$T" >"$T/evilhome/.local/bin/envs"; chmod +x "$T/evilhome/.local/bin/envs"
+rm -f "$T/evil-ran" "$T/real-ran"
+HOME="$T/fakehome" zsh -f -c "$fn; HOME='$T/evilhome'; PATH='$T/evilbin':\$PATH; envs run true; er true; ere stage true; ert test" >/dev/null 2>&1
+check "19.6: HOME and PATH changed after startup (a project's [env]) do not redirect envs, er, ere, ert" bash -c "[ ! -e '$T/evil-ran' ] && [ \$(wc -l <'$T/real-ran') = 4 ]"
 printf '#!/bin/sh\necho evil >>"%s/wlcopy-evil"\ncat >/dev/null\n' "$T" >"$T/evilbin/wl-copy"; chmod +x "$T/evilbin/wl-copy"
 rm -f "$T/wlcopy-evil"
 (cd "$PROJ" && PATH="$T/evilbin:$PATH" "$ENVS" copy-value DATABASE_URL >"$CAP/wl.out" 2>"$CAP/wl.err"); rc=$?

@@ -711,7 +711,7 @@ Functions of .zshrc that carry a comment, plus the commands of this setup.
 
 | Keys | Action |
 |---|---|
-| `er` | Run a command with the project's secrets of the active environment (envs: they live in Bitwarden and reach only the command, never this shell; a function or alias such as grun cannot be wrapped, use the real command: er go run .) (the absolute path: a project's mise `_.path` or a pinned tool dir can hold an `envs` of its own that would see the secrets) |
+| `er` | Run a command with the project's secrets of the active environment (envs: they live in Bitwarden and reach only the command, never this shell; a function or alias such as grun cannot be wrapped, use the real command: er go run .) |
 | `ere` | Run a command with the project's secrets of environment ENV (ere stage go test ./...) |
 | `ert` | Run a mise task with the project's secrets (ert test) |
 | `grun` | Go run for ./main.go, ./cmd/main.go or ./cmd/api/main.go |
