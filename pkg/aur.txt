@@ -2,6 +2,7 @@ adspower-global
 anydesk-bin
 bibata-cursor-theme-bin
 bitwarden-cli-bin
+carapace-bin
 ccusage
 downgrade
 everforest-cursor-theme

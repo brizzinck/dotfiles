@@ -1,10 +1,12 @@
 acpi_call-dkms
+act
 alacritty
 alsa-firmware
 alsa-utils
 amdgpu_top
 amd-ucode
 android-tools
+atuin
 bandwhich
 base
 base-devel
@@ -24,6 +26,7 @@ cmake
 cmatrix
 dante
 ddcutil
+difftastic
 direnv
 discord
 dive
@@ -47,6 +50,7 @@ firefox
 flatpak
 fwupd
 fzf
+ggml-vulkan
 ghostty
 gifski
 git
@@ -54,6 +58,7 @@ git-delta
 github-cli
 gitleaks
 git-lfs
+glab
 go
 go-yq
 gpu-screen-recorder
@@ -62,6 +67,7 @@ greetd-tuigreet
 grim
 grub
 htop
+hurl
 hyperfine
 hypridle
 hyprland
@@ -89,6 +95,7 @@ libvncserver
 linux
 linux-firmware
 linux-headers
+llama-cpp
 lld
 lostfiles
 lsof
@@ -96,6 +103,7 @@ lsp-plugins
 lsp-plugins-lv2
 man-db
 mesa
+mise
 mpv
 nano
 nautilus
@@ -177,6 +185,7 @@ ttf-jetbrains-mono-nerd
 udiskie
 ueberzugpp
 ufw
+usage
 usbutils
 vim
 visidata
