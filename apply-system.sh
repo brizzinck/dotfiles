@@ -269,6 +269,8 @@ REPO_PACKAGES=(
   # DEV-a: gitleaks = secret scan of the pre-commit hook of the public dotfiles repo (.githooks/pre-commit); atuin = local
   # shell history behind Ctrl+R (no sync, no daemon: .config/atuin/config.toml, recorded by .config/zsh/cmd-hooks.zsh)
   gitleaks atuin
+  # DEV-a: difftastic = structural diff next to delta (git dft / dlog / dshow, second lazygit diff renderer)
+  difftastic
   # phase 2: OCR (rus+eng), QR/barcodes, monitor brightness over DDC/CI, ports, calculator, GIF, cleanup, timers, network
   tesseract tesseract-data-eng tesseract-data-rus zbar qrencode ddcutil pik
   libqalculate chafa gifski kondo lostfiles termdown bandwhich lsof

@@ -5,6 +5,10 @@ gui:
   nerdFontsVersion: "3"
   border: rounded
 git:
-  pagers:
-    # pager.sh uses delta when installed and falls back to plain git output
-    - pager: ~/.config/lazygit/pager.sh
+  diffRenderers:
+    # pager.sh uses delta when installed and falls back to plain git output; `|` cycles to difftastic
+    - name: delta
+      command: ~/.config/lazygit/pager.sh
+    - name: difftastic
+      type: extDiff
+      command: difft --color=always --background={{colorScheme}} --context={{diffContext}}

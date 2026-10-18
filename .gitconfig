@@ -43,10 +43,18 @@
 	sort = -committerdate
 [commit]
 	verbose = true
+[difftool "difftastic"]
+	# structural diff (difftastic); delta stays the pager. git dft / git dlog / git dshow
+	cmd = difft "$LOCAL" "$REMOTE"
+[difftool]
+	prompt = false
 [alias]
 	lg = log --graph --oneline --decorate --all
 	st = status -sb
 	undo = reset --soft HEAD~1
+	dft = difftool --tool=difftastic
+	dlog = -c diff.external=difft log -p --ext-diff
+	dshow = -c diff.external=difft show --ext-diff
 	# secret scan of the staged changes (the dotfiles pre-commit hook runs the same rules; values redacted)
 	leaks = !gitleaks git --staged --no-banner --redact -v
 [filter "lfs"]
