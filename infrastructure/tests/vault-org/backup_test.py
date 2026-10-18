@@ -35,6 +35,8 @@ class Backend:
         self.edit_export = lambda doc, org: None
         self.after_exports = lambda: None
         self.served = None
+        self.cli_folder_sentinel = None
+        self.service_folder_sentinel = None
         self.fail = 'never'
         self.syncs = 0
 
@@ -48,7 +50,7 @@ class Backend:
         elif args[:2] == ('list', 'items'):
             doc = self.items
         elif args[:2] == ('list', 'folders'):
-            doc = self.folders
+            doc = self.folders + ([self.cli_folder_sentinel] if self.cli_folder_sentinel is not None else [])
         elif args[0] == 'export':
             org = args[args.index('--organizationid') + 1] if '--organizationid' in args else None
             self.exports.append(org)
@@ -74,7 +76,7 @@ class Backend:
         elif args[:2] == ('list', 'items'):
             data = self.items if self.served is None else self.served
         elif args[:2] == ('list', 'folders'):
-            data = self.folders
+            data = self.folders + ([self.service_folder_sentinel] if self.service_folder_sentinel is not None else [])
         else:
             raise AssertionError('mutation before verified backup: ' + repr(args))
         return types.SimpleNamespace(returncode=0, stdout=json.dumps(data), stderr='')
@@ -131,6 +133,88 @@ class Backups(unittest.TestCase):
             self.backup(b)
             self.assertEqual(expected, b.exports)
 
+    def test_official_no_folder_sentinels_normalize_cli_and_service(self):
+        expected = {'folder-one': 'Invented folder'}
+        for cli_id, service_id in ((None, None), ('', ''), (None, ''), ('', None)):
+            with self.subTest(cli_id=cli_id, service_id=service_id):
+                b = Backend()
+                b.items[0]['folderId'] = None
+                b.cli_folder_sentinel = {'object': 'folder', 'id': cli_id, 'name': 'No Folder'}
+                b.service_folder_sentinel = {'object': 'folder', 'id': service_id, 'name': 'No Folder'}
+                self.assertEqual(expected, v.backup_snapshot(b)['folders'])
+                self.assertEqual(expected, v.backup_snapshot(b, cli=False)['folders'])
+                self.assertEqual(expected, v.Applier(b, [], None, None).live_folders())
+                path = self.backup(b)
+                manifest = json.loads((path / 'manifest.json').read_text())
+                self.assertEqual(['folder-one'], manifest['folderIds'])
+                self.assertIsNone(manifest['items']['personal-one']['folderId'])
+                self.assertEqual(['folder-one'], [f['id'] for f in json.loads((path / 'personal.json').read_text())['folders']])
+
+    def test_only_exact_unique_no_folder_sentinel_is_ignored(self):
+        invalid = [
+            {'object': 'folder', 'name': 'No Folder'},
+            {'id': None, 'name': 'No Folder'},
+            {'object': 'item', 'id': None, 'name': 'No Folder'},
+            {'object': 'folder', 'id': None, 'name': 'Invented missing-ID folder'},
+            {'object': 'folder', 'id': '', 'name': 'No folder'},
+            {'object': 'folder', 'id': 0, 'name': 'No Folder'},
+            {'object': 'folder', 'id': None, 'name': 'No Folder', 'extra': 'invented'},
+        ]
+        for record in invalid:
+            for served in (False, True):
+                with self.subTest(record=record, served=served):
+                    b = Backend()
+                    b.folders.append(record)
+                    with self.assertRaises(v.Fail): v.backup_snapshot(b, cli=not served)
+                    with self.assertRaises(v.Fail): v.Applier(b, [], None, None).live_folders()
+        for duplicate in (
+            [{'object': 'folder', 'id': None, 'name': 'No Folder'}] * 2,
+            [{'object': 'folder', 'id': None, 'name': 'No Folder'}, {'object': 'folder', 'id': '', 'name': 'No Folder'}],
+            [{'id': 'folder-one', 'name': 'Duplicate real folder'}],
+        ):
+            b = Backend(); b.folders.extend(duplicate)
+            with self.assertRaises(v.Fail): v.backup_snapshot(b)
+            with self.assertRaises(v.Fail): v.Applier(b, [], None, None).live_folders()
+
+    def test_real_no_folder_name_remains_in_exact_export_coverage(self):
+        b = Backend()
+        real_id = '11111111-2222-4333-8444-000000000001'
+        b.folders.append({'object': 'folder', 'id': real_id, 'name': 'No Folder'})
+        b.cli_folder_sentinel = {'object': 'folder', 'id': '', 'name': 'No Folder'}
+        b.service_folder_sentinel = {'object': 'folder', 'id': None, 'name': 'No Folder'}
+        path = self.backup(b)
+        self.assertEqual(sorted(['folder-one', real_id]), json.loads((path / 'manifest.json').read_text())['folderIds'])
+        b.edit_export = lambda doc, org: doc.update(folders=doc['folders'][:1]) if org is None else None
+        self.assertIn('folder coverage', self.refused(b))
+
+    def test_apply_with_official_cli_and_service_sentinels_completes(self):
+        class Journal:
+            sha = PLAN
+            def seen(self, *args): return False
+            def log(self, *args): pass
+        class ApplyBackend(Backend):
+            def b64(self, obj): return obj
+            def bw(self, *args, stdin=None):
+                if args[:2] == ('get', 'item'):
+                    return types.SimpleNamespace(returncode=0, stdout=json.dumps(next(i for i in self.items if i['id'] == args[2])), stderr='')
+                if args[:2] == ('edit', 'item'):
+                    self.items = [copy.deepcopy(stdin) if i['id'] == args[2] else i for i in self.items]
+                    return types.SimpleNamespace(returncode=0, stdout=json.dumps(stdin), stderr='')
+                return super().bw(*args)
+        for sentinel_id in (None, ''):
+            with self.subTest(sentinel_id=sentinel_id):
+                b = ApplyBackend([item('personal-one')])
+                b.folders.append({'object': 'folder', 'id': 'folder-two', 'name': 'Destination'})
+                b.cli_folder_sentinel = {'object': 'folder', 'id': sentinel_id, 'name': 'No Folder'}
+                b.service_folder_sentinel = {'object': 'folder', 'id': '' if sentinel_id is None else None, 'name': 'No Folder'}
+                row = v.Row('item', 'personal-one', 'Invented private name', 'Invented folder', 'folder:Destination')
+                applier = v.Applier(b, [row], Journal(), None)
+                applier.finish = lambda: None
+                applier.summary = lambda: 5 if applier.skipped else 0
+                with contextlib.redirect_stdout(io.StringIO()): self.assertEqual(0, applier.run())
+                self.assertEqual('folder-two', b.items[0]['folderId'])
+                self.assertEqual(1, applier.counts['moved'])
+
     def test_equal_count_wrong_id_missing_and_duplicate_refused(self):
         for change in ('wrong', 'missing', 'duplicate', 'cross-org', 'revision', 'type'):
             with self.subTest(change=change):
@@ -171,7 +255,7 @@ class Backups(unittest.TestCase):
         self.assertEqual([], list(v.BACKUPS.glob('vault-*')))
 
     def test_invalid_encryption_modes_and_folder_ids_refused(self):
-        for change in ('plain', 'validation', 'password', 'folder-missing', 'folder-duplicate'):
+        for change in ('plain', 'validation', 'password', 'folder-missing', 'folder-duplicate', 'synthetic-folder'):
             b = Backend()
             def edit(doc, org):
                 if org is None:
@@ -179,7 +263,8 @@ class Backups(unittest.TestCase):
                     elif change == 'validation': doc.pop('encKeyValidation_DO_NOT_EDIT')
                     elif change == 'password': doc['passwordProtected'] = True
                     elif change == 'folder-missing': doc['folders'] = []
-                    else: doc['folders'] *= 2
+                    elif change == 'folder-duplicate': doc['folders'] *= 2
+                    else: doc['folders'].append({'object': 'folder', 'id': None, 'name': 'No Folder'})
             b.edit_export = edit
             with self.subTest(change=change): self.refused(b)
 

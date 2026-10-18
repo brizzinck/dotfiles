@@ -1343,6 +1343,26 @@ def backup_id(value):
     return isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value) is not None
 
 
+def real_folder_inventory(records):
+    """The CLI/serve synthetic No Folder row is not an exported or mutable folder."""
+    if not isinstance(records, list):
+        raise ValueError
+    folders, sentinel_seen = {}, False
+    for folder in records:
+        if (isinstance(folder, dict) and set(folder) == {"object", "id", "name"}
+                and folder["object"] == "folder" and folder["name"] == "No Folder"
+                and (folder["id"] is None or folder["id"] == "")):
+            if sentinel_seen:
+                raise ValueError
+            sentinel_seen = True
+            continue
+        if (not isinstance(folder, dict) or not backup_id(folder.get("id"))
+                or folder["id"] in folders or not isinstance(folder.get("name"), str)):
+            raise ValueError
+        folders[folder["id"]] = folder["name"]
+    return folders
+
+
 def backup_snapshot(m, cli=True):
     """Metadata only in the returned snapshot; full CLI records never reach disk or diagnostics."""
     def listing(kind):
@@ -1364,11 +1384,10 @@ def backup_snapshot(m, cli=True):
             backup_refused("invalid inventory")
         return records
 
-    folders = {}
-    for f in listing("folders"):
-        if not isinstance(f, dict) or not backup_id(f.get("id")) or f["id"] in folders or not isinstance(f.get("name"), str):
-            backup_refused("invalid folder inventory")
-        folders[f["id"]] = f["name"]
+    try:
+        folders = real_folder_inventory(listing("folders"))
+    except ValueError:
+        backup_refused("invalid folder inventory")
     items = {}
     for i in listing("items"):
         if not isinstance(i, dict) or not backup_id(i.get("id")) or i["id"] in items:
@@ -1617,15 +1636,11 @@ class Applier:
 
     def live_folders(self):
         """Fresh id -> name snapshot. Plan display columns and earlier snapshots are never mutation authority."""
-        folders = get_json(self.m, "list", "folders")
-        if not isinstance(folders, list):
-            raise Fail("cannot verify the live folders; audit and review again")
-        cur = {}
-        for f in folders:
-            if not isinstance(f, dict) or not f.get("id") or not isinstance(f.get("name"), str) or f["id"] in cur:
-                raise Fail("cannot verify the live folders; audit and review again")
-            cur[f["id"]] = unicodedata.normalize("NFC", f["name"])
-        return cur
+        try:
+            folders = real_folder_inventory(get_json(self.m, "list", "folders"))
+        except ValueError:
+            raise Fail("cannot verify the live folders; audit and review again") from None
+        return {ident: unicodedata.normalize("NFC", name) for ident, name in folders.items()}
 
     def fmap(self):
         return {name: ident for ident, name in self.live_folders().items()}
