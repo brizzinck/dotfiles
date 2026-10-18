@@ -1386,7 +1386,8 @@ if [ -x "$DOTFILES/.local/bin/pj" ]; then
     pj_bad=""
     [ "$(stat -c %a "$pj_dir")" = 700 ] || pj_bad="$pj_bad $pj_dir is $(stat -c %a "$pj_dir") (want 700);"
     [ ! -e "$pj_dir/trusted.tsv" ] || [ "$(stat -c %a "$pj_dir/trusted.tsv")" = 600 ] || pj_bad="$pj_bad trusted.tsv is $(stat -c %a "$pj_dir/trusted.tsv") (want 600);"
-    if [ -n "$pj_bad" ]; then bad pj-trust "$pj_bad"; else info pj-trust "$(grep -c . "$pj_dir/trusted.tsv" 2>/dev/null || echo 0) trusted .tmux-session.toml file(s) (pj trust DIR to add one); state dir 700, trusted.tsv 600"; fi
+    pj_n="$(grep -c . "$pj_dir/trusted.tsv" 2>/dev/null)"   # grep -c prints 0 AND exits 1 on an empty file: no `|| echo 0`
+    if [ -n "$pj_bad" ]; then bad pj-trust "$pj_bad"; else info pj-trust "${pj_n:-0} trusted file(s) (.tmux-session.toml and .workmux.yaml; pj trust DIR to add one); state dir 700, trusted.tsv 600"; fi
   else
     info pj-trust "no trusted layout files yet (~/.local/state/pj appears with the first pj trust)"
   fi

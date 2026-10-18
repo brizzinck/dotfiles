@@ -37,7 +37,7 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Editor | [Neovim: files and misc](#neovim-files-and-misc) | 17 |
 | Editor | [Neovim: moving and editing](#neovim-moving-and-editing) | 62 |
 | Menus and bar | [Menus: list grammar](#menus-list-grammar) | 19 |
-| Menus and bar | [Menus: keys of each menu](#menus-keys-of-each-menu) | 105 |
+| Menus and bar | [Menus: keys of each menu](#menus-keys-of-each-menu) | 106 |
 | Menus and bar | [TUIs and viewers](#tuis-and-viewers) | 4 |
 | Menus and bar | [Bar (waybar)](#bar-waybar) | 48 |
 | Apps and login | [Telegram](#telegram) | 6 |
@@ -1149,15 +1149,15 @@ Menu-specific keys keep the Alt+ form (works in both modes) and get a NORMAL let
 | `b` / `Alt+B` | Unlock the bw CLI session (Trash, attachments, edit need it) | Vault browser (SUPER+CTRL+SHIFT+P) |
 | `O` / `Alt+V` | Open the Bitwarden desktop app (account, emergency access, organisations) | Vault browser (SUPER+CTRL+SHIFT+P) |
 | `Tab` / `Shift+Tab` | Next / previous folder (All, each folder, no folder, Trash) | Vault browser (SUPER+CTRL+SHIFT+P) |
-| `Enter` / `l` | Projects: open the project (its environments) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
-| `n` | Projects: write .envs.toml here (envs init) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
-| `i` | Projects: import the project's .env file into Bitwarden and mise | envs (tmux prefix v, SUPER+; j e, hub Dev) |
-| `x` | Projects: write .env.example (names only) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
-| `c` | Projects: check the project (names, binding, vault) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
-| `s` | Projects: sync rbw (Alt+S is grabbed by Hyprland) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
-| `r` / `Alt+R` | Projects: rename the project (folder Env/<project>) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
-| `d` / `Alt+D` | Projects: delete the project (typed confirmation, items go to the trash) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
-| `b` | Projects: bind this checkout to Env/<project> (+ mise trust) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `Enter` / `l` | Envs: open the project (its environments) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `n` | Envs: write .envs.toml here (envs init) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `i` | Envs: import the project's .env file into Bitwarden and mise | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `x` | Envs: write .env.example (names only) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `c` | Envs: check the project (names, binding, vault) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `s` | Envs: sync rbw (Alt+S is grabbed by Hyprland) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `r` / `Alt+R` | Envs: rename the project (folder Env/<project>) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `d` / `Alt+D` | Envs: delete the project (typed confirmation, items go to the trash) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `b` | Envs: bind this checkout to Env/<project> (+ mise trust) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
 | `Enter` / `l` | Environments: open the variables | envs (tmux prefix v, SUPER+; j e, hub Dev) |
 | `u` / `Alt+U` | Environments: use it in this project (prod asks for its name, expires after an hour) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
 | `c` / `Alt+C` | Environments: copy values to another environment (picker) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
@@ -1213,12 +1213,13 @@ Menu-specific keys keep the Alt+ form (works in both modes) and get a NORMAL let
 | `F1` / `F2` | Previous / next completion group | Completion menu (Tab) |
 | `Esc` | NORMAL mode: j k g G v / i a q as in every menu (Esc again quits) | Completion menu (Tab) |
 | `Enter` | Accept the completion | Completion menu (Tab) |
-| `Enter` | Switch to or create the tmux session of the row (a worktree row: the window that works in it) | Projects (SUPER+P, prefix F, Ctrl+X p) |
+| `Enter` | Switch to or create the tmux session of the row (a worktree row: the window that works in it; a `+N worktrees` row: show them) | Projects (SUPER+P, prefix F, Ctrl+X p) |
 | `o` / `Alt+O` | A window of its own: focus the window that shows the session, else a new terminal (Hyprland only) | Projects (SUPER+P, prefix F, Ctrl+X p) |
 | `d` / `Alt+D` | Kill the session (asks when something runs, a client is attached or wm-* windows exist) | Projects (SUPER+P, prefix F, Ctrl+X p) |
-| `w` / `Alt+W` | New workmux task in the row's repo (branch picker, wm-* window in the project session) | Projects (SUPER+P, prefix F, Ctrl+X p) |
+| `w` / `Alt+W` | New workmux task in the row's repo (branch picker, then the wm-* window in the project session; needs a trusted .workmux.yaml) | Projects (SUPER+P, prefix F, Ctrl+X p) |
+| `Alt+Enter` | In the branch picker of w: use the typed branch name as it is, not the highlighted fuzzy match | Projects (SUPER+P, prefix F, Ctrl+X p) |
 | `c` / `Alt+C` | Clone a repository from gh or glab and open it | Projects (SUPER+P, prefix F, Ctrl+X p) |
-| `t` / `Alt+T` | Trust the repo's .tmux-session.toml (its commands are shown first) | Projects (SUPER+P, prefix F, Ctrl+X p) |
+| `t` / `Alt+T` | Trust the repo's .tmux-session.toml and .workmux.yaml (the commands are shown first) | Projects (SUPER+P, prefix F, Ctrl+X p) |
 | `Alt+Enter` | Create with the default layout, ignoring .tmux-session.toml | Projects (SUPER+P, prefix F, Ctrl+X p) |
 
 ### TUIs and viewers
