@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# fake gitlab-ci-local: `--list-csv` prints the real format; a run logs argv, cwd, the mode of the variables file and the sha256 of
+# its parsed value of NPM_TOKEN; the file itself is copied to $FAKE_DIR/gcl.variables for the test (and removed with the run dir)
+. "$(dirname "$0")/_dev.sh"
+dev_log "gcl $*"
+dev_log "gcl cwd=$PWD"
+vf=""
+for ((i = 1; i <= $#; i++)); do
+  [[ ${!i} == --list-csv ]] && { printf 'name;stage;when;allowFailure;environment;needs\nbuild-shell;build;on_success;false;;\ntest-docker;test;on_success;false;;\n'; exit 0; }
+  if [[ ${!i} == --variables-file ]]; then j=$((i + 1)); vf=${!j}; fi
+done
+if [[ -f $vf ]]; then
+  cp "$vf" "$FAKE_DIR/gcl.variables"
+  dev_log "gcl variables-mode=$(stat -c %a "$vf") dir-mode=$(stat -c %a "$(dirname "$vf")") file=$vf"
+  python3 - "$vf" <<'PY' >>"$FAKE_DIR/dev.log"
+import sys, hashlib, re
+t = open(sys.argv[1]).read()
+m = re.search(r'^NPM_TOKEN: "((?:[^"\\]|\\.)*)"$', t, re.M)
+if m:
+    import json
+    val = json.loads('"' + m.group(1) + '"')
+    print("gcl NPM_TOKEN-sha=" + hashlib.sha256(val.encode()).hexdigest()[:16] + " lines=" + str(len(t.splitlines())))
+PY
+fi
+dev_log "gcl names=$(env | cut -d= -f1 | grep -E '^(NPM_TOKEN|API_TOKEN|OPENAI_API_KEY)$' | sort | tr '\n' ' ')"
+maybe_sleep
+exit "${FAKE_GCL_RC:-0}"

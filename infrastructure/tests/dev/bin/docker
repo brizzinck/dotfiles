@@ -13,10 +13,21 @@ try:
     data = json.load(open(os.path.join(fake, "docker.json")))
 except OSError:
     data = {"ps": [], "ports": {}}
-if args[:1] == ["ps"]:
+if args[:1] == ["images"]:
+    for i in data.get("images", []):
+        print(i)
+elif args[:1] == ["ps"]:
     show_all = "-a" in args
+    import re
+    name_re = next((a.split("=", 1)[1] for a in args if a.startswith("name=")), None)
+    fmt_names = "{{.Names}}" in args and len([a for a in args if "\t" in a]) == 0
     for r in data["ps"]:
         if r["state"] != "running" and not show_all:
+            continue
+        if name_re and not re.search(name_re, r["name"]):
+            continue
+        if fmt_names:
+            print(r["name"])
             continue
         print("\t".join([r["name"], r["state"], r["image"], r.get("service", ""), r.get("workdir", ""), r.get("files", "")]))
 elif args[:1] == ["port"]:

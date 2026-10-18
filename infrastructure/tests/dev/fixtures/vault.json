@@ -79,6 +79,11 @@
      "name": "API_TOKEN",
      "value": "SECRET-api-token-stage",
      "type": 1
+    },
+    {
+     "name": "NPM_TOKEN",
+     "value": "SECRET-npm\"q\nline2",
+     "type": 1
     }
    ],
    "attachments": [],

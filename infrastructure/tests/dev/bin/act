@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# fake act: `-l` prints the real table format (captured from act 0.2.89); a run logs argv, cwd, the secret NAMES passed with -s,
+# hashes of the env values behind them and copies the three --*-file arguments (they must be empty)
+. "$(dirname "$0")/_dev.sh"
+dev_log "act $*"
+dev_log "act cwd=$PWD"
+args=("$@")
+for a in "$@"; do
+  if [[ $a == -l ]]; then
+    printf 'Stage  Job ID  Job name  Workflow name  Workflow file  Events           \n0      build   build     CI             ci.yml         push,pull_request\n1      test    test      CI             ci.yml         push,pull_request\n'
+    exit 0
+  fi
+done
+dev_log "act hashes $(hashes NPM_TOKEN API_TOKEN GITHUB_TOKEN) names=$(env | cut -d= -f1 | grep -E '^(NPM_TOKEN|API_TOKEN|GITHUB_TOKEN|DB_PASSWORD|OPENAI_API_KEY)$' | sort | tr '\n' ' ')"
+for ((i = 0; i < ${#args[@]}; i++)); do
+  case ${args[i]} in
+    --env-file|--secret-file|--var-file|--input-file) f=${args[i + 1]}; dev_log "act ${args[i]}-size=$(stat -c %s "$f" 2>/dev/null) mode=$(stat -c %a "$f" 2>/dev/null)" ;;
+  esac
+done
+echo "act: fake run"
+maybe_sleep
+exit "${FAKE_ACT_RC:-0}"

@@ -1,0 +1,545 @@
+#!/usr/bin/python3 -I
+"""ci: run the CI of a repository locally (DEV-d): act for GitHub Actions, gitlab-ci-local for GitLab CI. Python 3 stdlib only;
+absolute shebang (this process receives secrets through `envs run`). Docs: CLAUDE.md "Dev tools".
+
+  ci [--system act|gcl] [--root DIR]   menu over the jobs (fzf-menu): Enter run, a run everything, w workflow/event (act), n dry run,
+                                       l last log, x clean, i image-less jobs in a container (gcl), ? help
+  ci run [JOB...] [--system S] [--event E] [-W FILE] [--dry-run] [--root DIR]
+                                       run the jobs (default: everything: act `push` event, the whole pipeline)
+  ci list [--system S] [--json]        the jobs of the detected system
+  ci _run ...                          internal: the `envs run` child
+
+Detection from the git top-level: .github/workflows/*.y*ml -> act, .gitlab-ci.yml -> gitlab-ci-local, both -> the menu asks.
+`[ci]` in .envs.toml (at the top-level): secrets = ["NPM_TOKEN"] (declared secrets passed to the run, default none) and
+github_token = false (act: pass `gh auth token` as GITHUB_TOKEN). With neither, nothing touches the vault.
+
+Hostile-repo hardening: the tools run from a tmpfs run directory with -C / --cwd pointing at the repository, so a repo `.actrc`
+is never read (act reads ./.actrc); act gets EMPTY --env-file / --secret-file / --var-file / --input-file (a repo .env, .secrets,
+.vars is never used); gitlab-ci-local gets its own --variables-file (a repo .gitlab-ci-local-variables.yml is never used) and a
+repo `.gitlab-ci-local-env` (which can set CLI defaults such as volumes or privileged) stops the run unless you confirm it.
+The only secrets file is gitlab-ci-local's variables.yml: 0600 on tmpfs, removed when the run ends (also on INT/TERM/HUP).
+CI jobs are CODE from the repository: act runs them in containers; gitlab-ci-local jobs WITHOUT an `image:` run ON THIS MACHINE
+(shell executor): `i` switches to containers. The log of the last run is $XDG_RUNTIME_DIR/devtools/ci-last.log (tmpfs, 0600).
+Exit codes: 0 ok, 1 error, 2 usage, 4 refused (agent, unbound), 127 tool missing; the tool's own status for a run.
+"""
+import json
+import os
+import re
+import shlex
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+SELF = Path(__file__).resolve()
+_spec = __import__("importlib.util").util.spec_from_file_location("devtools", SELF.parents[2] / ".config/devtools/devtools.py")
+D = __import__("importlib.util").util.module_from_spec(_spec)
+_spec.loader.exec_module(D)
+E = D.envs()
+PY = "/usr/bin/python3" if os.access("/usr/bin/python3", os.X_OK) else sys.executable
+
+EVENTS = ("push", "pull_request", "workflow_dispatch")
+JOB_RE = re.compile(r"^[A-Za-z0-9_.:/ @-]{1,200}$")
+LOG_NAME = "ci-last.log"
+
+
+def git_top(start=None):
+    git = D.tool("git", required=False)
+    if not git:
+        return None
+    p = subprocess.run([git, "rev-parse", "--show-toplevel"], cwd=str(start or os.getcwd()), capture_output=True, text=True,
+                       stdin=subprocess.DEVNULL, env=E.git_env())
+    return Path(p.stdout.strip()) if p.returncode == 0 and p.stdout.strip() else None
+
+
+def workflows(root):
+    d = root / ".github/workflows"
+    return sorted(p for p in d.glob("*") if p.suffix in (".yml", ".yaml") and p.is_file()) if d.is_dir() else []
+
+
+def detect(root):
+    """['act'] / ['gcl'] / both / []"""
+    out = []
+    if workflows(root):
+        out.append("act")
+    if (root / ".gitlab-ci.yml").is_file():
+        out.append("gcl")
+    return out
+
+
+def ci_config(root):
+    """(secrets list, github_token flag) from the [ci] table of the .envs.toml at ROOT (the project itself, no search upward)."""
+    f = root / E.TOML
+    if not f.is_file():
+        return [], False, None
+    cfg = E.load_cfg(root)
+    raw = cfg.data.get("ci") if isinstance(cfg.data.get("ci"), dict) else {}
+    for k in raw:
+        if k not in ("secrets", "github_token"):
+            D.fail(f"[ci] unknown key {k!r} (allowed: secrets, github_token)", 1)
+    secrets = raw.get("secrets", [])
+    if not (isinstance(secrets, list) and all(isinstance(x, str) and x in cfg.secrets for x in secrets)):
+        D.fail("[ci] secrets must be a list of names declared in [secrets]", 1)
+    gt = raw.get("github_token", False)
+    if not isinstance(gt, bool):
+        D.fail("[ci] github_token must be true or false", 1)
+    return list(secrets), gt, cfg
+
+
+def choose_root(a):
+    if a.root:
+        r = Path(a.root).expanduser().resolve()
+        return git_top(r) or r
+    top = git_top()
+    if top:
+        return top
+    r = D.project_root(want=lambda p: bool(detect(git_top(p) or p)))
+    if r is None:
+        D.fail("not inside a git repository (cd into one, or bind a project with `envs bind`)", 1)
+    return git_top(r) or r
+
+
+def choose_system(root, want):
+    found = detect(root)
+    if want:
+        if want not in found:
+            D.fail(f"no {'GitHub workflow' if want == 'act' else '.gitlab-ci.yml'} in {root}", 1)
+        return want
+    if not found:
+        D.fail(f"no .github/workflows/*.yml and no .gitlab-ci.yml in {root}", 1)
+    if len(found) == 1:
+        return found[0]
+    got = E.pick(["act   GitHub Actions (.github/workflows)", "gcl   GitLab CI (.gitlab-ci.yml)"], "CI system") if D.tty() else None
+    if not got:
+        D.fail("both GitHub workflows and a .gitlab-ci.yml exist: pass --system act|gcl", 2)
+    return got.split()[0]
+
+
+# ───────────────────────────── jobs ─────────────────────────────
+
+def cache_dir():
+    return Path(os.environ.get("XDG_CACHE_HOME") or E.HOME / ".cache") / "act"
+
+
+def state_dir():
+    return D.run_root()
+
+
+def act_base(root, run, files=None):
+    """act with everything a repo could steer pinned: workdir -C ROOT, empty env/secret/var/input files, explicit cache paths."""
+    act = D.tool("act", hint=D.REPO_PKG_HINT)
+    empties = []
+    for name in ("none.env", "none.secrets", "none.vars", "none.input"):
+        empties.append(D.write_private(run / name, ""))
+    cd = cache_dir()
+    return [act, "-C", str(root), "--env-file", str(empties[0]), "--secret-file", str(empties[1]), "--var-file", str(empties[2]),
+            "--input-file", str(empties[3]), "--action-cache-path", str(cd), "--cache-server-path", str(cd / "cache"),
+            "--artifact-server-path", str(cd / "artifacts"), "--pull=false"]
+
+
+def parse_act_list(text):
+    """act -l is a fixed-width table: Stage  Job ID  Job name  Workflow name  Workflow file  Events"""
+    lines = [l for l in text.splitlines() if l.strip()]
+    hdr = next((i for i, l in enumerate(lines) if l.startswith("Stage") and "Job ID" in l), None)
+    if hdr is None:
+        return []
+    h = lines[hdr]
+    cols = ["Stage", "Job ID", "Job name", "Workflow name", "Workflow file", "Events"]
+    starts = [h.index(c) for c in cols]
+    jobs = []
+    for l in lines[hdr + 1:]:
+        cells = [l[s:(starts[i + 1] if i + 1 < len(starts) else None)].strip() for i, s in enumerate(starts)]
+        if len(cells) == 6 and cells[1]:
+            jobs.append(dict(stage=cells[0], job=cells[1], name=cells[2], workflow=cells[3], file=cells[4], events=cells[5]))
+    return jobs
+
+
+def list_jobs(system, root):
+    run = D.run_dir("ci")
+    try:
+        if system == "act":
+            p = subprocess.run(act_base(root, run) + ["-l"], capture_output=True, text=True, stdin=subprocess.DEVNULL, cwd=str(run))
+            return parse_act_list(p.stdout)
+        gcl = D.tool("gitlab-ci-local", hint=D.USER_TOOLS_HINT)
+        rel = os.path.relpath(root, run)
+        vf = D.write_private(run / "variables.yml", "---\n")
+        p = subprocess.run([gcl, "--cwd", rel, "--variables-file", str(vf), "--list-csv"], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, cwd=str(run))
+        rows = [l.split(";") for l in p.stdout.splitlines() if ";" in l]
+        if rows and rows[0][:2] == ["name", "stage"]:
+            rows = rows[1:]
+        return [dict(job=r[0], stage=r[1], when=r[2] if len(r) > 2 else "", name=r[0]) for r in rows if r and r[0]]
+    finally:
+        _rm(run)
+
+
+def _rm(d):
+    import shutil
+    shutil.rmtree(d, ignore_errors=True)
+
+
+def cmd_list(a):
+    root = choose_root(a)
+    system = choose_system(root, a.system)
+    jobs = list_jobs(system, root)
+    if a.json:
+        print(json.dumps(dict(system=system, root=str(root), jobs=jobs), indent=1))
+        return
+    for j in jobs:
+        print(f"{j['job']:<24} {j.get('stage', ''):<8} {j.get('workflow', j.get('when', '')):<24} {j.get('events', '')}")
+    if not jobs:
+        print("no jobs found")
+
+
+# ───────────────────────────── running ─────────────────────────────
+
+def actrc_images():
+    """Images named by the -P lines of the actrc (what a first run would pull)."""
+    out = []
+    files = [E.HOME / ".config/act/actrc", E.HOME / ".actrc"]
+    if E.TEST_DIRS and os.environ.get("DEVTOOLS_ACTRC"):        # test hook (verified test mode only)
+        files = [Path(os.environ["DEVTOOLS_ACTRC"])]
+    for f in files:
+        try:
+            for line in f.read_text().splitlines():
+                m = re.match(r"^\s*-P\s+\S+=(\S+)\s*$", line)
+                if m:
+                    out.append(m.group(1))
+        except OSError:
+            pass
+    return sorted(set(out))
+
+
+def ensure_images(yes):
+    """act pulls a medium image on its first run (about 1-2 GB): ask once when none of the configured ones is local."""
+    images = actrc_images()
+    if not images:
+        return
+    dk = D.tool("docker", required=False)
+    if not dk:
+        return
+    p = subprocess.run([dk, "images", "--format", "{{.Repository}}:{{.Tag}}"], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    have = set(p.stdout.split())
+    if any(i in have for i in images):
+        return
+    msg = f"None of the act images is on this machine ({', '.join(images[:3])}); the first run pulls one (about 1-2 GB)."
+    if yes:
+        return
+    if not D.tty():
+        D.fail(msg + " Run `ci` in a terminal once to confirm (or pull the image yourself).", 1)
+    sys.stderr.write(msg + " Continue? [y/N] ")
+    sys.stderr.flush()
+    if not sys.stdin.readline().strip().lower().startswith("y"):
+        D.fail("not confirmed", 130)
+
+
+def gcl_env_gate(root, yes):
+    f = root / ".gitlab-ci-local-env"
+    if not f.is_file():
+        return
+    keys = sorted({l.split("=", 1)[0].strip() for l in f.read_text().splitlines() if "=" in l and not l.lstrip().startswith("#")})
+    msg = (f"{f} sets CLI defaults of gitlab-ci-local ({', '.join(keys) or 'empty'}): such a file can mount host paths or run privileged. "
+           "Only continue for a repository you trust.")
+    if yes:
+        return
+    if not D.tty():
+        D.fail(msg + " Refused without a terminal (`ci run --trust-env-file` confirms it).", 4)
+    sys.stderr.write(msg + " Continue? [y/N] ")
+    sys.stderr.flush()
+    if not sys.stdin.readline().strip().lower().startswith("y"):
+        D.fail("not confirmed", 4)
+
+
+def yaml_variables(values):
+    """A gitlab-ci-local variables file: every value a double-quoted, escaped scalar (a quote or newline cannot add a key)."""
+    return "---\n" + "".join(f"{n}: {D.yaml_dq(v)}\n" for n, v in values.items())
+
+
+class Runner:
+    """Run one command under `script` (the terminal stays a terminal, the output is logged), forward INT / TERM / HUP to it and
+    remove the run directory on the way out."""
+
+    def __init__(self, run):
+        self.run, self.proc, self.sig = run, None, 0
+
+    def handle(self, signum, _frame):
+        self.sig = signum
+        if self.proc and self.proc.poll() is None:
+            try:
+                self.proc.send_signal(signal.SIGINT if signum == signal.SIGINT else signal.SIGTERM)
+            except OSError:
+                pass
+
+    def go(self, argv, env, log):
+        script = D.tool("script", required=False)
+        cmd = argv
+        if script:
+            cmd = [script, "-qefc", shlex.join(argv), str(log)]
+        old = {s: signal.signal(s, self.handle) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+        try:
+            self.proc = subprocess.Popen(cmd, env=env, cwd=str(self.run))
+            rc = self.proc.wait()
+        finally:
+            for s, h in old.items():
+                signal.signal(s, h)
+        if self.sig:
+            return 128 + self.sig
+        return rc
+
+
+def run_log():
+    p = D.run_root() / LOG_NAME
+    p.write_text("")
+    os.chmod(p, 0o600)
+    return p
+
+
+def cmd__run(a):
+    E.harden_environment()
+    root = Path(a.root)
+    system = a.system
+    secrets, gh_token, cfg = ci_config(root)
+    names = [n for n in os.environ.get("ENVS_SECRETS", "").split() if n in secrets]
+    if names or gh_token:
+        E.refuse_agent("ci run with secrets")
+    run = D.run_dir("ci")
+    runner = Runner(run)
+    env = dict(os.environ)
+    for n in os.environ.get("ENVS_SECRETS", "").split():       # envs injected every declared secret: only the [ci] ones go on
+        if n not in names:
+            env.pop(n, None)
+    rc = 1
+    try:
+        log = run_log()
+        if system == "act":
+            ensure_images(a.yes)
+            base = act_base(root, run)
+            tail = []
+            if a.workflow:
+                tail += ["-W", str(a.workflow)]
+            for n in names:
+                tail += ["-s", n]                              # no value: act takes it from its environment
+            if gh_token:
+                gh = D.tool("gh", hint="github-cli is installed by apply-system.sh")
+                p = subprocess.run([gh, "auth", "token"], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+                if p.returncode != 0 or not p.stdout.strip():
+                    D.fail("gh auth token gave nothing: run `gh auth login`", 1)
+                env["GITHUB_TOKEN"] = p.stdout.strip()
+                tail += ["-s", "GITHUB_TOKEN"]
+            if a.dry_run:
+                tail.append("-n")
+            jobs = a.jobs or [None]
+            for j in jobs:
+                argv = base + [a.event] + (["-j", j] if j else []) + tail
+                rc = runner.go(argv, env, log)
+                if rc != 0:
+                    break
+        else:
+            gcl = D.tool("gitlab-ci-local", hint=D.USER_TOOLS_HINT)
+            gcl_env_gate(root, a.yes)
+            values = {n: os.environ[n] for n in names if n in os.environ}
+            vf = D.write_private(run / "variables.yml", yaml_variables(values))
+            for n in names:
+                env.pop(n, None)                               # the file carries them; the environment need not
+            argv = [gcl, "--cwd", os.path.relpath(root, run), "--variables-file", str(vf), "--timestamps"]
+            if a.container_mode:
+                argv.append("--no-shell-executor-no-image")
+            if a.dry_run:
+                argv.append("--preview")
+            else:
+                argv += list(a.jobs)
+            values = None
+            rc = runner.go(argv, env, log)
+    finally:
+        _rm(run)
+    return rc
+
+
+def cmd_run(a):
+    root = choose_root(a)
+    system = choose_system(root, a.system)
+    for j in a.jobs:
+        if not JOB_RE.match(j) or j.startswith("-"):
+            D.fail(f"job name {j!r} is not accepted", 2)
+    secrets, gh_token, cfg = ci_config(root)
+    if secrets or gh_token:
+        E.refuse_agent("ci run with secrets")
+    inner = ["_run", "--root", str(root), "--system", system, "--event", a.event] + (["--dry-run"] if a.dry_run else []) \
+        + (["--yes"] if a.yes else []) + (["--container-mode"] if a.container_mode else []) \
+        + (["-W", str(a.workflow)] if a.workflow else []) + ["--", *a.jobs]
+    if cfg is not None and a.env and a.env not in cfg.envs:
+        D.fail(f"unknown environment {a.env!r} (have: {', '.join(cfg.envs)})", 2)
+    base = [PY, "-I", str(SELF)] + inner
+    sys.stdout.flush()
+    if secrets and cfg is not None:
+        env = a.env or E.choose_env(cfg)
+        argv = [str(E.SELF), "run", "-e", env] + (["--prod"] if a.prod else []) + ["--allow-missing", "--"] + base
+        os.execv(argv[0], argv)
+    sys.exit(subprocess.call(base))
+
+
+# ───────────────────────────── the menu ─────────────────────────────
+
+MENU_NORMAL = [("a", "all"), ("w", "workflow"), ("n", "dry"), ("l", "log"), ("x", "clean"), ("i", "container"), ("?", "help")]
+MENU_ALT = {"alt-a": "all", "alt-w": "workflow", "alt-n": "dry", "alt-l": "log", "alt-x": "clean"}
+HELP = """ci menu keys (NORMAL mode; Alt keys work in both modes)
+  Enter       run the job            a   run everything (act: the push event; gitlab-ci-local: the whole pipeline)
+  w           pick the workflow and event (act)            n   dry run (act -n; gitlab-ci-local --preview)
+  l           the log of the last run in $PAGER            x   clean (act containers; the .gitlab-ci-local/ directory)
+  i           gitlab-ci-local: run image-less jobs in a container instead of ON THIS MACHINE (toggle)
+  ?           this help      Esc  quit
+Secrets: only the names in [ci] secrets of .envs.toml, from Bitwarden through envs run; nothing is written except gitlab-ci-local's
+variables file (tmpfs, 0600, removed when the run ends)."""
+
+
+def menu_rows(jobs, system):
+    rows = []
+    for j in jobs:
+        if system == "act":
+            rows.append((j["job"], f"{j['job']:<22} {j['workflow']:<20} {j['events']:<28} stage {j['stage']}"))
+        else:
+            rows.append((j["job"], f"{j['job']:<30} {j.get('stage', ''):<10} {j.get('when', '')}"))
+    return rows
+
+
+def run_ci(args):
+    return subprocess.run([PY, "-I", str(SELF), *args]).returncode
+
+
+def pause():
+    try:
+        input("\n[Enter]")
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+
+def cmd_menu(a):
+    E.refuse_agent("ci")
+    root = choose_root(a)
+    system = choose_system(root, a.system)
+    st = dict(event="push", workflow=None, container=False)
+    while True:
+        jobs = list_jobs(system, root)
+        rows = menu_rows(jobs, system) or [("-", "(no jobs found)")]
+        warn = "gitlab-ci-local: jobs without image: run ON THIS MACHINE (shell executor)" if system == "gcl" and not st["container"] else \
+            ("gitlab-ci-local: image-less jobs run in a container" if system == "gcl" else f"act: event {st['event']}"
+             + (f", workflow {st['workflow'].name}" if st["workflow"] else ""))
+        header = f"{root.name} · {system} · {len(jobs)} jobs\n{warn}\nEnter run  a all  w workflow/event  n dry  l log  x clean  i container  ? help"
+        binds = "\n".join(f'{k}:become(printf "%s\\n%s\\n%s\\n" {{q}} {act} {{1}})' for k, act in MENU_NORMAL)
+        args = ["-p", "ci", "--delimiter=\t", "--with-nth=2..", "--tabstop=4", "--ansi", "--print-query",
+                "--expect=" + ",".join(MENU_ALT), f"--header={header}"]
+        if D.tty():
+            args.insert(0, "--here")
+        p = subprocess.run([D.tool("fzf-menu")] + args, input="\n".join(f"{i}\t{t}" for i, t in rows) + "\n", stdout=subprocess.PIPE,
+                           text=True, env=dict(os.environ, FZF_MENU_NORMAL_BINDS=binds))
+        if p.returncode != 0:
+            return 0
+        lines = p.stdout.split("\n")
+        key = lines[1] if len(lines) > 1 else ""
+        ident = (lines[2] if len(lines) > 2 else "").split("\t")[0]
+        action = MENU_ALT.get(key) or key or "run"
+        common = ["--root", str(root), "--system", system, "--event", st["event"]] + (["-W", str(st["workflow"])] if st["workflow"] else []) \
+            + (["--container-mode"] if st["container"] else [])
+        try:
+            if action == "run" and ident not in ("", "-"):
+                run_ci(["run", ident, *common]); pause()
+            elif action == "all":
+                run_ci(["run", *common]); pause()
+            elif action == "dry":
+                run_ci(["run", "--dry-run", *([ident] if ident not in ("", "-") else []), *common]); pause()
+            elif action == "workflow" and system == "act":
+                wfs = [str(w.name) for w in workflows(root)]
+                got = E.pick(wfs, "workflow") if wfs else None
+                if got:
+                    st["workflow"] = root / ".github/workflows" / got
+                ev = E.pick(list(EVENTS), "event")
+                if ev:
+                    st["event"] = ev
+            elif action == "log":
+                lg = D.run_root() / LOG_NAME
+                if lg.is_file():
+                    subprocess.run([*shlex.split(os.environ.get("PAGER") or "less -R"), str(lg)])
+                else:
+                    print("no log yet (it lives on tmpfs: gone after a reboot)")
+                    pause()
+            elif action == "clean":
+                clean(system, root)
+            elif action == "container":
+                st["container"] = not st["container"]
+            elif action == "help":
+                print(HELP)
+                pause()
+        except (D.DevError, E.Fail) as e:
+            print(e.msg, file=sys.stderr)
+            pause()
+
+
+def clean(system, root):
+    if system == "gcl":
+        d = root / ".gitlab-ci-local"
+        if not d.is_dir():
+            print("nothing to clean")
+            pause()
+            return
+        sys.stderr.write(f"Remove {d} (artifacts and caches of gitlab-ci-local)? [y/N] ")
+        sys.stderr.flush()
+        if sys.stdin.readline().strip().lower().startswith("y"):
+            _rm(d)
+        return
+    dk = D.tool("docker")
+    p = subprocess.run([dk, "ps", "-a", "--filter", "name=^act-", "--format", "{{.Names}}"], capture_output=True, text=True,
+                       stdin=subprocess.DEVNULL)
+    names = p.stdout.split()
+    if not names:
+        print("no act containers")
+        pause()
+        return
+    sys.stderr.write(f"Remove {len(names)} act container(s) ({', '.join(names[:4])}{'...' if len(names) > 4 else ''})? [y/N] ")
+    sys.stderr.flush()
+    if sys.stdin.readline().strip().lower().startswith("y"):
+        subprocess.run([dk, "rm", "-f", *names])
+
+
+# ───────────────────────────── entry ─────────────────────────────
+
+def build_parser():
+    import argparse
+    ap = argparse.ArgumentParser(prog="ci", description="local CI launcher (see the header of this file)")
+    ap.add_argument("--system", choices=["act", "gcl"])
+    ap.add_argument("--root")
+    sub = ap.add_subparsers(dest="cmd")
+    p = sub.add_parser("list")
+    p.add_argument("--system", choices=["act", "gcl"])
+    p.add_argument("--root")
+    p.add_argument("--json", action="store_true")
+    for name in ("run", "_run"):
+        p = sub.add_parser(name)
+        p.add_argument("jobs", nargs="*")
+        p.add_argument("--system", choices=["act", "gcl"])
+        p.add_argument("--root")
+        p.add_argument("--event", default="push", choices=list(EVENTS))
+        p.add_argument("-W", "--workflow")
+        p.add_argument("--dry-run", action="store_true")
+        p.add_argument("--yes", "--trust-env-file", dest="yes", action="store_true")
+        p.add_argument("--container-mode", action="store_true")
+        p.add_argument("--prod", action="store_true")
+        p.add_argument("-e", "--env")
+    return ap
+
+
+def run(argv):
+    E.harden_environment()
+    a = build_parser().parse_args(argv)
+    if a.cmd is None:
+        return cmd_menu(a) or 0
+    if a.cmd == "list":
+        return cmd_list(a) or 0
+    if a.cmd == "run":
+        return cmd_run(a) or 0
+    return cmd__run(a) or 0
+
+
+if __name__ == "__main__":
+    sys.exit(D.main_wrap("ci", run, sys.argv[1:]))

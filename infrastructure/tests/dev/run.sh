@@ -475,6 +475,138 @@ check "8: an [api] path that leaves the project is refused" bash -c "[ $RC = 1 ]
 scan "8"
 }
 
+sections_9() {
+section "9 ci: act and gitlab-ci-local, secrets from envs, hostile-repo hardening"
+reset
+CI="$REPO/.local/bin/ci"
+c() { N=$((N + 1)); (cd "${EDIR:-$PROJ}" && "$CI" "$@" >"$CAP/$N.out" 2>"$CAP/$N.err" </dev/null); RC=$?; OUT="$CAP/$N.out" ERR="$CAP/$N.err"; }
+gh_flow() { mkdir -p "$PROJ/.github/workflows"; printf 'name: CI\non: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n' >"$PROJ/.github/workflows/ci.yml"; }
+gl_flow() { printf 'build-shell:\n  script:\n    - echo hi\n' >"$PROJ/.gitlab-ci.yml"; }
+printf -- '-P ubuntu-latest=catthehacker/ubuntu:act-latest\n' >"$T/actrc"; export DEVTOOLS_ACTRC="$T/actrc"
+c list
+check "9: no workflow and no .gitlab-ci.yml: exit 1 with a message" bash -c "[ $RC = 1 ] && grep -q 'no .github/workflows' '$ERR'"
+gh_flow
+c list --json
+check "9: detection: a GitHub workflow -> act; the job table of act -l is parsed (job, workflow, file, events)" bash -c "[ $RC = 0 ] && jq -e '.system==\"act\" and (.jobs|length)==2 and .jobs[0].job==\"build\" and .jobs[0].file==\"ci.yml\" and .jobs[0].events==\"push,pull_request\"' '$OUT'"
+rm -rf "$PROJ/.github"; gl_flow
+c list --json
+check "9: detection: .gitlab-ci.yml -> gitlab-ci-local; the --list-csv rows are parsed" bash -c "[ $RC = 0 ] && jq -e '.system==\"gcl\" and .jobs[0].job==\"build-shell\" and .jobs[1].stage==\"test\"' '$OUT'"
+gh_flow
+c list
+check "9: both present and no terminal: asks for --system (exit 2)" bash -c "[ $RC = 2 ] && grep -q -- '--system' '$ERR'"
+c list --system act --json
+check "9: --system act picks act" bash -c "jq -e '.system==\"act\"' '$OUT'"
+rm -rf "$PROJ/.gitlab-ci.yml"
+
+# act: argv, empty files, secrets by name
+cat >>"$PROJ/.envs.toml" <<'TOML'
+
+[ci]
+secrets = ["NPM_TOKEN"]
+TOML
+mkdir -p "$T/images"; python3 - "$FAKE_DIR/docker.json" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p)); d["images"] = ["catthehacker/ubuntu:act-latest"]; json.dump(d, open(p, "w"))
+PY
+: >"$FAKE_DIR/dev.log"
+c run --system act
+RUNL=$(grep '^act ' "$FAKE_DIR/dev.log" | head -1)
+check "9: act run: -C <repo>, empty --env-file/--secret-file/--var-file/--input-file in the run dir, explicit cache paths, --pull=false, push event" bash -c "[ $RC = 0 ] && grep -qE '^act -C $PROJ --env-file $XDG_RUNTIME_DIR/devtools/ci-[0-9]+/none.env --secret-file [^ ]+none.secrets --var-file [^ ]+none.vars --input-file [^ ]+none.input --action-cache-path [^ ]+/act --cache-server-path [^ ]+/act/cache --artifact-server-path [^ ]+/act/artifacts --pull=false push -s NPM_TOKEN\$' '$FAKE_DIR/dev.log'"
+check "9: the four files are empty and 0600 (a repo .env / .secrets / .vars / .input is never read)" bash -c "[ \$(grep -c -E '^act --(env|secret|var|input)-file-size=0 mode=600\$' '$FAKE_DIR/dev.log') = 4 ]"
+check "9: act's cwd is the run dir, not the repository (a repo .actrc is never read)" grep -q "^act cwd=$XDG_RUNTIME_DIR/devtools/ci-" "$FAKE_DIR/dev.log"
+check "9: -s NPM_TOKEN has no value on argv; the value is in act's environment (hash)" bash -c "grep -q 'NPM_TOKEN=$(sha SECRET-npm-token) ' '$FAKE_DIR/dev.log' && ! grep -q 'SECRET' '$FAKE_DIR/dev.log'"
+check "9: only the declared [ci] secret is injected, not DB_PASSWORD or API_TOKEN" bash -c "grep '^act hashes' '$FAKE_DIR/dev.log' | grep -q 'names=NPM_TOKEN OPENAI_API_KEY \$'"
+check "9: run dir removed when the run ends" bash -c "! ls '$XDG_RUNTIME_DIR'/devtools/ci-[0-9]* >/dev/null 2>&1"
+check "9: the log of the run is on tmpfs, 0600" bash -c "[ \$(stat -c %a '$XDG_RUNTIME_DIR/devtools/ci-last.log') = 600 ] && grep -q 'fake run' '$XDG_RUNTIME_DIR/devtools/ci-last.log'"
+: >"$FAKE_DIR/dev.log"
+c run build --system act --event pull_request --dry-run
+check "9: a job, another event and --dry-run: -j build, pull_request, -n" bash -c "grep -qE '^act .* pull_request -j build -s NPM_TOKEN -n\$' '$FAKE_DIR/dev.log'"
+c run -- --system act
+check "9: a job name starting with a dash is refused (exit 2)" test $RC = 2
+c run 'build;rm' --system act
+check "9: a job name with shell characters is refused" test $RC = 2
+FAKE_ACT_RC=7 c run --system act
+check "9: the tool's exit status is ci run's" test $RC = 7
+# the first-run image confirmation
+python3 - "$FAKE_DIR/docker.json" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p)); d["images"] = []; json.dump(d, open(p, "w"))
+PY
+: >"$FAKE_DIR/dev.log"
+c run --system act
+check "9: no act image on the machine and no terminal: nothing runs (the pull of 1-2 GB needs a yes)" bash -c "[ $RC = 1 ] && grep -q 'about 1-2 GB' '$ERR' && ! grep -q '^act -C' '$FAKE_DIR/dev.log'"
+c run --system act --yes
+check "9: --yes accepts it" test $RC = 0
+# github_token
+python3 - "$PROJ/.envs.toml" <<'PY'
+import sys
+p = sys.argv[1]; t = open(p).read().replace('secrets = ["NPM_TOKEN"]', 'secrets = []\ngithub_token = true'); open(p, "w").write(t)
+PY
+: >"$FAKE_DIR/dev.log"; : >"$FAKE_DIR/argv.log"
+c run --system act --yes
+check "9: github_token = true: the fake gh gives GITHUB_TOKEN to act's environment, -s GITHUB_TOKEN, no vault" bash -c "[ $RC = 0 ] && grep -q 'GITHUB_TOKEN=$(sha SECRET-gh-token)' '$FAKE_DIR/dev.log' && grep -q ' -s GITHUB_TOKEN' '$FAKE_DIR/dev.log' && ! grep -q '^rbw' '$FAKE_DIR/argv.log'"
+CLAUDECODE=1 c run --system act --yes
+check "9: an agent is refused when the run needs a token (exit 4)" test $RC = 4
+python3 - "$PROJ/.envs.toml" <<'PY'
+import sys
+p = sys.argv[1]; t = open(p).read().replace('secrets = []\ngithub_token = true', 'secrets = []'); open(p, "w").write(t)
+PY
+: >"$FAKE_DIR/argv.log"
+CLAUDECODE=1 c run --system act --yes
+check "9: without secrets or token an agent may run CI (it can run act itself); no vault" bash -c "[ $RC = 0 ] && ! grep -q '^rbw' '$FAKE_DIR/argv.log'"
+python3 - "$PROJ/.envs.toml" <<'PY'
+import sys
+p = sys.argv[1]; t = open(p).read().replace('secrets = []', 'secrets = ["NPM_TOKEN"]'); open(p, "w").write(t)
+PY
+scan "9 act"
+
+# gitlab-ci-local
+rm -rf "$PROJ/.github"; gl_flow
+: >"$FAKE_DIR/dev.log"
+c run --system gcl -e stage
+check "9: gcl run: --cwd <relative path to the repo>, --variables-file in the run dir, --timestamps" bash -c "[ $RC = 0 ] && grep -qE '^gcl --cwd (\\.\\./)+[^ ]+ --variables-file $XDG_RUNTIME_DIR/devtools/ci-[0-9]+/variables.yml --timestamps\$' '$FAKE_DIR/dev.log'"
+check "9: variables.yml is 0600 in a 0700 dir; the value with a quote and a newline round-trips through the escaping" bash -c "grep -q 'variables-mode=600 dir-mode=700' '$FAKE_DIR/dev.log' && grep -q 'NPM_TOKEN-sha=$(sha $'SECRET-npm"q\nline2') lines=2' '$FAKE_DIR/dev.log'"
+check "9: ... one key only: the escaped value cannot add a variable" bash -c "[ \$(grep -c '^[A-Za-z_]*:' '$FAKE_DIR/gcl.variables') = 1 ]"
+check "9: the plain NPM_TOKEN is not in gitlab-ci-local's environment" bash -c "grep '^gcl names=' '$FAKE_DIR/dev.log' | grep -qv 'NPM_TOKEN'"
+check "9: the variables file is gone after a successful run" bash -c "! ls '$XDG_RUNTIME_DIR'/devtools/ci-[0-9]* >/dev/null 2>&1"
+FAKE_GCL_RC=3 c run --system gcl
+check "9: after a failing run: exit status 3 and the file is gone" bash -c "[ $RC = 3 ] && ! ls '$XDG_RUNTIME_DIR'/devtools/ci-[0-9]* >/dev/null 2>&1"
+# SIGINT while the job runs
+: >"$FAKE_DIR/dev.log"
+(cd "$PROJ" && FAKE_SLEEP=20 "$CI" run --system gcl >"$CAP/int.out" 2>"$CAP/int.err" </dev/null) & BG=$!
+for _ in $(seq 60); do grep -q '^gcl variables-mode' "$FAKE_DIR/dev.log" 2>/dev/null && break; sleep 0.1; done
+RUNPID=$(pgrep -f "ci _run --root $PROJ" | head -1)
+ls "$XDG_RUNTIME_DIR"/devtools/ci-[0-9]*/variables.yml >/dev/null 2>&1 && ok "9: while the run lives the variables file exists (tmpfs)" || bad "9: variables file during the run"
+kill -INT "$RUNPID" 2>/dev/null
+wait "$BG"; RCI=$?
+check "9: SIGINT to the wrapper: it stops (exit 130) and the secrets file is removed" bash -c "[ $RCI = 130 ] && ! ls '$XDG_RUNTIME_DIR'/devtools/ci-[0-9]*/variables.yml >/dev/null 2>&1"
+(cd "$PROJ" && FAKE_SLEEP=20 "$CI" run --system gcl >"$CAP/term.out" 2>"$CAP/term.err" </dev/null) & BG=$!
+for _ in $(seq 60); do pgrep -f "ci _run --root $PROJ" >/dev/null && ls "$XDG_RUNTIME_DIR"/devtools/ci-[0-9]*/variables.yml >/dev/null 2>&1 && break; sleep 0.1; done
+RUNPID=$(pgrep -f "ci _run --root $PROJ" | head -1); sleep 0.5
+kill -TERM "$RUNPID" 2>/dev/null; wait "$BG"; RCT=$?
+check "9: SIGTERM the same (exit 143, file removed)" bash -c "[ $RCT = 143 ] && ! ls '$XDG_RUNTIME_DIR'/devtools/ci-[0-9]*/variables.yml >/dev/null 2>&1"
+# a repo .gitlab-ci-local-env
+printf 'VOLUME=/:/host\n' >"$PROJ/.gitlab-ci-local-env"; : >"$FAKE_DIR/dev.log"
+c run --system gcl
+check "9: a repo .gitlab-ci-local-env (CLI defaults such as volumes) stops the run without a terminal (exit 4), gitlab-ci-local never starts" bash -c "[ $RC = 4 ] && grep -q 'VOLUME' '$ERR' && ! grep -q '^gcl --cwd' '$FAKE_DIR/dev.log'"
+c run --system gcl --trust-env-file
+check "9: --trust-env-file confirms it" test $RC = 0
+rm -f "$PROJ/.gitlab-ci-local-env"
+c run --system gcl --container-mode build-shell
+check "9: container mode: --no-shell-executor-no-image and the job name" grep -q -- '--no-shell-executor-no-image build-shell' "$FAKE_DIR/dev.log"
+c run --system gcl --dry-run
+check "9: dry run of gcl is --preview" grep -q -- '--preview' "$FAKE_DIR/dev.log"
+# the menu
+gh_flow; : >"$FAKE_DIR/dev.log"
+c --system gcl
+check "9: the menu (gcl) lists the jobs and warns that image-less jobs run on this machine" bash -c "grep -q 'build-shell' '$FAKE_DIR/menu.in' && grep -q 'run ON THIS MACHINE' '$FAKE_DIR/dev.log'"
+c --system act
+check "9: the menu (act) lists build and test with workflow and events" bash -c "grep -q 'build  *CI  *push,pull_request' '$FAKE_DIR/menu.in'"
+CLAUDECODE=1 c --system act
+check "9: the menu is refused for an agent" test $RC = 4
+scan "9"
+}
+
 run_section() { [[ -z $ONLY || $ONLY == "$1" ]] && "$2"; }
 run_section 1 sections_1
 run_section 2 sections_2_3
@@ -483,6 +615,7 @@ run_section 5 sections_5
 run_section 6 sections_6
 run_section 7 sections_7
 run_section 8 sections_8
+run_section 9 sections_9
 run_section 11 sections_11_12
 
 printf '\ndev test: %d passed, %d failed\n' "$PASS" "$FAILS"

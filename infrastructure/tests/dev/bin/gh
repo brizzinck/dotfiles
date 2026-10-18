@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+. "$(dirname "$0")/_dev.sh"
+dev_log "gh $*"
+case "${1:-} ${2:-}" in
+  "auth token") echo "SECRET-gh-token" ;;
+  "auth status") echo "Logged in to github.com account fake (fake)" ;;
+  *) : ;;
+esac
