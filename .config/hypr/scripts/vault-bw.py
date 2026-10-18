@@ -22,7 +22,8 @@ Run through `vault.sh bw CMD` (hub rows in actions.d/u6.tsv, interactive ones in
   vault-bw.py call [--stdin] BW-ARGS...
                               run one bw command through the backend below (--stdin: the body for create / edit is read
                               from stdin; stdout / exit code are bw's): the way shell scripts (linux-pass) reach bw
-  vault-bw.py nodump-status   print yes, or no (reason): do the bw processes that hold the session key run non-dumpable
+  vault-bw.py nodump-status   print yes, or no (reason): is the non-dumpable library for the bw processes that hold the session key
+                              there, probed and intact (read-only, compiles nothing); nodump-build builds and probes it
   vault-bw.py serve-status    print running|stopped and the socket; exit 0 only when the server answers
   vault-bw.py serve-stop      stop the per-session server (the session key stays; the next bw action restarts it)
 
@@ -191,6 +192,7 @@ __attribute__((constructor)) static void vault_nodump(void) { prctl(PR_SET_DUMPA
 """
 _nodump_lib = None
 _nodump_why = ""
+_nodump_failed_at = None
 _nodump_lock = threading.Lock()
 
 
@@ -261,16 +263,48 @@ def _nodump_build():
 def nodump_lib():
     """Path of the LD_PRELOAD library that makes a process non-dumpable (no core, no systemd-coredump journal entry with the
     environment, /proc/PID/environ closed to the rest of this user's processes), or None. Thread-safe: every thread gets the
-    same answer, the first one builds."""
-    global _nodump_lib, _nodump_why
+    same answer, the first one builds. A failed build (no cc yet, a transient compile error) is kept for VAULT_BW_NODUMP_RETRY
+    seconds (default 120) and then tried again: the per-session `_serve` process lives for hours and used to keep the failure
+    (no protection) until the session ended."""
+    global _nodump_lib, _nodump_why, _nodump_failed_at
     with _nodump_lock:
-        if _nodump_lib is None:
-            _nodump_lib, _nodump_why = _nodump_build()
+        if not _nodump_lib:
+            retry = float(os.environ.get("VAULT_BW_NODUMP_RETRY") or 120)
+            if _nodump_failed_at is None or time.monotonic() - _nodump_failed_at >= retry:
+                _nodump_lib, _nodump_why = _nodump_build()
+                _nodump_failed_at = None if _nodump_lib else time.monotonic()
         return _nodump_lib or None
 
 
+def _nodump_state():
+    """(verified library path or "", reason): the READ-ONLY view (no compile, no file written): is there a library whose probe marker
+    still matches its sha256."""
+    if os.environ.get("VAULT_BW_NODUMP") == "0":
+        return "", "switched off (VAULT_BW_NODUMP=0)"
+    src = os.environ.get("VAULT_BW_NODUMP_SRC") or NODUMP_C
+    if not run_dir_trusted():
+        return "", f"{RUN} is not a private directory of this user (or does not exist yet)"
+    lib = RUN / f"nodump-{_sha(src.encode())[:12]}.so"
+    try:
+        if (RUN / (lib.name + ".ok")).read_text().strip() == _sha(lib.read_bytes()):
+            return str(lib), ""
+    except OSError:
+        pass
+    return "", "the library is not built yet (the first bw call that holds a session key builds it; vault-bw.py nodump-build)"
+
+
 def cmd_nodump_status():
-    """yes, or no (reason): do the bw processes that hold the session key run non-dumpable (doctor)."""
+    """yes, or no (reason): is the library there, probed and intact (doctor). Read-only: it never compiles anything."""
+    lib, why = _nodump_state()
+    if lib:
+        print("yes")
+        return 0
+    print(f"no ({why})")
+    return 1
+
+
+def cmd_nodump_build():
+    """yes, or no (reason): build the library if needed, probe it (what the first bw call with a session key does)."""
     if nodump_lib():
         print("yes")
         return 0
@@ -1449,6 +1483,8 @@ def main(argv):
         return cmd_sync()
     if cmd == "nodump-status":
         return cmd_nodump_status()
+    if cmd == "nodump-build":
+        return cmd_nodump_build()
     if cmd == "_serve":
         return cmd_serve()
     if cmd == "serve-status":

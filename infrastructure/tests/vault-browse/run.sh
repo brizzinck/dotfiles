@@ -366,12 +366,25 @@ quick_nodump() {
   # FIX3 F5: verified once (marker with the sha256), a corrupt file is not trusted, a failure is reported, builds are serialised
   check "nodump: nodump-status says yes" bash -c '[ "$(python3 -I "$1" nodump-status)" = yes ]' _ "$V"
   check "nodump: a probe marker with the library's sha256 sits next to it" bash -c '[ "$(cat "$1.ok")" = "$(sha256sum "$1" | cut -d" " -f1)" ]' _ "$lib"
-  check "nodump: a corrupt library is not trusted: it is rebuilt and works again" bash -c 'echo junk >"$1"; [ "$(python3 -I "$2" nodump-status)" = yes ] && [ "$(sha256sum "$1" | cut -d" " -f1)" = "$(cat "$1.ok")" ] && [ "$(LD_PRELOAD="$1" python3 -c "import ctypes; print(ctypes.CDLL(None).prctl(3,0,0,0,0))")" = 0 ]' _ "$lib" "$V"
+  check "nodump: a corrupt library is not trusted: nodump-status says no, nodump-build rebuilds it and it works again" bash -c 'echo junk >"$1"; [ "$(python3 -I "$2" nodump-status | cut -c1-2)" = no ] && [ "$(python3 -I "$2" nodump-build)" = yes ] && [ "$(sha256sum "$1" | cut -d" " -f1)" = "$(cat "$1.ok")" ] && [ "$(LD_PRELOAD="$1" python3 -c "import ctypes; print(ctypes.CDLL(None).prctl(3,0,0,0,0))")" = 0 ]' _ "$lib" "$V"
   mkdir -p "$FAKE/nocc" && ln -sf "$(command -v python3)" "$FAKE/nocc/python3"
-  check "nodump: without a C compiler nodump-status says no (no C compiler) and exits 1" bash -c 'out=$(XDG_RUNTIME_DIR="$2/rt-nocc" PATH="$2/nocc" python3 -I "$1" nodump-status); rc=$?; [ $rc = 1 ] && [[ $out == "no (no C compiler"* ]]' _ "$V" "$FAKE"
-  check "nodump: a library that does not make the process non-dumpable fails the probe (reported, not used)" bash -c 'out=$(XDG_RUNTIME_DIR="$2/rt-bad" VAULT_BW_NODUMP_SRC="int vault_noop;" python3 -I "$1" nodump-status); rc=$?; [ $rc = 1 ] && [[ $out == "no (the probe did not report non-dumpable"* ]] && ! ls "$2"/rt-bad/vault/nodump-*.so >/dev/null 2>&1' _ "$V" "$FAKE"
-  check "nodump: a runtime path with a space is refused (LD_PRELOAD splits on it)" bash -c 'mkdir -p -m 700 "$2/rt a b"; out=$(XDG_RUNTIME_DIR="$2/rt a b" python3 -I "$1" nodump-status); [[ $out == "no (the library path contains a space or colon"* ]]' _ "$V" "$FAKE"
-  check "nodump: six processes at once build one library (file lock), no temp file is left" bash -c 'export XDG_RUNTIME_DIR="$2/rt-par"; for i in 1 2 3 4 5 6; do python3 -I "$1" nodump-status >"$2/par.$i" & done; wait; [ "$(cat "$2"/par.? | sort -u)" = yes ] && [ "$(ls "$2"/rt-par/vault/nodump-*.so | wc -l)" = 1 ] && ! ls -a "$2"/rt-par/vault | grep -q "^.nodump\."' _ "$V" "$FAKE"
+  check "nodump: without a C compiler nodump-status says no (no C compiler) and exits 1" bash -c 'out=$(XDG_RUNTIME_DIR="$2/rt-nocc" PATH="$2/nocc" python3 -I "$1" nodump-build); rc=$?; [ $rc = 1 ] && [[ $out == "no (no C compiler"* ]]' _ "$V" "$FAKE"
+  check "nodump: a library that does not make the process non-dumpable fails the probe (reported, not used)" bash -c 'out=$(XDG_RUNTIME_DIR="$2/rt-bad" VAULT_BW_NODUMP_SRC="int vault_noop;" python3 -I "$1" nodump-build); rc=$?; [ $rc = 1 ] && [[ $out == "no (the probe did not report non-dumpable"* ]] && ! ls "$2"/rt-bad/vault/nodump-*.so >/dev/null 2>&1' _ "$V" "$FAKE"
+  check "nodump: a runtime path with a space is refused (LD_PRELOAD splits on it)" bash -c 'mkdir -p -m 700 "$2/rt a b"; out=$(XDG_RUNTIME_DIR="$2/rt a b" python3 -I "$1" nodump-build); [[ $out == "no (the library path contains a space or colon"* ]]' _ "$V" "$FAKE"
+  check "nodump: six processes at once build one library (file lock), no temp file is left" bash -c 'export XDG_RUNTIME_DIR="$2/rt-par"; for i in 1 2 3 4 5 6; do python3 -I "$1" nodump-build >"$2/par.$i" & done; wait; [ "$(cat "$2"/par.? | sort -u)" = yes ] && [ "$(ls "$2"/rt-par/vault/nodump-*.so | wc -l)" = 1 ] && ! ls -a "$2"/rt-par/vault | grep -q "^.nodump\."' _ "$V" "$FAKE"
+  # FIX5 (review 8): nodump-status (doctor) is read-only and never compiles; a failed build is retried by the long-lived server
+  check "nodump: nodump-status in a fresh runtime directory compiles nothing and says no (old code built the library as a side effect)" bash -c 'mkdir -p -m 700 "$2/rt-ro/vault"; out=$(XDG_RUNTIME_DIR="$2/rt-ro" python3 -I "$1" nodump-status); rc=$?; [ $rc = 1 ] && [[ $out == "no (the library is not built yet"* ]] && ! ls -a "$2"/rt-ro/vault | grep -q nodump' _ "$V" "$FAKE"
+  check "nodump: a failed build is tried again after VAULT_BW_NODUMP_RETRY seconds, not before (old code: the failure stayed for the life of the process)" bash -c 'XDG_RUNTIME_DIR="$2/rt-retry" VAULT_BW_NODUMP_RETRY=1 python3 -I - "$1" <<"PY"
+import importlib.util, sys, time
+spec = importlib.util.spec_from_file_location("vb", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+real_have = m.have
+m.have = lambda c: False if c == "cc" else real_have(c)
+assert m.nodump_lib() is None
+m.have = real_have                   # the compiler "appears"
+assert m.nodump_lib() is None        # inside the window: no new attempt
+time.sleep(1.2)
+sys.exit(0 if m.nodump_lib() else 1)
+PY' _ "$V" "$FAKE"
   check "nodump: threads of one process all get the library while the first one compiles (old code: the others got None)" bash -c 'XDG_RUNTIME_DIR="$2/rt-thr" python3 -I - "$1" <<"PY"
 import importlib.util, subprocess, sys, threading, time
 spec = importlib.util.spec_from_file_location("vb", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
