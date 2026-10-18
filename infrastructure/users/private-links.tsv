@@ -1,0 +1,4 @@
+# SOURCE<TAB>HOME_RELATIVE_DESTINATION. Missing fallback sources are omitted.
+.claude/agents	.claude/agents
+.claude/skills	.claude/skills
+.gemini/config/skills	.gemini/config/skills

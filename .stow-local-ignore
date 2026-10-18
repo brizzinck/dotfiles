@@ -24,3 +24,5 @@
 ^/docs
 __pycache__
 ^/\.gitleaks\.toml
+
+^/env\.secret\.backups

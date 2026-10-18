@@ -268,7 +268,11 @@ fi
 if [ -d "$DOTFILES/private" ] && [ -n "$(ls -A "$DOTFILES/private" 2>/dev/null)" ]; then
   (cd "$DOTFILES/private" && stow --restow .)
 fi
-touch "$DOTFILES/env.secret.sh" && chmod 600 "$DOTFILES/env.secret.sh"   # sourced by .zshrc, holds API keys: owner-only
+# Migration must precede creation: an empty canonical file would block legacy
+# migration. The helper uses passwd home and refuses unsafe paths/both files.
+"$DOTFILES/infrastructure/users/private-publish.py" migrate --initialize ||
+  warn "secrets migration needs attention; no empty canonical file was created"
+
 # palette variant link (black by default; flip with `theme black|night`): ghostty, tmux, fzf, delta and nvim read it
 "$HOME/.local/bin/theme" init || warn "theme init failed (themes/generated missing?)"
 # waybar bar mode (compact/full) and visibility files; the bar config includes them

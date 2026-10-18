@@ -140,8 +140,8 @@ else
   export XCURSOR_THEME=Bibata-Modern-Ice
 fi
 
-# secrets: ~/.config/secrets/env.sh (0600; the place for managed users) and, for the owner, ~/dotfiles/env.secret.sh
-for _f in "$HOME/.config/secrets/env.sh" "$HOME/dotfiles/env.secret.sh"; do [ -f "$_f" ] && source "$_f"; done; unset _f
+# Canonical shell exports; ownership/ACL checks and legacy-only transition live in one helper.
+[[ -r $HOME/.config/zsh/secrets.zsh ]] && source "$HOME/.config/zsh/secrets.zsh"
 # per-user overrides that are never shared (usr link writes the accent marker of a managed user's prompt here)
 [ -r "$HOME/.zshrc.local" ] && source "$HOME/.zshrc.local"
 # per-command hooks (atuin recording, long-command notification), Ctrl+R over atuin, completion extras: not for agents.

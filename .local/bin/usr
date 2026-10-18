@@ -13,6 +13,7 @@
 #   usr link USER [--dry-run|--restore]   link USER's profile from /srv/dotfiles into its home (runs as USER)
 #   usr sync [--quiet] [--worktree] [--dry-run]   publish the committed ~/dotfiles to /srv/dotfiles (no secrets), relink on
 #                                  profile changes; the git hooks in .githooks call it after every commit/merge/rewrite
+#   usr secrets-migrate --self|USER [--dry-run]   back up and migrate legacy shell exports without displaying values
 #   usr nvim-sync [--background] [--force]   install nvim plugins + Mason into /srv/nvim-shared (read by the managed users)
 #   usr devtools-sync [--background] [--force]   install the pinned dev tools into /srv/devtools (user-tools.sh --shared; `usr sync`
 #                                  starts it in the background when the tree is not current and the pins were not just tried)
@@ -27,6 +28,8 @@ set -u
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 REPO=$(cd "$(dirname "$SELF")/../.." && pwd)
 SRV="${USR_SRV_DOTFILES:-/srv/dotfiles}"
+PRIVATE="${USR_SRV_PRIVATE:-/srv/private}"
+PRIVATE_HELPER="$REPO/infrastructure/users/private-publish.py"
 NVIM_SHARED="${USR_NVIM_SHARED:-/srv/nvim-shared}"
 DEVTOOLS_SHARED="${USR_DEVTOOLS_SHARED:-/srv/devtools}"
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/usr"
@@ -359,7 +362,7 @@ seed_user_files() {
 
 # runs as the managed user (or, with USR_TARGET_USER/USR_TARGET_HOME and --dry-run, as the owner reading that home)
 cmd__link() {
-  local dry=0 restore=0 seeds_only=0 a user home profile list path src dst bdir ts kind target hex check_root val n_ok=0 n_link=0 n_skip=0 n_move=0
+  local dry=0 restore=0 seeds_only=0 a user home profile list path src dst bdir ts kind target expected layer hex check_root val n_ok=0 n_link=0 n_skip=0 n_move=0
   for a in "$@"; do
     case "$a" in
       --dry-run) dry=1 ;;
@@ -412,9 +415,13 @@ cmd__link() {
       done <"$home/.local/state/usr/seeds.tsv"
       [ "$dry" = 1 ] || : >"$home/.local/state/usr/seeds.tsv"
     fi
-    while IFS=$'\t' read -r path kind target; do
+    while IFS=$'\t' read -r path kind target expected layer; do
       dst="$home/$path"
-      if [ -L "$dst" ] && { [ "$(readlink "$dst")" = "$SRV/$path" ] || [ "$kind" = seed-link ]; }; then
+      case "$layer" in
+        private-parent | private-dir) continue ;;
+        private) "$PRIVATE_HELPER" parent-check --home "$home" --relative "$path" >/dev/null 2>&1 || { echo "skip   ~/$path (changed ancestor)"; continue; } ;;
+      esac
+      if [ -L "$dst" ] && { [ "$(readlink "$dst")" = "${expected:-$SRV/$path}" ] || { [ "$kind" = seed-link ] && [ -z "${expected:-}" ]; }; }; then
         if [ "$dry" = 1 ]; then :; else rm -f -- "$dst"; fi
       fi
       if [ -e "$bdir/$path" ] || [ -L "$bdir/$path" ]; then
@@ -422,6 +429,23 @@ cmd__link() {
         mkdir -p "$(dirname "$dst")"
         [ -e "$dst" ] || [ -L "$dst" ] || mv -- "$bdir/$path" "$dst"
         echo "restored ~/$path (was: $kind $target)"
+      fi
+    done <"$bdir/MANIFEST"
+    # Remove only recorded directories that are still empty. A user-created
+    # directory (even empty) keeps a retired parent from being restored.
+    while IFS=$'\t' read -r path kind target expected layer; do
+      [ "$layer" = private-dir ] || continue
+      "$PRIVATE_HELPER" parent-check --home "$home" --relative "$path" >/dev/null 2>&1 || continue
+      [ "$(stat -c %d:%i "$home/$path" 2>/dev/null)" = "$expected" ] || continue
+      [ "$dry" = 1 ] || rmdir -- "$home/$path" 2>/dev/null || true
+    done < <(tac "$bdir/MANIFEST")
+    while IFS=$'\t' read -r path kind target expected layer; do
+      [ "$layer" = private-parent ] || continue
+      "$PRIVATE_HELPER" parent-check --home "$home" --relative "$path" >/dev/null 2>&1 || continue
+      dst="$home/$path"
+      [ "$(stat -c %d:%i "$dst" 2>/dev/null)" = "$expected" ] || continue
+      if [ "$dry" != 1 ] && [ -d "$dst" ] && [ ! -L "$dst" ]; then
+        if rmdir -- "$dst" 2>/dev/null; then mv -- "$bdir/.retired-parents/$path" "$dst"; fi
       fi
     done <"$bdir/MANIFEST"
     # links the profile added where nothing was before
@@ -435,7 +459,7 @@ cmd__link() {
     return 0
   fi
 
-  ts=$(date +%Y%m%d-%H%M%S)
+  ts=$(date +%Y%m%d-%H%M%S-%N)
   bdir="$home/.local/state/usr/backup-$ts"
   while IFS= read -r path; do
     path="${path%%#*}"
@@ -462,11 +486,18 @@ cmd__link() {
     if [ "$kind" != none ]; then
       mkdir -p "$bdir/$(dirname "$path")"
       mv -- "$dst" "$bdir/$path"
-      printf '%s\t%s\t%s\n' "$path" "$kind" "$target" >>"$bdir/MANIFEST"
+      printf '%s\t%s\t%s\t%s\tpublic\n' "$path" "$kind" "$target" "$src" >>"$bdir/MANIFEST"
+    fi
+    if [ "$kind" = none ]; then
+      mkdir -p "$bdir" && chmod 700 "$bdir"
+      printf '%s\t%s\t%s\t%s\tpublic\n' "$path" "$kind" "$target" "$src" >>"$bdir/MANIFEST"
     fi
     ln -s -- "$src" "$dst"
   done <"$list"
   echo "profile $profile for $user: $n_link linked, $n_ok already linked, $n_skip skipped, $n_move replaced (backup: $bdir)"
+  if managed_has "$user" interactive; then
+    "$PRIVATE_HELPER" link --root "$PRIVATE" --home "$home" --backup "$bdir" $([ "$dry" = 1 ] && printf -- --dry-run) || return $?
+  fi
   SEED_BDIR="$bdir"
   seed_user_files "$user" "$home" "$check_root" "$dry"
   [ "$dry" = 1 ] && return 0
@@ -508,10 +539,23 @@ cmd_link() {
   exec sudo -n -u "$user" -H "$SRV/.local/bin/usr" _link "$@"
 }
 
+cmd_secrets_migrate() {
+  local user="${1:-}" dry=() a
+  [ -n "$user" ] || die "secrets-migrate: use --self or USER [--dry-run]"
+  shift
+  for a in "$@"; do [ "$a" = --dry-run ] || die "secrets-migrate: unknown option $a"; dry=(--dry-run); done
+  if [ "$user" = --self ]; then "$PRIVATE_HELPER" migrate "${dry[@]}"; return; fi
+  need_managed "$user" interactive
+  managed_has "$user" profile || die "secrets-migrate: target has no profile"
+  if [ "$ME" = "$user" ]; then "$PRIVATE_HELPER" migrate "${dry[@]}"; return; fi
+  [ -x "$SRV/.local/bin/usr" ] || die "secrets-migrate: published usr is missing (usr sync first)"
+  sudo -n -u "$user" -H "$SRV/.local/bin/usr" secrets-migrate --self "${dry[@]}"
+}
+
 # ───────────────────────────── publish ─────────────────────────────
 
 cmd_sync() {
-  local quiet=0 worktree=0 dry=0 a stage rev nvim_sha sub path exclude log phash old_phash u relink_ok
+  local quiet=0 worktree=0 dry=0 a stage rev nvim_sha sub path exclude log phash old_phash u relink_ok private_rc=0
   for a in "$@"; do
     case "$a" in
       --quiet) quiet=1 ;;
@@ -534,7 +578,7 @@ cmd_sync() {
   # shellcheck disable=SC2064
   trap "rm -rf '$stage'" EXIT
   if [ "$worktree" = 1 ]; then
-    git -C "$REPO" ls-files -z --recurse-submodules | rsync -a --from0 --files-from=- "$REPO/" "$stage/" 2>>"$log"
+    git -C "$REPO" ls-files -z --recurse-submodules | rsync -a --from0 --files-from=- --exclude-from="$exclude" "$REPO/" "$stage/" 2>>"$log"
     rev="worktree"
   else
     git -C "$REPO" archive --format=tar HEAD | tar -x -C "$stage" || die "sync: git archive failed"
@@ -557,6 +601,7 @@ cmd_sync() {
   rm -rf -- "$stage/private" "$stage/env.secret.sh"
   if [ "$dry" = 1 ]; then
     rsync -a --delete --delete-excluded --filter="P /.published" --exclude-from="$exclude" --dry-run --itemize-changes "$stage/" "$SRV/" | head -50
+    "$PRIVATE_HELPER" publish --root "$PRIVATE" --repo "$REPO/private" --dry-run || return $?
     return 0
   fi
   rsync -a --delete --delete-excluded --filter="P /.published" --exclude-from="$exclude" "$stage/" "$SRV/" 2>>"$log" || die "sync: rsync failed (see $log)"
@@ -564,6 +609,19 @@ cmd_sync() {
   printf 'rev=%s\ntime=%s\n' "$rev" "$(date -Is)" >"$SRV/.published"
   echo "$(date -Is) published $rev" >>"$log"
   note "published $rev to $SRV"
+
+  [ "$worktree" = 1 ] && note "private publication always uses committed private HEAD"
+  if ! "$PRIVATE_HELPER" publish --root "$PRIVATE" --repo "$REPO/private"; then
+    private_rc=1
+    (umask 077; printf failed >"$STATE/private-status")
+    note "usr: private scan failed; public publish completed, previous private revision retained unless copy was interrupted"
+  elif [ -f "$PRIVATE/.published" ]; then
+    (umask 077; printf ready >"$STATE/private-status")
+  elif [ -d "$PRIVATE" ]; then
+    (umask 077; printf uncertified >"$STATE/private-status")
+  else
+    (umask 077; printf not-configured >"$STATE/private-status")
+  fi
 
   # git in the managed homes: the owner may run git there although the repos belong to the managed users
   if [ -f "$HOME/.gitconfig.local" ] || [ -w "$HOME" ]; then
@@ -573,7 +631,7 @@ cmd_sync() {
     done
   fi
   # relink only when a profile changed
-  phash=$(cat "$SRV"/infrastructure/users/profiles/*.txt "$SRV/infrastructure/users/managed.tsv" 2>/dev/null | sha256sum | cut -d' ' -f1)
+  phash=$(cat "$SRV"/infrastructure/users/profiles/*.txt "$SRV/infrastructure/users/managed.tsv" "$REPO/infrastructure/users/private-links.tsv" "$REPO/infrastructure/users/private-deny.txt" "$PRIVATE/.published" 2>/dev/null | sha256sum | cut -d' ' -f1)
   old_phash=$(cat "$STATE/profiles.sha" 2>/dev/null || true)
   if [ "$phash" != "$old_phash" ]; then
     relink_ok=1
@@ -587,7 +645,7 @@ cmd_sync() {
   # the pinned dev tools (lazysql, gh-dash, posting, ...) for the managed users: only when /srv/devtools exists and is not current,
   # and (--if-new) not again for pins whose last attempt already failed (M2)
   if [ -d "$DEVTOOLS_SHARED" ] && [ -w "$DEVTOOLS_SHARED" ]; then cmd_devtools_sync --background --if-new >>"$log" 2>&1 || true; fi
-  return 0
+  return "$private_rc"
 }
 
 # ───────────────────────────── shared nvim ─────────────────────────────
@@ -715,6 +773,7 @@ case "$cmd" in
   link) cmd_link "$@" ;;
   _link) cmd__link "$@" ;;
   sync) cmd_sync "$@" ;;
+  secrets-migrate) cmd_secrets_migrate "$@" ;;
   nvim-sync) cmd_nvim_sync "$@" ;;
   devtools-sync) cmd_devtools_sync "$@" ;;
   clipboard-acl) cmd_clipboard_acl ;;

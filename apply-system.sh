@@ -1107,6 +1107,28 @@ USERS_SRV_NVIM=/srv/nvim-shared
 USERS_SRV_DEVTOOLS=/srv/devtools
 USERS_DEVTOOLS_ANCHOR=/etc/usr-managed/devtools-owner
 
+# Dedicated private group only; no change to wheel/docker or other policy.
+users_private_setup() {
+  local members gid primary
+  members=$(private_publish_members | paste -sd, -)
+  if getent group dotfiles-private >/dev/null; then
+    gid=$(getent group dotfiles-private | cut -d: -f3)
+    primary=$(getent passwd | awk -F: -v gid="$gid" '$4 == gid { print $1 }')
+    if [ -n "$primary" ]; then
+      warn "users: dotfiles-private is a primary group; private setup refused"
+      return 1
+    fi
+  else
+    run groupadd --system dotfiles-private
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "[dry-run] gate /srv/private 0700; repair named read-only inherited ACLs, reconcile members, reopen $OWNER:dotfiles-private 0750"
+    run gpasswd -M "$members" dotfiles-private
+  else
+    "$USERS_DIR/private-publish.py" setup --owner "$OWNER" --members "$members" || return 1
+  fi
+}
+
 # stdout: the sudoers drop-in / polkit rule rendered from managed.tsv (users with the `become` capability)
 users_render_sudoers() {
   local list
@@ -1393,6 +1415,8 @@ section_users() {
     changed "$USERS_DEVTOOLS_ANCHOR names $OWNER (root-owned anchor of the /srv/devtools PATH rule)"
   fi
 
+  users_private_setup || warn "users: private layer was not set up"
+
   # 4c. vault-share: the socket directory and the scope file the broker in the owner's session trusts (td / yc get no vault of their own)
   users_vault_share
 
@@ -1438,6 +1462,7 @@ section_users() {
     changed "published ~/dotfiles (committed state, no secrets) to $USERS_SRV_DOTFILES"
     for u in $(managed_users profile); do
       getent passwd "$u" >/dev/null || continue
+      sudo -u "$u" -H "$USERS_SRV_DOTFILES/.local/bin/usr" secrets-migrate --self || warn "users: secrets migration for $u needs attention"
       if sudo -u "$u" -H "$USERS_SRV_DOTFILES/.local/bin/usr" _link; then
         changed "linked the profile $(managed_field "$u" profile) into /home/$u (replaced links/files are in ~/.local/state/usr/backup-*)"
       else

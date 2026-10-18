@@ -1089,5 +1089,14 @@ else
   printf 'skip  home ACL cleanup tests: no ACL support in %s\n' "${TMPDIR:-/tmp}"
 fi
 
+# C1-C3: committed private publication/link/restore and canonical-source
+# migration use invented repositories/accounts and desktop/scanner fakes.
+if /usr/bin/python3 -IB "$HERE/secrets.py" >"$T/secrets-tests.log" 2>&1; then
+  ok
+else
+  cat "$T/secrets-tests.log"
+  bad "private/secrets regression suite"
+fi
+
 printf 'users tests: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]

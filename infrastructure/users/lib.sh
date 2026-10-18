@@ -79,3 +79,12 @@ managed_validate() {
     done
   done < <(_managed_rows)
 }
+
+# Exact private-layer membership: existing interactive accounts with a profile.
+# Service users and the publisher are never added by this mechanism.
+private_publish_members() {
+  local u
+  for u in $(managed_users profile); do
+    managed_has "$u" interactive && getent passwd "$u" >/dev/null && printf '%s\n' "$u"
+  done
+}
