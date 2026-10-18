@@ -714,11 +714,15 @@ EOS
 printf '#!/bin/sh\n[ "$1" = list ] && { [ -n "$UT_PIPX_JSON" ] && echo "$UT_PIPX_JSON" || echo "{}"; }\n' >"$T/ut/bin/pipx"
 printf '#!/bin/sh\n[ "$1" = ls ] && { [ -n "$UT_NPM_JSON" ] && echo "$UT_NPM_JSON" || echo "{}"; }\n' >"$T/ut/bin/npm"
 printf '#!/bin/sh\n[ "$1 $2" = "install --list" ] && printf "%%b" "${UT_CARGO_LIST:-}"\n' >"$T/ut/bin/cargo"
+# glab 1.123 is installed on the machine: its first call of any kind writes $HOME/.config/glab-cli, so the test has its own (L9)
+printf '#!/bin/sh\necho "glab $*" >>"$UT_LOG"\n[ "$1 $2" = "config get" ] && echo "${UT_GLAB_TELEMETRY:-false}"\nexit 0\n' >"$T/ut/bin/glab"
 chmod +x "$T/ut/bin"/*
-run_ut() { PATH="$T/ut/bin:/usr/bin:/bin" HOME="$T/ut/home" UT_GOBIN="$T/ut/gobin" "$@"; }
+run_ut() { PATH="$T/ut/bin:/usr/bin:/bin" HOME="$T/ut/home" XDG_CONFIG_HOME="$T/ut/home/.config" GLAB_CONFIG_DIR="$T/ut/glab" UT_LOG="$T/ut/glab.log" UT_GOBIN="$T/ut/gobin" "$@"; }
 out=$(run_ut "$UT" --dry-run 2>&1)
 check "13u: nothing installed: every pinned tool is planned with its exact version (go: module@tag, pipx ==, npm @, cargo --locked --version)" bash -c "grep -qF 'would run: go install github.com/jorgerojas26/lazysql@v0.7.0' <<<'$out' && grep -qF 'would run: go install github.com/dlvhdr/gh-dash/v4@v4.26.2' <<<'$out' && grep -qF 'would run: pipx install --pip-args=--no-deps posting==2.11.1' <<<'$out' && grep -qF 'would run: pipx runpip posting install --require-hashes --no-deps --force-reinstall -r $REPO/infrastructure/dev/posting-requirements.txt' <<<'$out' && grep -qF 'would run: npm install -g --ignore-scripts gitlab-ci-local@4.76.1' <<<'$out' && grep -qF 'would run: cargo install --locked --version 0.9.3 glab-tui-crate' <<<'$out'"
 check "13u: --dry-run changes nothing (no gobin file, no config copy)" bash -c "[ -z \"\$(ls -A '$T/ut/gobin')\" ] && [ ! -e '$T/ut/home/.config' ]"
+check "13u: --dry-run does not call glab while it has no config yet (that call would create \$HOME/.config/glab-cli)" bash -c "[ ! -e '$T/ut/glab.log' ] && [ ! -e '$T/ut/glab' ]"
+mkdir -p "$T/ut/glab"; : >"$T/ut/glab/config.yml"
 touch "$T/ut/gobin/lazysql" "$T/ut/gobin/gh-dash"; chmod +x "$T/ut/gobin"/*
 mkdir -p "$XDG_STATE_HOME/dev-tools"; sha256sum "$REPO/infrastructure/dev/posting-requirements.txt" | cut -d' ' -f1 >"$XDG_STATE_HOME/dev-tools/posting.lock"
 out=$(UT_GO_VERSION=v9.0.0 UT_PIPX_JSON='{"venvs":{"posting":{"metadata":{"main_package":{"package_version":"2.11.1"}}}}}' UT_NPM_JSON='{"dependencies":{"gitlab-ci-local":{"version":"4.76.1"}}}' UT_CARGO_LIST='glab-tui-crate v0.9.3:\n    glab-tui\n' run_ut "$UT" --dry-run 2>&1)

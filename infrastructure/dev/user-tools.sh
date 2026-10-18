@@ -124,7 +124,11 @@ step_glabtui() {
 
 step_glab() { # telemetry off (the setting is checked on the installed glab; a version without it is left alone)
   have glab || { log "glab is not installed (apply-system.sh --only install): telemetry setting skipped"; return 0; }
-  local cur
+  local cur cfg
+  # glab creates its config directory on the first call of any kind (also `config get` / `--help`): a dry run on a machine that
+  # never ran glab must not do that (L9)
+  cfg=${GLAB_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/glab-cli}
+  if ((DRY)) && [[ ! -e $cfg/config.yml ]]; then echo "  would run: glab config set --global telemetry false (when the installed glab has the setting)"; return 0; fi
   cur=$(glab config get telemetry --global 2>/dev/null)
   if [[ $cur == false ]]; then log "glab telemetry is off"; return 0; fi
   if glab config --help 2>&1 | grep -qi 'telemetry' || [[ -n $cur ]]; then
