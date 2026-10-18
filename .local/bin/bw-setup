@@ -62,8 +62,9 @@ rbw config set base_url "$url"
 rbw config set email "$email"
 # The owner (the user whose account owns this checkout) unlocks once per login. A managed user (td, yc ...) holds the owner's
 # whole vault while unlocked and runs agents: one hour, then the master password again.
-repo_owner=${BW_SETUP_FAKE_OWNER:-$(stat -c %U "$self_dir/../.." 2>/dev/null || true)}   # BW_SETUP_FAKE_OWNER: test hook
-if [[ -z $repo_owner || $repo_owner == "$(id -un)" ]]; then lock_timeout=31536000; else lock_timeout=3600; fi
+# BW_SETUP_FAKE_OWNER (test hook, any value) can only make this run count as a managed user: it never gives the long timeout
+repo_owner=$(stat -c %U "$self_dir/../.." 2>/dev/null || true)
+if [[ -z ${BW_SETUP_FAKE_OWNER:-} && ( -z $repo_owner || $repo_owner == "$(id -un)" ) ]]; then lock_timeout=31536000; else lock_timeout=3600; fi
 rbw config set lock_timeout "$lock_timeout"
 rbw config set pinentry "$pinentry"
 echo "rbw configured (pinentry: $pinentry)."

@@ -386,6 +386,14 @@ assert m.nodump_lib() is None        # inside the window: no new attempt
 time.sleep(1.2)
 sys.exit(0 if m.nodump_lib() else 1)
 PY' _ "$V" "$FAKE"
+  check "nodump: a non-numeric, nan or negative VAULT_BW_NODUMP_RETRY falls back to 120 s instead of raising ValueError (FIX-DEVb2 #7)" bash -c 'for v in abc nan -5 1e999; do XDG_RUNTIME_DIR="$2/rt-retryv" VAULT_BW_NODUMP_RETRY=$v python3 -I -B - "$1" <<"PY" || exit 1
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("vb", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.have = lambda c: False if c == "cc" else True
+assert m.nodump_lib() is None        # a failed build is kept; asking again inside the window must not raise either
+assert m.nodump_lib() is None
+PY
+done' _ "$V" "$FAKE"
   check "nodump: threads of one process all get the library while the first one compiles (old code: the others got None)" bash -c 'XDG_RUNTIME_DIR="$2/rt-thr" python3 -I -B - "$1" <<"PY"
 import importlib.util, subprocess, sys, threading, time
 spec = importlib.util.spec_from_file_location("vb", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)

@@ -243,7 +243,9 @@ hot_request() { # REQ -> 0 when answered (also cancelled by a dead server), 1 wh
     # The pid is read ONCE, now: server.pid belongs to the server that holds the claim. Following the file would make a NEW server
     # (a standby that took over after this one died before `started`) keep the wait alive for ever; the wait is bounded as well.
     spid=$(cat "$RUN/server.pid" 2>/dev/null)
-    deadline=$((SECONDS + ${FZF_MENU_CLAIM_WAIT:-30}))
+    cwait=${FZF_MENU_CLAIM_WAIT:-30}             # a number of seconds: anything else is the default (bash evaluates $(( )) text, so
+    [[ $cwait =~ ^[0-9]{1,4}$ ]] && ((10#$cwait >= 1)) || cwait=30   # an unchecked value from the environment could run a command)
+    deadline=$((SECONDS + 10#$cwait))
     while [[ ! -e $req/started && ! -e $req/rc ]]; do
       if [[ -z $spid ]] || ! kill -0 "$spid" 2>/dev/null || ((SECONDS >= deadline)); then
         [[ -e $req/started || -e $req/rc ]] || echo 1 >"$req/rc"

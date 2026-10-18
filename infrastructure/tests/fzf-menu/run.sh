@@ -348,6 +348,14 @@ expect "5j: ... no cold menu either" test ! -s "$FT_DIR/term.log"
 kill "$(cat "$T/sp2.pid")" 2>/dev/null
 FZF_MENU_CLAIM_WAIT=2 claim_case stall
 expect "5j: a server that stays alive but never starts is given up on after the bound (old code: waits for ever)" test "$RC" = 1 -a ! -s "$T/m5j.out"
+# FIX-DEVb2 #7: FZF_MENU_CLAIM_WAIT is read as arithmetic by bash: a value that is not a number made the wait 0 s (the client gave
+# up on a server that was only slow) or an arithmetic error; anything but 1-9999 seconds is the default (30 s)
+rm -f "$T/claim-injected"
+for bad in abc -5 2.5 "x[\$(touch $T/claim-injected)]"; do
+  FZF_MENU_CLAIM_WAIT="$bad" claim_case slow
+  expect "5j: FZF_MENU_CLAIM_WAIT='$bad' is the default wait: the slow server is still waited for (old code: gave up at once or failed)" test "$RC" = 0 -a "$(cat "$T/m5j.out")" = picked
+done
+expect "5j: ... and the payload ran nothing" test ! -e "$T/claim-injected"
 claim_case die
 expect "5j: a server that died holding the claim = cancelled (status 1, no output)" test "$RC" = 1 -a ! -s "$T/m5j.out"
 expect "5j: ... and no cold menu was opened (old code: the same request ran again cold)" test ! -s "$FT_DIR/term.log"

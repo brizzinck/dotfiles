@@ -170,6 +170,10 @@ expect "bw-setup with a Wayland socket that is not writable falls back to the te
 expect "bw-setup for the owner: lock_timeout one year" "31536000" "$(tail -1 "$T/pin.log.lock")"
 (BW_SETUP_FAKE_OWNER=someone-else FAKE_PIN_LOG="$T/pin.log" PATH="$T/fakebin:$PATH" WAYLAND_DISPLAY="" XDG_RUNTIME_DIR="$T/run" "$REPO/.local/bin/bw-setup" --url https://v.example.invalid --email t@example.invalid </dev/null >/dev/null 2>&1)
 expect "bw-setup for a managed user: lock_timeout one hour" "3600" "$(tail -1 "$T/pin.log.lock")"
+(BW_SETUP_FAKE_OWNER="$(id -un)" FAKE_PIN_LOG="$T/pin.log" PATH="$T/fakebin:$PATH" WAYLAND_DISPLAY="" XDG_RUNTIME_DIR="$T/run" "$REPO/.local/bin/bw-setup" --url https://v.example.invalid --email t@example.invalid </dev/null >/dev/null 2>&1)
+expect "FIX-DEVb2 #7: BW_SETUP_FAKE_OWNER naming the current user does not give the one-year timeout (the hook only shortens it)" "3600" "$(tail -1 "$T/pin.log.lock")"
+(FAKE_PIN_LOG="$T/pin.log" PATH="$T/fakebin:$PATH" WAYLAND_DISPLAY="" XDG_RUNTIME_DIR="$T/run" "$REPO/.local/bin/bw-setup" --url https://v.example.invalid --email t@example.invalid </dev/null >/dev/null 2>&1)
+expect "... and without the hook the owner still gets one year" "31536000" "$(tail -1 "$T/pin.log.lock")"
 # FIX5 (review 15): the first `bw` sync of bw-setup reports a failure (it used to vanish silently: output to /dev/null, no else)
 BT="$T/bwtree"; mkdir -p "$BT/.local/bin" "$BT/.config/hypr/scripts" "$BT/fb"
 cp "$REPO/.local/bin/bw-setup" "$BT/.local/bin/bw-setup"

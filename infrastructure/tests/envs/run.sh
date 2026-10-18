@@ -891,13 +891,13 @@ check "the TUI refuses to start under an agent" bash -c "cd '$PROJ' && CLAUDECOD
 check "the TUI without a terminal says so" bash -c "cd '$PROJ' && '$ENVS' </dev/null >/dev/null 2>&1; [ \$? = 2 ]"
 scan "section 15"
 
-# ───────────── 16 timing (report; fails only above 150 ms)
+# ───────────── 16 timing (reported; fails only above 150 ms, the bash+jq fakes put the median at about 60 to 65 ms)
 section "16 timing"
 if command -v hyperfine >/dev/null; then
   reset; bind_proj
   (cd "$PROJ" && hyperfine -N -w3 -r 25 --export-json "$T/hf.json" "true" "$ENVS run -- true" >/dev/null 2>&1)
   base=$(jq -r '.results[0]|(.median // .summary.time_wall_clock.median)*1000' "$T/hf.json"); runm=$(jq -r '.results[1]|(.median // .summary.time_wall_clock.median)*1000' "$T/hf.json")
-  printf 'info  envs run -- true: median %.1f ms, true alone %.2f ms (gate: overhead <= 60 ms; fake rbw is bash+jq)\n' "$runm" "$base"
+  printf 'info  envs run -- true: median %.1f ms, true alone %.2f ms (reported; the check below fails above 150 ms; fake rbw is bash+jq)\n' "$runm" "$base"
   check "envs run overhead is below 150 ms" bash -c "awk -v r=$runm 'BEGIN{exit !(r < 150)}'"
 else
   echo "info  hyperfine is missing: timing skipped"

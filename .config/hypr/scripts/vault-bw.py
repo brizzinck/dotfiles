@@ -269,7 +269,12 @@ def nodump_lib():
     global _nodump_lib, _nodump_why, _nodump_failed_at
     with _nodump_lock:
         if not _nodump_lib:
-            retry = float(os.environ.get("VAULT_BW_NODUMP_RETRY") or 120)
+            try:
+                retry = float(os.environ.get("VAULT_BW_NODUMP_RETRY") or 120)
+            except ValueError:
+                retry = 120.0
+            if not 0 <= retry <= 86400:               # also nan and inf
+                retry = 120.0
             if _nodump_failed_at is None or time.monotonic() - _nodump_failed_at >= retry:
                 _nodump_lib, _nodump_why = _nodump_build()
                 _nodump_failed_at = None if _nodump_lib else time.monotonic()
