@@ -155,7 +155,7 @@ exit 0
 RBW
 chmod +x "$T/fakebin"/*
 : >"$T/pin.log"
-(FAKE_PIN_LOG="$T/pin.log" PATH="$T/fakebin:$PATH" WAYLAND_DISPLAY= XDG_RUNTIME_DIR="$T/run" "$REPO/.local/bin/bw-setup" --url https://v.example.invalid --email t@example.invalid </dev/null >/dev/null 2>&1)
+(FAKE_PIN_LOG="$T/pin.log" PATH="$T/fakebin:$PATH" WAYLAND_DISPLAY="" XDG_RUNTIME_DIR="$T/run" "$REPO/.local/bin/bw-setup" --url https://v.example.invalid --email t@example.invalid </dev/null >/dev/null 2>&1)
 expect "bw-setup without a Wayland display uses pinentry-curses" "$T/fakebin/pinentry-curses" "$(tail -1 "$T/pin.log")"
 mkdir -p "$T/run"; : >"$T/run/wayland-fake"
 (FAKE_PIN_LOG="$T/pin.log" PATH="$T/fakebin:$PATH" WAYLAND_DISPLAY=wayland-fake XDG_RUNTIME_DIR="$T/run" "$REPO/.local/bin/bw-setup" --url https://v.example.invalid --email t@example.invalid </dev/null >/dev/null 2>&1)
