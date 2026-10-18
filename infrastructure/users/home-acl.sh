@@ -73,7 +73,8 @@ trap 'rm -rf "$W"' EXIT
 OWNER_UID="$(id -u "$OWNER" 2>/dev/null || echo -1)"
 ROOT_REAL="$(realpath -m -- "$ROOT")" REPO_REAL="$(realpath -m -- "$REPO")"
 
-# as_owner CMD...: run CMD as the owner of the tree. Root drops to the owner with setpriv (uid, gid and supplementary groups;
+# as_owner CMD...: run CMD as the owner of the tree. Root drops to the owner with setpriv (uid, gid, supplementary groups and the
+# owner's environment;
 # runuser would go through the PAM stack: a pam_systemd session, a lastlog entry and the motd for every call) and starts in /
 # (root's working directory may not be traversable for the owner: bash warns "getcwd"); the owner itself and the tests
 # (--runas) run it directly. stdin and stdout pass through. HOME_ACL_TEST_EUID is a test hook, honoured only when not root.
@@ -84,7 +85,9 @@ as_owner() {
     # shellcheck disable=SC2086
     $RUNAS "$@"
   elif [ "$euid" -eq 0 ] && [ "$OWNER" != root ]; then
-    (cd / && exec setpriv --reuid="$OWNER_UID" --regid="$(id -g "$OWNER")" --init-groups -- "$@")
+    # --reset-env: HOME / USER / LOGNAME / SHELL / PATH of the owner instead of root's (runuser did that; a later `as_owner git ...`
+    # must not read /root); umask 077 for what the owner-side commands create (no pam_umask here)
+    (umask 077; cd / && exec setpriv --reuid="$OWNER_UID" --regid="$(id -g "$OWNER")" --init-groups --reset-env -- "$@")
   else
     "$@"
   fi

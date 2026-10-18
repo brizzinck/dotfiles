@@ -150,6 +150,7 @@ printf '#!/bin/sh\nexit 0\n' >"$T/fakebin/pinentry-themed"
 cat >"$T/fakebin/rbw" <<'RBW'
 #!/bin/sh
 [ "$1" = config ] && [ "$2" = set ] && [ "$3" = pinentry ] && echo "$4" >>"$FAKE_PIN_LOG"
+[ "$1" = config ] && [ "$2" = set ] && [ "$3" = lock_timeout ] && echo "$4" >>"$FAKE_PIN_LOG.lock"
 [ "$1" = login ] && exit 1
 exit 0
 RBW
@@ -162,6 +163,12 @@ mkdir -p "$T/run"; : >"$T/run/wayland-fake"
 expect "bw-setup with a writable Wayland socket keeps pinentry-themed" "$T/fakebin/pinentry-themed" "$(tail -1 "$T/pin.log")"
 (FAKE_PIN_LOG="$T/pin.log" PATH="$T/fakebin:$PATH" WAYLAND_DISPLAY=wayland-nosuch XDG_RUNTIME_DIR="$T/run" "$REPO/.local/bin/bw-setup" --url https://v.example.invalid --email t@example.invalid </dev/null >/dev/null 2>&1)
 expect "bw-setup with a Wayland socket that is not writable falls back to the terminal" "$T/fakebin/pinentry-curses" "$(tail -1 "$T/pin.log")"
+# FIX-DEVb: the owner keeps the one-year lock timeout, a managed user (the checkout belongs to someone else) gets one hour
+: >"$T/pin.log.lock"
+(FAKE_PIN_LOG="$T/pin.log" PATH="$T/fakebin:$PATH" WAYLAND_DISPLAY="" XDG_RUNTIME_DIR="$T/run" "$REPO/.local/bin/bw-setup" --url https://v.example.invalid --email t@example.invalid </dev/null >/dev/null 2>&1)
+expect "bw-setup for the owner: lock_timeout one year" "31536000" "$(tail -1 "$T/pin.log.lock")"
+(BW_SETUP_FAKE_OWNER=someone-else FAKE_PIN_LOG="$T/pin.log" PATH="$T/fakebin:$PATH" WAYLAND_DISPLAY="" XDG_RUNTIME_DIR="$T/run" "$REPO/.local/bin/bw-setup" --url https://v.example.invalid --email t@example.invalid </dev/null >/dev/null 2>&1)
+expect "bw-setup for a managed user: lock_timeout one hour" "3600" "$(tail -1 "$T/pin.log.lock")"
 run_link --restore >/dev/null
 expect "restore gitconfig" "old" "$(cat "$T/h/td/.gitconfig" 2>/dev/null)"
 expect "restore tmux link" "../dotfiles/.config/tmux" "$(readlink "$T/h/td/.config/tmux")"
@@ -534,8 +541,11 @@ PY
   printf '755\t%s\n' "$H7/m7" >"$T/st7/secret-modes-before-20260101-000000.txt"
   cat >"$T/fakebin/setpriv" <<'FAKE'
 #!/bin/sh
-echo "setpriv $* cwd=$(pwd)" >>"$SETPRIV_LOG"
+echo "setpriv $* cwd=$(pwd) umask=$(umask)" >>"$SETPRIV_LOG"
+reset=0; for a in "$@"; do [ "$a" = --reset-env ] && reset=1; done
 while [ "$1" != -- ]; do shift; done; shift
+# what setpriv --reset-env does to HOME / USER / LOGNAME (the fake uses SETPRIV_OWNER_HOME for the owner's passwd entry)
+[ "$reset" = 1 ] && exec env HOME="$SETPRIV_OWNER_HOME" USER=owner LOGNAME=owner "$@"
 exec "$@"
 FAKE
   cat >"$T/fakebin/runuser" <<'FAKE'
@@ -544,9 +554,9 @@ echo "runuser $*" >>"$SETPRIV_LOG"
 exit 1
 FAKE
   chmod +x "$T/fakebin/setpriv" "$T/fakebin/runuser"
-  export SETPRIV_LOG="$T/setpriv.log"; : >"$SETPRIV_LOG"
+  export SETPRIV_LOG="$T/setpriv.log" SETPRIV_OWNER_HOME="$T/owner-home"; : >"$SETPRIV_LOG"
   PATH="$T/fakebin:$PATH" HOME_ACL_TEST_EUID=0 "$HA" restore --root "$H7" --owner "$ME" --state "$T/st7" >/dev/null 2>&1
-  grep -q "^setpriv --reuid=$(id -u) --regid=$(id -g) --init-groups -- .* cwd=/\$" "$SETPRIV_LOG" && ok || bad "FIX3 F6 home-acl: root does not drop to the owner with setpriv --reuid --regid --init-groups from / ($(head -2 "$SETPRIV_LOG" | paste -sd'|' -))"
+  grep -q "^setpriv --reuid=$(id -u) --regid=$(id -g) --init-groups --reset-env -- .* cwd=/ umask=0077\$" "$SETPRIV_LOG" && ok || bad "FIX3 F6 home-acl: root does not drop to the owner with setpriv --reuid --regid --init-groups --reset-env, umask 077, from / ($(head -2 "$SETPRIV_LOG" | paste -sd'|' -))"
   grep -q '^runuser' "$SETPRIV_LOG" && bad "FIX3 F6 home-acl: runuser (PAM login stack) is still used" || ok
   expect "FIX3 F6 home-acl: the change was made through setpriv (m7 mode)" "755" "$(stat -c %a "$H7/m7")"
 
