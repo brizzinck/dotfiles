@@ -16,20 +16,33 @@
 set -euo pipefail
 
 # Immune to concurrent edits: bash reads a script incrementally, so a commit that rewrites this file during a run breaks it
-# mid-way. Run from a private copy (root-owned 0700 temp dir when under sudo, removed afterwards, also on Ctrl+C or SIGTERM:
-# the trap removes it and re-raises the signal; as root TMPDIR is ignored, always /tmp); APPLY_SYSTEM_SELF is the original
-# path (repo lookups, the sudo re-exec, hints). Falls through to running in place when the copy cannot be made.
+# mid-way. Run from a private copy (root-owned 0700 temp dir when under sudo, removed afterwards, also on Ctrl+C, SIGTERM or
+# SIGHUP: the signal is forwarded to the copy, the copy removed, the signal re-raised; as root TMPDIR is ignored, always /tmp);
+# APPLY_SYSTEM_SELF is the original path (repo lookups, the sudo re-exec, hints). Falls through to running in place when the
+# copy cannot be made.
 if [ -z "${APPLY_SYSTEM_SELF:-}" ]; then
   APPLY_SYSTEM_SELF="$(readlink -f "${BASH_SOURCE[0]}")"
   _abase="${TMPDIR:-/tmp}"
   [ "$(id -u)" = 0 ] && _abase=/tmp
   if _atmp="$(mktemp -d "$_abase/apply-system.XXXXXX" 2>/dev/null)" && install -m 0700 "$APPLY_SYSTEM_SELF" "$_atmp/apply-system.sh"; then
     export APPLY_SYSTEM_SELF
-    _arc=0
-    trap 'rm -rf "$_atmp"; trap - INT; kill -INT $$' INT
-    trap 'rm -rf "$_atmp"; trap - TERM; kill -TERM $$' TERM
-    bash "$_atmp/apply-system.sh" "$@" || _arc=$?
+    _arc=0 _apid="" _agot=""
+    # The copy runs as a CHILD: a signal sent to this wrapper alone (kill, a closing terminal) is forwarded to it at once (a
+    # foreground child would hold the trap back until it finished) and the copy is removed afterwards, then the signal is
+    # re-raised so the caller sees the real cause of death. Ctrl+C reaches both through the process group.
+    _asig() { _agot=$1; if [ -n "$_apid" ]; then kill "-$1" "$_apid" 2>/dev/null || true; fi; }
+    trap '_asig INT' INT
+    trap '_asig TERM' TERM
+    trap '_asig HUP' HUP
+    env --default-signal=INT,QUIT bash "$_atmp/apply-system.sh" "$@" <&0 &   # an async child would ignore SIGINT otherwise
+    _apid=$!
+    while :; do
+      _arc=0
+      wait "$_apid" || _arc=$?
+      kill -0 "$_apid" 2>/dev/null || break   # wait also returns when a trapped signal arrived while the child still runs
+    done
     rm -rf "$_atmp"
+    if [ -n "$_agot" ]; then trap - "$_agot"; kill "-$_agot" $$; fi
     exit "$_arc"
   fi
   [ -n "${_atmp:-}" ] && rm -rf "$_atmp"

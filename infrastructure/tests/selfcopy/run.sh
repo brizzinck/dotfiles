@@ -49,6 +49,39 @@ time.sleep(0.2)
 print(f"rc={rc} leftovers={len(os.listdir(tmp))} copy_was_used={os.path.exists(log)}")
 PY
 }
+# runone SCRIPT SIGNAL: the signal goes to the WRAPPER process only (not the group): kill from outside, a closing terminal.
+# Prints "rc=<returncode> secs=<n> leftovers=<n> copy_alive=<0|1>" (the copy's own pid is read from the log it writes)
+runone() {
+  python3 -I - "$1" "$2" "$SCRATCH/tmp" "$SCRATCH/log" <<'PY'
+import glob, os, signal, subprocess, sys, time
+script, sig, tmp, log = sys.argv[1], getattr(signal, sys.argv[2]), sys.argv[3], sys.argv[4]
+os.makedirs(tmp, exist_ok=True)
+env = dict(os.environ, TMPDIR=tmp, SELFCOPY_LOG=log, SELFCOPY_SLEEP="30")
+p = subprocess.Popen(["bash", script], env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+for _ in range(100):
+    if glob.glob(tmp + "/*/*.sh") and os.path.exists(log):
+        break
+    time.sleep(0.05)
+kids = subprocess.run(["pgrep", "-P", str(p.pid)], capture_output=True, text=True).stdout.split()
+t = time.time()
+os.kill(p.pid, sig)
+try:
+    rc = p.wait(8)
+except subprocess.TimeoutExpired:
+    os.killpg(p.pid, signal.SIGKILL); rc = "hung"
+secs = round(time.time() - t)
+time.sleep(0.3)
+alive = int(any(os.path.exists(f"/proc/{k}") and b"Z" != open(f"/proc/{k}/stat").read().split(")")[-1].split()[0].encode() for k in kids))
+print(f"rc={rc} secs={secs} leftovers={len(os.listdir(tmp))} copy_alive={alive}")
+PY
+}
+for s in doctor.sh apply-system.sh; do
+  for sig in SIGTERM SIGHUP; do   # (SIGINT alone: a bash copy waiting for a foreground child only exits after it; Ctrl+C reaches both, see below)
+    rm -rf "$SCRATCH/tmp" "$SCRATCH/log"
+    out=$(runone "$SCRATCH/s/$s" "$sig")
+    check "$s: $sig sent to the wrapper alone is forwarded to the copy, ends the run at once, leaves no temp dir and re-raises" bash -c 'grep -q "secs=[0-4] leftovers=0 copy_alive=0" <<<"$1" && grep -qE "rc=-(1|2|15) " <<<"$1"' _ "$out"
+  done
+done
 for s in doctor.sh apply-system.sh; do
   for sig in SIGINT SIGTERM; do
     rm -rf "$SCRATCH/tmp" "$SCRATCH/log"

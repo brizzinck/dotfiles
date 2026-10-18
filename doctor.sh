@@ -6,20 +6,33 @@
 set -u
 
 # Immune to concurrent edits: bash reads a script incrementally, so a commit that rewrites this file during a run breaks it
-# mid-way ("syntax error near unexpected token"). Run from a private copy (0700 temp dir, removed afterwards, also on Ctrl+C or
-# SIGTERM: the trap removes it and re-raises the signal; as root TMPDIR is ignored, always /tmp); DOCTOR_SELF is the original
-# path, used for the repo lookups. Falls through to running in place when the copy cannot be made.
+# mid-way ("syntax error near unexpected token"). Run from a private copy (0700 temp dir, removed afterwards, also on Ctrl+C,
+# SIGTERM or SIGHUP: the signal is forwarded to the copy, the copy removed, the signal re-raised; as root TMPDIR is ignored,
+# always /tmp); DOCTOR_SELF is the original path, used for the repo lookups. Falls through to running in place when the copy
+# cannot be made.
 if [ -z "${DOCTOR_SELF:-}" ]; then
   DOCTOR_SELF="$(readlink -f "${BASH_SOURCE[0]}")"
   _dbase="${TMPDIR:-/tmp}"
   [ "$(id -u)" = 0 ] && _dbase=/tmp
   if _dtmp="$(mktemp -d "$_dbase/doctor.XXXXXX" 2>/dev/null)" && install -m 0700 "$DOCTOR_SELF" "$_dtmp/doctor.sh"; then
     export DOCTOR_SELF
-    _drc=0
-    trap 'rm -rf "$_dtmp"; trap - INT; kill -INT $$' INT
-    trap 'rm -rf "$_dtmp"; trap - TERM; kill -TERM $$' TERM
-    bash "$_dtmp/doctor.sh" "$@" || _drc=$?
+    _drc=0 _dpid="" _dgot=""
+    # The copy runs as a CHILD: a signal sent to this wrapper alone (kill, a closing terminal) is forwarded to it at once (a
+    # foreground child would hold the trap back until it finished) and the copy is removed afterwards, then the signal is
+    # re-raised so the caller sees the real cause of death. Ctrl+C reaches both through the process group.
+    _dsig() { _dgot=$1; if [ -n "$_dpid" ]; then kill "-$1" "$_dpid" 2>/dev/null || true; fi; }
+    trap '_dsig INT' INT
+    trap '_dsig TERM' TERM
+    trap '_dsig HUP' HUP
+    env --default-signal=INT,QUIT bash "$_dtmp/doctor.sh" "$@" <&0 &   # an async child would ignore SIGINT otherwise
+    _dpid=$!
+    while :; do
+      _drc=0
+      wait "$_dpid" || _drc=$?
+      kill -0 "$_dpid" 2>/dev/null || break   # wait also returns when a trapped signal arrived while the child still runs
+    done
     rm -rf "$_dtmp"
+    if [ -n "$_dgot" ]; then trap - "$_dgot"; kill "-$_dgot" $$; fi
     exit "$_drc"
   fi
   [ -n "${_dtmp:-}" ] && rm -rf "$_dtmp"
@@ -491,6 +504,15 @@ if [ -x "$HOME/.local/bin/mcp-gateway" ]; then
     if [ -z "$tg_drift" ]; then ok mcp-tg-files "telegram-mcp scripts and units match the repo"; else bad mcp-tg-files "installed files differ from the repo:$tg_drift (sudo ./apply-system.sh --only mcp)"; fi
   else
     info mcp-tg-files "Telegram service not installed yet: sudo ./apply-system.sh --only users,mcp"
+  fi
+  # a failed Bitwarden write of a fresh Telegram session leaves a plaintext full-account session in a recovery file that every process
+  # of yours (agents too) can read: FAIL until it is resumed or deleted
+  if tg_rec="$("$DOTFILES/.local/bin/mcp-telegram-setup" recovery-status 2>/dev/null)"; then
+    ok mcp-tg-recovery "no plaintext Telegram session waiting in a recovery file"
+  elif [ -n "$tg_rec" ]; then
+    bad mcp-tg-recovery "a Telegram session sits in plaintext in $tg_rec (readable by every process of yours): mcp-telegram-setup --resume, or delete the file"
+  else
+    info mcp-tg-recovery "mcp-telegram-setup recovery-status gave no answer"
   fi
   if getent passwd aimcp >/dev/null; then
     aimcp_home="$(getent passwd aimcp | cut -d: -f6)"
