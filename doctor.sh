@@ -1349,6 +1349,17 @@ if command -v mise >/dev/null 2>&1; then
 fi
 if db_t="$("$DOTFILES/infrastructure/tests/envs/run.sh" --quick 2>&1)"; then ok envs-test "envs against the fake vault: $(printf '%s' "$db_t" | tail -1)"; else bad envs-test "$(printf '%s' "$db_t" | grep -m1 '^FAIL') (infrastructure/tests/envs/run.sh)"; fi
 if "$DOTFILES/.config/hub/hub" --list --all 2>/dev/null | grep -q ' envs '; then ok envs-row "hub row envs exists (group Dev, leader j e)"; else bad envs-row "hub row envs missing (.config/hub/actions.d/dev-b.tsv)"; fi
+# FIX-DEVb: the hardening of the review stays in place (absolute interpreter, absolute er/ere/ert, no legacy-file auto-install, backends off)
+db_bad=""
+[ "$(head -1 "$DOTFILES/.local/bin/envs")" = '#!/usr/bin/python3 -I' ] || db_bad="$db_bad envs shebang is not the absolute #!/usr/bin/python3 -I;"
+for db_f in er ere ert; do grep -qE "^$db_f\(\) \{.*\\\$HOME/\.local/bin/envs run" "$DOTFILES/.zshrc" || db_bad="$db_bad $db_f() does not call \$HOME/.local/bin/envs;"; done
+grep -q 'not installed automatically' "$DOTFILES/.config/zsh/mise.zsh" || db_bad="$db_bad mise.zsh would auto-install for legacy version files;"
+grep -q '^disable_backends = \["asdf", "vfox"\]' "$DOTFILES/.config/mise/config.toml" || db_bad="$db_bad mise config does not disable the asdf/vfox backends;"
+grep -q 'clean_project_env' "$DOTFILES/.local/bin/sysup" || db_bad="$db_bad sysup does not undo an activated project;"
+if [ -n "$db_bad" ]; then bad envs-hardening "$db_bad"; else ok envs-hardening "envs: absolute interpreter and er/ere/ert, trust is its own question, install-on-cd skips legacy version files, sysup undoes a project env"; fi
+for db_f in ENVS_TOOL_PATH ENVS_TEST_YES ENVS_TEST_ROOT_PID RBW_BIN BW_BIN PINENTRY_BIN; do
+  [ -z "$(printenv "$db_f" 2>/dev/null)" ] || info envs-hooks "$db_f is set in this shell: envs ignores test hooks outside tests/ (a project [env] may have exported it)"
+done
 db_dir="${XDG_STATE_HOME:-$HOME/.local/state}/envs"
 if [ -d "$db_dir" ]; then
   db_bad=""
