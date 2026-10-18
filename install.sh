@@ -228,6 +228,9 @@ cd "$DOTFILES"
 mkdir -p "$HOME/.config/gtk-3.0" "$HOME/.config/gtk-4.0"
 # envs global scope: global.toml is linked, global.local.toml (machine-local secret names and connections) must never land in the repo
 mkdir -p -m 700 "$HOME/.config/envs"
+# dev tools (DEV-d): these write their own state next to the linked theme/config files (posting history and scratch collection,
+# glab-tui config + cache, gh-dash), so their directories stay real and only single files are linked
+mkdir -p "$HOME/.local/share/posting/themes" "$HOME/.config/posting" "$HOME/.config/glab-tui/themes" "$HOME/.config/gh-dash"
 git submodule update --init --recursive
 # Move real files/dirs out of the way; leave symlinks (stow manages them)
 while IFS= read -r rel; do

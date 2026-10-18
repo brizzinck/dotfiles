@@ -36,6 +36,10 @@ that path:
 | GTK 3 / GTK 4 | `gtk.css` imports `theme-black.css` and `theme.css` (symlinks to `generated/*/gtk3.css`, `gtk4.css`) |
 | qt6ct, btop | `colors/everforest.conf` and `themes/everforest-v2.theme` are symlinks to `current/qt6ct.conf` and `current/btop.theme` |
 | lazygit | `LG_CONFIG_FILE=~/.config/lazygit/config.yml,current/lazygit.yml` (set by `.zshrc`, tmux and hub only when the file exists) |
+| lazysql | `current/lazysql.toml` (`[theme]` + `[theme.Colors]`): the `db` launcher appends it to its per-run config at every start |
+| posting | `~/.local/share/posting/themes/everforest.yaml` is a repo symlink to `current/posting.yaml` (`theme: everforest` in `config.yaml`; posting reloads a changed theme file itself) |
+| gh-dash | `current/gh-dash-theme.yml` (a top-level `theme:` only): `forge` concatenates it with `~/.config/gh-dash/base.yml` into the per-run `--config` |
+| glab-tui | `~/.config/glab-tui/themes/everforest.toml` is a repo symlink to `current/glab-tui.toml` (`theme_preset = "everforest"` in its config) |
 | Zen (later) | `current/tokens.css` (`--ef-*` variables, dashes: `--ef-fg-hi`, `--ef-subtext`, `--ef-muted`, `--ef-bg-oled`) and `current/tokens.json` |
 | Claude Code | `current/claude-theme.json`, copied by the owner (see below) |
 
