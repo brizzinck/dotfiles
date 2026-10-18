@@ -369,6 +369,126 @@ class Secrets(unittest.TestCase):
         with patch.object(m, 'anchor_owner', return_value=65532), self.assertRaises(m.Refused):
             m.migrate(dry=True)
 
+    def test_usr_envs_directory_is_private_and_metadata_usable(self):
+        # A named publisher default ACL yields mode0775 on mkdir -p. The public
+        # module links must coexist with private account-local wrapper/import data.
+        srv = self.t / 'public'
+        source = srv / '.config/envs'
+        source.mkdir(parents=True)
+        for name in ('global.toml', 'secrets.py', 'commands.py'):
+            (source / name).write_text('# public fixture\n')
+        config = self.home / '.config'
+        config.mkdir(mode=0o755)
+        directory = config / 'envs'
+        directory.mkdir(mode=0o775)
+        subprocess.run(['setfacl', '-m', 'u:65534:rwx,g::r-x,m::rwx,o::---', str(self.home)], check=True)
+        subprocess.run(['setfacl', '-m', 'u:65534:rwx,g::r-x,m::rwx,o::r-x', str(config)], check=True)
+        ancestors_before = [subprocess.check_output(['getfacl', '-cpnE', str(p)]) for p in (self.home, config)]
+        subprocess.run(['setfacl', '-m', 'u:65534:rwx,g::r-x,o::r-x,m::rwx,d:u::rwx,d:u:65534:rwx,d:g::r-x,d:m::rwx,d:o::r-x', str(directory)], check=True)
+        local = directory / 'global.local.toml'
+        local.write_text('# local metadata kept\n'); local.chmod(0o600)
+        local_before = (local.stat().st_ino, local.read_bytes())
+        code = directory / 'secrets.py'; code.symlink_to(source / 'secrets.py')
+        code_before = code.lstat().st_ino
+        wrapper = directory / 'wrap.tsv'
+        wrapper.write_text('fixturetool\t/usr/bin/true\tTOKEN\n'); wrapper.chmod(0o600)
+        registry = self.t / 'managed.tsv'
+        registry.write_text('fixture\tcli\tinteractive\t-\n')
+        env = dict(os.environ, HOME=str(self.home), XDG_CONFIG_HOME=str(config),
+                   XDG_STATE_HOME=str(self.home / '.local/state'),
+                   USR_MANAGED_TSV=str(registry), USR_TARGET_USER='fixture', USR_TARGET_HOME=str(self.home),
+                   USR_SRV_DOTFILES=str(srv), USR_SRV_PRIVATE=str(self.t / 'absent-private'),
+                   USR_DEVTOOLS_SHARED=str(self.t / 'absent-tools'))
+        env.pop('DISPLAY', None); env.pop('WAYLAND_DISPLAY', None)
+        command = [str(REPO / '.local/bin/usr'), '_link']
+        dry = subprocess.run(command + ['--dry-run'], env=env, capture_output=True, text=True)
+        self.assertEqual(0, dry.returncode, dry.stderr)
+        self.assertEqual(0o775, directory.stat().st_mode & 0o777)
+        self.assertEqual(code_before, code.lstat().st_ino)
+        actual = subprocess.run(command, env=env, capture_output=True, text=True)
+        self.assertEqual(0, actual.returncode, actual.stderr)
+        self.assertEqual(0o700, directory.stat().st_mode & 0o777)
+        self.assertNotIn('system.posix_acl_default', os.listxattr(directory))
+        self.assertNotIn('system.posix_acl_access', os.listxattr(directory))
+        self.assertEqual(local_before, (local.stat().st_ino, local.read_bytes()))
+        self.assertEqual(code_before, code.lstat().st_ino)
+        self.assertEqual(str(source / 'secrets.py'), os.readlink(code))
+        # Exercise the real shell loader and import metadata guard, no backend.
+        wrapper_spec = importlib.util.spec_from_file_location('fixture_wrappers', REPO / 'infrastructure/tests/envs/wrappers_test.py')
+        wrappers = importlib.util.module_from_spec(wrapper_spec); wrapper_spec.loader.exec_module(wrappers)
+        wrapper_source, _ = wrappers.Wrappers.publisher_source(self)
+        script = 'readonly _ENVS_BIN=' + str(self.home / '.local/bin/envs') + '; source ' + str(wrapper_source) + '; (( ${+functions[fixturetool]} ))'
+        smoke = subprocess.run(['/usr/bin/zsh', '-f', '-c', script], env=env, capture_output=True, text=True)
+        self.assertEqual(0, smoke.returncode, smoke.stderr)
+        import types, sys
+        core_spec = importlib.util.spec_from_file_location('fixture_envs_core', REPO / '.config/envs/secrets.py')
+        core = importlib.util.module_from_spec(core_spec); sys.modules[core_spec.name] = core; core_spec.loader.exec_module(core)
+        import_spec = importlib.util.spec_from_file_location('fixture_envs_imports', REPO / '.config/envs/imports.py')
+        imports = importlib.util.module_from_spec(import_spec); import_spec.loader.exec_module(imports)
+        self.assertIsNone(imports.prepare_target(directory / 'global.env', types.SimpleNamespace(D=core)))
+        again = subprocess.run(command, env=env, capture_output=True, text=True)
+        self.assertEqual(0, again.returncode, again.stderr)
+        self.assertEqual(local_before, (local.stat().st_ino, local.read_bytes()))
+        ancestors_after = [subprocess.check_output(['getfacl', '-cpnE', str(p)]) for p in (self.home, config)]
+        self.assertEqual(ancestors_before, ancestors_after)
+
+    def envs_prepare(self, home=None, dry=False, patches=()):
+        import contextlib, sys
+        source = (REPO / '.local/bin/usr').read_text()
+        script = source.split("<<'PY_ENVS_DIRECTORY'\n", 1)[1].split('\nPY_ENVS_DIRECTORY', 1)[0]
+        with patch.object(sys, 'argv', ['fixture', str(home or self.home), '1' if dry else '0']), contextlib.ExitStack() as stack:
+            for target, replacement in patches:
+                stack.enter_context(patch(target, replacement))
+            try:
+                exec(compile(script, '<usr-envs-directory-fixture>', 'exec'), {})
+                return 0
+            except SystemExit as exc:
+                return exc.code
+
+    def test_usr_envs_directory_missing_dry_and_symlink_guards(self):
+        self.assertEqual(0, self.envs_prepare(dry=True))
+        self.assertFalse((self.home / '.config').exists())
+        self.assertEqual(0, self.envs_prepare())
+        directory = self.home / '.config/envs'
+        self.assertEqual(0o700, directory.stat().st_mode & 0o777)
+        directory.rmdir()
+        outside = self.t / 'outside'; outside.mkdir(mode=0o755)
+        (outside / 'kept').write_text('invented unchanged fixture')
+        directory.symlink_to(outside)
+        for dry in (True, False):
+            self.assertEqual(2, self.envs_prepare(dry=dry))
+            self.assertTrue(directory.is_symlink())
+            self.assertEqual(0o755, outside.stat().st_mode & 0o777)
+        directory.unlink()
+        directory.write_text('not a directory')
+        self.assertEqual(2, self.envs_prepare())
+        directory.unlink(); directory.mkdir()
+        (self.home / '.config').rename(self.home / 'kept-config')
+        (self.home / '.config').symlink_to(self.home / 'kept-config')
+        self.assertEqual(2, self.envs_prepare())
+        self.assertTrue((self.home / '.config').is_symlink())
+
+    def test_usr_envs_foreign_owner_and_path_swap_refused(self):
+        directory = self.home / '.config/envs'
+        directory.mkdir(parents=True); directory.chmod(0o775)
+        original_stat = os.fstat
+        def foreign(fd):
+            st = original_stat(fd)
+            if (st.st_dev, st.st_ino) == (directory.stat().st_dev, directory.stat().st_ino):
+                values = list(st); values[4] = os.getuid() + 1
+                return os.stat_result(values)
+            return st
+        self.assertEqual(2, self.envs_prepare(patches=(('os.fstat', foreign),)))
+        self.assertEqual(0o775, directory.stat().st_mode & 0o777)
+        original_chmod = os.fchmod
+        def swap(fd, mode):
+            directory.rename(directory.with_name('displaced-envs'))
+            directory.mkdir(mode=0o755)
+            original_chmod(fd, mode)
+        self.assertEqual(2, self.envs_prepare(patches=(('os.fchmod', swap),)))
+        self.assertEqual(0o755, directory.stat().st_mode & 0o777)
+        self.assertEqual(0o700, directory.with_name('displaced-envs').stat().st_mode & 0o777)
+
     def test_usr_restore_roundtrip_and_user_edit_preserved(self):
         self.setup_root()
         self.commit({'.claude/agents/ok.md': 'shared', '.gemini/config/skills/ok.md': 'shared'})
