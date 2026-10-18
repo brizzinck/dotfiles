@@ -59,7 +59,8 @@ packages=(
   hyprpolkitagent cliphist wl-clip-persist swayosd wiremix hyprshot satty hyprpicker hyprsunset
   xorg-xcursorgen librsvg                                                           # build deps of the local everforest-cursor-theme package (infrastructure/cursor)
   rofimoji wtype udiskie                                                            # polkit agent, clipboard, OSD, screenshots, picker, emoji (rofimoji = the emoji data of emoji.sh), automount
-  bat eza git-delta github-cli trash-cli dust duf watchexec just go-yq xh shfmt direnv dive hyperfine
+  bat eza git-delta github-cli trash-cli dust duf watchexec just go-yq xh shfmt dive hyperfine
+  mise usage                                                                        # tool versions per project (replaces direnv: .config/zsh/mise.zsh), usage = its zsh completion generator
   difftastic                                                                        # structural diff (difft): git dft / dlog / dshow, second lazygit diff renderer
   atuin                                                                             # local shell history (no sync), Ctrl+R list in the modal fzf (~/.config/zsh/history.zsh)
   gitleaks                                                                          # secret scan of the dotfiles pre-commit hook (.githooks/pre-commit, doctor gitleaks-history)

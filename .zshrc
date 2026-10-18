@@ -137,8 +137,6 @@ else
   export XCURSOR_THEME=Bibata-Modern-Ice
 fi
 
-export NVM_DIR="$HOME/.nvm"
-
 # secrets: ~/.config/secrets/env.sh (0600; the place for managed users) and, for the owner, ~/dotfiles/env.secret.sh
 for _f in "$HOME/.config/secrets/env.sh" "$HOME/dotfiles/env.secret.sh"; do [ -f "$_f" ] && source "$_f"; done; unset _f
 # per-user overrides that are never shared (usr link writes the accent marker of a managed user's prompt here)
@@ -150,9 +148,6 @@ if [[ -z $CLAUDECODE ]]; then
     [[ -r ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/$_f.zsh ]] && source ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/$_f.zsh
   done; unset _f
 fi
-
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  
-[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  
 
 [ -s "/home/$USER/.bun/_bun" ] && source "/home/$USER/.bun/_bun"
 
@@ -279,7 +274,8 @@ if [[ -z $CLAUDECODE ]]; then
   export MANROFFOPT='-P -c'
 fi
 
-(( $+commands[direnv] )) && eval "$(direnv hook zsh)"
+# mise: tool versions per project (non-secret [env] too); replaces direnv. Secrets never live in the shell: `envs run`, see CLAUDE.md
+[[ -r ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/mise.zsh ]] && source ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/mise.zsh
 
 # ── Maintenance helpers ─────────────────────────────────────────────────────
 # System upgrades: `sysup` is ~/.local/bin/sysup (background check + download, install only when you run it:

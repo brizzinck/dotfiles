@@ -264,8 +264,10 @@ REPO_PACKAGES=(
   hyprpolkitagent cliphist wl-clip-persist swayosd wiremix hyprshot satty hyprpicker hyprsunset
   rofimoji wtype udiskie qt6ct
   # cli tools (shellcheck comes from the AUR as shellcheck-bin, see AUR_PACKAGES)
-  bat eza git-delta github-cli trash-cli dust duf watchexec just go-yq xh shfmt direnv
+  bat eza git-delta github-cli trash-cli dust duf watchexec just go-yq xh shfmt
   dive hyperfine
+  # DEV-b: mise = tool versions per project (replaces direnv; .config/zsh/mise.zsh), usage = its zsh completion generator
+  mise usage
   # DEV-a: gitleaks = secret scan of the pre-commit hook of the public dotfiles repo (.githooks/pre-commit); atuin = local
   # shell history behind Ctrl+R (no sync, no daemon: .config/atuin/config.toml, recorded by .config/zsh/cmd-hooks.zsh)
   gitleaks atuin
@@ -621,7 +623,7 @@ section_remove() {
   # explicit list from the package review (only those actually installed).
   # kotlin is the only package that requires jdk-openjdk; no java/gradle/maven usage was found (no shell history,
   # ~/.gradle, ~/.m2 or project files), so the JDK goes with it. To keep java: pacman -D --asexplicit jdk-openjdk
-  for p in lazarus fpc fpc-src kotlin zig dolphin-emu modemmanager; do
+  for p in lazarus fpc fpc-src kotlin zig dolphin-emu modemmanager direnv; do
     pkg_installed "$p" && present+=("$p")
   done
   if [ "${#present[@]}" -gt 0 ]; then
