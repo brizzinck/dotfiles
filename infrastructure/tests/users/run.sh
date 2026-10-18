@@ -495,6 +495,27 @@ PY
   # the rollback tests below need a snapshot again (what the next `apply` would write)
   gzip -c "$T/snap-a.txt" >"$ST5/home-acl-before-20260104-000000.txt.gz"
 
+  # FIX3 F6: root drops to the owner with setpriv (no PAM login stack like runuser) and starts in /
+  H7="$T/aclhome7"; mkdir -p "$H7" "$T/st7"; printf 'x\n' >"$H7/m7"; chmod 600 "$H7/m7"
+  printf '755\t%s\n' "$H7/m7" >"$T/st7/secret-modes-before-20260101-000000.txt"
+  cat >"$T/fakebin/setpriv" <<'FAKE'
+#!/bin/sh
+echo "setpriv $* cwd=$(pwd)" >>"$SETPRIV_LOG"
+while [ "$1" != -- ]; do shift; done; shift
+exec "$@"
+FAKE
+  cat >"$T/fakebin/runuser" <<'FAKE'
+#!/bin/sh
+echo "runuser $*" >>"$SETPRIV_LOG"
+exit 1
+FAKE
+  chmod +x "$T/fakebin/setpriv" "$T/fakebin/runuser"
+  export SETPRIV_LOG="$T/setpriv.log"; : >"$SETPRIV_LOG"
+  PATH="$T/fakebin:$PATH" HOME_ACL_TEST_EUID=0 "$HA" restore --root "$H7" --owner "$ME" --state "$T/st7" >/dev/null 2>&1
+  grep -q "^setpriv --reuid=$(id -u) --regid=$(id -g) --init-groups -- .* cwd=/\$" "$SETPRIV_LOG" && ok || bad "FIX3 F6 home-acl: root does not drop to the owner with setpriv --reuid --regid --init-groups from / ($(head -2 "$SETPRIV_LOG" | paste -sd'|' -))"
+  grep -q '^runuser' "$SETPRIV_LOG" && bad "FIX3 F6 home-acl: runuser (PAM login stack) is still used" || ok
+  expect "FIX3 F6 home-acl: the change was made through setpriv (m7 mode)" "755" "$(stat -c %a "$H7/m7")"
+
   # rollback.sh --home-acl-cleanup runs alone: the sudoers rule and the managed users' ACL are not touched, no other option combines
   mkdir -p "$T/rb/etc/sudoers.d" "$T/rb/etc/polkit-1/rules.d" "$T/rb/srv/dotfiles"
   : >"$T/rb/etc/sudoers.d/50-usr-managed"; : >"$T/rb/etc/polkit-1/rules.d/50-usr-managed.rules"

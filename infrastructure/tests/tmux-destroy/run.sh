@@ -7,10 +7,12 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 CONF="$REPO/.config/tmux/tmux.conf"
 SOCK="tmux-destroy-test-$$"
+SOCK_DIR="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"   # before the private TMUX_TMPDIR below
 T=$(mktemp -d)
 cleanup() {
   tmux -L "$SOCK" kill-server 2>/dev/null
   pkill -f "tmux -L $SOCK" 2>/dev/null
+  rm -f "$SOCK_DIR/$SOCK"   # kill-server leaves the socket file behind
   rm -rf "$T"
 }
 trap cleanup EXIT

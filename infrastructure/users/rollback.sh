@@ -44,7 +44,7 @@ OWNER_HOME="$(getent passwd "$OWNER" | cut -d: -f6)"
 source "$HERE/lib.sh"
 
 if [ "$DO_CLEAN" = 1 ]; then
-  # cleanup only: home-acl.sh restore does the work as the owner (runuser) and removes the marker
+  # cleanup only: home-acl.sh restore does the work as the owner (setpriv) and removes the marker
   "$HERE/home-acl.sh" restore --root "$OWNER_HOME" --owner "$OWNER" --state "$STATE"
   echo "done. Only the home ACL cleanup was undone; sudoers, polkit and the managed users' ACL are unchanged."
   exit 0

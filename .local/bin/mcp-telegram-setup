@@ -276,6 +276,17 @@ def recovery_path() -> Path | None:
     return None
 
 
+def leftover_recovery_files() -> list[Path]:
+    """Every file that may still hold a plaintext session: the recovery files, readable as JSON or not, and the `.tmp` of a partial
+    write (a full tmpfs leaves one before the fallback is used)."""
+    found: list[Path] = []
+    for path in RECOVERY_FILES:
+        for cand in (path, path.with_suffix(".tmp")):
+            if os.path.lexists(cand) and cand not in found:
+                found.append(cand)
+    return found
+
+
 def load_recovery() -> dict | None:
     path = recovery_path()
     return json.loads(path.read_text()) if path else None
@@ -884,11 +895,11 @@ def main(argv: list[str]) -> int:
         return 0
     if words == ["status"]:
         return cmd_status()
-    if words == ["recovery-status"]:   # hidden: doctor. Exit 1 and the path while a plaintext session waits in a recovery file
-        where = recovery_path()
-        if where:
-            print(where)
-        return 1 if where else 0
+    if words == ["recovery-status"]:   # hidden: doctor. Exit 1 and the paths while anything that may hold a plaintext session is left
+        left = leftover_recovery_files()
+        for path in left:
+            print(path)
+        return 1 if left else 0
     if words and words[0] == "send-chats":
         acct = "main"
         if "--account" in argv:

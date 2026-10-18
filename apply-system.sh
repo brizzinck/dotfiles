@@ -1171,7 +1171,7 @@ users_home_acl_cleanup() {
   fi
   local args=(--root "$root" --owner "$OWNER" --state "$USERS_STATE" --repo "$REPO" --managed "$(managed_users | paste -sd' ' -)")
   # streamed (the scan of a big home takes ~10 s and says so first), the full output is kept for the RESULT line; the script
-  # changes the home as the owner (runuser), root only writes the before-state
+  # changes the home as the owner (setpriv), root only writes the before-state
   outf="$(mktemp)"
   local verb=apply
   if [ "$DRY_RUN" -eq 1 ]; then

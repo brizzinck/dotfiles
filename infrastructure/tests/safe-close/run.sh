@@ -9,6 +9,7 @@ T=$(mktemp -d)
 SOCK="sc-test-$$"
 cleanup() {
   tmux -L "$SOCK" kill-server 2>/dev/null
+  rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SOCK"   # kill-server leaves the socket file behind
   [ -n "${CLIENT_PID:-}" ] && kill "$CLIENT_PID" 2>/dev/null
   [ -n "${HOLD_PID:-}" ] && kill "$HOLD_PID" 2>/dev/null
   rm -rf "$T"

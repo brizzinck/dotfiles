@@ -30,6 +30,7 @@ SECRETS=('PW-github-s3cret!' 'TOKEN-api-hidden-777' '4111111111111111' 'CVV-secr
 
 cleanup() {
   "${T[@]}" kill-server 2>/dev/null
+  rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SOCK"   # kill-server leaves the socket file behind
   stop_bw_servers
   [[ -n ${SAMPLER:-} ]] && kill "$SAMPLER" 2>/dev/null
   if ((KEEP)); then echo "kept: $FAKE"; else rm -rf "$FAKE"; fi

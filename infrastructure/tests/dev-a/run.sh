@@ -25,6 +25,7 @@ cleanup() {
   tmux -L "$SOCK" kill-server 2>/dev/null
   tmux -L "$SOCK-b" kill-server 2>/dev/null
   pkill -f "tmux -L $SOCK" 2>/dev/null
+  rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SOCK" "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SOCK-b"   # kill-server leaves the socket files behind
   [[ -n ${T:-} && -d $T ]] && rm -rf -- "$T"
 }
 trap cleanup EXIT

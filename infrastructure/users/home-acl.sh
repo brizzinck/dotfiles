@@ -5,7 +5,7 @@
 #   home-acl.sh report [opts]   read-only: what `apply` would do (counts, kinds, examples, every path it would tighten)
 #   home-acl.sh apply  [opts]   do it (root when the home belongs to the owner): strip the unintended extended ACLs, tighten
 #                               the secret locations, keep the before-state, write the marker file. Every change of a path in
-#                               the home is made AS THE OWNER (runuser when started as root; the home is the owner's, so no
+#                               the home is made AS THE OWNER (setpriv when started as root, no PAM; the home is the owner's, so no
 #                               root is needed and a symlink swapped in by a hostile process cannot send root anywhere);
 #                               root only writes the before-state below --state
 #   home-acl.sh restore [opts]  put back what `apply` changed (rollback.sh --home-acl-cleanup): every home-acl-before-*.txt.gz
@@ -23,7 +23,7 @@
 #   --secrets FILE  secret locations [secret-paths.txt next to this script]
 #   --repo DIR      what @REPO@ stands for in the secrets file [the dotfiles checkout]
 #   --marker FILE   written by `apply` [ROOT/.local/state/usr/home-acl-cleanup]
-#   --runas CMD     command prefix that replaces runuser (test hook: the tests log what runs "as the owner")
+#   --runas CMD     command prefix that replaces setpriv (test hook: the tests log what runs "as the owner")
 #   --examples N    examples to print [8]            --depth N / --budget SECONDS   check only [5 / 10]
 #
 # What is an unintended extended ACL: any path of the tree that carries an ACL xattr without a named user/group entry that
@@ -73,14 +73,18 @@ trap 'rm -rf "$W"' EXIT
 OWNER_UID="$(id -u "$OWNER" 2>/dev/null || echo -1)"
 ROOT_REAL="$(realpath -m -- "$ROOT")" REPO_REAL="$(realpath -m -- "$REPO")"
 
-# as_owner CMD...: run CMD as the owner of the tree. Root drops to the owner (runuser, supplementary groups included), the
-# owner itself and the tests (--runas) run it directly. stdin and stdout pass through.
+# as_owner CMD...: run CMD as the owner of the tree. Root drops to the owner with setpriv (uid, gid and supplementary groups;
+# runuser would go through the PAM stack: a pam_systemd session, a lastlog entry and the motd for every call) and starts in /
+# (root's working directory may not be traversable for the owner: bash warns "getcwd"); the owner itself and the tests
+# (--runas) run it directly. stdin and stdout pass through. HOME_ACL_TEST_EUID is a test hook, honoured only when not root.
 as_owner() {
+  local euid=$EUID
+  [ "$EUID" -ne 0 ] && [ -n "${HOME_ACL_TEST_EUID:-}" ] && euid=$HOME_ACL_TEST_EUID
   if [ -n "$RUNAS" ]; then
     # shellcheck disable=SC2086
     $RUNAS "$@"
-  elif [ "$EUID" -eq 0 ] && [ "$OWNER" != root ]; then
-    runuser -u "$OWNER" -- "$@"
+  elif [ "$euid" -eq 0 ] && [ "$OWNER" != root ]; then
+    (cd / && exec setpriv --reuid="$OWNER_UID" --regid="$(id -g "$OWNER")" --init-groups -- "$@")
   else
     "$@"
   fi

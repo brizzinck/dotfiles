@@ -20,7 +20,7 @@ SOCKS=("$S")
 cleanup() {
   local s
   [[ -r $T/xdg/fzf-menu/server.pid ]] && kill "$(cat "$T/xdg/fzf-menu/server.pid")" 2>/dev/null
-  for s in "${SOCKS[@]}"; do tmux -L "$s" kill-server 2>/dev/null; done
+  for s in "${SOCKS[@]}"; do tmux -L "$s" kill-server 2>/dev/null; rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$s"; done   # kill-server leaves the socket file behind
   rm -rf "$T"
 }
 trap cleanup EXIT

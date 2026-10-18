@@ -325,6 +325,11 @@ def tmux_list(conf):
             time.sleep(0.15)
     finally:
         run(base + ["kill-server"], timeout=10, env=env)
+        # kill-server leaves the socket file behind: hundreds of dead ones piled up in /tmp/tmux-UID
+        try:
+            os.unlink(os.path.join(os.environ.get("TMUX_TMPDIR") or "/tmp", f"tmux-{os.getuid()}", f"{TMUX_SOCK}-{os.getpid()}"))
+        except OSError:
+            pass
     return rows
 
 
@@ -1043,7 +1048,7 @@ def problems(data):
         if not b["count"] and b["id"] not in ("hypr-other",):
             errs.append(f"block {b['id']} is empty (its source returned nothing)")
     texts_kw = [r["desc"] for r in data["rows"]]
-    for src, rx, _words in keyword_rules():
+    for src, rx, words in keyword_rules():
         if rx is None:
             errs.append(f"keywords.tsv: the regex {src!r} does not compile")
             continue
@@ -1054,7 +1059,10 @@ def problems(data):
             errs.append(f"keywords.tsv: the regex {src!r} matches {hits} rows (more than {KEYWORD_MAX_ROWS}: too broad, anchor it)")
         for b in data["blocks"]:
             rows_b = [r["desc"] for r in data["rows"] if r["block"] == b["id"]]
-            if len(rows_b) >= 8 and all(rx.search(t) for t in rows_b):
+            # a block that is ABOUT the rule's topic (title or id holds one of its words, "Dictation" and the rule "dictation") is
+            # uniform on purpose: the rule is correct there, not a broadcast
+            about = any(w.lower() in f"{b['title']} {b['id']}".lower() for w in words)
+            if len(rows_b) >= 8 and all(rx.search(t) for t in rows_b) and not about:
                 errs.append(f"keywords.tsv: the regex {src!r} matches every row of the block {b['id']} (a broadcast, anchor it)")
     hypr = sum(r.get("n", 1) for r in data["rows"] if r["source"] == "hyprland")
     if data.get("hypr_binds") and hypr != data["hypr_binds"]:

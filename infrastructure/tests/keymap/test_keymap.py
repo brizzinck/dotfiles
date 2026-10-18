@@ -139,6 +139,11 @@ real_rules = km.keyword_rules
 km.keyword_rules = lambda: [("lock", re.compile("lock"), ["w"])]
 check("keymap check: a keyword rule that hits every row of a block of 8+ is a broadcast and fails",
       any("every row of the block" in e for e in km.problems(broad)))
+about = {"pins": [], "hypr_binds": 0, "blocks": [{"id": "dictation", "title": "Dictation", "count": 9}],
+         "rows": [{"keys": f"k{i}", "desc": f"dictation {i}", "block": "dictation", "source": "x"} for i in range(9)]}
+km.keyword_rules = lambda: [("dictation", re.compile("dictation"), ["dictation", "voice"])]
+check("keymap check: a correct rule on a block that is about its topic (block 'Dictation', rule 'dictation') is no broadcast",
+      not any("every row of the block" in e for e in km.problems(about)))
 km.keyword_rules = lambda: [("clock", re.compile("clock"), ["w"])]
 check("keymap check: a rule that matches nothing still fails (stale rule)", any("matches no row" in e for e in km.problems(broad)))
 km.keyword_rules = real_rules

@@ -596,6 +596,8 @@ FAKE_PICK_IDS="42" MCP_TG_RETRY_DELAY=0 setup_env MCP_TG_RECOVERY="$SCRATCH/rec/
 FB="$SCRATCH/setup-state/telegram-recovery.json"
 check "recovery: an unusable runtime directory does not lose the session (no traceback; 0600 file under the state directory)" bash -c '[ "$1" != 0 ] && ! grep -q Traceback "$2" && [ "$(stat -c %a "$3")" = 600 ] && jq -e ".session | startswith(\"1FRESH\")" "$3" >/dev/null && grep -q "$3" "$2" && grep -q "mcp-telegram-setup --resume" "$2" && ! grep -q FRESHSESSION "$2"' _ "$rc14" "$SCRATCH/f14a.out" "$FB"
 check "recovery-status: exit 1 and the path while a recovery file holds a session" bash -c 'out=$(MCP_STATE_DIR="$2" MCP_TG_RECOVERY="$3" "$1" recovery-status); rc=$?; [ $rc = 1 ] && [ "$out" = "$4" ]' _ "$SETUP" "$SCRATCH/setup-state" "$SCRATCH/rec/notadir/x/recovery.json" "$FB"
+check "recovery-status: an unreadable / non-JSON recovery file counts (it may hold a session)" bash -c 'mkdir -p "$2/junk"; echo "not json" >"$2/junk/r.json"; out=$(MCP_STATE_DIR="$2/junk-state" MCP_TG_RECOVERY="$2/junk/r.json" "$1" recovery-status); rc=$?; [ $rc = 1 ] && [ "$out" = "$2/junk/r.json" ]' _ "$SETUP" "$SCRATCH"
+check "recovery-status: a leftover .tmp of a partial write counts, in the runtime and in the fallback directory" bash -c 'mkdir -p "$2/tmpl" "$2/tmpl-state"; : >"$2/tmpl/r.tmp"; : >"$2/tmpl-state/telegram-recovery.tmp"; out=$(MCP_STATE_DIR="$2/tmpl-state" MCP_TG_RECOVERY="$2/tmpl/r.json" "$1" recovery-status); rc=$?; [ $rc = 1 ] && [ "$out" = "$2/tmpl/r.tmp"$'"'"'\n'"'"'"$2/tmpl-state/telegram-recovery.tmp" ]' _ "$SETUP" "$SCRATCH"
 check "recovery-status: exit 0 and silent when there is none" bash -c 'out=$(MCP_STATE_DIR="$2/none" MCP_TG_RECOVERY="$2/none/r.json" "$1" recovery-status); [ $? = 0 ] && [ -z "$out" ]' _ "$SETUP" "$SCRATCH"
 echo 0 >"$FAKE_DIR/bw-edit-fails"; : >"$FAKE_DIR/argv.log"
 setup_env MCP_TG_RECOVERY="$SCRATCH/rec/notadir/x/recovery.json" VAULT_RBW_CONF="$FAKE_DIR/rbw-ready.json" "$SETUP" --resume >"$SCRATCH/f14b.out" 2>&1
@@ -714,7 +716,7 @@ if command -v tmux >/dev/null && command -v fzf >/dev/null && [[ $QUICK -eq 0 ]]
   check "picker UI: Tab ticks the first row (+), the counter follows, and the cursor moved down" bash -c '[[ $1 == *"Selected 2 (+1 / -0)"* ]] && echo "$1" | grep "Saved Messages" | grep -q "\[x\]+"' _ "$scr1"
   check "picker UI: the second Tab acted on the NEXT row (Ann unticked), header Selected 1 (+1 / -1)" bash -c '[[ $1 == *"Selected 1 (+1 / -1)"* ]] && echo "$1" | grep "Ann" | grep -q "\[ \]-"' _ "$scr2"
   check "picker UI: Enter saves: sel has exactly the expected ids" bash -c '[ "$(paste -sd, "$1/sel")" = 1 ]' _ "$UD"
-  tmux -L "$TS_SOCK" kill-server 2>/dev/null
+  tmux -L "$TS_SOCK" kill-server 2>/dev/null; rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$TS_SOCK"   # kill-server leaves the socket file behind
 fi
 rm -rf "$PD" "$UD"
 reset_tg_item

@@ -551,6 +551,7 @@ self_test() {
   case_run "NORMAL: Cyrillic G twin" 30 Escape '=П' Enter
   prompt_case 7
   tmux -L "$sock" kill-server 2>/dev/null
+  rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$sock"   # kill-server leaves the socket file behind
   name=${FUNCNAME[0]}
   ((fails == 0)) && { echo "$name: all cases passed"; return 0; }
   echo "$name: $fails case(s) failed"
