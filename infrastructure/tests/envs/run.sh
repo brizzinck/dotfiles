@@ -1168,11 +1168,38 @@ EDIR=""
 scan "21"
 }
 
+sections_22() {
+section "22 SECRETS: literal refs, approvals, imports and runtime"
+local module result
+for module in secrets metadata wrappers; do
+  if result=$(env -u DISPLAY -u WAYLAND_DISPLAY -u HYPRLAND_INSTANCE_SIGNATURE /usr/bin/python3 -I -B "$HERE/${module}_test.py" 2>&1); then
+    ok "$module isolated regression groups"
+  else
+    bad "$module isolated regression groups" "$(printf '%s' "$result" | tail -12)"
+  fi
+done
+if ((QUICK)); then
+  if result=$(env -u DISPLAY -u WAYLAND_DISPLAY -u HYPRLAND_INSTANCE_SIGNATURE /usr/bin/python3 -I -B "$HERE/runtime_test.py" Masking RuntimeFiles 2>&1); then
+    ok "runtime bounded masking and private tmpfs unit groups"
+  else bad "runtime unit groups" "$(printf '%s' "$result" | tail -12)"; fi
+else
+  for module in references policy imports runtime send precedence; do
+    if result=$(env -u DISPLAY -u WAYLAND_DISPLAY -u HYPRLAND_INSTANCE_SIGNATURE /usr/bin/python3 -I -B "$HERE/${module}_test.py" 2>&1); then
+      ok "$module isolated integration groups"
+      [[ $module != precedence ]] || printf '%s\n' "$result" | grep -E '^(PASS|SKIP|loader probes:)'
+    else
+      bad "$module isolated integration groups" "$(printf '%s' "$result" | tail -12)"
+    fi
+  done
+fi
+}
+
 if [[ -z $ONLY ]]; then sections_1_14; sections_17; sections_18; sections_19; sections_20; sections_21; fi
 [[ $ONLY == 19 ]] && sections_19
 [[ $ONLY == 20 ]] && sections_20
 [[ $ONLY == 21 ]] && sections_21
-sections_15_16
+[[ -z $ONLY || $ONLY == 22 ]] && sections_22
+[[ -z $ONLY || $ONLY == 15 || $ONLY == 16 ]] && sections_15_16
 
 printf '\nenvs test: %d passed, %d failed\n' "$PASS" "$FAILS"
 exit $((FAILS > 0))

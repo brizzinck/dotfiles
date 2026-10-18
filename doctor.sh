@@ -1230,6 +1230,87 @@ if [ -r "$users_lib" ]; then
   else
     info users-srv-dotfiles "/srv/dotfiles does not exist yet (sudo ./apply-system.sh --only users)"
   fi
+  # Private payloads are never read by doctor: validate owner/modes/ACLs and certification metadata only.
+  if [ -d /srv/private ]; then
+    if "$DOTFILES/infrastructure/users/private-publish.py" validate >/dev/null 2>&1; then
+      if [ -f /srv/private/.published ]; then
+        ok users-private "checked private owner/modes/read-only ACLs and publication marker"
+      else
+        info users-private "private layer prepared, no certified revision (usr sync as publisher)"
+      fi
+    else
+      bad users-private "unsafe private owner/path/ACL (sudo ./apply-system.sh --only users)"
+    fi
+  else
+    info users-private "/srv/private is not set up (sudo ./apply-system.sh --only users)"
+  fi
+  if users_private_group=$(getent group dotfiles-private); then
+    users_private_gid=$(printf '%s' "$users_private_group" | cut -d: -f3)
+    users_private_actual=$(printf '%s' "$users_private_group" | cut -d: -f4 | tr ',' '\n' | sed '/^$/d' | sort -u)
+    users_private_expected=$(private_publish_members | sort -u)
+    users_private_primary=$(getent passwd | awk -F: -v gid="$users_private_gid" '$4==gid {print $1}')
+    if [ "$users_private_actual" = "$users_private_expected" ] && [ -z "$users_private_primary" ]; then
+      ok users-private-group "exact existing interactive profile members; no primary-group accounts"
+    else
+      bad users-private-group "private group roster drift (sudo ./apply-system.sh --only users)"
+    fi
+  else
+    info users-private-group "dedicated group absent (sudo ./apply-system.sh --only users)"
+  fi
+  # Read only the safe scan marker, public policy/scanner metadata and private HEAD object identity.
+  if [ -f /srv/private/.published ]; then
+    if python3 -I -B - "$DOTFILES" <<'PY_PRIVATE_MARKER'
+import hashlib, importlib.util, json, os, pathlib, re, stat, subprocess, sys
+repo=pathlib.Path(sys.argv[1]); helper=repo/'infrastructure/users/private-publish.py'
+spec=importlib.util.spec_from_file_location('private_doctor',helper)
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+try:
+    root=pathlib.Path('/srv/private');uid=m.anchor_owner(root)
+    marker=root/'.published';m.checked_path(marker)
+    fd=os.open(marker,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    with os.fdopen(fd,'rb') as source:
+        st=os.fstat(source.fileno())
+        assert stat.S_ISREG(st.st_mode) and st.st_uid==uid and st.st_nlink==1 and st.st_size<4096
+        data=json.loads(source.read(4096))
+    policy=hashlib.sha256(helper.read_bytes()+(helper.parent/'private-deny.txt').read_bytes()+(helper.parent/'private-links.tsv').read_bytes()).hexdigest()
+    current=subprocess.run(['git','-C',str(repo/'private'),'rev-parse','HEAD^{commit}'],capture_output=True,text=True,timeout=5,check=True).stdout.strip()
+    scanner=subprocess.run(['gitleaks','version'],capture_output=True,text=True,timeout=5,check=True).stdout.strip()
+    assert data.get('rev')==current and data.get('policy')==policy and data.get('scanner')==scanner
+    assert re.fullmatch('[0-9a-f]{64}',data.get('manifest','')) and isinstance(data.get('time'),int)
+except Exception:
+    sys.exit(1)
+PY_PRIVATE_MARKER
+    then ok users-private-scan "certified private revision/policy/scanner metadata is current; no payload scan run"
+    else bad users-private-scan "scan/publication certification stale or invalid (usr sync as publisher)"; fi
+  else
+    info users-private-scan "no certified private scan metadata yet (usr sync as publisher)"
+  fi
+  secret_source_check=$("$DOTFILES/infrastructure/users/private-publish.py" migrate --dry-run 2>&1)
+  secret_source_rc=$?
+  if [ "$secret_source_rc" -ne 0 ]; then
+    if [[ $secret_source_check == *"both secret files exist"* ]] && python3 -I -B - "$DOTFILES" <<'PY_SECRET_CONFLICT'
+import importlib.util, os, pathlib, sys
+path=pathlib.Path(sys.argv[1])/'infrastructure/users/private-publish.py'
+spec=importlib.util.spec_from_file_location('secret_metadata_conflict',path)
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+try:
+    home=m.home_for_self()
+    for source in (home/'dotfiles/env.secret.sh',home/'.config/secrets/env.sh'):
+        st=m.checked_path(source,os.getuid())
+        assert not st.st_mode & 0o077
+        m.secret_safe(source,os.getuid())
+except Exception:
+    sys.exit(1)
+PY_SECRET_CONFLICT
+    then info secrets-source "both safe export files retained; explicitly import legacy before retirement"
+    else bad secrets-source "unsafe shell export metadata (usr secrets-migrate --self)"; fi
+  else
+    case "$secret_source_check" in
+      *"already migrated"*) ok secrets-source "canonical shell exports pass metadata/ACL checks" ;;
+      *"would back up"*|*"need masked ACL cleanup"*) info secrets-source "shell export migration/ACL cleanup awaits usr secrets-migrate --self" ;;
+      *) info secrets-source "shell exports are not configured" ;;
+    esac
+  fi
   # profile links of the managed users point at /srv/dotfiles
   users_nolink=""
   for u in $(managed_users profile); do
@@ -1498,9 +1579,30 @@ if [ -d "$db_dir" ]; then
   db_bad=""
   [ "$(stat -c %a "$db_dir")" = 700 ] || db_bad="$db_bad directory is $(stat -c %a "$db_dir") (want 700);"
   while IFS= read -r db_f; do [ "$(stat -c %a "$db_f")" = 600 ] || db_bad="$db_bad $(basename "$db_f") is $(stat -c %a "$db_f") (want 600);"; done < <(find "$db_dir" -type f 2>/dev/null)
-  if [ -n "$db_bad" ]; then bad envs-state "$db_bad"; else ok envs-state "~/.local/state/envs is 700, files 600 (no value is ever stored there)"; fi
+  if [ -n "$db_bad" ]; then bad envs-state "$db_bad"; else ok envs-state "~/.local/state/envs is 700, files 600 (authorization records metadata-only; ambiguous source recovery stays private)"; fi
 else
   info envs-state "no ~/.local/state/envs yet (created by the first envs bind / use)"
+fi
+
+# SECRETS: this helper opens only names/policy metadata; dotenv/shell-export payloads and vaults stay closed.
+if [ -r "$DOTFILES/.config/envs/metadata.py" ]; then
+  db_meta=$(python3 -I -B "$DOTFILES/.config/envs/metadata.py" 2>/dev/null)
+  db_meta_rc=$?
+  while IFS=$'\t' read -r db_kind db_check db_message; do
+    case "$db_kind" in
+      OK) ok "$db_check" "$db_message" ;;
+      INFO) info "$db_check" "$db_message" ;;
+      FAIL) bad "$db_check" "$db_message" ;;
+    esac
+  done <<<"$db_meta"
+  [ "$db_meta_rc" -eq 0 ] || [ -n "$db_meta" ] || bad envs-metadata "metadata validation failed; no source payload read"
+else
+  bad envs-metadata "public metadata helper missing (stow . / usr link USER)"
+fi
+if grep -q 'zsh/secrets.zsh' "$DOTFILES/.zshrc" && grep -q 'zsh/envs-wrap.zsh' "$DOTFILES/.zshrc"; then
+  ok secrets-shell "canonical shell source and validated local wrappers wired at shell startup"
+else
+  bad secrets-shell "canonical source/wrapper wiring missing"
 fi
 
 # ── DEV-c: pj, the project picker (one tmux session per repo; replaces sessionizer.sh) ──────

@@ -128,6 +128,16 @@ dtty() { # INPUT args: through a pty
   OUT="$CAP/$N.out" ERR="$CAP/$N.err"
 }
 
+glab_wrapper_fixture() {
+  local directory="$T/glab-wrapper-home"
+  mkdir -p "$directory/.local/bin" "$directory/.config/zsh"
+  ln -sfn "$ENVS" "$directory/.local/bin/envs"
+  # Exercise the actual public parser/default, substituting only its absolute executable with the fixture binary.
+  sed "s@/usr/bin/glab@$HERE/bin/glab@g" "$REPO/.config/zsh/envs-wrap.zsh" >"$directory/.config/zsh/envs-wrap.zsh"
+  blk=$(printf 'typeset -gr _ENVS_BIN=%q\n' "$directory/.local/bin/envs")
+  gfn=$(printf 'source %q\n' "$directory/.config/zsh/envs-wrap.zsh")
+}
+
 scan() { # label: no sentinel in any place a leak could go (one grep over every file: a grep per secret and file took seconds)
   local label=$1 hit="" f line
   local files=("$CAP"/* "$FAKE_DIR/dev.log" "$FAKE_DIR/argv.log" "$FAKE_DIR/notify.log" "$FAKE_DIR/logger.log" "$FAKE_DIR/lazysql.config"
@@ -690,9 +700,8 @@ check "10: no remote and no terminal: asks for github|gitlab (exit 2)" bash -c "
 f check
 check "10: forge check reports the tools and the remote without any vault" bash -c "[ $RC = 0 ] && grep -q 'gh-dash' '$OUT' && grep -q 'remote' '$OUT'"
 # the zsh function: glab with the token from Bitwarden (Env/global) through envs run -g
-blk=$(sed -n '/^# The absolute path of envs/,/^fi$/p' "$REPO/.zshrc")
-gfn=$(grep -E '^glab\(\)' "$REPO/.zshrc"); gfn=${gfn//\/usr\/bin\/glab/$HERE/bin/glab}   # the fake instead of the absolute /usr/bin/glab
-check "10: .zshrc defines glab() through \$_ENVS_BIN run -g, with the comment" bash -c "grep -B4 -E '^glab\\(\\)' '$REPO/.zshrc' | grep -q '^# glab with the GitLab token' && grep -qE '^glab\\(\\) \\{ \\\$_ENVS_BIN run -g --only GITLAB_TOKEN,GITLAB_HOST -- /usr/bin/glab \"\\\$@\" \\}' '$REPO/.zshrc'"
+glab_wrapper_fixture
+check "10: .zshrc sources validated wrappers; the shipped default fixes glab path and exact names" bash -c "grep -q 'zsh/envs-wrap.zsh' '$REPO/.zshrc' && grep -q 'GITLAB_TOKEN,GITLAB_HOST' '$REPO/.config/zsh/envs-wrap.zsh' && grep -q '/usr/bin/glab' '$REPO/.config/zsh/envs-wrap.zsh' && grep -q 'run -g --only' '$REPO/.config/zsh/envs-wrap.zsh'"
 : >"$FAKE_DIR/dev.log"
 (cd "$T" && zsh -f -c "$blk; $gfn; glab ci view" >"$CAP/zg.out" 2>"$CAP/zg.err" </dev/null); rc=$?
 check "10: glab ci view in zsh runs the (fake) glab with GITLAB_TOKEN from Env/global, no glab config involved" bash -c "[ $rc = 0 ] && grep -q '^glab ci view\$' '$FAKE_DIR/dev.log' && grep -q 'GITLAB_TOKEN=$(sha SECRET-gitlab-token) ' '$FAKE_DIR/dev.log'"
@@ -969,12 +978,11 @@ printf '[secrets]\nTD_PW = ""\n' >"$ENVS_GLOBAL_DIR/global.local.toml"; chmod 60
 check "15: LOW 10: envs run --only injects just the named secrets (no GITLAB_HOST, no TD_PW)" bash -c "[ $RC = 0 ] && grep '^glab hashes' '$FAKE_DIR/dev.log' | grep -q 'names=GITLAB_TOKEN OPENAI_API_KEY \$'"
 (cd "$T" && "$ENVS" run -g --only NOPE -- true >"$CAP/only.out" 2>"$CAP/only.err" </dev/null); RC=$?
 check "15: LOW 10: --only with an undeclared name is a usage error (exit 2)" bash -c "[ $RC = 2 ] && grep -q 'not declared' '$CAP/only.err'"
-blk=$(sed -n '/^# The absolute path of envs/,/^fi$/p' "$REPO/.zshrc")
-gfn=$(grep -E '^glab\(\)' "$REPO/.zshrc"); gfn=${gfn//\/usr\/bin\/glab/$HERE/bin/glab}
+glab_wrapper_fixture
 : >"$FAKE_DIR/dev.log"
 (cd "$T" && zsh -f -c "$blk; $gfn; glab ci view" >"$CAP/zg.out" 2>"$CAP/zg.err" </dev/null); rc=$?
 check "15: LOW 10: the zsh glab function passes only GITLAB_TOKEN and GITLAB_HOST (the global TD_PW stays out)" bash -c "[ $rc = 0 ] && grep '^glab hashes' '$FAKE_DIR/dev.log' | grep -q 'names=GITLAB_HOST GITLAB_TOKEN OPENAI_API_KEY \$'"
-check "15: LOW 10: the .zshrc function and the hub row use the absolute /usr/bin/glab (no PATH lookup)" bash -c "grep -q -- '--only GITLAB_TOKEN,GITLAB_HOST -- /usr/bin/glab' '$REPO/.zshrc' '$REPO/.config/hub/actions.d/dev-d.tsv'"
+check "15: LOW 10: the wrapper default and hub row keep absolute /usr/bin/glab (no PATH lookup)" bash -c "grep -q '/usr/bin/glab' '$REPO/.config/zsh/envs-wrap.zsh' && grep -q -- '--only GITLAB_TOKEN,GITLAB_HOST -- /usr/bin/glab' '$REPO/.config/hub/actions.d/dev-d.tsv'"
 scan "15c"
 }
 

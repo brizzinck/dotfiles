@@ -86,10 +86,13 @@ class Masking(unittest.TestCase):
 
 class RuntimeFiles(unittest.TestCase):
     def test_tmpfs_only_and_cleanup_on_exception(self):
+        # The public test snapshot itself may live on tmpfs. Model a non-tmpfs
+        # fstatfs result explicitly; the success case below uses real /dev/shm.
         with tempfile.TemporaryDirectory(dir=SOURCE.parent, prefix=".envs-disk-probe.") as disk:
-            with self.assertRaises(r.RuntimeProblem):
-                with r.private_envfile("KEY=fixture\n", base=disk):
-                    self.fail("persistent file fallback was accepted")
+            with mock.patch.object(r, "_tmpfs", return_value=False):
+                with self.assertRaises(r.RuntimeProblem):
+                    with r.private_envfile("KEY=fixture\n", base=disk):
+                        self.fail("persistent file fallback was accepted")
         with tempfile.TemporaryDirectory(dir="/dev/shm", prefix="envs-runtime-test.") as tmpfs:
             path = None
             with self.assertRaisesRegex(ValueError, "inert failure"):

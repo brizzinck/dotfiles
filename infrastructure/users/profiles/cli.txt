@@ -18,6 +18,7 @@
 .local/bin/theme
 .config/mise
 .local/bin/envs
+.local/bin/usr
 .local/bin/fzf-menu
 .local/bin/bw-setup
 .local/bin/vault-share
@@ -35,5 +36,14 @@
 .config/posting/config.yaml
 .config/act/actrc
 .config/gh-dash/base.yml
+# Public envs code is linked per file: global.env/global.local.toml/wrap.tsv and approvals remain per user.
 .config/envs/global.toml
+.config/envs/secrets.py
+.config/envs/commands.py
+.config/envs/runtime.py
+.config/envs/imports.py
+.config/envs/policy.py
+.config/envs/scan.py
+.config/envs/metadata.py
+.config/envs/send.py
 .config/lazydocker/config.yml

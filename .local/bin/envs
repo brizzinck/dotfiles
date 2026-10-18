@@ -1,52 +1,47 @@
 #!/usr/bin/python3 -I
-"""envs: per-project environments with secrets from Bitwarden (DEV-b). Python 3 stdlib only; the shebang is the absolute
-/usr/bin/python3 -I (never a PATH lookup: a project's pinned Python or `_.path` must not run in place of envs).
+"""envs: exact vault references, verified imports and approved command environments (stdlib Python).
 
-  envs                          the TUI: projects -> environments -> variables
-  envs init [--project NAME] [--envs dev,stage,prod] [--default dev]
-                                write .envs.toml in the git top-level (or cwd), add .env* to .gitignore, bind (mise trust only on request)
-  envs bind                     confirm the root -> Env/<project> binding; needs a terminal (never trusts mise by itself); the project
-                                name is typed when Env/<project> is already bound elsewhere or the repository at a bound path changed
-  envs trust                    `mise trust` for this root, after a separate question that lists the config files
-  envs status [--json]          project, root, binding, active env, declared names; with an unlocked vault per env: set /
-                                missing / extra (no values)
-  envs use [ENV] [--prod] [--for 60m]   select the active env of this root (picker without ENV); the default env clears it
-  envs run [-e ENV] [--prod] [--sync] [--no-mise] [--allow-missing] [--only NAME,NAME] -- CMD [ARGS...]
-                                run CMD with the declared secrets of the env in ITS environment only (exec, nothing stays)
-  envs set NAME [-e ENV | --all] [--plain] [--stdin] [--description TEXT]
-                                secret: value from a hidden prompt (asked twice) or --stdin, into the env item(s); --plain:
-                                into .mise.toml [env] (or .mise.ENV.toml with -e). A value on the command line is refused
-  envs unset NAME [-e ENV | --all] [--undeclare]
-  envs rename OLD NEW           the field in every env item + the declaration (+ mise files when plain)
-  envs copy SRC DST [--overwrite]   copy secret values between envs (default: only names missing in DST)
-  envs diff [A B]               per name: set/missing in each, same/differs (compared in memory, never printed)
-  envs env new|rename|delete ...    manage environments (item + .envs.toml list; delete = Bitwarden trash, typed confirmation)
-  envs project rename NEW | delete  folder rename / items to the trash + folder delete, typed confirmation
-  envs convert NAME [--prod]    secret <-> plain (the value moves between Bitwarden and .mise*.toml; protected envs: typed name)
-  envs import [FILE] [-e ENV] [--secrets A,B] [--plain C,D] [--keep]   move a .env file into Bitwarden / .mise.toml
-  envs export-example [-o .env.example]   names only
-  envs copy-value NAME [-e ENV] copy one value (wl-copy --sensitive, cleared after 30 s); no command prints a value
-  envs check [--all]            the project (or every bound root): toml, names, binding, conflicts with mise [env], untracked
-                                .env* files, tracked .env, mise trust and tools, and with an unlocked vault: items, duplicates,
-                                missing and undeclared fields
+  envs bind [-g] [-e ENV] [--ref-file RELATIVE_PATH ...] [--protect-ref NAME ...]
+      Human first-use binding/target authorization; selected sources and item identities are pinned locally.
+  envs run [-g] [-e ENV] [--only A,B] [--prod] [--no-mise] -- COMMAND ARGS...
+      Resolve selected reference/legacy fields into the child only. No value on argv or in the parent shell.
+  envs run --env-file [--env-source APPROVED_RELATIVE_PATH] -- COMMAND '{envfile}'
+      Supervised 0600 tmpfs file, selected refs only. Generic consumer serialization has a verified limited subset.
+  envs refs list [-g] [--locations]     Names/status by default; exact private locations require --locations.
+  envs refs set [--file .env] [-g] NAME 'bw://Env/my-project/dev#NAME'
+      Metadata-only edit, no vault access; literal credentials require human import first.
+  envs agent allow|deny [-g] [-e ENV] -- EXACT_COMMAND ARGS...
+  envs agent list [-g] [-e ENV]
+      Human argv-prefix approval/revocation. Protected environments/references are never available to agents.
+  envs import [-g] [FILE] [-e ENV] [--secrets A,B] [--plain C] [--drop D] [--overwrite]
+      Whole-document literal classification, verified remote write/readback before source redaction.
+      Keep .env plain bytes and replace selected secret spans with exact refs. --plain-to-mise is explicit;
+      --keep leaves original plaintext unchanged with warning. Global plain exports use secrets/env.sh.
+  envs global-wrap NAME /absolute/COMMAND --only A,B | --list | --remove NAME
+      Private validated wrapper metadata, no vault lookup during shell startup. Default glab remains available.
+  envs send [FILE] [-e ENV] [--only A,B] [--prod] [--file-send]
+  envs send --recover [EXACT_UUID]
+      Human owner only: text Send (512 UTF-8 bytes), one access and deletion after one day; explicit file mode (4 MiB),
+      sensitive clipboard link without URL output. Lossless envs transfer dialect, never shell-source it.
+  envs scan [DIR] [--json] [--depth N]   Human names-only inventory; no backend or mutation.
+  envs status [-g] [--json] / check [-g] [--all]
+      Local names/schema/source/approval metadata only; human --vault explicitly opts into vault inspection.
 
-Managed users (td, yc: a non-service row of infrastructure/users/managed.tsv): no rbw, no bw. `run`, `status`, `check`, `diff`, `copy-value`
-and the TUI read Users/<me>/Env/<project> and Shared/Env/<project> (the global scope: .../Env/global) through the vault-share broker that
-runs in the owner's session; both items are merged, the user's own value wins (`check`/`status` name the shadowed names). A locked vault
-is exit 3. Every write command (set unset rename copy env project import convert) is refused (exit 4): the owner writes with
-`envs set NAME --for td` (folder Users/td/Env/<project>) or `--shared` (Shared/Env/<project>); --for/--shared exist on set, unset, import,
-env, copy, diff, status and check, need no binding and are the owner's only.
+Legacy commands remain: TUI (no args), init, trust, use, set, unset, rename, copy, diff, env, project,
+convert, export-example, copy-value. Values are entered through hidden prompts/stdin, never CLI arguments.
+Managed users have only the owner's read-only broker, not their own rbw/bw account. Legacy declarations merge
+own then Shared fields; explicit references remain exact and grant no new scope. Owner --for USER / --shared
+writes stay explicitly scoped. Scoped global import retains its source until target-user mapping setup.
 
-Files. `.envs.toml` (committed, names only): project, environments, default, protected, [secrets] NAME = "description".
-Values: Bitwarden folder `Env/<project>`, one Secure Note per environment named exactly like it, one hidden custom field per
-secret. Non-secret variables: mise [env] (`.mise.toml`, `.mise.ENV.toml`). State: ~/.local/state/envs/{active,bindings}.tsv.
-Secrets go ONLY into the command (`envs run`); nothing here prints a value, puts one in argv, a log or a file. Agents (claude,
-codex, gemini, ... as an ancestor process, or $CLAUDECODE) get names-only commands and nothing else. `prod`/`production` and
-`protected = [...]` need --prod (or a typed confirmation) and are logged to the journal (no values).
-Exit codes: 0 ok, 1 error, 2 usage, 3 vault locked and no tty, 4 refused (agent, protected without --prod, unbound), 130 cancel.
-Test hooks (only when ENVS_TOOL_PATH resolves below <repo>/infrastructure/tests/ AND XDG_STATE_HOME / XDG_RUNTIME_DIR point
-away from the real ones; otherwise every hook is dropped and rbw, bw, pinentry, wl-copy come from /usr/bin only): ENVS_TOOL_PATH
-(fake tools), ENVS_TEST_ROOT_PID, ENVS_TEST_YES, ENVS_NO_JOURNAL, ENVS_TEST_MANAGED_USER, RBW_BIN, BW_BIN, PINENTRY_BIN (inside that directory).
+Approvals/masking reduce accidental transcript leaks, not malicious-code access: approved code can export
+secrets through other channels, and same-uid processes retain their ordinary vault/environment authority.
+Recognized agents cannot bind/import/mutate/reveal/approve themselves; refs set is the narrow metadata exception.
+The masker covers finite raw/base64/URL/hex transforms, not arbitrary composite/ANSI/cross-stream encodings.
+Sources/backups are not erased or rotated. See CLAUDE.md for exact parser, recovery, consumer and threat limits.
+
+Exit codes: 0 success, 1 backend/error, 2 usage, 3 locked, 4 refused/stale/unsupported, 130 cancelled.
+Test hooks count only with repository-contained fake tools AND isolated state/runtime; secret tools never
+fall back to live backends in verified test mode. Production account home comes from passwd, never project HOME.
 """
 import contextlib
 import fcntl
@@ -3020,7 +3015,7 @@ def apply_scope(a):
 
 def build_parser():
     import argparse
-    ap = argparse.ArgumentParser(prog="envs", add_help=True, description="project environments and secrets (see the header of this file)")
+    ap = argparse.ArgumentParser(prog="envs", add_help=True, description="exact vault references, verified imports, approved masked runs and human Sends (see CLAUDE.md)")
     sub = ap.add_subparsers(dest="cmd")
     p = sub.add_parser("init")
     p.add_argument("--project")
@@ -3167,7 +3162,7 @@ class RunArgs:
 
 
 def usage_error(msg):
-    print(f"envs: {msg}\nusage: envs run [-g] [-e ENV] [--prod] [--sync] [--no-mise] [--allow-missing] [--only NAME,NAME] -- CMD [ARGS...]", file=sys.stderr)
+    print(f"envs: {msg}\nusage: envs run [-g] [-e ENV] [--prod] [--sync] [--no-mise] [--allow-missing] [--only NAME,NAME] [--env-file [--env-source RELPATH]] -- CMD [ARGS...]", file=sys.stderr)
     return 2
 
 
