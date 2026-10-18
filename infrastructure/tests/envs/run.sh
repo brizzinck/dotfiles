@@ -490,9 +490,7 @@ check "1: this run's flag does not reveal for a checkout that is not bound" bash
 (cd / && ENVS_REVEAL_FILE="$FLAG" "$ENVS" _preview vars billing - dev DATABASE_URL >"$CAP/pv3b.out" 2>&1)
 check "1: ... nor without a checkout at all (project named on the command line)" bash -c "! grep -q SECRET '$CAP/pv3b.out'"
 bind_proj
-(cd / && ENVS_REVEAL_FILE="$FLAG" "$ENVS" _preview vars billing "$PROJ" dev DATABASE_URL >"$T/ctl.out" 2>&1)
-check "1: control: a bound checkout and this run's flag do reveal the value" grep -q SECRET-billing-dev-db "$T/ctl.out"
-rm -f "$T/ctl.out"
+pycheck "1: control + FIX-DEVb2 #3: a bound checkout and the flag of an ancestor TUI reveal; no other process does (reveal_test.py)" "$HERE/reveal_test.py" "$ENVS" "$PROJ" "$T/revealwork"
 printf 'billing\tdev\tDATABASE_URL\t%s' "$FUT" >"$T/reveal-1-0123456789ab"
 (cd / && ENVS_REVEAL_FILE="$T/reveal-1-0123456789ab" "$ENVS" _preview vars billing "$PROJ" dev DATABASE_URL >"$CAP/pv4.out" 2>&1)
 check "1: a flag outside the runtime directory is ignored" bash -c "! grep -q SECRET '$CAP/pv4.out'"

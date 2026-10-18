@@ -2060,15 +2060,39 @@ REVEAL_SECONDS = 15
 
 def reveal_file():
     """The reveal flag of THIS TUI run: `reveal-<pid>-<random>` in the runtime dir, handed to its fzf (and so to the preview
-    commands) through ENVS_REVEAL_FILE and removed at exit. A preview started any other way has none: no value is ever shown.
-    (Same-uid processes can still read the path from /proc/PID/environ: the flag is per run, not a secret.)"""
+    commands) through ENVS_REVEAL_FILE and removed at exit. A preview started any other way has none: no value is ever shown;
+    the flag counts only while the pid in its name is an ancestor of the preview and runs the TUI (see tui_ancestor)."""
     p = os.environ.get("ENVS_REVEAL_FILE")
     if not p:
         return None
     pp = Path(p)
-    if pp.parent != run_dir() or not re.fullmatch(r"reveal-\d+-[0-9a-f]{12}", pp.name):
+    m = re.fullmatch(r"reveal-(\d+)-[0-9a-f]{12}", pp.name)
+    if pp.parent != run_dir() or not m or not tui_ancestor(int(m.group(1))):
         return None
     return pp
+
+
+def tui_ancestor(pid):
+    """True when `pid` is an ancestor of this process AND runs the TUI (`PY -I SELF`, no arguments). The flag name carries the
+    pid of the run that wrote it, so a preview started by anything else (setsid, tmux, systemd-run: a process of its own that
+    writes a flag and calls `_preview`) is not a reveal, and neither is a flag naming some other ancestor."""
+    me, seen = os.getpid(), 0
+    while me > 1 and seen < 64:
+        if me == pid:
+            break
+        me = proc_ppid(me)
+        seen += 1
+    else:
+        return False
+    argv = proc_argv(pid)
+    if len(argv) != 4 or argv[3] != b"" or argv[1] != b"-I":
+        return False
+    try:
+        cwd = os.readlink(f"/proc/{pid}/cwd")
+        a0, a2 = (a.decode("utf-8", "replace") for a in (argv[0], argv[2]))
+        return os.path.realpath(a0) == os.path.realpath(PY) and os.path.realpath(os.path.join(cwd, a2)) == str(SELF)
+    except OSError:
+        return False
 
 
 def read_reveal():
@@ -2350,6 +2374,8 @@ def cmd_preview(a):
         return
     if r and r == (project, env, ident) and cfg and cfg.project == project \
             and binding_state(cfg.root, cfg.project)[0] == "bound":
+        if cfg.is_protected(env):
+            journal(f"preview shows project={cfg.project} env={env} name={ident} (protected)")
         say(fields[ident])
         say("")
         say(f"(shown for {REVEAL_SECONDS} s or until the cursor moves)")
