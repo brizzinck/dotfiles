@@ -61,6 +61,7 @@ packages=(
   rofimoji wtype udiskie                                                            # polkit agent, clipboard, OSD, screenshots, picker, emoji (rofimoji = the emoji data of emoji.sh), automount
   bat eza git-delta github-cli trash-cli dust duf watchexec just go-yq xh shfmt dive hyperfine
   hurl act glab python-pipx                                                         # DEV-d: HTTP tests (api test), GitHub Actions locally (ci), GitLab CLI (token through envs run -g), pipx (posting)
+  llama-cpp ggml-vulkan                                                             # DEV-e: local LLM (llm): llama-server + the Vulkan backend
   mise usage                                                                        # tool versions per project (replaces direnv: .config/zsh/mise.zsh), usage = its zsh completion generator
   difftastic                                                                        # structural diff (difft): git dft / dlog / dshow, second lazygit diff renderer
   atuin                                                                             # local shell history (no sync), Ctrl+R list in the modal fzf (~/.config/zsh/history.zsh)
@@ -297,6 +298,15 @@ log "User timers: cache aging (user tmpfiles), Codex release pruning and the sys
 systemctl --user daemon-reload 2>/dev/null || true
 systemctl --user enable --now systemd-tmpfiles-clean.timer codex-prune-releases.timer sysalert.timer sysup-check.timer hypridle-watch.timer crash-watch.service voxtype.service 2>/dev/null \
   || later "enable the user timers once logged in: systemctl --user enable --now systemd-tmpfiles-clean.timer codex-prune-releases.timer sysalert.timer sysup-check.timer hypridle-watch.timer crash-watch.service voxtype.service"
+
+# Local LLM (DEV-e): the socket listens at login (zero memory); the model is loaded on the first use and unloaded 5 idle minutes later
+log "Local LLM: token, on-demand socket, default model (1.3 GB, resumable, sha256-checked)"
+"$HOME/.local/bin/llm" token ensure || warn "llm token ensure failed"
+systemctl --user daemon-reload 2>/dev/null || true
+systemctl --user enable --now llm.socket 2>/dev/null \
+  || later "enable the local LLM socket once logged in: systemctl --user enable --now llm.socket"
+"$HOME/.local/bin/llm" models fetch --default \
+  || later "download the local LLM model: llm models fetch --default   (then: llm status)"
 
 # Dictation (Voxtype, AUR voxtype-bin from the root script): the Whisper model is a user-level download (about 466 MB, resumable)
 if command -v voxtype >/dev/null 2>&1; then

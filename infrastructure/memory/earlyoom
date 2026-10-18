@@ -5,7 +5,8 @@
 #   -m 6,3  SIGTERM below 6% MemAvailable, SIGKILL below 3%   (both conditions must hold with the swap limit)
 #   -s 10,5 ... and below 10% / 5% free swap
 #   -r 0    no periodic memory report in the journal
-# --prefer: browser renderers, Electron apps, linters and language servers are killed first.
+# --prefer: browser renderers, Electron apps, linters, language servers and the on-demand local LLM (llama-server, DEV-e: it is
+#           reloaded on the next request) are killed first.
 # --avoid : compositor, bar, terminal, multiplexer, editor, agents and the session plumbing are deprioritised
 #           (a bias, not immunity).
-EARLYOOM_ARGS="-m 6,3 -s 10,5 -r 0 --prefer ^(Isolated.Web.Co|Web.Content|WebExtensions|chrome|Telegram|electron|obsidian|spotify|golangci-lint|gopls|tsserver|java|dragonfly)$ --avoid ^(Hyprland|Xwayland|waybar|hypridle|hyprlock|dunst|ghostty|tmux:.server|nvim|zsh|sshd|pipewire|pipewire-pulse|wireplumber|systemd|systemd-logind|dbus-broker|NetworkManager|xdg-desktop-por|zen|claude|codex)$"
+EARLYOOM_ARGS="-m 6,3 -s 10,5 -r 0 --prefer ^(Isolated.Web.Co|Web.Content|WebExtensions|chrome|Telegram|electron|obsidian|spotify|golangci-lint|gopls|tsserver|java|dragonfly|llama-server)$ --avoid ^(Hyprland|Xwayland|waybar|hypridle|hyprlock|dunst|ghostty|tmux:.server|nvim|zsh|sshd|pipewire|pipewire-pulse|wireplumber|systemd|systemd-logind|dbus-broker|NetworkManager|xdg-desktop-por|zen|claude|codex)$"

@@ -270,6 +270,10 @@ REPO_PACKAGES=(
   # DEV-d: hurl = HTTP tests (`api test`), act = GitHub Actions locally (`ci`), glab = GitLab CLI (token through envs run -g, see .zshrc);
   # the user-level tools (lazysql, gh-dash, posting, gitlab-ci-local, glab-tui) are pinned in infrastructure/dev/user-tools.sh
   hurl act glab python-pipx
+  # DEV-e: llama.cpp (llama-server, started on demand by llm.socket, never the packaged llama-server.service) and its Vulkan backend
+  # (ggml-vulkan is a SEPARATE package: without it llama-server silently runs on the CPU; it is also the backend whisper-cpp loads,
+  # where the Telegram whisper unit runs -ng without devices and stays unaffected)
+  llama-cpp ggml-vulkan
   # DEV-b: mise = tool versions per project (replaces direnv; .config/zsh/mise.zsh), usage = its zsh completion generator
   mise usage
   # DEV-a: gitleaks = secret scan of the pre-commit hook of the public dotfiles repo (.githooks/pre-commit); atuin = local
