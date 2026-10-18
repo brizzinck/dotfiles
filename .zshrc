@@ -228,20 +228,46 @@ ere() { local e=$1; shift; $_ENVS_BIN run -e "$e" -- "$@" }
 # Run a mise task with the project's secrets (ert test)
 ert() { $_ENVS_BIN run -- mise run "$@" }
 
-# was rg(): shadowed ripgrep (false "no matches" for agents via the shell snapshot)
-grun() {
-  if [ -f "./main.go" ]; then 
-    go run . "$@"
-  elif [ -f "./cmd/main.go" ]; then
-    go run ./cmd/main.go "$@"
-  elif [ -f "./cmd/api/main.go" ]; then
-    go run ./cmd/api/main.go "$@"
+# Go run/test shortcuts use the same project discovery as envs. Missing metadata
+# keeps ordinary Go projects usable; configured-project failures never fall back.
+_df_go_envs_run() {
+  emulate -L zsh
+  local origin=${PWD:A} current=${PWD:A} top root account_home=${_ENVS_BIN:h:h:h} configured=0
+  top=$(
+    local -a git_names
+    git_names=(${(M)${(k)parameters}:#GIT_*})
+    (( ${#git_names} )) && unset "${git_names[@]}"
+    /usr/bin/git -C "$origin" rev-parse --show-toplevel 2>/dev/null
+  ) || top=
+  while true; do
+    if [[ -e $current/.envs.toml || -L $current/.envs.toml ]]; then configured=1; break; fi
+    [[ $current == ${top:-/} || $current == $account_home || $current == / ]] && break
+    current=${current:h}
+  done
+  root=${top:-$origin}
+  [[ -e $root/.env || -L $root/.env ]] && configured=1
+  if (( configured )); then
+    "$_ENVS_BIN" run -- go "$@"
+  else
+    command go "$@"
   fi
 }
+
+grun() {
+  if [[ -f ./main.go ]]; then
+    _df_go_envs_run run . "$@"
+  elif [[ -f ./cmd/main.go ]]; then
+    _df_go_envs_run run ./cmd/main.go "$@"
+  elif [[ -f ./cmd/api/main.go ]]; then
+    _df_go_envs_run run ./cmd/api/main.go "$@"
+  fi
+}
+
+(( ${+aliases[tg]} )) && unalias tg
+tg() { _df_go_envs_run test ./... "$@" }
 alias lg="golangci-lint run --fix; go mod tidy"
 alias lgw="golangci-lint run > lint.dev 2>&1"
 alias lgr='find . -name "go.mod" -execdir sh -c "golangci-lint run --fix; go mod tidy" \;'
-alias tg="go test ./..."
 
 alias lf="facad"
 
