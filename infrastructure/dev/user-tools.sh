@@ -169,9 +169,12 @@ sh_have() {
       f=$PREFIX/go/bin/$name
       [[ -x $f ]] && have go && go version -m "$f" 2>/dev/null | awk '$1 == "mod" {sub(/^v/, "", $3); print $3; exit}' ;;
     posting)
+      # read the version from the dist-info, never by running the venv's python (and its .pth files) as the owner; a venv built from
+      # another interpreter than the system one (a mise-pinned python: `home` points into the owner's home) is not usable by td / yc (L4, L8)
       f=$PREFIX/venv/posting/bin/python
       [[ -x $f && -x $PREFIX/bin/posting && $(cat "$PREFIX/venv/posting.lock" 2>/dev/null) == "$(sha256sum "$HERE/posting-requirements.txt" 2>/dev/null | cut -d' ' -f1)" ]] &&
-        "$f" -c 'import importlib.metadata as m; print(m.version("posting"))' 2>/dev/null ;;
+        grep -qx 'home = /usr/bin' "$PREFIX/venv/posting/pyvenv.cfg" 2>/dev/null &&
+        sed -n 's/^Version: //p' "$PREFIX"/venv/posting/lib/python3*/site-packages/posting-*.dist-info/METADATA 2>/dev/null | head -1 ;;
     gitlab-ci-local)
       f=$PREFIX/npm/node_modules/gitlab-ci-local/package.json
       [[ -r $f && -e $PREFIX/npm/node_modules/.bin/gitlab-ci-local ]] && python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$f" 2>/dev/null ;;
@@ -204,12 +207,13 @@ sh_link() { # sh_link NAME TARGET (relative to bin/)
 sh_install() { # one tool; failure only warns (the others still go on)
   local name=$1
   case $name in
-    lazysql) run env "GOBIN=$PREFIX/go/bin" go install "github.com/jorgerojas26/lazysql@$LAZYSQL_VERSION" && sh_link lazysql ../go/bin/lazysql ;;
-    gh-dash) run env "GOBIN=$PREFIX/go/bin" go install "github.com/dlvhdr/gh-dash/v4@$GHDASH_VERSION" && sh_link gh-dash ../go/bin/gh-dash ;;
+    lazysql) run env "GOBIN=$PREFIX/go/bin" go install -trimpath "github.com/jorgerojas26/lazysql@$LAZYSQL_VERSION" && sh_link lazysql ../go/bin/lazysql ;;
+    gh-dash) run env "GOBIN=$PREFIX/go/bin" go install -trimpath "github.com/dlvhdr/gh-dash/v4@$GHDASH_VERSION" && sh_link gh-dash ../go/bin/gh-dash ;;
     posting)
       # a venv at its final path (the entry point's shebang names it), every package from the hash lock, nothing else
-      run python3 -m venv --clear "$PREFIX/venv/posting" &&
-        run "$PREFIX/venv/posting/bin/python" -m pip install --disable-pip-version-check --no-cache-dir --require-hashes --no-deps -r "$HERE/posting-requirements.txt" &&
+      # (the system python, never the first python3 on a project's PATH; the pip cache is kept, the hashes still verify every file)
+      run /usr/bin/python3 -m venv --clear "$PREFIX/venv/posting" &&
+        run "$PREFIX/venv/posting/bin/python" -m pip install --disable-pip-version-check --require-hashes --no-deps -r "$HERE/posting-requirements.txt" &&
         sh_link posting ../venv/posting/bin/posting &&
         if ((DRY)); then echo "  would write: $PREFIX/venv/posting.lock"; else sha256sum "$HERE/posting-requirements.txt" | cut -d' ' -f1 >"$PREFIX/venv/posting.lock"; fi ;;
     gitlab-ci-local)
@@ -239,10 +243,48 @@ sh_need() { # the program a tool is built with
   esac
 }
 
+# One installer at a time on the tree (M1): `usr sync` starts one in the background after every users-section run and the owner may
+# run this by hand too; two `venv --clear`, `npm install --prefix` or `cargo install --root` on the same directories break each other.
+# The wait is long on purpose (a cargo build takes minutes); the state is re-read once the lock is ours.
+shared_lock() {
+  exec 7>"$PREFIX/.install.lock" || { warn "cannot open $PREFIX/.install.lock"; return 1; }
+  flock -n 7 && return 0
+  warn "another --shared install holds $PREFIX/.install.lock (the one \`usr sync\` starts logs to ${XDG_STATE_HOME:-$HOME/.local/state}/usr/devtools-sync.log): waiting up to 30 min"
+  flock -w 1800 7 || { warn "still locked after 30 min: giving up"; return 1; }
+}
+
+# The builds must not depend on where or from which shell they were started (L4): not inside a project (its .cargo/config.toml,
+# go.work, mise-pinned python/node in PATH, GOFLAGS / RUSTFLAGS / CARGO_TARGET_DIR / npm prefix from its [env]).
+shared_clean_env() {
+  local v d np=""
+  cd / || return 1
+  for v in GOFLAGS GOBIN GOWORK GOTOOLCHAIN CGO_ENABLED CARGO_TARGET_DIR CARGO_BUILD_TARGET CARGO_BUILD_RUSTFLAGS RUSTFLAGS RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER \
+    npm_config_prefix NPM_CONFIG_PREFIX NPM_CONFIG_USERCONFIG PIP_REQUIRE_VIRTUALENV PIP_CONFIG_FILE PIP_INDEX_URL PIP_EXTRA_INDEX_URL VIRTUAL_ENV PYTHONHOME PYTHONPATH PYTHONSTARTUP; do
+    unset "$v"
+  done
+  for v in $(compgen -e); do case $v in MISE_* | __MISE_*) unset "$v" ;; esac; done
+  # no mise install dirs or shims in PATH (they would shadow /usr/bin python3, node, go)
+  while [[ -n $PATH ]]; do
+    d=${PATH%%:*}
+    case $d in */mise/installs/* | */mise/shims | */mise/shims/*) ;; *) np=${np:+$np:}$d ;; esac
+    [[ $PATH == *:* ]] && PATH=${PATH#*:} || PATH=""
+  done
+  PATH=$np
+  export PATH
+}
+
 shared_main() {
-  local name stale=() missing_prog=() bad=0 want_v have_v stamp
+  local name stale=() missing_prog=() bad=0 want_v have_v stamp d
+  # a minimal PATH (doctor, cron) still finds the system go / python3 / npm / git
+  for d in /usr/local/bin /usr/bin; do [[ :$PATH: == *":$d:"* ]] || PATH="$PATH:$d"; done
   stamp=$(shared_stamp)
   if [[ $MODE == stamp ]]; then echo "$stamp"; return 0; fi
+  if [[ $MODE == install ]] && ((! DRY)); then
+    [[ -d $PREFIX && -w $PREFIX ]] || { warn "$PREFIX is missing or not writable for $(id -un): sudo ./apply-system.sh --only users creates it, then run this as the owner"; return 1; }
+    [[ $(id -u) -ne 0 ]] || { warn "run --shared as the owner, not as root (the tree must belong to the owner)"; return 1; }
+    shared_lock || return 1
+    shared_clean_env || return 1
+  fi
   for name in $SHARED_TOOLS; do
     want "$name" || continue
     want_v=$(sh_pin "$name"); have_v=$(sh_have "$name")
@@ -258,10 +300,6 @@ shared_main() {
     [[ -n $ONLY || $(sed -n 's/^stamp=//p' "$PREFIX/.ready" 2>/dev/null) == "$stamp" ]] && return 0
     echo "stamp: $PREFIX/.ready does not match the pins"
     return 1
-  fi
-  if ((! DRY)); then
-    [[ -d $PREFIX && -w $PREFIX ]] || { warn "$PREFIX is missing or not writable for $(id -un): sudo ./apply-system.sh --only users creates it, then run this as the owner"; return 1; }
-    [[ $(id -u) -ne 0 ]] || { warn "run --shared as the owner, not as root (the tree must belong to the owner)"; return 1; }
   fi
   umask 022
   for name in "${stale[@]}"; do

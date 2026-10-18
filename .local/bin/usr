@@ -15,7 +15,7 @@
 #                                  profile changes; the git hooks in .githooks call it after every commit/merge/rewrite
 #   usr nvim-sync [--background] [--force]   install nvim plugins + Mason into /srv/nvim-shared (read by the managed users)
 #   usr devtools-sync [--background] [--force]   install the pinned dev tools into /srv/devtools (user-tools.sh --shared; `usr sync`
-#                                  starts it in the background when the pins changed)
+#                                  starts it in the background when the tree is not current and the pins were not just tried)
 #   usr clipboard-acl              give the users flagged `clipboard` or `wayland` access to the Wayland socket and nothing else of
 #                                  $XDG_RUNTIME_DIR (Hyprland autostart runs it)
 #
@@ -275,20 +275,33 @@ block_set() {
   rm -f "$tmp"
 }
 
+# What the seeds below create is written to ~/.local/state/usr/seeds.tsv (kind, path relative to the home, value) so that
+# `usr link --restore` can undo exactly those: a link that still points at the recorded target, a copy that still equals its source,
+# the fzf-tab directory while its marker file is there. A link of another target that a seed replaces is moved to the same
+# backup-<time> directory as the profile links (MANIFEST kind seed-link).
+SEED_HOME="" SEED_BDIR=""
+seed_note() { # seed_note KIND REL VALUE
+  mkdir -p "$SEED_HOME/.local/state/usr" && printf '%s\t%s\t%s\n' "$1" "$2" "$3" >>"$SEED_HOME/.local/state/usr/seeds.tsv"
+}
 # seed_link TARGET LINK DRY: a per-user symlink with an ABSOLUTE target into the user's own state (the repo's theme links are
-# relative to ~/dotfiles and break from /srv/dotfiles). Created when absent, replaced when it is another link, never over a real file.
+# relative to ~/dotfiles and break from /srv/dotfiles). Created when absent, another link is backed up and replaced, never over a real file.
 seed_link() {
-  local target="$1" link="$2" dry="$3" cur
+  local target="$1" link="$2" dry="$3" cur rel="${2#"$SEED_HOME"/}"
   if [ -L "$link" ]; then
     cur=$(readlink "$link")
     [ "$cur" = "$target" ] && return 0
+    echo "move   $link (link -> $cur) to the backup"
+    if [ "$dry" != 1 ]; then
+      mkdir -p "$SEED_BDIR/$(dirname "$rel")" && mv -- "$link" "$SEED_BDIR/$rel" &&
+        printf '%s\t%s\t%s\n' "$rel" seed-link "$cur" >>"$SEED_BDIR/MANIFEST"
+    fi
   elif [ -e "$link" ]; then
     echo "skip   $link (a real file is there; left alone)"
     return 0
   fi
   echo "link   $link -> $target"
   [ "$dry" = 1 ] && return 0
-  mkdir -p "$(dirname "$link")" && ln -sfn -- "$target" "$link"
+  mkdir -p "$(dirname "$link")" && ln -sfn -- "$target" "$link" && seed_note link "$rel" "$target"
 }
 # seed_copy SRC DST DRY: a starting file the tool rewrites itself (so it cannot be a link into the read-only tree); only when absent
 seed_copy() {
@@ -297,29 +310,59 @@ seed_copy() {
   [ -r "$src" ] || return 0
   echo "copy   $src -> $dst"
   [ "$dry" = 1 ] && return 0
-  mkdir -p "$(dirname "$dst")" && install -m 644 -- "$src" "$dst"
+  mkdir -p "$(dirname "$dst")" && install -m 644 -- "$src" "$dst" && seed_note copy "${dst#"$SEED_HOME"/}" "$(sha256sum "$src" | cut -d' ' -f1)"
+}
+# oh-my-zsh's fzf-tab (the .zshrc plugin list) is COPIED from the shared tree (pinned commit, never a clone made by the user) into the
+# user's own plugin directory: a link would leave the plugin owned by another account, which compaudit calls insecure (L1). The marker
+# file holds the commit; only a directory with the marker (or the link an earlier version made into the shared tree) is replaced.
+seed_fzftab() { # seed_fzftab HOME DRY
+  local home="$1" dry="$2" src="$DEVTOOLS_SHARED/share/fzf-tab" dst tmp commit cur
+  [ -r "$src/fzf-tab.plugin.zsh" ] && [ -d "$home/.oh-my-zsh" ] || return 0
+  dst="$home/.oh-my-zsh/custom/plugins/fzf-tab"
+  commit=$(sed -n 's/^fzf-tab=//p' "$DEVTOOLS_SHARED/.ready" 2>/dev/null | head -1)
+  : "${commit:=unknown}"
+  if [ -L "$dst" ]; then
+    cur=$(readlink "$dst")
+    case "$cur" in "$DEVTOOLS_SHARED"/*) ;; *) echo "skip   $dst (a link of your own; left alone)"; return 0 ;; esac
+  elif [ -e "$dst" ]; then
+    [ -f "$dst/.from-devtools" ] || { echo "skip   $dst (a directory of your own; left alone)"; return 0; }
+    [ "$(cat "$dst/.from-devtools" 2>/dev/null)" = "$commit" ] && return 0
+  fi
+  echo "copy   $src -> $dst (fzf-tab $commit)"
+  [ "$dry" = 1 ] && return 0
+  tmp="$dst.new.$$"
+  rm -rf -- "$tmp"
+  if mkdir -p "$(dirname "$dst")" && cp -r --no-preserve=ownership -- "$src" "$tmp"; then
+    rm -rf -- "$tmp/.git"
+    printf '%s\n' "$commit" >"$tmp/.from-devtools"
+    rm -rf -- "$dst"
+    mv -- "$tmp" "$dst" && seed_note dir "${dst#"$home"/}" "$commit"
+  else
+    rm -rf -- "$tmp"
+    echo "usr: could not copy fzf-tab into $dst" >&2
+  fi
 }
 # the per-user files of the dev tools that cannot come from the profile list (see profiles/cli.txt)
 seed_user_files() {
   local user="$1" home="$2" root="$3" dry="$4" cur="$2/.local/state/theme/current"
+  SEED_HOME="$home"
+  : "${SEED_BDIR:=$home/.local/state/usr/backup-$(date +%Y%m%d-%H%M%S)}"
   seed_link "$cur/posting.yaml" "$home/.local/share/posting/themes/everforest.yaml" "$dry"
   seed_link "$cur/glab-tui.toml" "$home/.config/glab-tui/themes/everforest.toml" "$dry"
   seed_link "$cur/btop.theme" "$home/.config/btop/themes/everforest-v2.theme" "$dry"
-  # oh-my-zsh's fzf-tab (the .zshrc plugin list) comes from the shared tree at a pinned commit, never from a clone made by the user
-  if [ -d "$DEVTOOLS_SHARED/share/fzf-tab" ] && [ -d "$home/.oh-my-zsh" ]; then
-    seed_link "$DEVTOOLS_SHARED/share/fzf-tab" "$home/.oh-my-zsh/custom/plugins/fzf-tab" "$dry"
-  fi
+  seed_fzftab "$home" "$dry"
   seed_copy "$root/infrastructure/dev/glab-tui-config.toml" "$home/.config/glab-tui/config.toml" "$dry"
   seed_copy "$root/.config/btop/btop.conf" "$home/.config/btop/btop.conf" "$dry"
 }
 
 # runs as the managed user (or, with USR_TARGET_USER/USR_TARGET_HOME and --dry-run, as the owner reading that home)
 cmd__link() {
-  local dry=0 restore=0 a user home profile list path src dst bdir ts kind target hex check_root n_ok=0 n_link=0 n_skip=0 n_move=0
+  local dry=0 restore=0 seeds_only=0 a user home profile list path src dst bdir ts kind target hex check_root val n_ok=0 n_link=0 n_skip=0 n_move=0
   for a in "$@"; do
     case "$a" in
       --dry-run) dry=1 ;;
       --restore) restore=1 ;;
+      --seeds-only) seeds_only=1 ;;   # only the seeded files (theme links, fzf-tab, starting configs): devtools-sync uses it
     esac
   done
   user="${USR_TARGET_USER:-$ME}"
@@ -340,12 +383,38 @@ cmd__link() {
     echo "note   $SRV does not exist yet; previewing against $REPO"
   fi
 
+  if [ "$seeds_only" = 1 ]; then
+    SEED_BDIR="$home/.local/state/usr/backup-$(date +%Y%m%d-%H%M%S)"
+    seed_user_files "$user" "$home" "$check_root" "$dry"
+    return 0
+  fi
+
   if [ "$restore" = 1 ]; then
     bdir=$(find "$home/.local/state/usr" -maxdepth 1 -type d -name 'backup-*' 2>/dev/null | sort | tail -1)
     [ -n "$bdir" ] && [ -r "$bdir/MANIFEST" ] || die "link --restore: no backup in $home/.local/state/usr"
+    # what the seeds made (L5): the links that still point where we put them, the copies nobody edited, the fzf-tab copy
+    if [ -r "$home/.local/state/usr/seeds.tsv" ]; then
+      while IFS=$'\t' read -r kind path val; do
+        dst="$home/$path"
+        case "$kind" in
+          link) if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$val" ]; then
+              if [ "$dry" = 1 ]; then echo "remove ~/$path (seeded link)"; else rm -f -- "$dst"; echo "removed ~/$path (seeded link)"; fi
+            fi ;;
+          copy) if [ -f "$dst" ] && [ ! -L "$dst" ] && [ "$(sha256sum "$dst" | cut -d' ' -f1)" = "$val" ]; then
+              if [ "$dry" = 1 ]; then echo "remove ~/$path (seeded copy, unchanged)"; else rm -f -- "$dst"; echo "removed ~/$path (seeded copy, unchanged)"; fi
+            fi ;;
+          dir) if [ -d "$dst" ] && [ ! -L "$dst" ] && [ -f "$dst/.from-devtools" ]; then
+              if [ "$dry" = 1 ]; then echo "remove ~/$path (copied from the shared tree)"; else rm -rf -- "$dst"; echo "removed ~/$path (copied from the shared tree)"; fi
+            fi ;;
+        esac
+      done <"$home/.local/state/usr/seeds.tsv"
+      [ "$dry" = 1 ] || : >"$home/.local/state/usr/seeds.tsv"
+    fi
     while IFS=$'\t' read -r path kind target; do
       dst="$home/$path"
-      if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$SRV/$path" ]; then rm -f -- "$dst"; fi
+      if [ -L "$dst" ] && { [ "$(readlink "$dst")" = "$SRV/$path" ] || [ "$kind" = seed-link ]; }; then
+        if [ "$dry" = 1 ]; then :; else rm -f -- "$dst"; fi
+      fi
       if [ -e "$bdir/$path" ] || [ -L "$bdir/$path" ]; then
         [ "$dry" = 1 ] && { echo "restore ~/$path (was: $kind $target)"; continue; }
         mkdir -p "$(dirname "$dst")"
@@ -396,6 +465,7 @@ cmd__link() {
     ln -s -- "$src" "$dst"
   done <"$list"
   echo "profile $profile for $user: $n_link linked, $n_ok already linked, $n_skip skipped, $n_move replaced (backup: $bdir)"
+  SEED_BDIR="$bdir"
   seed_user_files "$user" "$home" "$check_root" "$dry"
   [ "$dry" = 1 ] && return 0
 
@@ -501,8 +571,9 @@ cmd_sync() {
     done
     if [ "$relink_ok" = 1 ]; then echo "$phash" >"$STATE/profiles.sha"; fi
   fi
-  # the pinned dev tools (lazysql, gh-dash, posting, ...) for the managed users: only when /srv/devtools exists and the pins moved
-  if [ -d "$DEVTOOLS_SHARED" ] && [ -w "$DEVTOOLS_SHARED" ]; then cmd_devtools_sync --background >>"$log" 2>&1 || true; fi
+  # the pinned dev tools (lazysql, gh-dash, posting, ...) for the managed users: only when /srv/devtools exists and is not current,
+  # and (--if-new) not again for pins whose last attempt already failed (M2)
+  if [ -d "$DEVTOOLS_SHARED" ] && [ -w "$DEVTOOLS_SHARED" ]; then cmd_devtools_sync --background --if-new >>"$log" 2>&1 || true; fi
   return 0
 }
 
@@ -558,11 +629,12 @@ cmd_nvim_sync() {
 
 # installs the pins of infrastructure/dev/user-tools.sh into /srv/devtools (read by td and yc); a no-op while the tree is current
 cmd_devtools_sync() {
-  local bg=0 force=0 a script log rc
+  local bg=0 force=0 ifnew=0 a script log rc stamp att age
   for a in "$@"; do
     case "$a" in
       --background) bg=1 ;;
       --force) force=1 ;;
+      --if-new) ifnew=1 ;;   # what `usr sync` passes: no new attempt for pins that already failed
       --_fg) ;;
       *) die "devtools-sync: unknown option $a" ;;
     esac
@@ -574,6 +646,19 @@ cmd_devtools_sync() {
   mkdir -p "$STATE"
   log="$STATE/devtools-sync.log"
   if [ "$force" = 0 ] && "$script" --shared --prefix "$DEVTOOLS_SHARED" --check >/dev/null 2>&1; then note "devtools-sync: $DEVTOOLS_SHARED is up to date"; return 0; fi
+  # Every commit runs `usr sync`: a tool that keeps failing (offline, a crate that no longer builds) must not start a full attempt
+  # (minutes of cargo, 47 posting packages) each time. The stamp of the last ATTEMPT is written before it runs; the same pins are
+  # tried again automatically only after USR_DEVTOOLS_RETRY seconds (6 h). A manual `usr devtools-sync` and sysup always try.
+  stamp=$("$script" --shared --prefix "$DEVTOOLS_SHARED" --stamp 2>/dev/null | head -1)
+  att="$STATE/devtools-attempt.stamp"
+  if [ "$ifnew" = 1 ] && [ -n "$stamp" ] && [ "$(cat "$att" 2>/dev/null)" = "$stamp" ]; then
+    age=$(( $(date +%s) - $(stat -c %Y "$att" 2>/dev/null || echo 0) ))
+    if [ "$age" -lt "${USR_DEVTOOLS_RETRY:-21600}" ]; then
+      note "devtools-sync: $DEVTOOLS_SHARED is not current, but the last attempt for these pins was $((age / 60)) min ago (next automatic try after $(( ${USR_DEVTOOLS_RETRY:-21600} / 3600 )) h; usr devtools-sync tries now, log $log)"
+      return 0
+    fi
+  fi
+  [ -n "$stamp" ] && printf '%s\n' "$stamp" >"$att"
   if [ "$bg" = 1 ]; then
     local fargs=()
     [ "$force" = 1 ] && fargs=(--force)
@@ -592,7 +677,8 @@ cmd_devtools_sync() {
     if [ -z "${USR_DEVTOOLS_SHARED:-}" ] && [ -x "$SRV/.local/bin/usr" ]; then
       for a in $(managed_users profile); do
         getent passwd "$a" >/dev/null || continue
-        sudo -n -u "$a" -H "$SRV/.local/bin/usr" _link >/dev/null 2>&1 || echo "devtools-sync: could not relink $a (usr link $a)"
+        # only the seeded files (the fzf-tab copy), not a full relink: a file the user made at a profile path stays his (L5)
+        sudo -n -u "$a" -H "$SRV/.local/bin/usr" _link --seeds-only >/dev/null 2>&1 || echo "devtools-sync: could not refresh the seeded files of $a (usr link $a)"
       done
     fi
   else echo "$(date -Is) devtools-sync FAILED (rc $rc); $DEVTOOLS_SHARED/.ready not updated"; fi

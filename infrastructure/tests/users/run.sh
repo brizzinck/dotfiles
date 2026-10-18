@@ -115,6 +115,7 @@ export USR_DEVTOOLS_SHARED="$T/no-devtools"   # a test must never start the real
 mkdir -p "$T/srv" "$T/home"
 export HOME="$T/home"
 export XDG_STATE_HOME="$T/home/.local/state"
+STATE_USR="$XDG_STATE_HOME/usr"
 "$USR" sync --worktree --quiet >/dev/null 2>&1 || bad "usr sync --worktree failed"
 [ -f "$T/srv/.zshrc" ] && ok || bad "sync: .zshrc not published"
 [ -e "$T/srv/private" ] && bad "sync: private/ was published" || ok
@@ -160,13 +161,43 @@ expect "td: an existing glab-tui config is never overwritten" "my own" "$(cat "$
 expect "td: an existing btop.conf is never overwritten" "mine" "$(cat "$T/h/td/.config/btop/btop.conf")"
 expect "td: a real file where a theme link would go is left alone" "own theme" "$(cat "$T/h/td/.config/btop/themes/everforest-v2.theme")"
 rm -f "$T/h/td/.config/btop/themes/everforest-v2.theme"
-# fzf-tab: linked from the shared tree into oh-my-zsh's custom plugins when both exist; an existing directory of the user wins
-mkdir -p "$T/dtfz/share/fzf-tab" "$T/h/td/.oh-my-zsh/custom/plugins"
+# fzf-tab (L1): COPIED from the shared tree into oh-my-zsh's custom plugins (a link would be owned by another account: compaudit calls it
+# insecure), with a marker holding the commit; an existing directory of the user (no marker) or a link of his own wins
+FZP="$T/h/td/.oh-my-zsh/custom/plugins/fzf-tab"
+mkdir -p "$T/dtfz/share/fzf-tab/lib" "$T/dtfz/share/fzf-tab/.git" "$T/h/td/.oh-my-zsh/custom/plugins"
+echo '# plugin' >"$T/dtfz/share/fzf-tab/fzf-tab.plugin.zsh"; echo ref >"$T/dtfz/share/fzf-tab/.git/HEAD"; echo lib >"$T/dtfz/share/fzf-tab/lib/x.zsh"
+printf 'stamp=x\nfzf-tab=c0ffee\n' >"$T/dtfz/.ready"
 USR_DEVTOOLS_SHARED="$T/dtfz" run_link >/dev/null
-expect "td: fzf-tab links to the shared tree" "$T/dtfz/share/fzf-tab" "$(readlink "$T/h/td/.oh-my-zsh/custom/plugins/fzf-tab")"
-rm -f "$T/h/td/.oh-my-zsh/custom/plugins/fzf-tab"; mkdir "$T/h/td/.oh-my-zsh/custom/plugins/fzf-tab"
+[ -d "$FZP" ] && [ ! -L "$FZP" ] && [ -f "$FZP/fzf-tab.plugin.zsh" ] && [ -f "$FZP/lib/x.zsh" ] && ok || bad "td: fzf-tab is not a real copy of the shared plugin"
+expect "td: the fzf-tab copy carries the commit marker, not the git dir" "c0ffee|no" "$(cat "$FZP/.from-devtools" 2>/dev/null)|$([ -e "$FZP/.git" ] && echo yes || echo no)"
+printf 'stamp=x\nfzf-tab=beef01\n' >"$T/dtfz/.ready"
 USR_DEVTOOLS_SHARED="$T/dtfz" run_link >/dev/null
-[ -d "$T/h/td/.oh-my-zsh/custom/plugins/fzf-tab" ] && [ ! -L "$T/h/td/.oh-my-zsh/custom/plugins/fzf-tab" ] && ok || bad "td: an own fzf-tab directory was replaced"
+expect "td: a new pinned commit refreshes the copy" "beef01" "$(cat "$FZP/.from-devtools" 2>/dev/null)"
+rm -rf "$FZP"; ln -s "$T/dtfz/share/fzf-tab" "$FZP"   # what the earlier version of usr link made
+USR_DEVTOOLS_SHARED="$T/dtfz" run_link >/dev/null
+[ -d "$FZP" ] && [ ! -L "$FZP" ] && [ -f "$FZP/.from-devtools" ] && ok || bad "td: the old fzf-tab link was not replaced by a copy"
+rm -rf "$FZP"; ln -s /nonexistent/own-fzf-tab "$FZP"
+USR_DEVTOOLS_SHARED="$T/dtfz" run_link >/dev/null
+expect "td: a link of his own at the fzf-tab place is left alone" "/nonexistent/own-fzf-tab" "$(readlink "$FZP")"
+rm -f "$FZP"; mkdir "$FZP"
+USR_DEVTOOLS_SHARED="$T/dtfz" run_link >/dev/null
+[ -d "$FZP" ] && [ ! -L "$FZP" ] && [ ! -e "$FZP/.from-devtools" ] && ok || bad "td: an own fzf-tab directory was replaced"
+# L5: a seed that replaces another link backs it up; --restore undoes exactly what the seeds made (and --dry-run restore changes nothing)
+YH="$T/h/yc2"; mkdir -p "$YH/.oh-my-zsh/custom/plugins" "$YH/.config/btop/themes"
+ln -s /elsewhere/x.theme "$YH/.config/btop/themes/everforest-v2.theme"
+run_yc() { USR_DEVTOOLS_SHARED="$T/dtfz" USR_TARGET_USER=yc USR_TARGET_HOME="$YH" "$USR" _link "$@" 2>&1; }
+out="$(run_yc)"
+case "$out" in *"move   $YH/.config/btop/themes/everforest-v2.theme (link -> /elsewhere/x.theme) to the backup"*) ok ;; *) bad "a seed replaced a foreign link without announcing the backup: $out" ;; esac
+expect "yc: the foreign theme link is in the backup" "/elsewhere/x.theme" "$(readlink "$YH"/.local/state/usr/backup-*/.config/btop/themes/everforest-v2.theme 2>/dev/null)"
+grep -q "seed-link" "$YH"/.local/state/usr/backup-*/MANIFEST 2>/dev/null && ok || bad "the backup MANIFEST has no seed-link row"
+expect "yc: the seeds are recorded for the restore (3 links, 2 copies, fzf-tab)" "6" "$(cut -f1 "$YH/.local/state/usr/seeds.tsv" | grep -c .)"
+out="$(run_yc --restore --dry-run)"
+[ -L "$YH/.zshrc" ] && [ -L "$YH/.local/share/posting/themes/everforest.yaml" ] && ok || bad "link --restore --dry-run removed links"
+out="$(run_yc --restore)"
+expect "yc restore: the foreign theme link is back" "/elsewhere/x.theme" "$(readlink "$YH/.config/btop/themes/everforest-v2.theme")"
+for f in .local/share/posting/themes/everforest.yaml .config/glab-tui/themes/everforest.toml .config/glab-tui/config.toml .config/btop/btop.conf .oh-my-zsh/custom/plugins/fzf-tab .zshrc; do
+  [ -e "$YH/$f" ] || [ -L "$YH/$f" ] && bad "yc restore left ~/$f behind" || ok
+done
 mkdir -p "$T/h/yc"
 dry_yc="$(USR_TARGET_USER=yc USR_TARGET_HOME="$T/h/yc" "$USR" _link --dry-run 2>&1)"
 case "$dry_yc" in *"link   $T/h/yc/.local/share/posting/themes/everforest.yaml -> $T/h/yc/.local/state/theme/current/posting.yaml"*"copy   "*"glab-tui-config.toml -> $T/h/yc/.config/glab-tui/config.toml"*) ok ;; *) bad "link --dry-run does not preview the seeded theme links and copies: $dry_yc" ;; esac
@@ -372,8 +403,8 @@ unset XDG_RUNTIME_DIR WAYLAND_DISPLAY
 UT="$REPO/infrastructure/dev/user-tools.sh"
 DT="$T/devtools"
 dtd="$("$UT" --shared --prefix "$DT" --dry-run 2>&1)"
-for want in "env GOBIN=$DT/go/bin go install github.com/jorgerojas26/lazysql@v0.7.0" "env GOBIN=$DT/go/bin go install github.com/dlvhdr/gh-dash/v4@v4.26.2" \
-  "python3 -m venv --clear $DT/venv/posting" "-m pip install --disable-pip-version-check --no-cache-dir --require-hashes --no-deps -r $REPO/infrastructure/dev/posting-requirements.txt" \
+for want in "env GOBIN=$DT/go/bin go install -trimpath github.com/jorgerojas26/lazysql@v0.7.0" "env GOBIN=$DT/go/bin go install -trimpath github.com/dlvhdr/gh-dash/v4@v4.26.2" \
+  "/usr/bin/python3 -m venv --clear $DT/venv/posting" "-m pip install --disable-pip-version-check --require-hashes --no-deps -r $REPO/infrastructure/dev/posting-requirements.txt" \
   "npm install --prefix $DT/npm --ignore-scripts --no-audit --no-fund --no-save gitlab-ci-local@4.76.1" \
   "cargo install --locked --version 0.9.3 --root $DT/cargo glab-tui-crate" "cargo install --locked --version 0.1.276 --root $DT/cargo workmux" \
   "git clone --quiet https://github.com/Aloxaf/fzf-tab $DT/share/fzf-tab" "would link: $DT/bin/lazysql -> ../go/bin/lazysql" "would link: $DT/bin/posting -> ../venv/posting/bin/posting" "would link: $DT/bin/workmux -> ../cargo/bin/workmux"; do
@@ -414,10 +445,45 @@ out="$("$UT" --shared --prefix "$T/not-there" 2>&1)"; rc=$?
 [ -e "$T/not-there" ] && bad "--shared created the missing prefix" || ok
 "$UT" --shared --prefix relative/dir >/dev/null 2>&1; expect "--shared with a relative prefix is refused" 2 "$?"
 "$UT" --check >/dev/null 2>&1; expect "--check without --shared is refused" 2 "$?"
+# M1: two installers on one tree never overlap (the second waits, then finds the work done); L4: the build runs from /, without the
+# caller's project environment or mise PATH entries
+mkdir -p "$T/lockbin" "$T/locktree"
+cat >"$T/lockbin/go" <<'FAKE'
+#!/bin/sh
+case "$1" in
+  install) echo "start pwd=$(pwd) goflags=${GOFLAGS-unset} mise=${MISE_FOO-unset} path=$PATH" >>"$FAKE_GO_LOG"; sleep 1.2
+    mkdir -p "$GOBIN"; : >"$GOBIN/lazysql"; chmod +x "$GOBIN/lazysql"; echo end >>"$FAKE_GO_LOG" ;;
+  version) printf '\tmod\tgithub.com/jorgerojas26/lazysql\tv0.7.0\n' ;;
+esac
+FAKE
+chmod +x "$T/lockbin/go"
+export FAKE_GO_LOG="$T/go.log"; : >"$FAKE_GO_LOG"
+for n in 1 2; do
+  (cd "$T" && GOFLAGS=-mod=evil MISE_FOO=1 PATH="$T/lockbin:$T/fakehome/.local/share/mise/installs/node/20/bin:$PATH" "$UT" --shared --prefix "$T/locktree" --only lazysql >"$T/lock-$n.out" 2>&1; echo $? >"$T/lock-$n.rc") &
+  sleep 0.4
+done
+wait
+expect "user-tools --shared: two concurrent installs = one installer run (the second waits, then finds it current)" "1|1" "$(grep -c '^start' "$FAKE_GO_LOG")|$(grep -c '^end' "$FAKE_GO_LOG")"
+expect "user-tools --shared: both runs exit 0" "0 0" "$(cat "$T/lock-1.rc") $(cat "$T/lock-2.rc")"
+grep -q 'another --shared install holds' "$T/lock-2.out" && ok || bad "the second run did not say it waits for the lock ($(cat "$T/lock-2.out"))"
+expect "user-tools --shared: the build runs from / with the project's variables and mise PATH entries removed" "start pwd=/ goflags=unset mise=unset path-ok" "$(sed -n 1p "$FAKE_GO_LOG" | sed -E 's/ path=.*mise\/installs.*/ path-mise/; s/ path=.*/ path-ok/')"
+unset FAKE_GO_LOG
+# L8/L4: --check never runs the venv's python, and a venv from a non-system python is not "installed"
+PD="$T/posttree"; mkdir -p "$PD/bin" "$PD/venv/posting/bin" "$PD/venv/posting/lib/python3.14/site-packages/posting-2.11.1.dist-info"
+printf '#!/bin/sh\ntouch "%s/ran"\n' "$T" >"$PD/venv/posting/bin/python"; chmod +x "$PD/venv/posting/bin/python"
+printf '#!/bin/sh\n' >"$PD/venv/posting/bin/posting"; chmod +x "$PD/venv/posting/bin/posting"; ln -s ../venv/posting/bin/posting "$PD/bin/posting"
+printf 'Name: posting\nVersion: 2.11.1\n' >"$PD/venv/posting/lib/python3.14/site-packages/posting-2.11.1.dist-info/METADATA"
+sha256sum "$REPO/infrastructure/dev/posting-requirements.txt" | cut -d' ' -f1 >"$PD/venv/posting.lock"
+printf 'home = /usr/bin\n' >"$PD/venv/posting/pyvenv.cfg"
+"$UT" --shared --prefix "$PD" --only posting --check >/dev/null 2>&1; expect "--check posting: a venv on the system python at the pin is current" 0 "$?"
+[ ! -e "$T/ran" ] && ok || bad "--check ran the venv's python as the owner"
+printf 'home = /home/x/.local/share/mise/installs/python/3.12/bin\n' >"$PD/venv/posting/pyvenv.cfg"
+"$UT" --shared --prefix "$PD" --only posting --check >/dev/null 2>&1; expect "--check posting: a venv built on another python is not current" 1 "$?"
 # usr devtools-sync: a current tree is left alone, a stale one runs the installer (fake script) in the foreground / background
 mkdir -p "$T/dtsync"
 cat >"$T/fake-user-tools.sh" <<'FAKE'
 #!/bin/sh
+case " $* " in *" --stamp "*) echo "${FAKE_UT_STAMP:-stamp1}"; exit 0 ;; esac
 echo "user-tools $*" >>"$FAKE_UT_LOG"
 case " $* " in *" --check "*) exit "${FAKE_UT_CHECK:-1}" ;; esac
 exit "${FAKE_UT_RC:-0}"
@@ -435,12 +501,30 @@ user-tools --shared --prefix $T/dtsync" "$rc|$(cat "$FAKE_UT_LOG")"
 USR_DEVTOOLS_SHARED="$T/dtsync" FAKE_UT_RC=1 "$USR" devtools-sync >/dev/null 2>&1; expect "devtools-sync: a failing installer = exit 1" 1 "$?"
 USR_DEVTOOLS_SHARED="$T/no-dtsync" "$USR" devtools-sync >/dev/null 2>&1; expect "devtools-sync: no tree = refused (exit 2)" 2 "$?"
 # `usr sync` starts it in the background only when the tree exists and is writable
+rm -f "$STATE_USR/devtools-attempt.stamp"
 : >"$FAKE_UT_LOG"
 USR_DEVTOOLS_SHARED="$T/no-dtsync" "$USR" sync --worktree --quiet >/dev/null 2>&1
 sleep 0.3; [ ! -s "$FAKE_UT_LOG" ] && ok || bad "usr sync ran the dev-tool installer without /srv/devtools: $(cat "$FAKE_UT_LOG")"
 USR_DEVTOOLS_SHARED="$T/dtsync" "$USR" sync --worktree --quiet >/dev/null 2>&1
 for _ in $(seq 40); do grep -q -- "--prefix $T/dtsync\$" "$FAKE_UT_LOG" && break; sleep 0.1; done
 grep -qx "user-tools --shared --prefix $T/dtsync" "$FAKE_UT_LOG" && ok || bad "usr sync did not start devtools-sync in the background ($(cat "$FAKE_UT_LOG"))"
+# M2: pins whose attempt just failed are not tried again by every commit: same stamp = no new run, new stamp or 6 h later = a run
+sleep 0.3
+runs() { grep -c -x "user-tools --shared --prefix $T/dtsync" "$FAKE_UT_LOG"; }
+r1="$(runs)"
+out="$(USR_DEVTOOLS_SHARED="$T/dtsync" "$USR" sync --worktree 2>&1)"; sleep 0.5
+expect "usr sync: the same pins that just failed start no new installer run" "$r1" "$(runs)"
+grep -q "last attempt for these pins" "$STATE_USR/sync.log" && ok || bad "usr sync does not log why it skipped the devtools install: $(tail -3 "$STATE_USR/sync.log")"
+USR_DEVTOOLS_SHARED="$T/dtsync" FAKE_UT_STAMP=stamp2 "$USR" sync --worktree --quiet >/dev/null 2>&1
+for _ in $(seq 30); do [ "$(runs)" -gt "$r1" ] && break; sleep 0.1; done
+[ "$(runs)" -gt "$r1" ] && ok || bad "usr sync did not try again for new pins"
+r1="$(runs)"; touch -d '7 hours ago' "$STATE_USR/devtools-attempt.stamp"
+USR_DEVTOOLS_SHARED="$T/dtsync" FAKE_UT_STAMP=stamp2 "$USR" sync --worktree --quiet >/dev/null 2>&1
+for _ in $(seq 30); do [ "$(runs)" -gt "$r1" ] && break; sleep 0.1; done
+[ "$(runs)" -gt "$r1" ] && ok || bad "usr sync did not retry after the back-off"
+r1="$(runs)"
+USR_DEVTOOLS_SHARED="$T/dtsync" FAKE_UT_STAMP=stamp2 "$USR" devtools-sync >/dev/null 2>&1; sleep 0.2
+[ "$(runs)" -gt "$r1" ] && ok || bad "a manual usr devtools-sync was throttled"
 unset FAKE_UT_LOG USR_DEVTOOLS_SCRIPT
 
 # ── USERS-SYNC C3: /srv/devtools/bin on a managed user's PATH and in the launchers' lookup, only while the tree is trusted ─────
