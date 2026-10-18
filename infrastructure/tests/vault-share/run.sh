@@ -69,6 +69,7 @@ section4() {
 }
 
 check "broker subprocess timeout drains pipes and reaps child" python3 -I -B "$HERE/process_test.py"
+check "broker idle preserves inherited activation socket and cleans standalone socket" python3 -I -B "$HERE/socket_idle_test.py" "$SCRIPTS/vault-share.py"
 
 want 2 && section2
 want 4 && section4

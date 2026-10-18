@@ -943,7 +943,8 @@ class Broker:
         if fds >= 1:
             s = socket.socket(fileno=3)
             s.setblocking(False)
-            server = await asyncio.start_unix_server(self.handle, sock=s, limit=MAX_REQUEST)
+            # systemd owns the pathname; closing our inherited descriptor must not unlink it.
+            server = await asyncio.start_unix_server(self.handle, sock=s, limit=MAX_REQUEST, cleanup_socket=False)
         elif TEST:
             path = sock_path()
             path.parent.mkdir(parents=True, exist_ok=True)
