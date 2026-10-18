@@ -364,12 +364,16 @@ hl.window_rule({
     stay_focused = true,
 })
 
--- Camoufox (skw anti-detect browser): keep the persona window size so the page fills the window
+-- Camoufox (skw anti-detect browser): keep the persona window size so the page fills the window.
+-- Its automation (camoufox-gateway) opens windows by itself: they never take the focus (a new window that grabs it closes an
+-- open fzf-menu, whose special workspace hides). Click the window to work in it.
 hl.window_rule({
     name = "float-camoufox",
     match = { class = "^(camoufox)$" },
     float = true,
     center = true,
+    no_initial_focus = true,
+    suppress_event = "activate activatefocus",
 })
 
 -- Bitwarden desktop app (Electron, class Bitwarden): a centered floating window instead of a full-width tile.
