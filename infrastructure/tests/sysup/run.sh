@@ -109,7 +109,12 @@ expect "mise step: plugins update, upgrade, prune in order" bash -c "[ \"\$(grep
 expect "mise step runs from HOME, not the start directory" bash -c "grep 'fake mise' '$FAKE_LOG' | grep -q '$T/home|' && ! grep 'fake mise' '$FAKE_LOG' | grep -q '$T/proj'"
 expect "mise is listed after go in the dry run" bash -c "$SYSUP --dry-run | tr -s ' \n' ' ' | grep -q 'go devtools mise claude'"
 rm -f "$T/bin/mise"
-out=$(HOME="$T/home" PATH="$T/bin:/usr/bin:/bin" "$SYSUP" --only mise --yes 2>&1); rc=$?
+# a PATH without /usr/bin (mise is installed there now): links to the few basics sysup needs, none to mise (L9)
+mkdir -p "$T/nomise"
+for t in bash env sh dirname basename date mktemp cat sed grep awk tr id readlink mkdir rm sort head tail printf cut ls tee df uname hostname stat find wc; do
+  [ -x "/usr/bin/$t" ] && ln -sf "/usr/bin/$t" "$T/nomise/$t"
+done
+out=$(HOME="$T/home" PATH="$T/bin:$T/nomise" "$SYSUP" --only mise --yes 2>&1); rc=$?
 expect "mise step is skipped when mise is missing" bash -c "[ $rc = 0 ] && grep -q 'mise is not installed' <<<'$out'"
 
 # FIX-DEVb2: started inside an activated project, sysup lets mise undo its own environment (`mise hook-env -s bash --force` from
