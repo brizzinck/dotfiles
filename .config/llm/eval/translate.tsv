@@ -1,0 +1,17 @@
+# Quality set for `llm bench --quality` (translation): direction (src-dst), source text, reference translation. Scored with chrF
+# (character 6-gram F-score, beta 2). Short everyday sentences, the kind the selection and dictation hotkeys translate.
+ru-en	Сегодня я забыл зонт, поэтому промок до нитки.	I forgot my umbrella today, so I got soaked to the skin.
+ru-en	Пожалуйста, отправь мне отчёт до пятницы, он нужен для встречи с клиентом.	Please send me the report by Friday, I need it for the meeting with the client.
+ru-en	Новая версия приложения работает быстрее и занимает меньше памяти.	The new version of the app runs faster and uses less memory.
+uk-en	Вчора ми довго гуляли містом і пили каву біля річки.	Yesterday we walked around the city for a long time and drank coffee by the river.
+uk-en	Будь ласка, перевірте цей договір і скажіть, чи все гаразд.	Please check this contract and tell me if everything is fine.
+uk-en	Сервер знову впав уночі, тому треба переглянути журнали помилок.	The server went down again at night, so we need to look through the error logs.
+en-ru	The meeting has been moved to Tuesday afternoon because the manager is travelling.	Встречу перенесли на вторник днём, потому что менеджер в отъезде.
+en-ru	Could you review my pull request when you have a minute?	Не мог бы ты посмотреть мой пулл-реквест, когда будет минутка?
+en-ru	The battery lasts about ten hours if you keep the screen dim.	Батареи хватает примерно на десять часов, если держать экран тусклым.
+en-uk	I am going to the shop, do you need anything?	Я йду до магазину, тобі щось потрібно?
+en-uk	The deployment failed because the database migration took too long.	Розгортання не вдалося, бо міграція бази даних тривала надто довго.
+en-uk	Thank you for your help, it saved me a lot of time.	Дякую за допомогу, вона заощадила мені багато часу.
+ru-uk	Я сегодня поздно вернусь домой, не жди меня на ужин.	Я сьогодні пізно повернуся додому, не чекай на мене на вечерю.
+ru-uk	Пожалуйста, проверь, что все тесты проходят перед слиянием.	Будь ласка, перевір, що всі тести проходять перед злиттям.
+ru-uk	Эта программа запускается только после перезагрузки системы.	Ця програма запускається лише після перезавантаження системи.

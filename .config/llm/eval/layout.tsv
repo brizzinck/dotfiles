@@ -1,0 +1,13 @@
+# Quality set for `llm bench --quality` (fix-layout): the text as typed on the wrong layout, then the text it should become
+# (the candidate the preset must pick; an English or already right text stays as typed).
+ghbdtn	привет
+ghbdtn vbh	привет мир
+руддщ	hello
+цщкдв	world
+ghbdsn	привіт
+Ghbdtn? rfr ltkf&	Привет, как дела?
+ntcn	тест
+hello world	hello world
+привет мир	привет мир
+rfnfkju	каталог
+cjplfnm	создать

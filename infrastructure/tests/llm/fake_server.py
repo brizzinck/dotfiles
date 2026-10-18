@@ -149,6 +149,9 @@ class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
 
     def get_request(self):
         sock, _ = super().get_request()
+        if os.environ.get("FAKE_LLM_CONNS"):
+            with open(os.environ["FAKE_LLM_CONNS"], "a") as f:
+                f.write("conn\n")
         return sock, ("unix", 0)
 
 

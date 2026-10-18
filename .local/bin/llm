@@ -1,18 +1,41 @@
 #!/usr/bin/python3 -I
-"""llm: the local LLM (DEV-e): llama.cpp on Vulkan, started on demand, gone again after 5 idle minutes. Python 3 stdlib only.
-Docs: CLAUDE.md "Local LLM (DEV-e)".
+"""llm: the local LLM (DEV-e): llama.cpp on Vulkan, started on demand by a socket, gone again after 5 idle minutes. Python 3 stdlib
+only. Docs: CLAUDE.md "Local LLM (DEV-e)". Nothing is resident at boot and nothing listens on TCP: the model lives in memory only
+while it is used (llm.socket -> llm-proxy.service -> llm-server.service).
 
+  llm [PRESET] [OPTIONS] [TEXT...]     run a preset on TEXT or stdin (PRESET default: ask)
+      presets: ask translate fix rewrite shorten explain commit-msg fix-layout   (.config/llm/presets.toml)
+      --to LANG / --from LANG          translate (en ru uk; --to default: Cyrillic text -> en, Latin -> ru)
+      --model NAME                     refuse unless NAME is the active model (no implicit switch; exit 2 with the hint)
+      --max-tokens N  --temperature T  override the preset
+      --json                           print {"text","model","timings":{prompt_n,prompt_ms,predicted_n,predicted_ms}}
+      --no-stream                      never stream (streaming is only used when stdout is a terminal)
+      --timeout S                      default 180 (covers a first-ever GPU kernel compile)
+      --dry-run                        print the request (system prompt, parameters, input LENGTH only) and exit; no connection
+      --no-llm                         fix-layout only: the offline guess, no server
+    Text comes from the arguments, else stdin (callers should pipe selections on stdin, never put them in argv). commit-msg uses
+    the staged diff (git diff --cached) when there is no text; --stat is always included, the diff is cut at 12000 characters.
+    fix-layout prints the candidate (as typed, or the same keys read on us/ru/ua) the model picks with a one-digit grammar; when
+    the model cannot answer it falls back to the offline guess (a hotkey must work without it), the other presets exit 3.
+  llm chat                             tiny REPL (history in memory only, Ctrl+D quits, /reset)
+  llm status [--json]                  package, Vulkan device (cached), active model, socket, loaded or not (+ since, MemoryCurrent,
+                                       GPU memory); never connects to the model socket, so it never loads the model
+  llm start | stop                     preload now (the 5 minute idle timer then runs as usual) | unload now
+  llm model [NAME|--pick]              show / set the active model (restarts the server only when it is loaded)
   llm models [list|fetch [NAME...|--default|--all-candidates]|check [--deep]|path NAME]
-                               the catalogue (~/.config/llm/models.tsv); fetch downloads into ~/.local/share/llm/models/ with
-                               curl (resumable), checks the pinned sha256 before the rename and stamps the file
-  llm model [NAME|--pick]      show / set the active model (state file ~/.local/state/llm/model); --pick = fzf-menu list
-  llm token ensure|rotate|path the bearer token of the server (~/.local/state/llm/token, 0600, dir 0700)
-  llm _serve [--dry-run]       service entry of llm-server.service (checks, stale socket, device line, exec llama-server);
-                               --dry-run prints the argv
+                                       the catalogue (.config/llm/models.tsv); fetch downloads into ~/.local/share/llm/models/ with
+                                       curl (resumable), checks the pinned sha256 before the rename and stamps the file
+  llm bench [--model NAME] [--quality] [--cold]
+                                       speed (prompt and generation t/s, first token, GPU memory) and, with --quality, the eval set
+                                       (translation chrF per direction, layout fixes, commit messages); --cold also measures the
+                                       first load after a stop; written to ~/.local/state/llm/bench/
+  llm token ensure|rotate|path         the bearer token of the server (~/.local/state/llm/token, 0600, dir 0700)
+  llm _serve [--dry-run]               service entry of llm-server.service (checks, stale socket, device line, exec llama-server;
+                                       --dry-run prints the argv)
 
 Exit codes: 0 ok, 1 error, 2 usage, 3 not available (package / model / socket missing; the message says the fix), 4 timeout,
-130 interrupted. Test hooks (never needed by hand): LLM_STATE_DIR, LLM_DATA_DIR, LLM_MODELS_DIR, LLM_CONFIG_DIR, LLM_CATALOG, LLM_SERVER_BIN,
-LLM_RUNTIME_DIR.
+130 interrupted. Test hooks (never needed by hand): LLM_STATE_DIR, LLM_DATA_DIR, LLM_MODELS_DIR, LLM_CONFIG_DIR, LLM_CATALOG,
+LLM_SERVER_BIN, LLM_RUNTIME_DIR.
 """
 import hashlib
 import os
@@ -464,12 +487,775 @@ def cmd__serve(args):
         BACKEND_SOCK.unlink()
     except FileNotFoundError:
         pass
+    gtt = gtt_used()
+    if gtt is not None:
+        (SERVER_DIR / "gtt-before").write_text(str(gtt))  # llm status reports the GPU memory the model added
     print(f"llm: model {model['id']}, devices: {device_summary()}", flush=True)
     os.execv(argv[0], argv)
 
 
 # --------------------------------------------------------------------------------------------------------------
-COMMANDS = {"_serve": cmd__serve, "models": cmd_models, "model": cmd_model, "token": cmd_token}
+# client: presets, request, answer
+PRESET_NAMES = ("ask", "translate", "fix", "rewrite", "shorten", "explain", "commit-msg", "fix-layout")
+LANGS = {"en": "English", "ru": "Russian", "uk": "Ukrainian"}
+INPUT_LIMIT = 12000
+DIFF_LIMIT = 12000
+EXIT_NA, EXIT_TIMEOUT = 3, 4
+
+
+def load_presets():
+    import tomllib
+    try:
+        with open(CONF / "presets.toml", "rb") as f:
+            return tomllib.load(f)
+    except (OSError, ValueError) as e:
+        raise Fail(f"cannot read {CONF / 'presets.toml'}: {e}", 1)
+
+
+def max_tokens_for(preset, n_chars):
+    if "max_tokens" in preset:
+        return int(preset["max_tokens"])
+    rule = preset.get("max_tokens_rule", "")
+    if rule == "two_thirds":
+        return min(2048, 2 * n_chars // 3 + 64)
+    if rule == "quarter":
+        return n_chars // 4 + 64
+    if rule == "diff":
+        return 200
+    return 800
+
+
+def script_of(text):
+    """Dominant script of the letters in text: 'cyr', 'lat' or ''."""
+    cyr = sum(1 for c in text if "Ѐ" <= c <= "ӿ")
+    lat = sum(1 for c in text if c.isascii() and c.isalpha())
+    if not cyr and not lat:
+        return ""
+    return "cyr" if cyr > lat else "lat"
+
+
+def strip_answer(text, strip):
+    import re
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
+    if not strip:
+        return text
+    m = re.fullmatch(r"```[^\n]*\n(.*?)\n?```", text, flags=re.S)
+    if m:
+        text = m.group(1).strip()
+    for a, b in (('"', '"'), ("'", "'"), ("“", "”"), ("«", "»")):
+        if len(text) >= 2 and text[0] == a and text[-1] == b and text.count(a) + (text.count(b) if a != b else 0) == 2:
+            text = text[1:-1].strip()
+            break
+    return text
+
+
+def diffstat(diff):
+    """A git-style --stat of a unified diff, computed here so stdin diffs and `git diff --cached` look the same."""
+    files, cur = [], None
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            parts = line.split(" b/", 1)
+            cur = [parts[1] if len(parts) > 1 else line[11:], 0, 0]
+            files.append(cur)
+        elif cur is not None and line.startswith("+") and not line.startswith("+++"):
+            cur[1] += 1
+        elif cur is not None and line.startswith("-") and not line.startswith("---"):
+            cur[2] += 1
+    return "\n".join(f" {f} | +{a} -{d}" for f, a, d in files) + (f"\n {len(files)} file{'s' if len(files) != 1 else ''} changed" if files else "")
+
+
+def staged_diff():
+    try:
+        p = subprocess.run(["git", "diff", "--cached", "--no-color", "--no-ext-diff"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        raise Fail("git is not available", 2)
+    if p.returncode != 0:
+        raise Fail("not in a git repository (or git failed); pipe a diff on stdin instead", 2)
+    return p.stdout
+
+
+def read_input(opts, preset_name):
+    """The text to work on: arguments, else stdin (when it is not a terminal), else (commit-msg only) the staged diff."""
+    text = " ".join(opts.text) if opts.text else None
+    if text is None and not sys.stdin.isatty():
+        text = sys.stdin.read()
+        if text.endswith("\n"):
+            text = text[:-1]  # `echo x | llm ...`: the line ending is not part of the text; a selection piped with printf has none
+    if preset_name == "commit-msg":
+        if text is None or not text.strip():
+            text = staged_diff()
+            if not text.strip():
+                raise Fail("nothing staged: git add something first, or pipe a diff on stdin", 2)
+        return text
+    if text is None or not text.strip():
+        raise Fail(f"no text: give it as arguments or on stdin (llm {preset_name} --help)", 2)
+    if len(text) > INPUT_LIMIT:
+        raise Fail(f"text too long ({len(text)} characters, the limit is {INPUT_LIMIT})", 2)
+    return text
+
+
+def build_user_message(preset_name, text):
+    if preset_name != "commit-msg":
+        return text
+    stat = diffstat(text)
+    body = text
+    if len(body) > DIFF_LIMIT:
+        body = body[:DIFF_LIMIT].rsplit("\n", 1)[0] + "\n[diff truncated]"
+    return f"Staged changes:\n{stat}\n\n{body}"
+
+
+def request_body(model, system, user, preset, n_chars, stream, o):
+    body = {"model": model,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "temperature": o.temperature if o.temperature is not None else preset.get("temperature", 0.3),
+            "top_p": preset.get("top_p", 0.9),
+            "max_tokens": o.max_tokens if o.max_tokens is not None else max_tokens_for(preset, n_chars),
+            "stream": stream,
+            "chat_template_kwargs": {"enable_thinking": False}}
+    if preset.get("grammar"):
+        body["grammar"] = preset["grammar"]
+    return body
+
+
+def build_system(preset_name, preset, o, text):
+    system = preset["system"]
+    if preset_name == "translate":
+        dst = o.to or ("en" if script_of(text) == "cyr" else "ru")
+        if dst not in LANGS or (o.src and o.src not in LANGS):
+            raise Fail(f"languages are: {', '.join(LANGS)}", 2)
+        src = LANGS[o.src] if o.src else "the language of the text (detect it)"
+        system = system.replace("{src}", src).replace("{dst}", LANGS[dst])
+    elif o.to or o.src:
+        raise Fail(f"--to / --from only work with the translate preset", 2)
+    return system
+
+
+# ---- transport
+def ensure_available(model):
+    """Fast checks before connecting: the package, the model file, the socket (exit 3 with the exact fix)."""
+    import stat as st
+    if not os.access(SERVER_BIN, os.X_OK):
+        raise Fail("llama-server is not installed; run: sudo ~/dotfiles/apply-system.sh --only install", EXIT_NA)
+    state, detail = stamp_state(model)
+    if state != "fetched":
+        raise Fail(f"model {model['id']} is {state}; run: llm models fetch {model['id']}", EXIT_NA)
+    try:
+        ok = st.S_ISSOCK(os.stat(PUBLIC_SOCK).st_mode)
+    except OSError:
+        ok = False
+    if not ok:
+        raise Fail("the socket is not listening; run: systemctl --user enable --now llm.socket", EXIT_NA)
+
+
+def connect(timeout):
+    import http.client
+    import socket
+
+    class UnixConn(http.client.HTTPConnection):
+        def __init__(self):
+            super().__init__("llm", timeout=timeout)
+
+        def connect(self):
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(self.timeout)
+            s.connect(str(PUBLIC_SOCK))
+            self.sock = s
+
+    return UnixConn()
+
+
+def post_chat(body, timeout, on_delta=None):
+    """POST /v1/chat/completions. Returns (text, timings). Streams when body['stream'], calling on_delta(str) per piece."""
+    import http.client
+    import json
+    import socket
+    token = token_read()
+    conn = connect(timeout)
+    try:
+        conn.request("POST", "/v1/chat/completions", json.dumps(body).encode(),
+                     {"Content-Type": "application/json", "Authorization": "Bearer " + token})
+        resp = conn.getresponse()
+        if resp.status != 200:
+            raw = resp.read().decode("utf-8", "replace")
+            try:
+                msg = json.loads(raw).get("error", {}).get("message", raw)
+            except ValueError:
+                msg = raw
+            if resp.status == 401:
+                raise Fail("the server refused the token (401); restart it with: llm stop (the token file may have been rotated)", 1)
+            raise Fail(f"server error {resp.status}: {msg.strip()[:300]}", 1)
+        if not body.get("stream"):
+            data = json.loads(resp.read())
+            text = (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+            return text, data.get("timings") or {}
+        parts, timings = [], {}
+        for raw in resp:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line.startswith("data:"):
+                continue
+            payload = line[5:].strip()
+            if payload == "[DONE]":
+                break
+            try:
+                ev = json.loads(payload)
+            except ValueError:
+                continue
+            if ev.get("timings"):
+                timings = ev["timings"]
+            delta = ((ev.get("choices") or [{}])[0].get("delta") or {}).get("content")
+            if delta:
+                parts.append(delta)
+                if on_delta:
+                    on_delta(delta)
+        return "".join(parts), timings
+    except (socket.timeout, TimeoutError):
+        raise Fail(f"no answer within {timeout:g} s (a first start compiles the GPU kernels; try --timeout 300)", EXIT_TIMEOUT)
+    except (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError, ConnectionRefusedError, FileNotFoundError):
+        raise Fail("the server closed the connection; see: journalctl --user -u llm-server -n 30", 1)
+    finally:
+        conn.close()
+
+
+def maybe_loading_hint(model):
+    if sys.stderr.isatty() and not server_loaded():
+        print(f"llm: loading {model['id']}...", file=sys.stderr, flush=True)
+
+
+def run_preset(name, o):
+    presets = load_presets()
+    preset = presets.get(name)
+    if preset is None:
+        raise Fail(f"no preset '{name}' in presets.toml", 2)
+    rows = catalogue()
+    model = find_model(active_id(rows), rows)
+    if o.model and o.model != model["id"]:
+        raise Fail(f"--model {o.model}: the active model is {model['id']} (llm model {o.model} switches it, no implicit switch)", 2)
+    if name == "fix-layout":
+        return run_fix_layout(o, model, preset)
+    text = read_input(o, name)
+    system = build_system(name, preset, o, text)
+    user = build_user_message(name, text)
+    n_chars = len(text)
+    stream = sys.stdout.isatty() and not o.no_stream and not o.json and not o.dry_run
+    body = request_body(model["id"], system, user, preset, n_chars, stream, o)
+    if o.dry_run:
+        print_dry_run(name, body, n_chars)
+        return 0
+    ensure_available(model)
+    token_ensure()
+    maybe_loading_hint(model)
+    if stream:
+        text_out, timings = post_chat(body, o.timeout, lambda d: (sys.stdout.write(d), sys.stdout.flush()))
+        print()
+        return 0
+    text_out, timings = post_chat(body, o.timeout)
+    emit(text_out, timings, model, preset, o)
+    return 0
+
+
+def emit(text_out, timings, model, preset, o):
+    import json
+    answer = strip_answer(text_out, preset.get("strip", False))
+    if o.json:
+        keys = ("prompt_n", "prompt_ms", "predicted_n", "predicted_ms")
+        print(json.dumps({"text": answer, "model": model["id"], "timings": {k: timings.get(k) for k in keys}}, ensure_ascii=False))
+    else:
+        print(answer)
+
+
+def print_dry_run(name, body, n_chars):
+    """What would be sent; the input text itself is never printed (only its length)."""
+    print(f"preset: {name}")
+    print(f"model: {body['model']}")
+    print(f"system: {body['messages'][0]['content']}")
+    for k in ("temperature", "top_p", "max_tokens", "stream"):
+        print(f"{k}: {body[k]}")
+    print(f"chat_template_kwargs: {body['chat_template_kwargs']}")
+    if "grammar" in body:
+        print(f"grammar: {body['grammar']}")
+    print(f"input: {n_chars} characters (not shown), request message {len(body['messages'][1]['content'])} characters")
+
+
+# ---- fix-layout
+BIGRAMS = {
+    "en": set("th he in er an re on at en nd ti es or te of ed is it al ar st to nt ng se ha as ou io le ve co me de hi ri ro ic "
+              "ne ea ra ce li ch ll be ma si om ur ca el ta la ns ge ly ei di ho ee ec pe ot us".split()),
+    "ru": set("ст но ен то на ов ни ра во ко ре ро ли пр ол ос по ат ор ер ан ет ал ит ти ей ел ва ле ны ть го ог да ед ть пе "
+              "ка де ск ем ве ль мо ни ин ак ов ое ом те ту до ое ие ра ят ие".split()),
+    "uk": set("ст но ен ов на ни ра ко пр ро ол ер ти ат ор ит ан ід ий ал ль по ва ті ну ле ів ом ві ке ми ть ин ка ог го де "
+              "пе ре ля ую св ен ий їх ят іс ія ац ам".split()),
+}
+UK_ONLY, RU_ONLY = set("їєіґ"), set("ыэъё")
+
+
+def load_layout():
+    import importlib.util
+    here = Path(os.path.realpath(__file__)).parent
+    for cand in (here.parent.parent / ".config/layout/layout.py", Path(os.environ.get("HOME", "/")) / ".config/layout/layout.py"):
+        if cand.exists():
+            spec = importlib.util.spec_from_file_location("layout_mod", cand)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod, mod.Layout(mod.load_map())
+    raise Fail("layout.py not found (~/.config/layout/layout.py)", 1)
+
+
+def layout_candidates(text):
+    """[(label, text)]: as typed first, then the same keystrokes as us/ru/ua; identical results appear once."""
+    mod, L = load_layout()
+    out, seen = [], set()
+    for label, src, dst in (("as typed", None, None), ("us->ru", "us", "ru"), ("us->ua", "us", "ua"),
+                            ("ru->us", "ru", "us"), ("ua->us", "ua", "us")):
+        c = text if src is None else mod.convert_text(text, src, dst, L)
+        if c not in seen:
+            seen.add(c)
+            out.append((label, c))
+    return out
+
+
+def bigram_score(text):
+    """Share of the letter pairs inside words that are common in the language of the text's script (0..1)."""
+    words = ["".join(c for c in w if c.isalpha()).lower() for w in text.split()]
+    pairs = [w[i:i + 2] for w in words if len(w) > 1 for i in range(len(w) - 1)]
+    if not pairs:
+        return 0.0
+    sc = script_of(text)
+    if sc == "lat":
+        langs = ("en",)
+    elif sc == "cyr":
+        has_uk, has_ru = any(c in UK_ONLY for c in text.lower()), any(c in RU_ONLY for c in text.lower())
+        langs = ("uk",) if has_uk and not has_ru else ("ru",) if has_ru and not has_uk else ("ru", "uk")
+    else:
+        return 0.0
+    score = max(sum(1 for p in pairs if p in BIGRAMS[l]) / len(pairs) for l in langs)
+    mixed = sum(1 for w in text.split() if any("Ѐ" <= c <= "ӿ" for c in w) and any(c.isascii() and c.isalpha() for c in w))
+    return score - 0.5 * mixed / max(1, len(text.split()))
+
+
+def heuristic_pick(cands):
+    """Index of the most plausible candidate without a model; the text as typed gets a small head start."""
+    best, best_score = 0, -1.0
+    for i, (_, c) in enumerate(cands):
+        s = bigram_score(c) + (0.08 if i == 0 else 0.0)
+        if s > best_score:
+            best, best_score = i, s
+    return best
+
+
+def fix_layout_answer(text, o, model, preset, dry=False):
+    """The chosen candidate text. The model picks an index under a one-digit grammar; without a usable answer (server not
+    available, error, nonsense) the offline guess decides, so a layout-fix hotkey still works without the model."""
+    cands = layout_candidates(text)
+    if len(cands) == 1:
+        return cands[0][1]
+    if o.no_llm:
+        return cands[heuristic_pick(cands)][1]
+    lines = "\n".join(f"{i}: {c}" for i, (_, c) in enumerate(cands))
+    grammar = f"root ::= [0-{len(cands) - 1}]"
+    body = request_body(model["id"], preset["system"], lines, dict(preset, grammar=grammar), len(text), False, o)
+    if dry:
+        print_dry_run("fix-layout", body, len(text))
+        print(f"candidates: {len(cands)} ({', '.join(l for l, _ in cands)})")
+        return None
+    pick = None
+    try:
+        ensure_available(model)
+        token_ensure()
+        maybe_loading_hint(model)
+        ans, _ = post_chat(body, min(o.timeout, 60))
+        ans = ans.strip()
+        if ans.isdigit() and int(ans) < len(cands):
+            pick = int(ans)
+    except Fail as e:
+        err(f"{e}; using the offline guess")
+    if pick is None:
+        pick = heuristic_pick(cands)
+    return cands[pick][1]
+
+
+def run_fix_layout(o, model, preset):
+    text = read_input(o, "fix-layout")
+    out = fix_layout_answer(text, o, model, preset, dry=o.dry_run)
+    if out is not None:
+        print(out)
+    return 0
+
+
+def parse_preset_args(name, argv):
+    import argparse
+    ap = argparse.ArgumentParser(prog=f"llm {name}", add_help=True, description=f"llm {name}: run the preset on TEXT or stdin")
+    ap.add_argument("--to")
+    ap.add_argument("--from", dest="src")
+    ap.add_argument("--model")
+    ap.add_argument("--max-tokens", type=int, dest="max_tokens")
+    ap.add_argument("--temperature", type=float)
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--no-stream", action="store_true")
+    ap.add_argument("--timeout", type=float, default=180)
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--no-llm", action="store_true")
+    ap.add_argument("text", nargs="*")
+    try:
+        return ap.parse_args(argv)
+    except SystemExit as e:
+        raise Fail("", 0 if e.code in (0, None) else 2)
+
+
+def cmd_preset(name, argv):
+    o = parse_preset_args(name, argv)
+    return run_preset(name, o)
+
+
+# --------------------------------------------------------------------------------------------------------------
+# status / start / stop / chat
+def read_sys(path):
+    try:
+        return Path(path).read_text().strip()
+    except OSError:
+        return ""
+
+
+def gtt_used():
+    """Bytes of GTT in use on the first amdgpu card (None without one). GPU memory is not charged to the cgroup."""
+    import glob
+    for p in sorted(glob.glob("/sys/class/drm/card*/device/mem_info_gtt_used")):
+        v = read_sys(p)
+        if v.isdigit():
+            return int(v)
+    return None
+
+
+def pacman_version(pkg):
+    try:
+        p = subprocess.run(["pacman", "-Q", pkg], capture_output=True, text=True, timeout=10)
+        return p.stdout.split()[1] if p.returncode == 0 and len(p.stdout.split()) > 1 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def cached_devices():
+    """`llama-server --list-devices` lines, cached in the state dir; the key is the llama-cpp and ggml-vulkan versions, the
+    kernel and the binary's mtime (a package or kernel upgrade re-probes). (lines, from_cache)"""
+    import json
+    try:
+        mtime = int(os.stat(SERVER_BIN).st_mtime)
+    except OSError:
+        return [], False
+    key = "|".join([pacman_version("llama-cpp"), pacman_version("ggml-vulkan"), os.uname().release, str(mtime)])
+    cache = STATE / "devices.json"
+    try:
+        c = json.loads(cache.read_text())
+        if c.get("key") == key:
+            return c["devices"], True
+    except (OSError, ValueError, KeyError):
+        pass
+    try:
+        p = subprocess.run([SERVER_BIN, "--list-devices"], capture_output=True, text=True, timeout=60)
+        text = p.stdout + p.stderr
+    except (OSError, subprocess.TimeoutExpired):
+        return [], False
+    devs = [l.strip() for l in text.splitlines() if l.strip().startswith(("Vulkan", "CUDA", "ROCm", "CPU", "Metal", "SYCL"))]
+    try:
+        STATE.mkdir(parents=True, exist_ok=True)
+        tmp = cache.with_name("devices.json.tmp")
+        tmp.write_text(json.dumps({"key": key, "devices": devs}))
+        os.replace(tmp, cache)
+    except OSError:
+        pass
+    return devs, False
+
+
+def real_gpu(devs):
+    return [d for d in devs if d.startswith(("Vulkan", "CUDA", "ROCm", "Metal", "SYCL"))
+            and not any(w in d.lower() for w in ("llvmpipe", "lavapipe", "swiftshader", "software"))]
+
+
+def server_state():
+    """(active, since, memory_bytes) of llm-server.service from systemd, no connection to the model socket."""
+    p = systemctl_user("show", "llm-server.service", "-p", "ActiveState", "-p", "ActiveEnterTimestamp", "-p", "MemoryCurrent")
+    kv = dict(l.split("=", 1) for l in p.stdout.splitlines() if "=" in l)
+    mem = kv.get("MemoryCurrent", "")
+    return (kv.get("ActiveState") == "active", kv.get("ActiveEnterTimestamp", ""),
+            int(mem) if mem.isdigit() else None)
+
+
+def cmd_status(args):
+    import json
+    import stat as st
+    as_json = "--json" in args
+    if [a for a in args if a != "--json"]:
+        raise Fail("usage: llm status [--json]", 2)
+    rows = catalogue()
+    model = find_model(active_id(rows), rows)
+    mstate, mdetail = stamp_state(model)
+    installed = os.access(SERVER_BIN, os.X_OK)
+    vulkan_pkg = Path("/usr/lib/ggml/libggml-vulkan.so").exists() or bool(os.environ.get("LLM_SERVER_BIN"))
+    devs, cached = cached_devices() if installed else ([], False)
+    try:
+        sock = st.S_ISSOCK(os.stat(PUBLIC_SOCK).st_mode)
+    except OSError:
+        sock = False
+    loaded, since, mem = server_state()
+    gtt_now = gtt_used()
+    before = read_sys(SERVER_DIR / "gtt-before")
+    gtt_delta = gtt_now - int(before) if loaded and gtt_now is not None and before.isdigit() else None
+    info = {"package": installed, "vulkan_backend": vulkan_pkg, "devices": devs, "gpu": bool(real_gpu(devs)),
+            "model": model["id"], "model_file": model["file"], "model_state": mstate, "socket": sock, "loaded": loaded,
+            "since": since if loaded else "", "memory_current": mem if loaded else None, "gtt_delta": gtt_delta,
+            "idle_timeout": "5min"}
+    if as_json:
+        print(json.dumps(info, ensure_ascii=False))
+        return 0
+    print(f"package:  {'llama-server ' + SERVER_BIN if installed else 'not installed (sudo ~/dotfiles/apply-system.sh --only install)'}")
+    if installed:
+        print(f"backend:  {'ggml-vulkan present' if vulkan_pkg else 'ggml-vulkan MISSING: it would run on the CPU (install it)'}")
+        print(f"device:   {'; '.join(devs) if devs else 'none listed'}{' (cached)' if cached else ''}"
+              f"{'' if real_gpu(devs) or not devs else '  <- no real GPU'}")
+    print(f"model:    {model['id']} ({model['file']}): {mstate}{' - ' + mdetail if mdetail else ''}")
+    print(f"socket:   {PUBLIC_SOCK} {'listening' if sock else 'missing (systemctl --user enable --now llm.socket)'}")
+    if loaded:
+        print(f"server:   loaded since {since}" + (f", memory {human(mem)}" if mem else "")
+              + (f", GPU memory (GTT) +{human(gtt_delta)}" if gtt_delta is not None else ""))
+    else:
+        print("server:   not loaded (starts on the first request, llm start preloads it)")
+    print("idle:     unloads 5 minutes after the last request")
+    return 0
+
+
+def cmd_start(args):
+    rows = catalogue()
+    model = find_model(active_id(rows), rows)
+    ensure_available(model)
+    token_ensure()
+    p = systemctl_user("start", "llm-proxy.service")
+    if p.returncode != 0 or not server_loaded():
+        raise Fail("could not start the server; see: journalctl --user -u llm-server -n 30", 1)
+    print(f"loaded {model['id']} (unloads after 5 idle minutes)")
+    return 0
+
+
+def cmd_stop(args):
+    systemctl_user("stop", "llm-proxy.service", "llm-server.service")
+    if server_loaded():
+        raise Fail("the server is still running", 1)
+    return 0
+
+
+def cmd_chat(args):
+    if args:
+        raise Fail("usage: llm chat", 2)
+    presets = load_presets()
+    rows = catalogue()
+    model = find_model(active_id(rows), rows)
+    ensure_available(model)
+    token_ensure()
+    maybe_loading_hint(model)
+    history = [{"role": "system", "content": presets["ask"]["system"]}]
+    print(f"llm chat: {model['id']} (Ctrl+D quits, /reset clears the history)", file=sys.stderr)
+    tty = sys.stdout.isatty()
+    while True:
+        try:
+            line = input("> " if sys.stdin.isatty() else "")
+        except EOFError:
+            print()
+            return 0
+        if not line.strip():
+            continue
+        if line.strip() == "/reset":
+            history = history[:1]
+            continue
+        history.append({"role": "user", "content": line})
+        body = {"model": model["id"], "messages": history, "temperature": 0.3, "top_p": 0.9, "max_tokens": 800,
+                "stream": tty, "chat_template_kwargs": {"enable_thinking": False}}
+        try:
+            if tty:
+                text, _ = post_chat(body, 180, lambda d: (sys.stdout.write(d), sys.stdout.flush()))
+                print()
+            else:
+                text, _ = post_chat(body, 180)
+                print(strip_answer(text, False))
+        except Fail as e:
+            err(str(e))
+            history.pop()
+            continue
+        history.append({"role": "assistant", "content": strip_answer(text, False)})
+
+
+# --------------------------------------------------------------------------------------------------------------
+# bench
+SPEED_TEXT = ("The quick brown fox jumps over the lazy dog while the engineers review the logs of last night's deployment, "
+              "noting that the database migration finished late, the cache was cold, and two of the workers restarted. ") * 4
+SPEED_PROMPT = "Write a long, detailed essay about the following situation. " + SPEED_TEXT
+
+
+def chrf(hyp, ref, n=6, beta=2.0):
+    """Character n-gram F-score (chrF, beta 2) in percent; whitespace ignored, orders 1..n averaged."""
+    from collections import Counter
+
+    def grams(s, k):
+        s = "".join(s.split())
+        return Counter(s[i:i + k] for i in range(len(s) - k + 1))
+
+    ps, rs = [], []
+    for k in range(1, n + 1):
+        h, r = grams(hyp, k), grams(ref, k)
+        if not h or not r:
+            continue
+        match = sum((h & r).values())
+        ps.append(match / sum(h.values()))
+        rs.append(match / sum(r.values()))
+    if not ps:
+        return 0.0
+    p, r = sum(ps) / len(ps), sum(rs) / len(rs)
+    if p + r == 0:
+        return 0.0
+    return 100.0 * (1 + beta ** 2) * p * r / (beta ** 2 * p + r)
+
+
+def timed_stream(model, prompt, max_tokens, timeout=300):
+    """One streamed request: (time to first token s, total s, text, timings)."""
+    import time
+    body = {"model": model["id"], "messages": [{"role": "user", "content": prompt}], "temperature": 0.0, "top_p": 1.0,
+            "max_tokens": max_tokens, "stream": True, "chat_template_kwargs": {"enable_thinking": False}}
+    t0 = time.monotonic()
+    first = []
+
+    def on_delta(_):
+        if not first:
+            first.append(time.monotonic() - t0)
+
+    text, timings = post_chat(body, timeout, on_delta)
+    total = time.monotonic() - t0
+    return (first[0] if first else total), total, text, timings
+
+
+def median(xs):
+    xs = sorted(xs)
+    return xs[len(xs) // 2] if xs else 0.0
+
+
+def preset_answer(name, text, model, **kw):
+    import types
+    o = types.SimpleNamespace(to=kw.get("to"), src=kw.get("src"), temperature=None, max_tokens=None, timeout=180, no_llm=False,
+                              model=None, json=False, no_stream=True, dry_run=False, text=[])
+    presets = load_presets()
+    preset = presets[name]
+    system = build_system(name, preset, o, text)
+    body = request_body(model["id"], system, build_user_message(name, text), preset, len(text), False, o)
+    out, _ = post_chat(body, 180)
+    return strip_answer(out, preset.get("strip", False))
+
+
+def quality_run(model, rows_out):
+    import re
+    # translation
+    by_dir = {}
+    for line in (CONF / "eval" / "translate.tsv").read_text().splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        d, src_text, ref = line.split("\t")
+        s, t = d.split("-")
+        hyp = preset_answer("translate", src_text, model, src=s, to=t)
+        by_dir.setdefault(d, []).append(chrf(hyp, ref))
+    for d, v in by_dir.items():
+        rows_out.append((f"chrF {d}", f"{sum(v) / len(v):.1f}", f"{len(v)} sentences"))
+    # layout
+    import types
+    o = types.SimpleNamespace(no_llm=False, timeout=60, temperature=None, max_tokens=None)
+    presets = load_presets()
+    good = tot = 0
+    for line in (CONF / "eval" / "layout.tsv").read_text().splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        typed, want = line.split("\t")
+        tot += 1
+        good += fix_layout_answer(typed, o, model, presets["fix-layout"]) == want
+    rows_out.append(("layout exact match", f"{good}/{tot}", ""))
+    # commit messages
+    cdir = CONF / "eval" / "commit"
+    conv = re.compile(r"^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]+\))?!?: .+")
+    ok_fmt = ok_len = ok_area = n = 0
+    for diff in sorted(cdir.glob("*.diff")):
+        n += 1
+        text = diff.read_text()
+        msg = preset_answer("commit-msg", text, model)
+        subject = msg.splitlines()[0] if msg else ""
+        pat = (diff.with_suffix(".expect").read_text().strip() if diff.with_suffix(".expect").exists() else "")
+        ok_fmt += bool(conv.match(subject))
+        ok_len += 0 < len(subject) <= 72
+        ok_area += bool(pat and re.search(pat, msg, re.I))
+    rows_out.append(("commit-msg Conventional Commits", f"{ok_fmt}/{n}", ""))
+    rows_out.append(("commit-msg subject <= 72", f"{ok_len}/{n}", ""))
+    rows_out.append(("commit-msg names the area", f"{ok_area}/{n}", ""))
+
+
+def cmd_bench(args):
+    import time
+    quality = cold = False
+    want = None
+    it = iter(args)
+    for a in it:
+        if a == "--quality":
+            quality = True
+        elif a == "--cold":
+            cold = True
+        elif a == "--model":
+            want = next(it, None)
+        else:
+            raise Fail("usage: llm bench [--model NAME] [--quality] [--cold]", 2)
+    rows = catalogue()
+    model = find_model(active_id(rows), rows)
+    if want and want != model["id"]:
+        raise Fail(f"--model {want}: the active model is {model['id']} (llm model {want} switches it)", 2)
+    ensure_available(model)
+    token_ensure()
+    out = []
+    gtt0 = gtt_used()
+    if cold:
+        for label in ("cold start (first load after stop)", "cold start again (shader cache warm)"):
+            cmd_stop([])
+            time.sleep(1.0)
+            ttft, total, _, _ = timed_stream(model, "Say hello in one short sentence.", 16)
+            out.append((label, f"{ttft:.2f} s", f"first token; total {total:.2f} s"))
+    else:
+        timed_stream(model, "Say hello.", 4)  # make sure it is loaded; not measured
+    runs = [timed_stream(model, SPEED_PROMPT, 128) for _ in range(3)]
+    pp = [r[3].get("prompt_per_second") or 0 for r in runs]
+    tg = [r[3].get("predicted_per_second") or 0 for r in runs]
+    out.append(("prompt processing", f"{median(pp):.0f} t/s", f"{runs[0][3].get('prompt_n', '?')} prompt tokens"))
+    out.append(("generation", f"{median(tg):.1f} t/s", f"{runs[0][3].get('predicted_n', '?')} tokens"))
+    out.append(("time to first token (warm)", f"{median([r[0] for r in runs]):.2f} s", ""))
+    out.append(("128-token answer, wall", f"{median([r[1] for r in runs]):.2f} s", ""))
+    t0 = time.monotonic()
+    preset_answer("translate", "Please send me the report by Friday.", model, to="ru")
+    out.append(("warm one-sentence translate, wall", f"{time.monotonic() - t0:.2f} s", ""))
+    gtt1 = gtt_used()
+    _, _, mem = server_state()
+    out.append(("GPU memory (GTT) before / during", f"{human(gtt0) if gtt0 is not None else 'n/a'} / {human(gtt1) if gtt1 is not None else 'n/a'}",
+                f"delta {human(gtt1 - gtt0)}" if gtt0 is not None and gtt1 is not None and gtt1 >= gtt0 else "model was already loaded"))
+    out.append(("llm-server MemoryCurrent", human(mem) if mem else "n/a", "host RAM (GPU memory is not charged here)"))
+    if quality:
+        quality_run(model, out)
+    if cold:
+        cmd_stop([])
+        time.sleep(2.0)
+        gtt2 = gtt_used()
+        out.append(("GPU memory (GTT) after stop", human(gtt2) if gtt2 is not None else "n/a", ""))
+    print(f"llm bench: {model['id']} ({model['file']})")
+    w = max(len(r[0]) for r in out)
+    for k, v, note in out:
+        print(f"  {k:<{w}}  {v:>12}  {note}")
+    bdir = STATE / "bench"
+    bdir.mkdir(parents=True, exist_ok=True)
+    path = bdir / f"{model['id']}-{time.strftime('%Y-%m-%d')}.tsv"
+    path.write_text("\n".join("\t".join(r) for r in out) + "\n")
+    print(f"written: {path}")
+    return 0
+
+
+# --------------------------------------------------------------------------------------------------------------
+COMMANDS = {"_serve": cmd__serve, "models": cmd_models, "model": cmd_model, "token": cmd_token, "status": cmd_status,
+            "start": cmd_start, "stop": cmd_stop, "chat": cmd_chat, "bench": cmd_bench}
 
 
 def main(argv):
@@ -477,17 +1263,20 @@ def main(argv):
         print(__doc__)
         return 0 if len(argv) > 1 else 2
     cmd = argv[1]
-    fn = COMMANDS.get(cmd)
-    if fn is None:
-        err(f"unknown command or preset '{cmd}' (llm --help)")
-        return 2
     try:
-        return fn(argv[2:]) or 0
+        if cmd in COMMANDS:
+            return COMMANDS[cmd](argv[2:]) or 0
+        if cmd in PRESET_NAMES:
+            return cmd_preset(cmd, argv[2:]) or 0
+        return cmd_preset("ask", argv[1:]) or 0  # no preset named: the arguments are the question
     except Fail as e:
-        err(str(e))
+        if str(e):
+            err(str(e))
         return e.code
     except KeyboardInterrupt:
         return 130
+    except BrokenPipeError:
+        return 0
 
 
 if __name__ == "__main__":

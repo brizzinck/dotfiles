@@ -4,7 +4,7 @@
 # identity and a private HOME + XDG dirs: WAYLAND_DISPLAY, DISPLAY and HYPRLAND_INSTANCE_SIGNATURE are unset and the fakes come first
 # on PATH, so no test can open a window, notify, touch the real ~/.local/state/llm, /run/user/1000/llm or start the real model.
 #   infrastructure/tests/llm/run.sh [--quick] [--keep] [--only=N,M]
-# --quick skips the live systemd part (transient units in the real user manager, section 12); doctor runs --quick.
+# --quick skips the live systemd part (transient units in the real user manager, section 5); doctor runs --quick.
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
@@ -41,6 +41,22 @@ export FAKE_LOG="$T/fake.log"
 : >"$FAKE_LOG"
 cp "$HERE/bin/"* "$T/fakes/"
 export PATH="$T/fakes:$PATH"
+# fake systemctl: logs the call; is-active answers by FAKE_LOADED (1 = the server is loaded); show prints the properties llm status reads
+cat >"$T/fakes/systemctl" <<'EOF'
+#!/usr/bin/env bash
+printf 'systemctl %s\n' "$*" >>"${FAKE_LOG:-/dev/null}"
+case "$*" in
+  *"is-active"*) [ "${FAKE_LOADED:-0}" = 1 ] ;;
+  *" show "*)
+    if [ "${FAKE_LOADED:-0}" = 1 ]; then printf 'ActiveState=active\nActiveEnterTimestamp=Sun 2026-10-18 10:00:00 CEST\nMemoryCurrent=734003200\n'
+    else printf 'ActiveState=inactive\nActiveEnterTimestamp=\nMemoryCurrent=[not set]\n'; fi ;;
+  *) exit 0 ;;
+esac
+EOF
+chmod +x "$T/fakes/systemctl"
+# fake pacman (versions for the device cache key) and fake fzf-menu are created where they are used
+printf '#!/usr/bin/env bash\n[ "$1 $2" = "-Q ggml-vulkan" ] && { echo "ggml-vulkan 0.26.0-1"; exit 0; }\n[ "$1 $2" = "-Q llama-cpp" ] && { echo "llama-cpp 0.6.0-1"; exit 0; }\nexit 1\n' >"$T/fakes/pacman"
+chmod +x "$T/fakes/pacman"
 # the catalogue and the config the tests use: tiny files instead of 1.3 GB models
 export LLM_CATALOG="$T/models.tsv" LLM_CONFIG_DIR="$REPO/.config/llm"
 
@@ -176,15 +192,6 @@ sec_model() {
   run models list
   check "list marks the new active model" $(has "$OUT" "* tm-alt" && echo 0 || echo 1)
   # a loaded server is restarted (fake systemctl says active), an idle one is not
-  cat >"$T/fakes/systemctl" <<'EOF'
-#!/usr/bin/env bash
-printf 'systemctl %s\n' "$*" >>"${FAKE_LOG:-/dev/null}"
-case "$*" in
-  *"is-active"*) [ "${FAKE_LOADED:-0}" = 1 ] ;;
-  *) exit 0 ;;
-esac
-EOF
-  chmod +x "$T/fakes/systemctl"
   : >"$FAKE_LOG"
   run model tm-default
   check "idle server: no restart" $(! grep -q 'systemctl --user stop' "$FAKE_LOG" && ! has "$OUT" restarted && echo 0 || echo 1) "$(cat "$FAKE_LOG")"
@@ -354,13 +361,307 @@ sec_live() {
   check "cleanup removed the test units" $([ ! -e "$ud/llmtest.socket" ] && [ "$(sc is-active llmtest.socket 2>/dev/null)" != active ] && echo 0 || echo 1)
 }
 
+# ---- client sections: a fake llama-server on the public socket
+FAKE_PID=""
+fake_up() { # fake_up [token-file]
+  fake_down
+  mkdir -p "$XDG_RUNTIME_DIR/llm"; chmod 700 "$XDG_RUNTIME_DIR/llm"
+  : >"$T/req.log"; : >"$T/conns.log"
+  FAKE_LLM_CONNS="$T/conns.log" python3 -I "$HERE/fake_server.py" --host "$XDG_RUNTIME_DIR/llm/llm.sock" --api-key-file "${1:-$ST/token}" \
+    --log "$T/req.log" --ctl "$T/ctl.json" >/dev/null 2>&1 &
+  FAKE_PID=$!
+  for _ in $(seq 50); do [ -S "$XDG_RUNTIME_DIR/llm/llm.sock" ] && break; sleep 0.1; done
+}
+fake_down() {
+  [ -n "$FAKE_PID" ] && { kill "$FAKE_PID" 2>/dev/null; wait "$FAKE_PID" 2>/dev/null; }
+  FAKE_PID=""
+  rm -f "$XDG_RUNTIME_DIR/llm/llm.sock"
+}
+ctl() { if [ -n "$1" ]; then printf '%s' "$1" >"$T/ctl.json"; else rm -f "$T/ctl.json"; fi; }
+req() { tail -1 "$T/req.log" | jq -r "$1"; }   # a field of the last request body
+nreq() { wc -l <"$T/req.log" | tr -d ' '; }
+client_setup() {
+  export FAKE_CURL_SRC="$T/src-default.bin"; run models fetch tm-default; unset FAKE_CURL_SRC
+  rm -f "$ST/model"; run token ensure
+  export LLM_SERVER_BIN="$HERE/fake_server.py"
+  ctl ''
+  fake_up
+}
+client_teardown() { fake_down; unset LLM_SERVER_BIN; ctl ''; }
+
+sec_presets() {
+  echo "-- 6 presets: request bodies, input, output"
+  client_setup
+  run ask "what is 2+2"
+  check "ask: answer on stdout, nothing else" $([ $RC = 0 ] && [ "$OUT" = "fake reply" ] && echo 0 || echo 1) "$RC $OUT $ERR"
+  check "ask body: model, system, temperature 0.3, top_p 0.9, max_tokens 800, no stream, enable_thinking false" $([ "$(req .model)" = tm-default ] && [[ "$(req '.messages[0].content')" == *"helpful assistant"* ]] && [ "$(req .temperature)" = 0.3 ] && [ "$(req .top_p)" = 0.9 ] && [ "$(req .max_tokens)" = 800 ] && [ "$(req .stream)" = false ] && [ "$(req .chat_template_kwargs.enable_thinking)" = false ] && echo 0 || echo 1) "$(tail -1 "$T/req.log")"
+  check "ask body: user message is the text, no grammar" $([ "$(req '.messages[1].content')" = "what is 2+2" ] && [ "$(req 'has("grammar")')" = false ] && echo 0 || echo 1)
+  run "plain question without a preset"
+  check "no preset named = ask with the arguments" $([ $RC = 0 ] && [ "$(req '.messages[1].content')" = "plain question without a preset" ] && [[ "$(req '.messages[0].content')" == *"helpful assistant"* ]] && echo 0 || echo 1) "$RC $ERR"
+  runin "from stdin" ask
+  check "text from stdin (one trailing newline dropped)" $([ "$(req '.messages[1].content')" = "from stdin" ] && echo 0 || echo 1) "$(req '.messages[1].content')"
+  runin "ignored stdin" ask "args win"
+  check "arguments win over stdin" $([ "$(req '.messages[1].content')" = "args win" ] && echo 0 || echo 1)
+  run translate "Привет, мир"
+  check "translate: Cyrillic text goes to English (system names the languages, temperature 0.2)" $([[ "$(req '.messages[0].content')" == *"into English"* ]] && [[ "$(req '.messages[0].content')" == *"detect it"* ]] && [ "$(req .temperature)" = 0.2 ] && echo 0 || echo 1) "$(req '.messages[0].content')"
+  run translate "Hello, world"
+  check "translate: Latin text goes to Russian" $([[ "$(req '.messages[0].content')" == *"into Russian"* ]] && echo 0 || echo 1)
+  run translate --to uk --from en "Hello"
+  check "translate --to uk --from en names both" $([[ "$(req '.messages[0].content')" == *"from English into Ukrainian"* ]] && echo 0 || echo 1) "$(req '.messages[0].content')"
+  check "translate max_tokens = 2*len//3+64 (5 chars -> 67)" $([ "$(req .max_tokens)" = 67 ] && echo 0 || echo 1) "$(req .max_tokens)"
+  long=$(head -c 6000 /dev/zero | tr '\0' 'a')
+  run translate "$long"
+  check "translate max_tokens is capped at 2048 (6000 chars)" $([ "$(req .max_tokens)" = 2048 ] && echo 0 || echo 1) "$(req .max_tokens)"
+  run translate --to de "x"
+  check "translate: unknown language = exit 2" $([ $RC = 2 ] && echo 0 || echo 1)
+  run fix --to en "x"
+  check "--to with another preset = exit 2" $([ $RC = 2 ] && echo 0 || echo 1)
+  run shorten "twelve chars"
+  check "shorten: max_tokens = len//4+64 and temperature 0.3" $([ "$(req .max_tokens)" = 67 ] && [ "$(req .temperature)" = 0.3 ] && echo 0 || echo 1) "$(req .max_tokens)"
+  run explain "x"; ex_ok=$([ "$(req .max_tokens)" = 600 ] && echo 0 || echo 1)
+  run fix "x"; fx_ok=$([ "$(req .temperature)" = 0.1 ] && [[ "$(req '.messages[0].content')" == *"Fix punctuation"* ]] && echo 0 || echo 1)
+  run rewrite "x"; rw_ok=$([ "$(req .temperature)" = 0.5 ] && echo 0 || echo 1)
+  check "explain 600 tokens, fix temperature 0.1, rewrite temperature 0.5" $([ "$ex_ok$fx_ok$rw_ok" = 000 ] && echo 0 || echo 1)
+  run ask --max-tokens 33 --temperature 0.9 "x"
+  check "--max-tokens and --temperature override the preset" $([ "$(req .max_tokens)" = 33 ] && [ "$(req .temperature)" = 0.9 ] && echo 0 || echo 1)
+  run ask --model tm-default "x"
+  check "--model with the active model is fine" $([ $RC = 0 ] && echo 0 || echo 1)
+  run ask --model qwen3.5-4b "x"
+  check "--model with another model = exit 2, no implicit switch" $([ $RC = 2 ] && has "$ERR" "llm model" && echo 0 || echo 1) "$ERR"
+  n0=$(nreq); run ask --model nope "x"
+  check "no request was sent for the refused model" $([ "$(nreq)" = "$n0" ] && echo 0 || echo 1)
+
+  run ask --json "x"
+  check "--json: text, model, timings" $([ "$(jq -r .text <<<"$OUT")" = "fake reply" ] && [ "$(jq -r .model <<<"$OUT")" = tm-default ] && [ "$(jq -r .timings.prompt_n <<<"$OUT")" = 12 ] && jq -e '.timings.predicted_ms == 40' <<<"$OUT" >/dev/null && echo 0 || echo 1) "$OUT"
+  ctl '{"fence": true, "reply": "Привет, мир"}'
+  run translate "Hello world"
+  check "translate: a wrapping code fence is stripped" $([ "$OUT" = "Привет, мир" ] && echo 0 || echo 1) "$OUT"
+  run ask "x"
+  check "ask: the fence is kept (not pasted verbatim anywhere)" $([[ "$OUT" == '```'* ]] && echo 0 || echo 1) "$OUT"
+  ctl '{"reply": "\"Привіт, світе\""}'
+  run translate --to uk "Hello world"
+  check "translate: one pair of wrapping quotes is stripped" $([ "$OUT" = "Привіт, світе" ] && echo 0 || echo 1) "$OUT"
+  ctl '{"reply": "He said \"hi\" and \"bye\""}'
+  run fix "x"
+  check "fix: inner quotes are kept (only a wrapping pair goes)" $([ "$OUT" = 'He said "hi" and "bye"' ] && echo 0 || echo 1) "$OUT"
+  ctl '{"reply": "  spaced  \n"}'
+  run fix "x"
+  check "fix: surrounding whitespace is stripped" $([ "$OUT" = "spaced" ] && echo 0 || echo 1) "[$OUT]"
+  ctl '{"reply": "<think>reasoning</think>The answer", "reasoning": "hidden thoughts"}'
+  run ask "x"
+  check "reasoning_content and <think> blocks never reach stdout" $([ "$OUT" = "The answer" ] && echo 0 || echo 1) "$OUT"
+  ctl ''
+  # input limit
+  big=$(head -c 12001 /dev/zero | tr '\0' 'a')
+  run ask "$big"
+  check "12001 characters = exit 2 text too long" $([ $RC = 2 ] && has "$ERR" "too long" && echo 0 || echo 1) "$ERR"
+  ok12=$(head -c 12000 /dev/zero | tr '\0' 'a')
+  run ask "$ok12"
+  check "12000 characters are accepted" $([ $RC = 0 ] && echo 0 || echo 1)
+  run ask
+  check "no text at all = exit 2" $([ $RC = 2 ] && echo 0 || echo 1) "$ERR"
+  run ask --bogus x
+  check "unknown option = exit 2" $([ $RC = 2 ] && echo 0 || echo 1)
+  OUT=$("$LLM" 2>/dev/null); RC=$?
+  check "llm with no arguments = exit 2" $([ $RC = 2 ] && echo 0 || echo 1)
+  run --help
+  check "--help prints the reference, exit 0" $([ $RC = 0 ] && has "$OUT" "fix-layout" && has "$OUT" "llm bench" && echo 0 || echo 1)
+  # streaming only on a terminal
+  n0=$(nreq)
+  script -qec "$LLM ask hi" /dev/null >"$T/pty.out" 2>&1
+  check "on a terminal the request streams and the answer is printed" $([ "$(nreq)" = $((n0 + 1)) ] && [ "$(req .stream)" = true ] && grep -q 'fake reply' "$T/pty.out" && echo 0 || echo 1) "$(cat "$T/pty.out")"
+  run ask --no-stream "x"; check "--no-stream and a pipe: not streamed" $([ "$(req .stream)" = false ] && echo 0 || echo 1)
+  script -qec "$LLM ask --no-stream hi" /dev/null >"$T/pty.out" 2>&1
+  check "--no-stream on a terminal: not streamed" $([ "$(req .stream)" = false ] && echo 0 || echo 1)
+  script -qec "$LLM ask --json hi" /dev/null >"$T/pty.out" 2>&1
+  check "--json on a terminal: not streamed" $([ "$(req .stream)" = false ] && echo 0 || echo 1)
+  client_teardown
+}
+
+sec_commit() {
+  echo "-- 7 commit-msg in a temp git repo"
+  client_setup
+  export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
+  local r="$T/repo"; mkdir -p "$r"; git -C "$r" init -q; printf 'one\n' >"$r/a.txt"; git -C "$r" add a.txt; git -C "$r" commit -qm init
+  printf 'one\ntwo\n' >"$r/a.txt"; printf 'new file\n' >"$r/b.txt"; git -C "$r" add a.txt b.txt
+  OUT=$(cd "$r" && "$LLM" commit-msg 2>"$T/err" </dev/null); RC=$?; ERR=$(cat "$T/err")
+  check "commit-msg works in a repo with staged changes" $([ $RC = 0 ] && [ "$OUT" = "fake reply" ] && echo 0 || echo 1) "$RC $OUT $ERR"
+  u=$(req '.messages[1].content')
+  check "user message = diffstat first, then the staged diff" $([[ "$u" == "Staged changes:"* ]] && [[ "$u" == *" a.txt | +1 -0"* ]] && [[ "$u" == *" b.txt | +1 -0"* ]] && [[ "$u" == *"2 files changed"* ]] && [[ "$u" == *"diff --git a/a.txt b/a.txt"* ]] && [[ "$u" == *"+two"* ]] && echo 0 || echo 1) "$u"
+  check "commit-msg body: Conventional Commits system prompt, max_tokens 200, temperature 0.2" $([[ "$(req '.messages[0].content')" == *"Conventional Commits"* ]] && [ "$(req .max_tokens)" = 200 ] && [ "$(req .temperature)" = 0.2 ] && echo 0 || echo 1)
+  OUT=$(cd "$r" && printf 'unstaged\n' >>a.txt && git reset -q && "$LLM" commit-msg 2>"$T/err" </dev/null); RC=$?; ERR=$(cat "$T/err")
+  check "nothing staged = exit 2 with the hint" $([ $RC = 2 ] && has "$ERR" "nothing staged" && echo 0 || echo 1) "$RC $ERR"
+  OUT=$(cd "$T" && "$LLM" commit-msg 2>"$T/err" </dev/null); RC=$?; ERR=$(cat "$T/err")
+  check "outside a repo = exit 2" $([ $RC = 2 ] && has "$ERR" "git" && echo 0 || echo 1) "$ERR"
+  # a diff on stdin replaces the staged one
+  d=$(cat "$REPO/.config/llm/eval/commit/001.diff")
+  OUT=$(cd "$r" && "$LLM" commit-msg 2>"$T/err" <<<"$d"); RC=$?
+  u=$(req '.messages[1].content')
+  check "a diff on stdin is used instead of git (stat computed from it)" $([ $RC = 0 ] && [[ "$u" == *" internal/auth/token.go | +4 -1"* ]] && echo 0 || echo 1) "$u"
+  # truncation
+  head -c 30000 /dev/urandom | base64 -w 80 >"$r/big.txt"; git -C "$r" add big.txt
+  OUT=$(cd "$r" && "$LLM" commit-msg 2>"$T/err" </dev/null); RC=$?
+  u=$(req '.messages[1].content')
+  check "a big diff is cut at 12000 characters with the [diff truncated] marker" $([ $RC = 0 ] && [[ "$u" == *"[diff truncated]" ]] && [ ${#u} -lt 12600 ] && [[ "$u" == *" big.txt | +"* ]] && echo 0 || echo 1) "${#u}"
+  ctl '{"fence": true, "reply": "feat(core): add b"}'
+  OUT=$(cd "$r" && "$LLM" commit-msg 2>"$T/err" </dev/null)
+  check "commit-msg: a wrapping code fence is stripped" $([ "$OUT" = "feat(core): add b" ] && echo 0 || echo 1) "$OUT"
+  unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+  client_teardown
+}
+
+sec_layout() {
+  echo "-- 8 fix-layout"
+  client_setup
+  ctl '{"pick": "1"}'
+  run fix-layout ghbdtn
+  check "ghbdtn -> the model picked candidate 1 (привет)" $([ $RC = 0 ] && [ "$OUT" = "привет" ] && echo 0 || echo 1) "$OUT $ERR"
+  check "request: grammar root ::= [0-1] (two distinct candidates), max_tokens 1, temperature 0" $([ "$(req .grammar)" = 'root ::= [0-1]' ] && [ "$(req .max_tokens)" = 1 ] && [ "$(req '.temperature == 0')" = true ] && echo 0 || echo 1) "$(tail -1 "$T/req.log")"
+  check "request: the candidates are listed by index" $([ "$(req '.messages[1].content')" = $'0: ghbdtn\n1: привет' ] && echo 0 || echo 1) "$(req '.messages[1].content')"
+  ctl '{"pick": "2"}'
+  run fix-layout ghbdsn
+  check "ghbdsn (ua): three candidates, the model picks привіт" $([ "$OUT" = "привіт" ] && [ "$(req .grammar)" = 'root ::= [0-2]' ] && echo 0 || echo 1) "$OUT $(req .grammar)"
+  check "ghbdsn candidates: as typed, us->ru (привыт), us->ua (привіт)" $([ "$(req '.messages[1].content')" = $'0: ghbdsn\n1: привыт\n2: привіт' ] && echo 0 || echo 1) "$(req '.messages[1].content')"
+  ctl '{"pick": "1"}'
+  run fix-layout "руддщ"
+  check "руддщ -> hello" $([ "$OUT" = "hello" ] && echo 0 || echo 1) "$OUT"
+  ctl '{"pick": "0"}'
+  run fix-layout "hello world"
+  check "English is kept as typed when the model says 0" $([ "$OUT" = "hello world" ] && echo 0 || echo 1) "$OUT"
+  runin "ghbdtn" fix-layout
+  check "text on stdin works" $([ "$(req '.messages[1].content')" = $'0: ghbdtn\n1: привет' ] && echo 0 || echo 1)
+  run fix-layout "1234 !!!"
+  check "text without letters has one candidate: printed as is, the model is not asked" $([ "$OUT" = "1234 !!!" ] && echo 0 || echo 1) "$OUT"
+  n0=$(nreq); run fix-layout --no-llm ghbdtn
+  check "--no-llm: heuristic pick, no request" $([ "$OUT" = "привет" ] && [ "$(nreq)" = "$n0" ] && echo 0 || echo 1) "$OUT"
+  # the heuristic over the whole eval set
+  good=0 tot=0 miss=""
+  while IFS=$'\t' read -r typed want; do
+    case $typed in ''|'#'*) continue ;; esac
+    tot=$((tot + 1)); got=$("$LLM" fix-layout --no-llm "$typed" 2>/dev/null </dev/null)
+    if [ "$got" = "$want" ]; then good=$((good + 1)); else miss="$miss [$typed -> $got]"; fi
+  done <"$REPO/.config/llm/eval/layout.tsv"
+  check "the offline guess gets every row of eval/layout.tsv ($good/$tot)" $([ "$good" = "$tot" ] && echo 0 || echo 1) "$miss"
+  # the model cannot answer: nonsense, error, no server -> offline guess, exit 0
+  ctl '{"pick": "9"}'
+  run fix-layout ghbdtn
+  check "a nonsense answer falls back to the offline guess" $([ $RC = 0 ] && [ "$OUT" = "привет" ] && echo 0 || echo 1) "$OUT"
+  ctl '{"status": 503}'
+  run fix-layout ghbdtn
+  check "a server error falls back to the offline guess (stderr says so)" $([ $RC = 0 ] && [ "$OUT" = "привет" ] && has "$ERR" "offline guess" && echo 0 || echo 1) "$OUT $ERR"
+  ctl ''; fake_down
+  run fix-layout ghbdtn
+  check "no socket: offline guess, exit 0" $([ $RC = 0 ] && [ "$OUT" = "привет" ] && echo 0 || echo 1) "$RC $OUT $ERR"
+  run fix-layout --dry-run ghbdtn
+  check "fix-layout --dry-run lists the candidates and the grammar, not the text" $([ $RC = 0 ] && has "$OUT" 'root ::= [0-1]' && has "$OUT" "candidates: 2" && echo 0 || echo 1) "$OUT"
+  client_teardown
+}
+
+sec_errors() {
+  echo "-- 9 errors and exit codes"
+  client_setup
+  LLM_SERVER_BIN="$T/nope" run ask "x"
+  check "no llama-server = exit 3 with the install command" $([ $RC = 3 ] && has "$ERR" "apply-system.sh --only install" && echo 0 || echo 1) "$RC $ERR"
+  printf 'tm-tiny\n' >"$ST/model"
+  run ask "x"
+  check "model not fetched = exit 3 with the fetch command" $([ $RC = 3 ] && has "$ERR" "llm models fetch tm-tiny" && echo 0 || echo 1) "$RC $ERR"
+  rm -f "$ST/model"
+  fake_down
+  run ask "x"
+  check "no socket = exit 3 with the enable command" $([ $RC = 3 ] && has "$ERR" "systemctl --user enable --now llm.socket" && echo 0 || echo 1) "$RC $ERR"
+  printf 'other-token\n' >"$T/other-token"
+  fake_up "$T/other-token"
+  run ask "x"
+  check "a refused token = exit 1 mentioning the token" $([ $RC = 1 ] && has "$ERR" "token" && echo 0 || echo 1) "$RC $ERR"
+  fake_up
+  ctl '{"status": 503}'
+  run ask "x"
+  check "server 503 = exit 1 with the message" $([ $RC = 1 ] && has "$ERR" "server error 503" && has "$ERR" "overloaded" && echo 0 || echo 1) "$RC $ERR"
+  ctl '{"sleep": 3}'
+  t0=$(date +%s)
+  run ask --timeout 1 "x"
+  check "no answer within --timeout = exit 4" $([ $RC = 4 ] && [ $(( $(date +%s) - t0 )) -lt 3 ] && echo 0 || echo 1) "$RC $ERR"
+  ctl '{"close": true}'
+  run ask "x"
+  check "the connection closed early = exit 1 with the journal hint" $([ $RC = 1 ] && has "$ERR" "journalctl --user -u llm-server" && echo 0 || echo 1) "$RC $ERR"
+  ctl ''
+  fake_down
+  run ask --dry-run "SECRET-SENTINEL-4711 text"
+  check "--dry-run needs no server and exits 0" $([ $RC = 0 ] && has "$OUT" "preset: ask" && echo 0 || echo 1) "$RC $ERR"
+  check "--dry-run never prints the input text (only its length)" $(! has "$OUT" "SECRET-SENTINEL" && ! has "$ERR" "SECRET-SENTINEL" && has "$OUT" "input: 25 characters" && echo 0 || echo 1) "$OUT"
+  runin "STDIN-SENTINEL-4711" translate --dry-run
+  check "--dry-run with stdin: text not printed either" $(! has "$OUT" "STDIN-SENTINEL" && echo 0 || echo 1)
+  run translate --dry-run --to uk "SECRET-SENTINEL-4711"
+  check "--dry-run translate prints the system prompt with the languages and max_tokens" $(has "$OUT" "into Ukrainian" && has "$OUT" "max_tokens: 77" && ! has "$OUT" "SECRET-SENTINEL" && echo 0 || echo 1) "$OUT"
+  client_teardown
+}
+
+sec_status() {
+  echo "-- 10 status, start, stop"
+  client_setup
+  : >"$T/conns.log"
+  run status
+  check "status prints package, device, model, socket, server lines" $([ $RC = 0 ] && has "$OUT" "package:" && has "$OUT" "Vulkan0: AMD Radeon 860M" && has "$OUT" "model:    tm-default" && has "$OUT" "listening" && has "$OUT" "not loaded" && echo 0 || echo 1) "$OUT"
+  check "status never connects to the model socket" $([ ! -s "$T/conns.log" ] && echo 0 || echo 1) "$(cat "$T/conns.log")"
+  check "status caches the device list" $([ -f "$ST/devices.json" ] && echo 0 || echo 1)
+  run status
+  check "second status reads the cache" $(has "$OUT" "(cached)" && echo 0 || echo 1)
+  FAKE_LOADED=1 run status
+  check "loaded: since and memory" $(has "$OUT" "loaded since Sun 2026-10-18" && has "$OUT" "memory 734.0 MB" && echo 0 || echo 1) "$OUT"
+  run status --json
+  check "status --json is valid JSON with the fields" $([ "$(jq -r .model <<<"$OUT")" = tm-default ] && [ "$(jq -r .socket <<<"$OUT")" = true ] && [ "$(jq -r .loaded <<<"$OUT")" = false ] && [ "$(jq -r .gpu <<<"$OUT")" = true ] && echo 0 || echo 1) "$OUT"
+  LLM_SERVER_BIN="$T/nope" run status
+  check "status without the package says how to install it (exit 0)" $([ $RC = 0 ] && has "$OUT" "not installed" && echo 0 || echo 1) "$OUT"
+  : >"$FAKE_LOG"
+  FAKE_LOADED=1 run start
+  check "start: systemctl start llm-proxy.service, reports the model" $([ $RC = 0 ] && grep -q 'systemctl --user start llm-proxy.service' "$FAKE_LOG" && has "$OUT" "loaded tm-default" && echo 0 || echo 1) "$RC $OUT $ERR"
+  run start
+  check "start that does not end up loaded = exit 1 with the journal hint" $([ $RC = 1 ] && has "$ERR" "journalctl" && echo 0 || echo 1) "$ERR"
+  : >"$FAKE_LOG"
+  run stop
+  check "stop: stops proxy and server, exit 0" $([ $RC = 0 ] && grep -q 'systemctl --user stop llm-proxy.service llm-server.service' "$FAKE_LOG" && echo 0 || echo 1)
+  FAKE_LOADED=1 run stop
+  check "stop that leaves it running = exit 1" $([ $RC = 1 ] && echo 0 || echo 1)
+  client_teardown
+}
+
+sec_bench() {
+  echo "-- 11 bench and chrF"
+  out=$(PYTHONPYCACHEPREFIX="$T/pycache" python3 -I - "$LLM" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("llmmod", sys.argv[1])
+spec = importlib.util.spec_from_loader("llmmod", loader)
+m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+print("same", round(m.chrf("Привет, мир", "Привет, мир")))
+print("diff", m.chrf("совсем другое", "Привет, мир") < 40)
+print("close", 40 < m.chrf("Привет мир", "Привет, мир") < 100)
+print("empty", m.chrf("", "abc"))
+print("ws", round(m.chrf("a b c", "abc")))
+PY
+)
+  check "chrF: identical = 100, unrelated < 40, close in between, empty = 0, whitespace ignored" $([ "$out" = $'same 100\ndiff True\nclose True\nempty 0.0\nws 100' ] && echo 0 || echo 1) "$out"
+  client_setup
+  run bench
+  check "bench: speed rows from the server timings" $([ $RC = 0 ] && has "$OUT" "prompt processing" && has "$OUT" "600 t/s" && has "$OUT" "generation" && has "$OUT" "40.0 t/s" && has "$OUT" "time to first token" && has "$OUT" "warm one-sentence translate" && echo 0 || echo 1) "$RC $OUT $ERR"
+  check "bench writes a tsv under the state dir" $(ls "$ST/bench/tm-default-"*.tsv >/dev/null 2>&1 && echo 0 || echo 1)
+  run bench --model nope
+  check "bench --model for a non-active model = exit 2" $([ $RC = 2 ] && echo 0 || echo 1)
+  run bench --quality
+  check "bench --quality: chrF per direction, layout match, commit-msg checks" $([ $RC = 0 ] && has "$OUT" "chrF ru-en" && has "$OUT" "chrF uk-en" && has "$OUT" "chrF en-ru" && has "$OUT" "chrF en-uk" && has "$OUT" "chrF ru-uk" && has "$OUT" "layout exact match" && has "$OUT" "commit-msg Conventional Commits" && has "$OUT" "commit-msg subject" && has "$OUT" "names the area" && echo 0 || echo 1) "$RC $OUT $ERR"
+  run bench --cold
+  check "bench --cold: two cold starts and the GPU memory after stop" $([ $RC = 0 ] && has "$OUT" "cold start (first load" && has "$OUT" "cold start again" && has "$OUT" "after stop" && echo 0 || echo 1) "$RC $OUT $ERR"
+  run bench --bogus
+  check "bench usage error = exit 2" $([ $RC = 2 ] && echo 0 || echo 1)
+  client_teardown
+}
+
 # ----------------------------------------------------------------------------------------------------------------------------
-SECTIONS=(models:sec_models model:sec_model serve:sec_serve units:sec_units live:sec_live)
-n=0
-for s in "${SECTIONS[@]}"; do
-  n=$((n + 1))
-  want_section "$n" || continue
-  "${s#*:}"
+SECTIONS=(models:sec_models model:sec_model serve:sec_serve units:sec_units live:sec_live presets:sec_presets commit:sec_commit layout:sec_layout errors:sec_errors status:sec_status bench:sec_bench)
+secno=0
+for sec in "${SECTIONS[@]}"; do
+  secno=$((secno + 1))
+  want_section "$secno" || continue
+  "${sec#*:}"
 done
 echo "llm tests: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ] && [ "$PASS" -gt 0 ]

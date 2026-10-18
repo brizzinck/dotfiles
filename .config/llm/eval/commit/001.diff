@@ -1,0 +1,18 @@
+diff --git a/internal/auth/token.go b/internal/auth/token.go
+index 3c1a2b4..9d8e7f1 100644
+--- a/internal/auth/token.go
++++ b/internal/auth/token.go
+@@ -21,7 +21,11 @@ func Verify(tok string, key []byte) (*Claims, error) {
+ 	claims := &Claims{}
+ 	parsed, err := jwt.ParseWithClaims(tok, claims, func(t *jwt.Token) (any, error) {
+ 		return key, nil
+ 	})
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	return claims, nil
++	if !parsed.Valid || claims.ExpiresAt.Before(time.Now()) {
++		return nil, ErrTokenExpired
++	}
++	return claims, nil
+ }

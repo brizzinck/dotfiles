@@ -1,0 +1,16 @@
+diff --git a/README.md b/README.md
+index 1111111..2222222 100644
+--- a/README.md
++++ b/README.md
+@@ -1,5 +1,12 @@
+ # Pocket Notes
+ 
+ A tiny notes app.
++
++## Install
++
++    pip install pocket-notes
++
++## Usage
++
++Run `pocket-notes add "buy milk"` to add a note and `pocket-notes list` to show them.
