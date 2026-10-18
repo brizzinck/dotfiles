@@ -6,9 +6,12 @@
 #   ai-usage.sh report daily     float.tui report (ccusage daily), also `blocks`
 #   ai-usage.sh --record-claude  read the Claude Code statusline JSON on stdin and cache rate_limits (see below)
 #
-# Sources (all local, no network, nothing spends tokens):
-#   Codex   ~/.codex/codex-hud/account-usage.json (codex-hud cache, `codex.rate_limits` SSE event) and
-#           ~/.codex/codex-hud/account-usage/*.json; the freshest observation wins. Windows are told apart by
+# Sources (nothing spends tokens; the only network request is the Codex limits read below):
+#   Codex   ~/.codex/codex-hud/account-usage.json (codex-hud cache, `codex.rate_limits` SSE event),
+#           ~/.codex/codex-hud/account-usage/*.json and ~/.cache/ai-usage/codex.json; the freshest observation wins. The
+#           codex-hud files only change while Codex runs, so a reset (window or reset credit) stayed invisible until the next
+#           Codex session: codex-limits.py asks `codex app-server` (`account/rateLimits/read`, what /status shows, no tokens)
+#           in the background, at most every 15 minutes, only while Codex is logged in (~/.codex/auth.json). Windows are told apart by
 #           window_minutes (300 = 5h, 10080 = weekly), not by primary/secondary: the prolite plan reports only the weekly
 #           window as "primary", so its 5h shows "–". A window whose reset time has passed counts as 0.
 #   Claude  Claude Code hands `rate_limits` {five_hour,seven_day:{used_percentage,resets_at}} only to its statusline command
@@ -23,6 +26,8 @@ CODEX_JSON="$HOME/.codex/codex-hud/account-usage.json"
 CODEX_DIR="$HOME/.codex/codex-hud/account-usage"
 CLAUDE_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/ai-usage/claude.json"
 CLAUDE_RAW="${XDG_CACHE_HOME:-$HOME/.cache}/ai-usage/statusline.json"
+CODEX_LIVE="${XDG_CACHE_HOME:-$HOME/.cache}/ai-usage/codex.json"
+CODEX_LIVE_MAX=900
 RUN="${XDG_RUNTIME_DIR:-/tmp}/ai-usage"
 CCU_CACHE="$RUN/ccusage-today.json"
 G_AI='󰚩'
@@ -53,7 +58,19 @@ wname() { case $1 in 300) echo "5h" ;; 10080) echo "weekly" ;; 1440) echo "daily
 
 # ── Codex: 5h and weekly windows (by window_minutes), plan ─────────────────────
 # The freshest observation wins. A plan can report only one window (prolite: just the weekly one), the other stays empty.
-cx_plan="" cx_5="" cx_5r="" cx_7="" cx_7r="" cx_t=0
+cx_plan="" cx_5="" cx_5r="" cx_7="" cx_7r="" cx_t=0 cx_credits=""
+if command -v codex >/dev/null 2>&1 && [[ -r $HOME/.codex/auth.json ]]; then
+  mkdir -p "$RUN" "$(dirname "$CODEX_LIVE")"
+  if [[ ! -s $CODEX_LIVE ]] || (($(date +%s) - $(stat -c %Y "$CODEX_LIVE") > CODEX_LIVE_MAX)); then
+    # refresh in the background (about 1 s); the next poll sees it. A failed read leaves the old file, so touch the lock
+    # file's time as the "last try" and retry only after CODEX_LIVE_MAX as well.
+    if [[ ! -e $RUN/codex-live.try ]] || (($(date +%s) - $(stat -c %Y "$RUN/codex-live.try") > CODEX_LIVE_MAX)); then
+      touch "$RUN/codex-live.try"
+      (flock -n 9 || exit 0; timeout 30 "$(dirname "$0")/codex-limits.py" "$CODEX_LIVE") 9>"$RUN/codex-live.lock" >/dev/null 2>&1 &
+      disown 2>/dev/null || true
+    fi
+  fi
+fi
 CX_JQ='def win: select(. != null) | {p: .used_percent, w: .window_minutes, r: (.resets_at | if type == "string" then (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601? // 0) else (. // 0) end)};'
 cx_cands() {
   [[ -r $CODEX_JSON ]] && jq -c "$CX_JQ"'
@@ -65,11 +82,12 @@ cx_cands() {
     [[ -r $f ]] || continue
     jq -c "$CX_JQ"'select(.limits != null) | {t: ((.observedAt // 0) / 1000 | floor), plan: (.limits.plan_type // ""), wins: [.limits.primary, .limits.secondary | win]}' "$f" 2>/dev/null
   done
+  [[ -r $CODEX_LIVE ]] && jq -c 'select(.windows != null) | {t: (.observed // 0), plan: (.plan // ""), wins: [.windows[] | {p, w, r}], credits: .reset_credits}' "$CODEX_LIVE" 2>/dev/null
 }
 rec=$(cx_cands | jq -sc 'map(select(. != null and (.wins | length) > 0)) | if length == 0 then empty else max_by(.t) end' 2>/dev/null)
 if [[ -n $rec ]]; then
-  IFS='|' read -r cx_t cx_plan cx_5 cx_5r cx_7 cx_7r < <(jq -r 'def pick(f): ([.wins[] | select(.w != null and (.w | f))][0] // {}) | [.p, .r] | map(. // "") | join("|");
-      [.t, .plan, pick(. <= 300), pick(. >= 10080)] | join("|")' <<<"$rec")
+  IFS='|' read -r cx_t cx_plan cx_5 cx_5r cx_7 cx_7r cx_credits < <(jq -r 'def pick(f): ([.wins[] | select(.w != null and (.w | f))][0] // {}) | [.p, .r] | map(. // "") | join("|");
+      [.t, .plan, pick(. <= 300), pick(. >= 10080), (.credits // "" | tostring)] | join("|")' <<<"$rec")
 fi
 now=$(date +%s)
 cx_pc() { # pct, reset epoch -> pct, 0 once the window has reset, empty when unknown
@@ -133,7 +151,8 @@ tip+=("")
 if [[ -n $cx_plan || $cx_t != 0 ]]; then cx_why="this plan reports no 5h window"; else cx_why="no ~/.codex/codex-hud usage cache yet"; fi
 tip+=("$(line 'Codex 5h:    ' "$cx_5" "$cx_5r" "$cx_why")"
   "$(line 'Codex weekly:' "$cx_7" "$cx_7r" "${cx_why/this plan reports no 5h window/no weekly window reported}")")
-[[ -n $cx_plan ]] && tip+=("Codex plan: $cx_plan")
+[[ -n $cx_plan ]] && tip+=("Codex plan: $cx_plan${cx_credits:+, reset credits: $cx_credits}")
+[[ $cx_t != 0 ]] && tip+=("Codex seen: $(date -d "@$cx_t" '+%a %H:%M')")
 tip+=("" "L: ccusage daily · R: 5h blocks")
 
 printf '%s\n' "${tip[@]}" | jq -Rs --arg t "$text" '{text: $t, class: "normal", tooltip: (rtrimstr("\n"))}' | jq -c .
