@@ -231,7 +231,7 @@ section "7 agents never get values"
 reset; bind_proj
 cp /bin/sh "$T/claude"
 (cd "$PROJ" && "$T/claude" -c "\"$ENVS\" run -- true; exit \$?" >"$CAP/ag1.out" 2>"$CAP/ag1.err"); rc=$?
-check "run under a process called claude: refused, exit 4" bash -c "[ $rc = 4 ] && grep -q 'refused inside an agent' '$CAP/ag1.err'"
+check "run under a process called claude: refused, exit 4" bash -c "[ $rc = 4 ] && grep -q 'agent command is not approved' '$CAP/ag1.err'"
 (cd "$PROJ" && CLAUDECODE=1 "$ENVS" run -- true >"$CAP/ag2.out" 2>"$CAP/ag2.err"); rc=$?
 check "run with CLAUDECODE=1: refused" test $rc = 4
 for c in "set X --stdin" "use stage" "bind" "init"; do
@@ -363,7 +363,7 @@ check "copy into prod with --prod works" test $RC = 0
 e diff
 check "diff with no arguments lists every pair" bash -c "grep -q '^dev vs stage' '$OUT' && grep -q '^dev vs prod' '$OUT' && grep -q '^stage vs prod' '$OUT'"
 reset; bind_proj
-e check
+e check --vault
 check "check: set/missing per environment, undeclared fields named, no values" bash -c "grep -q 'stage: 1 set, missing: STRIPE_SECRET_KEY' '$OUT' && grep -q 'dev: undeclared fields (never injected): EXTRA_FIELD' '$OUT' && grep -q 'binding: bound' '$OUT'"
 printf 'NEWVAL-import-4\n' >"$PROJ/.env.local"
 e check
@@ -375,52 +375,51 @@ check "a tracked .env is an error (exit 1) that says to rotate" bash -c "[ $RC =
 e check --all
 check "check --all lists the bound root" grep -q "$PROJ" "$OUT"
 touch "$FAKE_DIR/rbw-locked"
-e check
+e check --vault
 check "a locked vault is reported, not unlocked by check" grep -q 'vault locked' "$OUT"
 scan "section 11"
 
 # ───────────── 12 import
-section "12 import"
+section "12 import (strict whole-document migration; no default shred)"
 reset; bind_proj
-write_env() {
-  cat >"$PROJ/.env" <<'ENV'
-# comment
-export DATABASE_URL="postgres://u:NEWVAL-import-4@db/app"
-STRIPE_SECRET_KEY='NEWVAL-import-5'
-LOG_LEVEL=debug # inline
+cat >"$PROJ/.env" <<'ENV'
+DATABASE_URL=NEWVAL-import-4
+BAD LINE WITH SECRET-work-login
+ENV
+e import .env --secrets DATABASE_URL --overwrite
+check "strict parser refuses the entire malformed file before any write" bash -c "[ $RC = 4 ] && grep -q 'line 2' '$ERR' && ! grep -q 'SECRET-work-login' '$OUT' '$ERR' && ! grep -q NEWVAL-import-4 '$FAKE_DIR/vault.json'"
+printf 'DATABASE_URL=NEWVAL-import-4\nREF=${HOME}/x\n' >"$PROJ/.env"
+e import .env --secrets DATABASE_URL --plain REF --overwrite
+check "unquoted shell expansion is refused rather than partially imported" bash -c "[ $RC = 4 ] && ! grep -q NEWVAL-import-4 '$FAKE_DIR/vault.json'"
+cat >"$PROJ/.env" <<'ENV'
+# exact plain bytes
+DATABASE_URL=NEWVAL-import-4
+STRIPE_SECRET_KEY=NEWVAL-import-5
+LOG_LEVEL = debug # inline
 MULTI="line1
 line2"
-BAD LINE WITH SECRET-work-login
-ESC="a\tb\"c\\d"
-REF=${HOME}/x
+REF='${HOME}/x'
 ENV
-}
-write_env
-e import .env -e stage --secrets DATABASE_URL,STRIPE_SECRET_KEY --plain LOG_LEVEL,MULTI,ESC,REF --keep
-check "import: new secret written, the already-set one skipped without --overwrite" bash -c "[ $RC = 0 ] && [ \"\$(jq -r '.items[]|select(.id==\"e-stage\")|.fields[]|select(.name==\"STRIPE_SECRET_KEY\")|.value' '$FAKE_DIR/vault.json')\" = NEWVAL-import-5 ] && [ \"\$(jq -r '.items[]|select(.id==\"e-stage\")|.fields[]|select(.name==\"DATABASE_URL\")|.value' '$FAKE_DIR/vault.json')\" = SECRET-billing-stage-db ] && grep -q 'skipped (already set): DATABASE_URL' '$OUT'"
-check "plain variables go to .mise.stage.toml with exact values (inline comment cut, escapes, multi-line, \${VAR} literal)" python3 - "$PROJ/.mise.stage.toml" <<'PY'
-import sys, tomllib
-e = tomllib.load(open(sys.argv[1], "rb"))["env"]
-assert e["LOG_LEVEL"] == "debug" and e["MULTI"] == "line1\nline2" and e["ESC"] == 'a\tb"c\\d' and e["REF"] == "${HOME}/x", e
-PY
-check "the bad line is reported by number, its content never" bash -c "grep -q 'line 7: not KEY=value' '$ERR' && ! grep -q 'WITH SECRET' '$ERR' '$OUT'"
-check "the \${VAR} warning" grep -q 'REF: contains' "$ERR"
-check "--keep leaves the file" test -f "$PROJ/.env"
-check "new secret names are declared in .envs.toml" bash -c "grep -q '^STRIPE_SECRET_KEY' '$PROJ/.envs.toml'"
-e import .env -e stage --secrets DATABASE_URL --overwrite --keep
-check "--overwrite replaces the existing field" test "$(vault_field e-stage DATABASE_URL)" = "postgres://u:NEWVAL-import-4@db/app"
-e import .env --plain LOG_LEVEL --keep
-check "without -e: the default environment (dev) -> .mise.toml" bash -c "[ $RC = 0 ] && grep -q '^LOG_LEVEL = \"debug\"' '$PROJ/.mise.toml'"
+e import .env -e stage --secrets DATABASE_URL,STRIPE_SECRET_KEY --plain LOG_LEVEL,MULTI,REF --keep
+check "a conflicting existing field refuses the whole import without --overwrite" bash -c "[ $RC = 1 ] && ! grep -q NEWVAL-import-5 '$FAKE_DIR/vault.json'"
+e import .env -e stage --secrets DATABASE_URL,STRIPE_SECRET_KEY --plain LOG_LEVEL,MULTI,REF --overwrite --keep --plain-to-mise
+check "explicit overwrite stores every selected field and --keep warns plaintext remains" bash -c "[ $RC = 0 ] && grep -q NEWVAL-import-5 '$FAKE_DIR/vault.json' && grep -q 'plaintext' '$ERR' && grep -q '^DATABASE_URL=NEWVAL-import-4' '$PROJ/.env'"
+check "plain-to-mise is explicit and preserves literal multiline/dollar values" python3 - "$PROJ/.mise.stage.toml" <<'PY2'
+import sys,tomllib
+e=tomllib.load(open(sys.argv[1],"rb"))["env"]
+assert e["LOG_LEVEL"]=="debug" and e["MULTI"]=="line1\nline2" and e["REF"]=="${HOME}/x"
+PY2
 e import .env --keep
-check "no terminal and no --secrets/--plain: usage error" test $RC = 2
-e import .env -e stage --secrets STRIPE_SECRET_KEY
-check "no terminal, no --keep: the file is kept with a message" bash -c "[ $RC = 0 ] && test -f '$PROJ/.env' && grep -q 'kept' '$OUT'"
-etty 'y\n' import .env -e stage --secrets STRIPE_SECRET_KEY --overwrite
-check "terminal: 'Shred .env now? [Y/n]' y shreds the untracked file" bash -c "[ $RC = 0 ] && [ ! -e '$PROJ/.env' ]"
-write_env
+check "no terminal and no complete classification: usage error" test $RC = 2
+reset; bind_proj
+printf '# keep\nNEW_TOKEN=NEWVAL-import-5\nLOG_LEVEL = debug # exact\n' >"$PROJ/.env"
+e import .env --secrets NEW_TOKEN --plain LOG_LEVEL
+check "default import keeps .env and replaces only selected secret spans with references" bash -c "[ $RC = 0 ] && grep -qx 'NEW_TOKEN=bw://Env/billing/dev#NEW_TOKEN' '$PROJ/.env' && grep -qx 'LOG_LEVEL = debug # exact' '$PROJ/.env' && ! grep -q NEWVAL-import-5 '$PROJ/.env'"
+check "inline import adds no duplicate TOML declaration or default mise output" bash -c "! grep -q NEW_TOKEN '$PROJ/.envs.toml' && ! grep -q LOG_LEVEL '$PROJ/.mise.toml'"
+printf 'NEW_TOKEN=NEWVAL-import-5\nLOG_LEVEL=debug\n' >"$PROJ/.env"
 (cd "$PROJ" && git add .env >/dev/null 2>&1 && git commit -qm env >/dev/null 2>&1)
-e import .env -e stage --secrets STRIPE_SECRET_KEY --overwrite
-check "a file tracked by git is kept with the rotate warning" bash -c "[ $RC = 0 ] && test -f '$PROJ/.env' && grep -q 'tracked in git' '$OUT'"
+e import .env --secrets NEW_TOKEN --plain LOG_LEVEL
+check "tracked file is rewritten only in working tree and history warning remains" bash -c "[ $RC = 0 ] && grep -q 'old history' '$ERR' && grep -q bw:// '$PROJ/.env' && git -C '$PROJ' diff --quiet --cached -- .env"
 scan "section 12"
 
 # ───────────── 13 export-example
@@ -456,7 +455,7 @@ e env delete dev
 check "the default environment cannot be deleted" test $RC = 1
 e project rename billing2
 check "project rename: folder renamed through PUT /object/folder, .envs.toml and the binding follow" bash -c "[ $RC = 0 ] && grep -q '^bw-serve PUT /object/folder/f-billing' '$FAKE_DIR/argv.log' && [ \"\$(jq -r '.folders[]|select(.id==\"f-billing\")|.name' '$FAKE_DIR/vault.json')\" = Env/billing2 ] && grep -q '^project = \"billing2\"' '$PROJ/.envs.toml' && grep -q billing2 '$XDG_STATE_HOME/envs/bindings.tsv'"
-e status
+e status --vault
 check "status after the rename: bound, vault items found under the new folder" bash -c "grep -q 'binding  bound' '$OUT' && grep -q 'dev: 2 set' '$OUT'"
 etty 'billing2\n' project delete
 check "project delete: items in the trash, folder gone (DELETE /object/folder), binding removed" bash -c "[ $RC = 0 ] && grep -q '^bw-serve DELETE /object/folder/f-billing' '$FAKE_DIR/argv.log' && [ \"\$(jq -r '[.items[]|select(.folderId==\"f-billing\" and .deletedDate==null)]|length' '$FAKE_DIR/vault.json')\" = 0 ] && [ \"\$(jq -r '[.folders[]|select(.id==\"f-billing\")]|length' '$FAKE_DIR/vault.json')\" = 0 ] && ! grep -q billing2 '$XDG_STATE_HOME/envs/bindings.tsv'"
@@ -555,7 +554,7 @@ mkdir -p "$T/fakebin"
 printf '#!/bin/sh\necho called >>"%s/rbw-called"\nexit 0\n' "$T" >"$T/fakebin/rbw"; chmod +x "$T/fakebin/rbw"
 rm -f "$T/rbw-called"
 (cd "$PROJ" && "$T/claude" -c "ENVS_TOOL_PATH='$T/fakebin' ENVS_TEST_ROOT_PID=\$\$ ENVS_TEST_YES=1 RBW_BIN='$T/fakebin/rbw' \"$ENVS\" run -- true; exit \$?" >"$CAP/h1.out" 2>"$CAP/h1.err"); rc=$?
-check "3: under an agent, hooks + a rbw outside tests/ are refused (exit 4) and the fake rbw is never called" bash -c "[ $rc = 4 ] && [ ! -e '$T/rbw-called' ] && grep -q 'refused inside an agent' '$CAP/h1.err'"
+check "3: under an agent, hooks + a rbw outside tests/ are refused (exit 4) and the fake rbw is never called" bash -c "[ $rc = 4 ] && [ ! -e '$T/rbw-called' ] && grep -q 'agent command is not approved' '$CAP/h1.err'"
 rm -f "$XDG_STATE_HOME/envs/bindings.tsv"
 (cd "$PROJ" && ENVS_TOOL_PATH="$T/fakebin" ENVS_TEST_YES=1 "$ENVS" bind >"$CAP/h2.out" 2>"$CAP/h2.err" </dev/null); rc=$?
 check "3: ENVS_TEST_YES with a tool directory outside tests/ binds nothing" bash -c "[ $rc = 4 ] && [ ! -s '$XDG_STATE_HOME/envs/bindings.tsv' ]"
@@ -686,13 +685,13 @@ reset; bind_proj
 printf 'X_TOKEN=NEWVAL-import-4\n' >"$T/outside.env"
 ln -s "$T/outside.env" "$PROJ/.env"
 e import -e stage --secrets X_TOKEN
-check "11: a symlinked .env is not even found" test $RC = 1
+check "11: a symlinked .env fails no-follow preflight" test $RC = 4
 e import .env -e stage --secrets X_TOKEN
-check "11: naming the symlink is refused" bash -c "[ $RC = 1 ] && grep -q 'symbolic link' '$ERR'"
+check "11: naming the symlink fails no-follow preflight" bash -c "[ $RC = 4 ] && grep -q 'cannot safely read source' '$ERR'"
 etty 'y\n' import .env -e stage --secrets X_TOKEN
-check "11: on a terminal too (no Shred prompt is reached)" test $RC = 1
+check "11: on a terminal too (no mutation prompt is reached)" test $RC = 4
 e import "$T/outside.env" -e stage --secrets X_TOKEN
-check "11: a file outside the project root is refused" test $RC = 1
+check "11: a file outside the project root is refused before opening it" test $RC = 4
 check "11: the link target is intact and nothing reached the vault" bash -c "[ \"\$(cat '$T/outside.env')\" = 'X_TOKEN=NEWVAL-import-4' ] && ! grep -q NEWVAL-import-4 '$FAKE_DIR/vault.json'"
 rm -f "$PROJ/.env" "$T/outside.env"
 
@@ -729,7 +728,7 @@ scan "17.16"
 reset; bind_proj
 cp /bin/sh "$T/node"
 (cd "$PROJ" && "$T/node" -c "\"$ENVS\" run -- true; exit \$?" /opt/lib/node_modules/@openai/codex/bin/codex.js >/dev/null 2>"$CAP/nd.err" </dev/null); rc=$?
-check "18: node running .../@openai/codex/... is recognised as an agent" bash -c "[ $rc = 4 ] && grep -q 'refused inside an agent' '$CAP/nd.err'"
+check "18: node running .../@openai/codex/... is recognised as an agent" bash -c "[ $rc = 4 ] && grep -q 'agent command is not approved' '$CAP/nd.err'"
 (cd "$PROJ" && "$T/node" -c "\"$ENVS\" run -- true; exit \$?" /usr/lib/gemini-cli/bundle/gemini.js >/dev/null 2>&1 </dev/null); rc=$?
 check "18: ... and gemini-cli" test $rc = 4
 e set DATABASE_URL=oops
@@ -803,9 +802,9 @@ reset; bind_proj
 printf 'X_TOKEN=NEWVAL-import-4\n' >"$T/outside.env"
 ln "$T/outside.env" "$PROJ/.env"
 e import .env -e stage --secrets X_TOKEN
-check "19.5: a .env with a second hard link is refused without a terminal" bash -c "[ $RC = 1 ] && grep -q 'hard link' '$ERR'"
+check "19.5: a .env with a second hard link fails single-link preflight" bash -c "[ $RC = 4 ] && grep -q 'unsafe source ownership, type or size' '$ERR'"
 etty 'y\n' import .env -e stage --secrets X_TOKEN
-check "19.5: and on a terminal (no Shred prompt is reached)" test $RC = 1
+check "19.5: and on a terminal (no mutation prompt is reached)" test $RC = 4
 check "19.5: the other name of the file is intact and nothing reached the vault" bash -c "[ \"\$(cat '$T/outside.env')\" = 'X_TOKEN=NEWVAL-import-4' ] && ! grep -q NEWVAL-import-4 '$FAKE_DIR/vault.json'"
 rm -f "$PROJ/.env" "$T/outside.env"
 printf 'X_TOKEN=NEWVAL-import-5\n' >"$PROJ/.env"
@@ -1113,14 +1112,14 @@ check "21.4 owner: --shared creates the item in Shared/Env/demo" bash -c "[ $RC 
 check "21.4 --for with a user that is not an interactive managed user: exit 2" bash -c "[ $rc = 2 ] && grep -q 'not an interactive managed user' '$CAP/for.err'"
 (cd "$DEMO" && printf 'x' | "$ENVS" set Y -e dev --for td --shared --stdin >/dev/null 2>&1); rc=$?
 check "21.4 --for and --shared together: exit 2" test $rc = 2
-e status --for td --json
+e status --for td --json --vault
 check "21.4 owner: status --for td reads Users/td/Env/demo (dev has the item, stage has none there)" bash -c "jq -e '.env.dev.item == true and .env.stage.item == false' '$OUT'"
 (cd "$DEMO" && asTD "$ENVS" set X --for td --stdin </dev/null >/dev/null 2>&1); rc=$?
 check "21.4 a managed user cannot use --for either (exit 4)" test $rc = 4
 # 21.5 shadowed names
-N=$((N + 1)); (cd "$DEMO" && asTD "$ENVS" check >"$CAP/$N.out" 2>"$CAP/$N.err" </dev/null); RC=$?; OUT="$CAP/$N.out"
+N=$((N + 1)); (cd "$DEMO" && asTD "$ENVS" check --vault >"$CAP/$N.out" 2>"$CAP/$N.err" </dev/null); RC=$?; OUT="$CAP/$N.out"
 check "21.5 check as td reports the name set in both folders (names only)" bash -c "grep -q 'set in both Users/td/Env and Shared/Env' '$OUT' && grep -q 'DATABASE_URL' '$OUT'"
-N=$((N + 1)); (cd "$DEMO" && asTD "$ENVS" status --json >"$CAP/$N.out" 2>"$CAP/$N.err" </dev/null); RC=$?; OUT="$CAP/$N.out"
+N=$((N + 1)); (cd "$DEMO" && asTD "$ENVS" status --json --vault >"$CAP/$N.out" 2>"$CAP/$N.err" </dev/null); RC=$?; OUT="$CAP/$N.out"
 check "21.5 status --json: the shadowed list, vault unlocked, nothing else leaks" bash -c "jq -e '.vault==\"unlocked\" and (.env.dev.shadowed|index(\"DATABASE_URL\")) and (.env.dev.set|index(\"TOKEN\")) and (.env.dev.set|index(\"SHARED_ONLY\"))' '$OUT' >/dev/null"
 # 21.6 global scope
 N=$((N + 1)); (cd "$T/nowhere" 2>/dev/null || mkdir -p "$T/nowhere"; cd "$T/nowhere" && asTD "$ENVS" run -g --allow-missing -- sh -c 'printf "%s" "$GITLAB_TOKEN" | sha256sum | cut -c1-64' >"$CAP/$N.out" 2>"$CAP/$N.err" </dev/null); RC=$?; OUT="$CAP/$N.out"
@@ -1137,6 +1136,32 @@ if command -v python3 >/dev/null; then
   printf 'info  envs run -- true as td through the broker: mean %d ms (reported; fails above 300 ms; fake rbw is bash+jq)\n' "$ms"
   check "21.8 envs run as td is below 300 ms" test "$ms" -lt 300
 fi
+# 21.9 inline references remain exact scoped targets; no legacy fallback or direct rbw.
+cat >"$DEMO/.envs.toml" <<'TOML'
+project = "demo"
+environments = ["dev"]
+default = "dev"
+TOML
+cat >"$DEMO/.env" <<'ENV'
+DATABASE_URL=bw://Users/td/Env/demo/dev#DATABASE_URL
+SHARED_ONLY=bw://Shared/Env/demo/dev#SHARED_ONLY
+APP_PORT=8080
+ENV
+N=$((N + 1)); (cd "$DEMO" && asTD "$ENVS" bind --yes >"$CAP/$N.out" 2>"$CAP/$N.err"); rc=$?
+check "21.9 exact own and Shared references authorize metadata without duplicate declarations" test $rc = 0
+N=$((N + 1)); (cd "$DEMO" && asTD "$ENVS" run --no-mise --only DATABASE_URL -- sh -c 'printf "%s" "$DATABASE_URL" | sha256sum | cut -c1-64; test -z "${SHARED_ONLY+x}"' >"$CAP/$N.out" 2>"$CAP/$N.err"); rc=$?
+check "21.9 selected inline reference reaches child; unselected Shared value is absent" bash -c "[ $rc = 0 ] && grep -qx $(sha SECRET-td-db) '$CAP/$N.out'"
+check "21.9 inline resolver never called poisoned rbw" test ! -e "$FAKE_DIR/poison.log"
+for folder in Env/demo Users/yc/Env/demo Users/td/Env/missing; do
+  printf 'DATABASE_URL=bw://%s/dev#DATABASE_URL\n' "$folder" >"$DEMO/.env"
+  N=$((N + 1)); (cd "$DEMO" && asTD "$ENVS" bind --yes >"$CAP/$N.out" 2>"$CAP/$N.err"); rc=$?
+  check "21.9 foreign/missing reference is uniformly unavailable ($folder)" bash -c "[ $rc = 4 ] && grep -q 'DATABASE_URL: referenced item or field unavailable' '$CAP/$N.err'"
+done
+printf 'DATABASE_URL=bw://Users/td/Env/demo/dev#DATABASE_URL\n' >"$DEMO/.env"
+(cd "$DEMO" && asTD "$ENVS" bind --yes >/dev/null 2>&1)
+printf 'td\tShared/**\nyc\tShared/**\nyc\tUsers/yc/**\n' >"$VSCR/etc/scopes.tsv"
+N=$((N + 1)); (cd "$DEMO" && asTD "$ENVS" run --no-mise -- true >"$CAP/$N.out" 2>"$CAP/$N.err"); rc=$?
+check "21.9 live broker scope revocation invalidates an approved reference" bash -c "[ $rc = 4 ] && grep -q 'referenced item or field unavailable' '$CAP/$N.err'"
 kill "$BROKER" 2>/dev/null; wait "$BROKER" 2>/dev/null
 unset VAULT_SHARE_TEST_DIR VAULT_SHARE_SCRATCH VAULT_SHARE_SOCK VAULT_SHARE_SCOPES VAULT_SHARE_RUNTIME VAULT_SHARE_TEST_PEER_FILE
 EDIR=""

@@ -61,6 +61,7 @@ import subprocess
 import sys
 import time
 import tomllib
+from functools import lru_cache
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -96,10 +97,10 @@ def _verified_test_dirs():
 
 
 TEST_DIRS = _verified_test_dirs()
-SECRET_TOOLS = {"rbw", "bw", "pinentry", "wl-copy"}    # these never resolve outside the test directory in test mode
+SECRET_TOOLS = {"rbw", "bw", "pinentry", "wl-copy", "wl-paste"}    # these never resolve outside the test directory in test mode
 # names a test (or a project's [env]) could use to redirect the vault tools; dropped from our environment outside test mode
 # and put back for the command we run (envs must not change what a command sees)
-HOOK_ENV = ("ENVS_GLOBAL_DIR", "ENVS_TOOL_PATH", "ENVS_TEST_ROOT_PID", "ENVS_TEST_YES", "ENVS_NO_JOURNAL", "RBW_BIN", "BW_BIN", "PINENTRY_BIN",
+HOOK_ENV = ("ENVS_TEST_SEND_TRANSPORT", "ENVS_GLOBAL_DIR", "ENVS_TOOL_PATH", "ENVS_TEST_ROOT_PID", "ENVS_TEST_YES", "ENVS_NO_JOURNAL", "RBW_BIN", "BW_BIN", "PINENTRY_BIN",
             "BW_DOWNLOAD_DIR", "VAULT_RBW_CONF", "VAULT_BW_IDLE", "VAULT_BW_SERVE_POLL", "VAULT_BW_RBW_POLL", "VAULT_BW_NODUMP",
             "VAULT_BW_NODUMP_SRC", "VAULT_BW_UNIT", "VAULT_BW_SYSTEMD_RUNTIME", "VAULT_BW_SERVE", "VAULT_BW_LAUNCH",
             "VAULT_TERMINAL", "VAULT_CLEAR_AFTER", "ENVS_TEST_MANAGED_USER", "VAULT_SHARE_TEST_DIR", "VAULT_SHARE_SCRATCH",
@@ -188,6 +189,21 @@ def test_mode():
     return bool(TEST_DIRS)
 
 
+_EXTRA = None
+
+
+def extras(name, *args, **kwargs):
+    """Lazy public helper: legacy startup does not import the parser/runtime unless required."""
+    global _EXTRA
+    if _EXTRA is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("_envs_commands", REPO / ".config/envs/commands.py")
+        _EXTRA = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = _EXTRA
+        spec.loader.exec_module(_EXTRA)
+    return _EXTRA.dispatch(name, globals(), *args, **kwargs)
+
+
 # ───────────────────────────── tools and agent check ─────────────────────────────
 
 def tool(name, env=None, required=True):
@@ -242,6 +258,7 @@ def proc_argv(pid):
         return []
 
 
+@lru_cache(maxsize=1)
 def agent_context():
     """The name of the agent this process runs under (an ancestor's /proc comm up to pid 1, or an interpreter running an agent
     script), or $CLAUDECODE. Tests stop the walk at ENVS_TEST_ROOT_PID (only in verified test mode)."""
@@ -277,7 +294,7 @@ def agent_context():
 def refuse_agent(what):
     a = agent_context()
     if a:
-        fail(f"{what} is refused inside an agent ({a}): secrets are never handed to agents; names-only commands "
+        fail(f"{what} is refused inside an agent ({a}): this operation is human-only; names-only commands "
              "(status, check, diff, export-example) still work", 4)
 
 
@@ -560,14 +577,21 @@ def bad_var_name(n):
 
 
 def find_root(start=None):
-    d = Path(start or os.getcwd()).resolve()
+    origin = Path(start or os.getcwd()).resolve()
+    common, top = git_common_dir(origin)
+    d = origin
     while True:
         if (d / TOML).is_file():
             tsv_safe(d)
             return d
-        if d.parent == d:
-            fail(f"no {TOML} here or above: run `envs init` in the project", 1)
+        if (top and d == top) or d.parent == d or d == HOME:
+            break
         d = d.parent
+    root = top if top is not None else origin
+    if (root / ".env").is_file() or (root / ".env").is_symlink():
+        tsv_safe(root)
+        return root
+    fail(f"no {TOML} or approved root .env: run `envs init` in the project", 1)
 
 
 def mise_files(root):
@@ -643,7 +667,8 @@ class Cfg:
         self.envs = list(data.get("environments", []))
         self.default = data.get("default", "")
         self.protected = set(data.get("protected", [])) | ALWAYS_PROTECTED
-        self.secrets = dict(data.get("secrets", {}))
+        self.legacy_secrets = dict(data.get("secrets", {}))
+        self.secrets = dict(self.legacy_secrets)
         self.is_global = False
 
     def is_protected(self, env):
@@ -657,11 +682,15 @@ class Cfg:
 
 def validate(data, root=None):
     p = []
-    known = {"project", "environments", "default", "protected", "secrets", "db", "api", "ci"}
+    known = {"project", "environments", "default", "protected", "secrets", "db", "api", "ci", "agents"}
     for k in data:
         if k not in known:
             p.append(f"unknown key {k!r} (allowed: project, environments, default, protected, [secrets], and the tables [db.NAME], "
                      "[api], [ci] that the db / api / ci launchers read)")
+    if "agents" in data:
+        policy = data["agents"]
+        if not isinstance(policy, dict) or set(policy) - {"allow"} or not isinstance(policy.get("allow", []), list) or not all(isinstance(x, str) for x in policy.get("allow", [])):
+            p.append("[agents] accepts only allow = [quoted command prefixes]")
     for k in ("db", "api", "ci"):             # the launchers validate their own fields (`db check`); here only the shape
         if k in data and not isinstance(data[k], dict):
             p.append(f"[{k}] must be a table")
@@ -711,11 +740,13 @@ def validate(data, root=None):
     return p
 
 
-def load_cfg(root=None, strict=True):
+def load_cfg(root=None, strict=True, augment=True):
     root = Path(root) if root else find_root()
     if is_global_root(root):
-        return load_global(strict)
+        return load_global(strict, augment=augment)
     path = root / TOML
+    if not path.exists() and (root / ".env").exists():
+        return extras("synthetic_cfg", root, strict, augment)
     try:
         text = path.read_text()
     except OSError as e:
@@ -729,7 +760,7 @@ def load_cfg(root=None, strict=True):
     problems = validate(data, root)
     if problems and strict:
         fail(f"{path}:\n  " + "\n  ".join(problems))
-    return Cfg(root, data, text, problems)
+    return extras("augment_cfg", Cfg(root, data, text, problems)) if augment else Cfg(root, data, text, problems)
 
 
 # the global scope (`envs run -g`): secrets that belong to no repository (GitLab token ...). Folder Env/global, one Secure Note
@@ -796,7 +827,7 @@ def merge_global(gtext, ltext):
     if g.get("project", "global") != "global":
         problems.append(f"{GLOBAL_TOML}: project must be \"global\"")
     for k in loc:
-        if k not in ("secrets", "db"):
+        if k not in ("secrets", "db", "agents"):
             problems.append(f"{GLOBAL_LOCAL}: only [secrets] and [db.NAME] are allowed here, not {k!r}")
     sec, db = dict(g.get("secrets") or {}), dict(g.get("db") or {})
     for n, d in (loc.get("secrets") or {}).items() if isinstance(loc.get("secrets"), dict) else []:
@@ -810,10 +841,14 @@ def merge_global(gtext, ltext):
     data = {"project": "global", "environments": ["default"], "default": "default", "protected": [], "secrets": sec}
     if db:
         data["db"] = db
+    if "agents" in g:
+        problems.append("global [agents] policy belongs only in global.local.toml")
+    if "agents" in loc:
+        data["agents"] = loc["agents"]
     return data, problems + validate(data)
 
 
-def load_global(strict=True):
+def load_global(strict=True, augment=True):
     d = global_dir()
     gp, lp = d / GLOBAL_TOML, d / GLOBAL_LOCAL
     if not gp.is_file():
@@ -830,7 +865,7 @@ def load_global(strict=True):
         fail("global scope:\n  " + "\n  ".join(problems))
     cfg = Cfg(d, data, gtext, problems)
     cfg.is_global = True
-    return cfg
+    return extras("augment_cfg", cfg) if augment else cfg
 
 
 def edit_global_local(cfg, fn):
@@ -1570,10 +1605,11 @@ def cmd_bind(a):
     refuse_agent("bind")
     if a.yes and test_mode():
         os.environ["ENVS_TEST_YES"] = "1"
-    cfg = load_cfg()
+    cfg = cfg_for(a)
     st, key, old = binding_state(cfg.root, cfg.project)
     if st == "bound":
         say(f"already bound: {cfg.root} -> {cfg.folder}")
+        extras("authorize_refs", cfg, a)
         return
     note = f" (was Env/{old})" if st == "changed" else (" (the repository here is not the one bound before)" if st == "moved" else "")
     elsewhere = other_binding_note(cfg) if st != "changed" else ""
@@ -1588,6 +1624,7 @@ def cmd_bind(a):
         fail("not bound" + ("" if tty() else ": a terminal is needed to confirm"), 4)
     bind_write(cfg.root, cfg.project)
     say(f"bound {cfg.root} -> {cfg.folder}")
+    extras("authorize_refs", cfg, a)
     if trust_files(cfg.root) and tool("mise", required=False):
         mise_trust(cfg.root)                    # its own question: binding is not trust
 
@@ -1634,15 +1671,19 @@ def classify(cfg, fields):
 
 
 def cmd_status(a):
+    if getattr(a, "vault", False):
+        refuse_agent("status --vault")
     cfg = cfg_for(a, strict=False)
     st, key, old = binding_state(cfg.root, cfg.project)
     act = active_get(cfg.root)
     env = choose_env(cfg) if not cfg.problems else None
     left = max(0, int((act[1] - time.time()) / 60)) if act and act[1] else None
-    matrix = vault_matrix(cfg) if not cfg.problems else None
+    refs = extras("reference_status", cfg, env) if env else {"names": list(cfg.secrets)}
+    matrix = vault_matrix(cfg) if not cfg.problems and getattr(a, "vault", False) else None
     doc = {"project": cfg.project, "root": str(cfg.root), "binding": st, "environments": cfg.envs, "default": cfg.default,
            "protected": sorted(cfg.protected & set(cfg.envs)), "active": env, "active_minutes_left": left,
-           "names": list(cfg.secrets), "vault": "unlocked" if matrix is not None else "locked", "problems": cfg.problems, "env": {}}
+           "names": refs["names"], "vault": ("unlocked" if matrix is not None else "locked") if getattr(a, "vault", False) else "not checked", "problems": cfg.problems, "env": {}}
+    doc.update({k: v for k, v in refs.items() if k != "names"})
     if matrix is not None:
         for e, f in matrix.items():
             if isinstance(f, Fail):
@@ -1664,7 +1705,7 @@ def cmd_status(a):
         extra = f" (active selection, {left} min left)" if act and left is not None and act[1] else \
             (" (active selection)" if act else " (default)")
         say(f"env      {env}{extra}" + ("  [protected]" if cfg.is_protected(env) else ""))
-    say(f"names    {', '.join(cfg.secrets) or '-'}")
+    say(f"names    {', '.join(refs['names']) or '-'}")
     for p in cfg.problems:
         say(f"problem  {p}")
     say(f"vault    {doc['vault']}")
@@ -1723,6 +1764,8 @@ def cfg_for(a, strict=True):
 
 
 def cmd_run(a, cmd):
+    if extras("new_run_required", a):
+        return extras("cmd_run", a, cmd)
     refuse_agent("run")
     cfg = cfg_for(a)
     require_bound(cfg)
@@ -2197,143 +2240,7 @@ def tracked_in_git(root, path):
 
 
 def cmd_import(a):
-    refuse_agent("import")
-    cfg = load_cfg()
-    require_bound(cfg)
-    if a.file:
-        path = Path(os.path.abspath(a.file))
-    else:
-        files = find_env_files(cfg.root)
-        if (cfg.root / ".env") in files:
-            path = cfg.root / ".env"
-        elif len(files) == 1:
-            path = files[0]
-        elif files:
-            got = pick([str(f.relative_to(cfg.root)) for f in files], ".env file")
-            if not got:
-                fail("no file chosen", 130)
-            path = cfg.root / got
-        else:
-            fail("no .env file found (up to 4 levels below the project root)", 1)
-    # a symlink (a build step can drop `.env -> ~/dotfiles/env.secret.sh`) or a file outside the project is never imported, and
-    # never shredded (shred -u follows links); the open itself refuses a link that appears after the check
-    if path.is_symlink() or not _under(path.parent, cfg.root) or _under(path.parent, cfg.root / ".git"):
-        fail(f"{path} is a symbolic link or outside the project root {cfg.root}: copy the file into the project first", 1)
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-        with os.fdopen(fd, "r") as fh:
-            # a hard link shares its inode with a file we cannot see (`ln ~/x/secrets .env`): the shred would empty that one
-            if os.fstat(fh.fileno()).st_nlink > 1:
-                fail(f"{path} has more than one hard link (the same file is also reachable under another name): copy it to a "
-                     "fresh file first (`cp .env .env.new && mv .env.new .env`)", 1)
-            text = fh.read()
-    except OSError as e:
-        fail(f"cannot read {path}: {e.strerror}")
-    vals, warns, errs = parse_dotenv(text)
-    for w in warns:
-        warn(w)
-    for er in errs:
-        warn(er)
-    if not vals:
-        fail("nothing to import" + (" (the file has errors)" if errs else ""), 1)
-    env = a.env
-    if not env:
-        got = None if not tty() else pick([e + ("  (default)" if e == cfg.default else "") for e in cfg.envs],
-                                          "import into environment")
-        env = got.split()[0] if got else (None if tty() else cfg.default)
-        if not env:
-            fail("no environment chosen", 130)
-    need_env(cfg, env)
-    guard_protected(cfg, env, a.prod, "import into")
-    names = list(vals)
-    secrets, plain = [], []
-    if a.secrets is not None or a.plain is not None:
-        secrets = [n for n in (a.secrets or "").split(",") if n]
-        plain = [n for n in (a.plain or "").split(",") if n]
-        for n in secrets + plain:
-            if n not in vals:
-                fail(f"{n} is not in {path.name}", 2)
-        if set(secrets) & set(plain):
-            fail("a name cannot be both secret and plain", 2)
-        left = [n for n in names if n not in secrets and n not in plain]
-        if left:
-            warn(f"not imported (neither --secrets nor --plain): {', '.join(left)}")
-    elif tty():
-        rows = [f"{n}  {'secret' if looks_secret(n, vals[n]) else 'plain'}" for n in names]
-        pre = [i for i, n in enumerate(names) if looks_secret(n, vals[n])]
-        chosen = pick_multi(rows, "secrets (selected = secret)", pre, "Tab toggles, Enter imports: selected rows go to Bitwarden, "
-                            "the others to mise [env] (committed in plain text)")
-        if chosen is None:
-            fail("cancelled", 130)
-        secrets = [r.split()[0] for r in chosen]
-        plain = [n for n in names if n not in secrets]
-    else:
-        fail("no terminal to classify the variables: pass --secrets A,B and --plain C,D", 2)
-    for n in secrets + plain:
-        why = bad_var_name(n)
-        if why:
-            warn(f"{n} {why}: skipped")
-    secrets = [n for n in secrets if not bad_var_name(n)]
-    plain = [n for n in plain if not bad_var_name(n)]
-    # conflicts: a name that is already set where it would go
-    target = mise_target(cfg.root, env, cfg.default)
-    existing_plain = {}
-    try:
-        existing_plain = (tomllib.loads(target.read_text()).get("env") or {}) if target.exists() else {}
-    except (OSError, ValueError):
-        pass
-    for n in list(plain):
-        if n in cfg.secrets:
-            warn(f"{n} is declared as a secret: skipped as plain")
-            plain.remove(n)
-    for n in list(secrets):
-        if n in mise_env_keys(cfg.root):
-            warn(f"{n} is a plain variable in mise [env]: skipped as secret")
-            secrets.remove(n)
-    n_sec = n_plain = 0
-    skipped = []
-    with write_lock():
-        if secrets:
-            m = bw_open()
-            item = bw_env_item(m, cfg.project, env, create=True)
-            have = set(item_field_names(item))
-            for n in secrets:
-                if n in have and not a.overwrite and not (tty() and confirm(f"{n} is already set in {env}. Overwrite?")):
-                    skipped.append(n)
-                    continue
-                item_set_field(item, n, vals[n])
-                n_sec += 1
-            if n_sec:
-                bw_save(m, item)
-            newdecl = [n for n in secrets if n not in cfg.secrets and n not in skipped]
-            if newdecl:
-                def decl(ed):
-                    for n in newdecl:
-                        ed.set("secrets", n, '""')
-                cfg = edit_cfg(cfg, decl)
-            m.refresh_rbw()
-        for n in plain:
-            if n in existing_plain and not a.overwrite and not (tty() and confirm(f"{n} is already in {target.name}. Overwrite?")):
-                skipped.append(n)
-                continue
-            edit_mise(target, lambda ed, n=n: ed.set("env", n, toml_str(vals[n])))
-            n_plain += 1
-    vals = None
-    say(f"imported {n_sec} secret(s) into {cfg.folder}/{env} and {n_plain} plain variable(s) into {target.name}"
-        + (f"; skipped (already set): {', '.join(skipped)}" if skipped else ""))
-    if tracked_in_git(cfg.root, path):
-        say(f"{path.name} is tracked in git: the values are in the history; rotate them and `git rm --cached {path.name}`")
-    elif a.keep:
-        say(f"{path.name} kept (--keep)")
-    elif not tty():
-        say(f"{path.name} kept (no terminal to confirm): `shred -u {path.name}` when you are sure")
-    elif confirm(f"Shred {path.name} now?", default=True):
-        sh = tool("shred", required=False)
-        if sh and subprocess.run([sh, "-u", str(path)]).returncode == 0:
-            say(f"{path.name} shredded (best effort on SSDs: rotate secrets that were ever committed or synced)")
-        else:
-            path.unlink(missing_ok=True)
-            say(f"{path.name} removed")
+    return extras("cmd_import", a)
 
 
 EXAMPLE_HEAD = "# generated by envs export-example; values: envs run (secrets) / .mise.toml (plain)"
@@ -2376,7 +2283,7 @@ def cmd_copy_value(a):
 
 # check ---------------------------------------------------------------------------------------------------------------
 
-def check_root(cfg, out):
+def check_root(cfg, out, vault=False):
     def add(level, msg):
         out.append((level, msg))
     for p in cfg.problems:
@@ -2412,6 +2319,10 @@ def check_root(cfg, out):
                 add("warn", f"mise tools are missing: {len(p.stdout.strip().splitlines())} (run `mise install`)")
             else:
                 add("ok", "mise: trusted, no tools missing")
+    if not vault:
+        meta = extras("reference_status", cfg, cfg.default)
+        add("info", "vault not checked; effective names: " + (", ".join(meta["names"]) or "-") + "; reference approval " + meta["reference_approval"])
+        return
     matrix = vault_matrix(cfg)
     if matrix is None:
         add("info", "vault locked: items and fields not checked (unlock it and run again)")
@@ -2434,6 +2345,8 @@ def check_root(cfg, out):
 
 
 def cmd_check(a):
+    if getattr(a, "vault", False):
+        refuse_agent("check --vault")
     roots = []
     if a.all:
         for key in bindings():
@@ -2458,7 +2371,7 @@ def cmd_check(a):
     bad = 0
     for r in roots:
         out = []
-        check_root(load_cfg(r, strict=False), out)
+        check_root(load_cfg(r, strict=False), out, getattr(a, "vault", False))
         say(f"{r}")
         for level, msg in out:
             say(f"  {level:5} {msg}")
@@ -3113,13 +3026,48 @@ def build_parser():
     p.add_argument("--project")
     p.add_argument("--envs", default="dev,stage,prod")
     p.add_argument("--default")
-    sub.add_parser("bind").add_argument("--yes", action="store_true")
+    p = sub.add_parser("bind")
+    p.add_argument("-g", "--global", dest="global_", action="store_true")
+    p.add_argument("--yes", action="store_true")
+    p.add_argument("-e", "--env")
+    p.add_argument("--ref-file", action="append")
+    p.add_argument("--protect-ref", action="append")
     def scope_opts(pp):
         pp.add_argument("--for", dest="for_user", metavar="USER", help="the owner: act on Users/USER/Env/<project> (a managed user's folder)")
         pp.add_argument("--shared", action="store_true", help="the owner: act on Shared/Env/<project>")
+    p = sub.add_parser("scan")
+    p.add_argument("directory", nargs="?")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--depth", type=int, default=4)
+    p = sub.add_parser("agent")
+    p.add_argument("action", choices=["allow", "deny", "list"])
+    p.add_argument("-e", "--env")
+    p.add_argument("-g", "--global", dest="global_", action="store_true")
+    p = sub.add_parser("send")
+    p.add_argument("file", nargs="?")
+    p.add_argument("-e", "--env")
+    p.add_argument("--prod", action="store_true")
+    p.add_argument("--only")
+    p.add_argument("--file-send", action="store_true")
+    p.add_argument("--recover", nargs="?", const=True)
+    p = sub.add_parser("global-wrap")
+    p.add_argument("name", nargs="?")
+    p.add_argument("binary", nargs="?")
+    p.add_argument("--only")
+    p.add_argument("--list", action="store_true")
+    p.add_argument("--remove")
+    p = sub.add_parser("refs")
+    p.add_argument("action", choices=["list", "set"])
+    p.add_argument("name", nargs="?")
+    p.add_argument("uri", nargs="?")
+    p.add_argument("--file")
+    p.add_argument("-e", "--env")
+    p.add_argument("--locations", action="store_true")
+    p.add_argument("-g", "--global", dest="global_", action="store_true")
     p = sub.add_parser("status")
     p.add_argument("-g", "--global", dest="global_", action="store_true")
     p.add_argument("--json", action="store_true")
+    p.add_argument("--vault", action="store_true", help="human: explicitly inspect vault metadata")
     scope_opts(p)
     p = sub.add_parser("use")
     p.add_argument("env", nargs="?")
@@ -3171,6 +3119,10 @@ def build_parser():
     p.add_argument("new", nargs="?")
     p = sub.add_parser("import")
     p.add_argument("file", nargs="?")
+    p.add_argument("-g", "--global", dest="global_", action="store_true")
+    p.add_argument("--drop")
+    p.add_argument("--yes", action="store_true")
+    p.add_argument("--plain-to-mise", action="store_true")
     p.add_argument("-e", "--env")
     p.add_argument("--secrets")
     p.add_argument("--plain")
@@ -3192,6 +3144,7 @@ def build_parser():
     p.add_argument("env")
     p.add_argument("ident")
     p = sub.add_parser("check")
+    p.add_argument("--vault", action="store_true", help="human: explicitly inspect vault metadata")
     p.add_argument("-g", "--global", dest="global_", action="store_true")
     p.add_argument("--all", action="store_true")
     scope_opts(p)
@@ -3205,11 +3158,12 @@ def build_parser():
 HANDLERS = {"init": cmd_init, "bind": cmd_bind, "status": cmd_status, "use": cmd_use, "set": cmd_set, "unset": cmd_unset,
             "rename": cmd_rename, "check": cmd_check, "copy": cmd_copy, "diff": cmd_diff, "env": cmd_env,
             "project": cmd_project, "import": cmd_import, "export-example": cmd_export_example,
-            "copy-value": cmd_copy_value, "_preview": cmd_preview, "trust": cmd_trust, "convert": cmd_convert}
+            "copy-value": cmd_copy_value, "_preview": cmd_preview, "trust": cmd_trust, "convert": cmd_convert,
+            "scan": lambda a: extras("cmd_scan", a), "agent": lambda a: extras("cmd_agent", a, a.argv[1:] if a.argv[:1] == ["--"] else a.argv), "send": lambda a: extras("cmd_send", a), "refs": lambda a: extras("cmd_refs", a), "global-wrap": lambda a: extras("cmd_global_wrap", a)}
 
 
 class RunArgs:
-    env, prod, sync, no_mise, allow_missing, global_, only = None, False, False, False, False, False, None
+    env, prod, sync, no_mise, allow_missing, global_, only, env_file, env_source = None, False, False, False, False, False, None, False, None
 
 
 def usage_error(msg):
@@ -3217,7 +3171,7 @@ def usage_error(msg):
     return 2
 
 
-def run_main(argv):
+def _run_main(argv):
     """`envs run` is parsed by hand: argparse costs about 7 ms of imports, and this is the path every command of a project takes."""
     if "--" not in argv:
         return usage_error("run needs `--` before the command")
@@ -3233,6 +3187,11 @@ def run_main(argv):
             k += 1
         elif o.startswith("--env="):
             a.env = o[6:]
+        elif o == "--env-file":
+            a.env_file = True
+        elif o == "--env-source" and k + 1 < len(opts):
+            a.env_source = opts[k + 1]
+            k += 1
         elif o == "--prod":
             a.prod = True
         elif o == "--sync":
@@ -3250,27 +3209,62 @@ def run_main(argv):
             return usage_error(f"unknown option {o}")
         k += 1
     try:
+        if a.env_source and not a.env_file:
+            fail("--env-source requires --env-file", 2)
+        if not a.env_file and any("{envfile}" in word for word in cmd):
+            fail("{envfile} requires --env-file", 2)
+        if a.env_file and not any("{envfile}" in word for word in cmd):
+            fail("--env-file requires an argv {envfile} placeholder", 2)
         return cmd_run(a, cmd) or 0
     except Fail as e:
         warn(e.msg)
         return e.code
 
 
+_RUN_AUDITED = False
+
+
+def run_main(argv):
+    if not agent_context():
+        return _run_main(argv)
+    global _RUN_AUDITED
+    _RUN_AUDITED = False
+    cmd = argv[argv.index("--") + 1:] if "--" in argv else []
+    try:
+        try:
+            return _run_main(argv)
+        finally:
+            if not _RUN_AUDITED:
+                _RUN_AUDITED = True
+                extras("audit_denied", cmd)
+    except Fail as error:
+        warn(error.msg)
+        return error.code
+
+
 def main(argv):
     harden_environment()
     if argv[:1] == ["run"]:
         return run_main(argv[1:])
+    agent_argv = []
+    if argv[:1] == ["agent"] and "--" in argv:
+        marker = argv.index("--")
+        agent_argv, argv = argv[marker + 1:], argv[:marker]
     ap = build_parser()
     a = ap.parse_args(argv)
+    if a.cmd == "agent":
+        a.argv = agent_argv
     try:
         if not a.cmd:
             tui()
             return 0
         apply_scope(a)
+        if managed_user() and a.cmd == "send":
+            fail("Send creation is available only in the owner's session; managed users use a read-only vault broker", 4)
         if managed_user() and a.cmd in WRITE_CMDS:
             me = managed_user()
             fail(f"values in Users/{me}/Env are written by the owner: `envs set NAME --for {me}` on his terminal", 4)
-        HANDLERS[a.cmd](a)
+        return HANDLERS[a.cmd](a) or 0
     except Fail as e:
         warn(e.msg)
         return e.code

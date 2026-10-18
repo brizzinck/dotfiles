@@ -1,3 +1,6 @@
 #!/usr/bin/env bash
 # fake logger: the journald line goes to $FAKE_DIR/logger.log (tests check it holds no values)
 printf '%s\n' "$*" >>"${FAKE_DIR:?}/logger.log"
+
+# Required agent decisions arrive on stdin, never argv.
+cat >>"${FAKE_DIR:?}/logger.log"

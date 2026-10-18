@@ -28,7 +28,9 @@ ACT
   install)
     [[ -n ${FAKE_MISE_MISSING:-} ]] && rm -f "$FAKE_MISE_MISSING"
     exit "${FAKE_MISE_INSTALL_RC:-0}" ;;
+  which) command -v -- "$2" ;;
   exec)
+    [[ ${FAKE_MISE_ECHO_SECRET:-} == 1 ]] && printf '%s\n' "${DATABASE_URL:-}"
     shift; [[ ${1:-} == -- ]] && shift
     export FAKE_MISE_EXEC=1
     exec "$@" ;;
