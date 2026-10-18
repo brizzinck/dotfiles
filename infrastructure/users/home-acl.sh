@@ -10,7 +10,9 @@
 #                               root only writes the before-state below --state
 #   home-acl.sh restore [opts]  put back what `apply` changed (rollback.sh --home-acl-cleanup): every home-acl-before-*.txt.gz
 #                               and secret-modes-before-* of --state, oldest first, as the owner, only paths the owner owns
-#                               that are not symlinks, never an owner/group change; removes the marker
+#                               that are not symlinks, never an owner/group change; removes the marker; the snapshots it
+#                               used are moved to --state/restored-<time>/ (a later restore must not replay them over what
+#                               the owner changed since, and the next `apply` writes fresh ones)
 #   home-acl.sh check  [opts]   read-only and bounded (doctor): key=value lines (acl_count, acl_examples, mode_count,
 #                               mode_examples, partial, marker)
 # Options (defaults in brackets; every one is a test hook):
@@ -333,11 +335,13 @@ owned_paths() { # stdin: NUL separated paths -> stdout: newline separated paths 
   xargs -0 -r stat --printf '%u\t%F\t%n\0' -- 2>/dev/null |
     awk -v RS='\0' -F'\t' -v u="$OWNER_UID" '$1 == u && $2 !~ /symbolic/ { p = $0; sub(/^[^\t]*\t[^\t]*\t/, "", p); print p }'
 }
+USED=()   # snapshots the restore read; retire_used moves them away
 restore_acl() {
   local f n=0
   for f in "$STATE"/home-acl-before-*.txt.gz; do
     [ -e "$f" ] || continue
     zcat "$f" >"$W/snap.txt" 2>/dev/null || { echo "warning: $f is unreadable"; continue; }
+    USED+=("$f")
     sed -n 's/^# file: //p' "$W/snap.txt" | tr '\n' '\0' | owned_paths >"$W/ok.lst"
     awk -v okf="$W/ok.lst" '
       BEGIN { while ((getline l < okf) > 0) ok[l] = 1 }
@@ -356,6 +360,7 @@ restore_modes() {
   for f in "$STATE"/secret-modes-before-*.txt; do
     [ -e "$f" ] || continue
     any=1
+    USED+=("$f")
     awk -F'\t' '{ printf "%s%c", $2, 0 }' "$f" | owned_paths >"$W/ok.lst"
     echo "restoring the modes of the secret locations from $f ($(wc -l <"$W/ok.lst") of $(wc -l <"$f") paths are the owner's and no symlink)"
     for m in $(awk -F'\t' '{ print $1 }' "$f" | sort -u); do
@@ -364,6 +369,18 @@ restore_modes() {
     done
   done
   [ "$any" = 1 ] || echo "no secret-modes-before-*.txt in $STATE: no mode to restore"
+}
+
+# retire_used: the snapshots this restore used go to $STATE/restored-<time>/. Without that every later restore replays the oldest
+# ones: a file the owner made 0600 after the first rollback would go back to its first-snapshot mode, and a cleanup done again
+# by `apply` would be undone to the state of two applies ago.
+retire_used() {
+  local d f
+  [ "${#USED[@]}" -gt 0 ] || return 0
+  d="$STATE/restored-$(date +%Y%m%d-%H%M%S)"
+  install -d -m 700 "$d" 2>/dev/null || { echo "warning: could not create $d, the snapshots stay in $STATE" >&2; return 0; }
+  for f in "${USED[@]}"; do mv -f -- "$f" "$d/" || echo "warning: could not move $f" >&2; done
+  echo "retired ${#USED[@]} snapshot file(s) to $d"
 }
 
 case "$MODE" in
@@ -386,6 +403,7 @@ case "$MODE" in
   restore)
     restore_acl
     restore_modes
+    retire_used
     as_owner rm -f -- "$MARKER"
     echo "removed the marker file $MARKER"
     ;;

@@ -484,6 +484,17 @@ PY
   [ -e "$H5/.local/state/usr/home-acl-cleanup" ] && bad "FIX2 restore: the marker is not removed" || ok
   grep -q 'setfacl --restore' "$RUNAS_LOG" && grep -q 'chmod' "$RUNAS_LOG" && ok || bad "FIX2 restore: setfacl/chmod do not run as the owner"
 
+  # FIX3 F4: a restore retires the snapshots it used; a second restore must not replay them over what the owner changed since
+  expect "FIX3 F4 restore: no snapshot is left in the state dir" "0" "$(ls "$ST5"/home-acl-before-*.txt.gz "$ST5"/secret-modes-before-*.txt 2>/dev/null | wc -l)"
+  expect "FIX3 F4 restore: the 5 snapshot files were archived in restored-<time>/" "5" "$(ls "$ST5"/restored-*/ 2>/dev/null | grep -c 'before-')"
+  chmod 600 "$H5/m1"; setfacl -b "$H5/a"
+  out="$("$HA" restore --root "$H5" --owner "$ME" --state "$ST5" --runas "$T/fakebin/runas" 2>&1)"
+  expect "FIX3 F4 restore: the second restore does not put m1 back to its first-snapshot mode" "600" "$(stat -c %a "$H5/m1")"
+  [ -z "$(getfacl -p -s "$H5/a" 2>/dev/null)" ] && ok || bad "FIX3 F4 restore: the second restore replayed an old ACL snapshot"
+  case "$out" in *"no home-acl-before-*.txt.gz"*"no secret-modes-before-"*) ok ;; *) bad "FIX3 F4 restore: the second restore does not say there is nothing left ($(printf '%s' "$out" | paste -sd'|' -))" ;; esac
+  # the rollback tests below need a snapshot again (what the next `apply` would write)
+  gzip -c "$T/snap-a.txt" >"$ST5/home-acl-before-20260104-000000.txt.gz"
+
   # rollback.sh --home-acl-cleanup runs alone: the sudoers rule and the managed users' ACL are not touched, no other option combines
   mkdir -p "$T/rb/etc/sudoers.d" "$T/rb/etc/polkit-1/rules.d" "$T/rb/srv/dotfiles"
   : >"$T/rb/etc/sudoers.d/50-usr-managed"; : >"$T/rb/etc/polkit-1/rules.d/50-usr-managed.rules"
