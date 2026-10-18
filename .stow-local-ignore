@@ -2,6 +2,7 @@
 ^/README.*
 ^/LICENSE.*
 ^/CLAUDE\.md
+^/AGENTS\.md
 ^/\.gitmodules
 ^/\.gitignore
 \.git
