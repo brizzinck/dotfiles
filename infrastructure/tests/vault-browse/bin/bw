@@ -10,6 +10,9 @@ need() { unlocked || { echo "Vault is locked." >&2; exit 1; }; }
 decode() { base64 -d; }
 next_id() { local n; n=$(cat "$FAKE_DIR/seq" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" >"$FAKE_DIR/seq"; echo "$1-$n"; }
 cmd=${1:-}
+if [[ ${FAKE_ENV_SEND:-} == 1 && ( $cmd == send || $cmd == config ) ]]; then
+  exec /usr/bin/python3 -I -B "$(dirname "$0")/send-api.py" "$@"
+fi
 case $cmd in
   serve) exec python3 -I -B "$(dirname "$0")/bw-serve.py" "$@" ;;
   status)
@@ -49,6 +52,7 @@ case $cmd in
     case $2 in
       items)
         if [[ ${3:-} == --trash ]]; then jq -c '[.items[] | select(.deletedDate != null)]' "$FAKE_DIR/vault.json"
+        elif [[ ${3:-} == --folderid ]]; then jq -c --arg folder "$4" '[.items[] | select(.deletedDate == null and .folderId == $folder)]' "$FAKE_DIR/vault.json"
         else jq -c '[.items[] | select(.deletedDate == null)]' "$FAKE_DIR/vault.json"; fi ;;
       folders) jq -c '.folders' "$FAKE_DIR/vault.json" ;;
     esac ;;

@@ -49,7 +49,8 @@ environment). So every bw process that holds BW_SESSION also runs with PR_SET_DU
 with cc into ~/.cache/vault on first use; the kernel then dumps nothing and systemd-coredump is never called, and
 /proc/PID/environ is closed to other processes of this user too). Without a compiler it falls back to RLIMIT_CORE 0 only. Item JSON (with the new password) and the Send password
 go to bw on stdin, never argv. Generated and old passwords are copied with `wl-copy --sensitive` and cleared in 30 s.
-A Send link is meant to be shared, so it is copied plainly.
+Send links are bearer secrets. The legacy sharing pickers copy plainly; envs
+uses the side-effect-free Send API and a sensitive selection with a bounded lifetime.
 Test hooks: BW_BIN, RBW_BIN, PINENTRY_BIN, VAULT_RBW_CONF, BW_DOWNLOAD_DIR, EDITOR, VAULT_BW_SERVE=0 (CLI only),
 VAULT_BW_LAUNCH=popen|systemd, VAULT_BW_NODUMP=0 (no dumpable-0 library), VAULT_BW_IDLE (seconds; default the rbw lock_timeout
 capped at 900), VAULT_BW_SERVE_POLL (supervisor tick, 2 s), VAULT_BW_RBW_POLL (how often it runs `rbw unlocked`, 20 s).
@@ -64,6 +65,7 @@ import os
 import re
 import resource
 import secrets
+import selectors
 import shutil
 import signal
 import socket
@@ -325,7 +327,64 @@ def with_nodump(env):
     return env
 
 
-def bw_cli(*args, stdin=None, session=True, extra_env=None, pass_fds=()):
+def _bounded_cli(argv, feed, env, pass_fds, timeout, maximum):
+    """Concurrent bounded pipe I/O for Send; stop/reap on every failure/signal."""
+    proc = subprocess.Popen(argv, stdin=subprocess.PIPE if feed is not None else subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+                            pass_fds=pass_fds, start_new_session=True)
+    output = {1: bytearray(), 2: bytearray()}
+    pending = memoryview(feed.encode('utf-8')) if feed is not None else None
+    total = 0
+    deadline = time.monotonic() + (timeout or 90)
+    exited = None
+    try:
+        with selectors.DefaultSelector() as selector:
+            for pipe, kind in ((proc.stdout, 1), (proc.stderr, 2), (proc.stdin, 0)):
+                if pipe is not None:
+                    os.set_blocking(pipe.fileno(), False)
+                    selector.register(pipe, selectors.EVENT_WRITE if kind == 0 else selectors.EVENT_READ, kind)
+            while selector.get_map():
+                now = time.monotonic()
+                if now >= deadline or exited is not None and now - exited > 1:
+                    raise subprocess.TimeoutExpired(argv, timeout or 90)
+                if proc.poll() is not None and exited is None:
+                    exited = now
+                for key, _ in selector.select(0.05):
+                    if key.data == 0:
+                        try:
+                            written = os.write(key.fd, pending[:65536]) if pending else 0
+                            pending = pending[written:]
+                        except BrokenPipeError:
+                            pending = pending[:0]
+                        if not pending:
+                            selector.unregister(key.fileobj); key.fileobj.close()
+                    else:
+                        try:
+                            data = os.read(key.fd, 65536)
+                        except BlockingIOError:
+                            continue
+                        total += len(data)
+                        if total > maximum:
+                            raise subprocess.SubprocessError('bounded Send response exceeded')
+                        output[key.data].extend(data)
+                        if not data:
+                            selector.unregister(key.fileobj); key.fileobj.close()
+        return subprocess.CompletedProcess(argv, proc.wait(timeout=max(0.01, deadline - time.monotonic())),
+                                           output[1].decode('utf-8', 'strict'), output[2].decode('utf-8', 'strict'))
+    except BaseException:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait(timeout=2)
+        raise
+    finally:
+        for pipe in (proc.stdin, proc.stdout, proc.stderr):
+            if pipe is not None:
+                pipe.close()
+
+
+def bw_cli(*args, stdin=None, session=True, extra_env=None, pass_fds=(), timeout=None, max_output=None):
     """One `bw` process (about 1 s of start-up each): the fallback and the calls the server does not do."""
     env = dict(os.environ)
     env.pop("BW_SESSION", None)
@@ -339,7 +398,10 @@ def bw_cli(*args, stdin=None, session=True, extra_env=None, pass_fds=()):
     if env.get("BW_SESSION"):
         with_nodump(env)
     try:
-        return subprocess.run([BW, *args], input=stdin, capture_output=True, text=True, env=env, pass_fds=pass_fds)
+        if max_output is not None:
+            return _bounded_cli([BW, *args], stdin, env, pass_fds, timeout, max_output)
+        return subprocess.run([BW, *args], input=stdin, capture_output=True, text=True, env=env, pass_fds=pass_fds,
+                              timeout=timeout)
     except FileNotFoundError:
         die("bw is not installed (sudo ~/dotfiles/apply-system.sh --only install)")
 
@@ -1324,19 +1386,171 @@ def send_options(send):
                 maxAccessCount=count, password=pw or None, emails=None, disabled=False, hideEmail=False)
 
 
-def create_send(send, *extra):
-    p = bw("send", "create", *extra, stdin=b64(send))
-    send["password"] = None
-    if p.returncode != 0:
-        die(f"could not create the Send: {first_line(p.stderr or p.stdout)}")
+SEND_OUTPUT_LIMIT = 16 * 1024 * 1024
+
+
+class SendError(Exception):
+    """A fixed public error; backend data/exception text must never escape."""
+
+
+def _send_json(*args, payload=None, session=True):
     try:
-        link = json.loads(p.stdout).get("accessUrl")
-    except ValueError:
-        link = None
-    if not link:
-        die("the Send was created but bw returned no link (see the web vault)")
+        result = bw_cli(*args, stdin=b64(payload) if payload is not None else None,
+                        session=session, timeout=90, max_output=SEND_OUTPUT_LIMIT)
+        if result.returncode or len((result.stdout or '').encode('utf-8')) > 16 * 1024 * 1024:
+            raise SendError('Send management request failed')
+        return json.loads(result.stdout)
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError, SystemExit):
+        raise SendError('Send management request failed') from None
+
+
+def create_send_result(send, *extra):
+    """One create attempt, stdin payload, no clipboard/notification/retry."""
+    if extra and (len(extra) != 2 or extra[0] != '--file' or not os.path.isabs(str(extra[1]))):
+        raise SendError('invalid Send file arguments')
+    if extra:
+        # Official CLI chooses JSON fileName before --file, then basenames it
+        # before saving. Carry only the private tmpfs path, never file bytes.
+        send = dict(send, file=dict(send.get('file') or {}, fileName=str(extra[1])))
+    result = _send_json('send', 'create', *map(str, extra), '--fullObject', payload=send)
+    if not isinstance(result, dict):
+        raise SendError('Send management response is invalid')
+    return result
+
+
+def get_send_result(ident):
+    if not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', ident or ''):
+        raise SendError('invalid Send identity')
+    result = _send_json('send', 'get', ident)
+    if not isinstance(result, dict) or result.get('id') != ident:
+        raise SendError('Send identity did not match')
+    return result
+
+
+def find_send_results(name):
+    if not re.fullmatch(r'envs-[0-9a-f]{32}', name or ''):
+        raise SendError('invalid Send request identity')
+    result = _send_json('send', 'list')
+    if not isinstance(result, list):
+        raise SendError('Send management response is invalid')
+    return [row for row in result if isinstance(row, dict) and row.get('name') == name]
+
+
+def send_server_origin():
+    """Configured sender identity only; never contact a recipient URL."""
+    try:
+        status_object = _send_json('status', session=False)
+        raw = status_object.get('serverUrl') if isinstance(status_object, dict) else None
+        result = bw_cli('config', 'server', session=False, timeout=30, max_output=4096) if not raw else None
+        raw = raw or (result.stdout or '').strip()
+        if result is not None and result.returncode or len(raw) > 2048:
+            raise ValueError
+        parsed = urllib.parse.urlsplit(raw)
+        if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError
+        hosts = {'bitwarden.com': 'send.bitwarden.com', 'vault.bitwarden.com': 'send.bitwarden.com',
+                 'bitwarden.eu': 'vault.bitwarden.eu', 'vault.bitwarden.eu': 'vault.bitwarden.eu',
+                 'vault.bitwarden-gov.com': 'send.bitwarden-gov.com'}
+        host = hosts.get(parsed.hostname.lower(), parsed.hostname.lower())
+        port = parsed.port
+        return 'https://' + host + ((':' + str(port)) if port not in (None, 443) else '')
+    except (OSError, ValueError, subprocess.SubprocessError, SystemExit):
+        raise SendError('configured Send server is unavailable') from None
+
+
+def _send_copy_start(pid):
+    """Proc inode ownership changes under dumpable-0; kernel Uid metadata is authoritative."""
+    try:
+        root = Path(f'/proc/{pid}')
+        def started():
+            with (root / 'stat').open('r') as f:
+                data = f.read(4097)
+            if len(data) > 4096:
+                return None
+            value = data.rsplit(')', 1)[1].split()[19]
+            return value if value.isdigit() else None
+        before = started()
+        with (root / 'status').open('r') as f:
+            metadata = f.read(16385)
+        if len(metadata) > 16384:
+            return None
+        uid = next((line for line in metadata.splitlines() if line.startswith('Uid:')), '')
+        fields = uid.split()[1:]
+        if len(fields) != 4 or any(not value.isdigit() or int(value) != os.getuid() for value in fields):
+            return None
+        return before if before is not None and started() == before else None
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _expire_send_copy(pid, start, delay=30):
+    time.sleep(delay)
+    if _send_copy_start(pid) == start:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+
+def copy_sensitive_send_link(link, copy_binary, paste_binary, clear_after=30):
+    """Expire only our foreground selection owner, never clear a newer item."""
+    proc = None
+    armed = False
+    try:
+        if not isinstance(link, str) or len(link) > 4096 or len(link.encode('utf-8')) > 4096:
+            raise SendError('sensitive clipboard link is too large')
+        if not all(os.path.isabs(p) and os.access(p, os.X_OK) for p in (copy_binary, paste_binary)):
+            raise SendError('sensitive clipboard is unavailable')
+        proc = subprocess.Popen([copy_binary, '--sensitive', '--foreground'], stdin=subprocess.PIPE,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                env=with_nodump(dict(os.environ)), start_new_session=True)
+        proc.stdin.write(link.encode('utf-8')); proc.stdin.close()
+        start = _send_copy_start(proc.pid)
+        if not start:
+            raise SendError('sensitive clipboard copy failed')
+        deadline = time.monotonic() + 2
+        while True:
+            if proc.poll() is not None:
+                raise SendError('sensitive clipboard copy failed')
+            protected = with_nodump(dict(os.environ))
+            types = _bounded_cli([paste_binary, '--list-types'], None, protected, (), 2, 8192)
+            content = _bounded_cli([paste_binary, '--no-newline'], None, protected, (), 2, 4096)
+            if types.returncode == content.returncode == 0 and 'x-kde-passwordManagerHint' in types.stdout.split() and content.stdout == link:
+                break
+            if time.monotonic() >= deadline:
+                raise SendError('sensitive clipboard copy failed')
+            time.sleep(0.02)
+        subprocess.Popen([sys.executable, '-I', '-B', str(Path(__file__).resolve()), '_send-wait-clear',
+                          str(proc.pid), start, str(clear_after)], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        armed = True
+    except (OSError, ValueError, subprocess.SubprocessError, BrokenPipeError):
+        raise SendError('sensitive clipboard copy failed') from None
+    finally:
+        # Signals use BaseException in the caller. Until expiry is armed every
+        # exit path must retire this selection owner, including those signals.
+        if not armed and proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2)
+
+
+def create_send(send, *extra):
+    if len(extra) == 2 and extra[0] == '--file':
+        extra = ('--file', os.path.abspath(os.path.expanduser(extra[1])))
+    try:
+        result = create_send_result(send, *extra)
+        link = result.get('accessUrl')
+        if not isinstance(link, str) or not link:
+            raise SendError('Send management response is invalid')
+    except SendError:
+        die('could not confirm the Send; check existing Sends before retrying')
+    send['password'] = None
     copy(link, sensitive=False)
-    finish("Send link copied", link.split("#")[0] + "#...")
+    finish('Send link copied')
 
 
 def cmd_send_text():
@@ -1480,6 +1694,17 @@ def main(argv):
         print(__doc__)
         return 0
     cmd = argv[0]
+    if cmd == '_send-wait-clear':
+        if len(argv) != 4 or not argv[1].isdigit() or not argv[2].isdigit():
+            return 2
+        try:
+            delay = float(argv[3])
+            if not 0 < delay <= 30:
+                return 2
+            _expire_send_copy(int(argv[1]), argv[2], delay)
+        except (ValueError, OSError):
+            return 2
+        return 0
     if cmd == "state":
         st = state()
         print(st)
