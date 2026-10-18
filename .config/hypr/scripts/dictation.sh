@@ -313,8 +313,18 @@ cmd_run() {
       resolve_backend
     fi
   fi
-  if ((DRY)); then echo "exec $BK_BIN -c $conf daemon   # $(backend_label)"; return 0; fi
+  # Whisper gets the RAW microphone: node.dont-move makes WirePlumber ignore EasyEffects' target metadata (processAllInputs), the
+  # stream still follows the default source (so a USB mic is used too). Offline A/B 2026-10-18 (AUDIO2, voxtype small, RNNoise
+  # in front of Whisper): clean speech +0.03 / +0.09 / 0.00 WER (ru / uk / en), SNR 5 pink noise worse in ru (+0.28) and uk
+  # (+0.15), SNR 15 mixed: the denoiser artefacts cost what the noise removal gains. pipewire-alsa honours the property.
+  local props='{ node.dont-move = true }'
+  if ((DRY)); then
+    echo "export PIPEWIRE_PROPS='$props'   # raw microphone for Whisper (AUDIO2), EasyEffects does not take this stream"
+    echo "exec $BK_BIN -c $conf daemon   # $(backend_label)"
+    return 0
+  fi
   [[ -n $BK_BIN && -x $BK_BIN ]] || { echo "dictation: no voxtype binary found" >&2; exit 1; }
+  export PIPEWIRE_PROPS="$props"
   exec "$BK_BIN" -c "$conf" daemon
 }
 

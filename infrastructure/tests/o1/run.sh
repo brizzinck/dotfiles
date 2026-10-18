@@ -401,6 +401,7 @@ cat >"$LIB/voxtype-vulkan" <<'X'
 #!/bin/sh
 echo "voxtype-vulkan $*" >>"$FAKE_LOG"
 case "$*" in
+  *daemon*) echo "env PIPEWIRE_PROPS=${PIPEWIRE_PROPS:-unset}" >>"$FAKE_LOG" ;;
   *transcribe*)
     echo probe >>"$FAKE_PROBES"
     echo "whisper_init_with_params_no_state: use gpu    = 1"
@@ -443,9 +444,12 @@ mv "$T/models/ggml-small.off" "$T/models/ggml-small.bin"
 # the daemon runs the variant directly: no PATH hack
 rm -rf "$HOME/.local/state/dictation/backend"
 out=$(FAKE_GPU=ok DICTATION_CPUINFO=$cpu512 "$DC" run --dry-run)
-expect "run execs the variant binary directly" bash -c "grep -q '^exec $LIB/voxtype-vulkan -c $T/run/voxtype/config.toml daemon' <<<'$out'"
+export RUN_OUT="$out"
+expect "run execs the variant binary directly" bash -c "grep -q '^exec $LIB/voxtype-vulkan -c $T/run/voxtype/config.toml daemon' <<<\"\$RUN_OUT\""
+expect "run keeps the Whisper stream on the raw microphone (PIPEWIRE_PROPS node.dont-move, AUDIO2)" bash -c "grep -qF \"export PIPEWIRE_PROPS='{ node.dont-move = true }'\" <<<\"\$RUN_OUT\""
 reset; FAKE_GPU=ok DICTATION_CPUINFO=$cpu512 "$DC" run
 expect "run (for real) starts the daemon from that binary" grep -q "^voxtype-vulkan -c $T/run/voxtype/config.toml daemon" "$T/log"
+expect "the real daemon process gets PIPEWIRE_PROPS node.dont-move in its environment" grep -qF "env PIPEWIRE_PROPS={ node.dont-move = true }" "$T/log"
 # a Vulkan daemon that crash-loops (systemd restarted it twice) is demoted to the CPU build
 reset; FAKE_NRESTARTS=2 FAKE_GPU=ok DICTATION_CPUINFO=$cpu512 "$DC" run
 expect "two automatic restarts demote Vulkan to the CPU build" grep -q "^voxtype-avx512 -c $T/run/voxtype/config.toml daemon" "$T/log"
