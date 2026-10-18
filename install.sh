@@ -60,6 +60,7 @@ packages=(
   xorg-xcursorgen librsvg                                                           # build deps of the local everforest-cursor-theme package (infrastructure/cursor)
   rofimoji wtype udiskie                                                            # polkit agent, clipboard, OSD, screenshots, picker, emoji (rofimoji = the emoji data of emoji.sh), automount
   bat eza git-delta github-cli trash-cli dust duf watchexec just go-yq xh shfmt direnv dive hyperfine
+  atuin                                                                             # local shell history (no sync), Ctrl+R list in the modal fzf (~/.config/zsh/history.zsh)
   gitleaks                                                                          # secret scan of the dotfiles pre-commit hook (.githooks/pre-commit, doctor gitleaks-history)
   tesseract tesseract-data-eng tesseract-data-rus zbar qrencode ddcutil pik                       # OCR (rus+eng), QR, DDC/CI monitor brightness, ports
   libqalculate chafa gifski kondo lostfiles termdown bandwhich lsof                           # calculator, image previews (chafa: kitty graphics in fzf-menu), GIF, cleanup, timer, network, open files
@@ -243,6 +244,10 @@ stow --restow .
 # publish the committed state to /srv/dotfiles for the managed users (usr sync). The public nvim submodule uses the same hooks.
 git -C "$DOTFILES" config core.hooksPath .githooks
 [ -e "$DOTFILES/.config/nvim/.git" ] && git -C "$DOTFILES/.config/nvim" config core.hooksPath "$DOTFILES/.githooks"
+# atuin (local history, DEV-a): import ~/.zsh_history once when there is no database yet (a new shell does it by itself too)
+if command -v atuin >/dev/null 2>&1 && [ ! -e "${XDG_DATA_HOME:-$HOME/.local/share}/atuin/history.db" ]; then
+  ATUIN_SESSION=$(atuin uuid) atuin import zsh >/dev/null 2>&1 || true
+fi
 # private submodule (secrets, machine-local configs) — stowed separately, skipped if not cloned
 if [ -d "$DOTFILES/private" ] && [ -n "$(ls -A "$DOTFILES/private" 2>/dev/null)" ]; then
   (cd "$DOTFILES/private" && stow --restow .)

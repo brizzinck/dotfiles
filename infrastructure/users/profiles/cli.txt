@@ -6,6 +6,7 @@
 .zshrc
 .gitconfig
 .config/zsh
+.config/atuin
 .config/fzf
 .config/layout
 .config/tmux

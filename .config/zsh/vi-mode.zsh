@@ -105,11 +105,15 @@ _df_vf_load() {
   local lib=$cfg/fzf/vimfzf.sh label out a
   local -a lines args
   [[ -r $lib ]] || return 1
-  if [[ ! -s $cache || $lib -nt $cache || $cfg/layout/layout-keys.sh -nt $cache ]]; then
+  if [[ ! -s $cache || $lib -nt $cache || $cfg/layout/layout-keys.sh -nt $cache || $cfg/zsh/vi-mode.zsh -nt $cache ]]; then
     mkdir -p ${cache:h} || return 1
     {
-      for label in history files cd; do
-        out=$(bash -c '. "$1"; VF_PROMPT=$2 VF_PRINT=1 vimfzf; printf "%s\n" "$VF_ACT_NORMAL"' _ "$lib" "$label" 2>/dev/null) || return 1
+      # atuin = Ctrl+R over the atuin database (history.zsh): NORMAL l / h cycle the filter like Tab / Shift+Tab;
+      # complete = the fzf-tab completion menu (completion.zsh)
+      for label in history files cd atuin complete; do
+        args=()
+        [[ $label == atuin ]] && args=("l:transform($cfg/fzf/atuin-history.sh cycle +1)" "h:transform($cfg/fzf/atuin-history.sh cycle -1)")
+        out=$(bash -c '. "$1"; VF_NORMAL_BINDS=("${@:3}"); VF_PROMPT=${2/atuin/history} VF_PRINT=1 vimfzf; printf "%s\n" "$VF_ACT_NORMAL"' _ "$lib" "$label" "${args[@]}" 2>/dev/null) || return 1
         lines=("${(@f)out}")
         print -r -- "_df_vf_act[$label]=${(qq)lines[-1]}"
         lines[-1]=()

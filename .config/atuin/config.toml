@@ -1,0 +1,18 @@
+# atuin: local shell history only (DEV-a). No sync, no AI, no daemon; zsh records through ~/.config/zsh/cmd-hooks.zsh and
+# Ctrl+R shows the history in the shared modal fzf list (~/.config/zsh/history.zsh), atuin's own TUI is not bound.
+auto_sync = false
+sync_address = "http://127.0.0.1:9"   # unroutable on purpose: nothing ever reaches api.atuin.sh
+update_check = false
+secrets_filter = true
+workspaces = true                    # the "workspace" filter = the git repository of the current directory
+search_mode = "fuzzy"
+filter_mode = "global"
+
+[ai]
+enabled = false
+
+[daemon]
+enabled = false
+
+[logs]
+enabled = false

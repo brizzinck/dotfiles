@@ -143,6 +143,13 @@ export NVM_DIR="$HOME/.nvm"
 for _f in "$HOME/.config/secrets/env.sh" "$HOME/dotfiles/env.secret.sh"; do [ -f "$_f" ] && source "$_f"; done; unset _f
 # per-user overrides that are never shared (usr link writes the accent marker of a managed user's prompt here)
 [ -r "$HOME/.zshrc.local" ] && source "$HOME/.zshrc.local"
+# per-command hooks (atuin recording, long-command notification), Ctrl+R over atuin, completion extras: not for agents.
+# After ~/.zshrc.local, so DF_CMD_NOTIFY_MIN & co can be set there; every file is optional and returns early without zle.
+if [[ -z $CLAUDECODE ]]; then
+  for _f in cmd-hooks history completion; do
+    [[ -r ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/$_f.zsh ]] && source ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/$_f.zsh
+  done; unset _f
+fi
 
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  
