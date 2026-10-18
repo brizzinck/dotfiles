@@ -298,7 +298,8 @@ REPO_PACKAGES=(
 # obs-cmd: OBS by keyboard over obs-websocket (leader o, hub rows; Rust, makedepends rust + git). OBS itself is never started.
 # voxtype-bin: offline dictation (SUPER+ALT+D, hold F9; dictation.sh, user unit voxtype.service); downgrade: pacman cache
 # rollback (hub row Update > Downgrade a package). Both guarded in the dotfiles: without them the keys say how to install.
-AUR_PACKAGES=(bibata-cursor-theme-bin shellcheck-bin ccusage wayscrollshot-bin pacseek bitwarden-cli-bin wlrctl wlr-which-key tmux-fingers obs-cmd voxtype-bin downgrade)
+# carapace-bin: completions for the commands zsh has none for (lazygit, glab, k9s, ...), loaded lazily by ~/.config/zsh/completion.zsh.
+AUR_PACKAGES=(bibata-cursor-theme-bin shellcheck-bin ccusage wayscrollshot-bin pacseek bitwarden-cli-bin wlrctl wlr-which-key tmux-fingers obs-cmd voxtype-bin downgrade carapace-bin)
 
 cpu_ucode_package() {
   if grep -qi 'AuthenticAMD' /proc/cpuinfo 2>/dev/null; then

@@ -93,9 +93,10 @@ fi
 # pacseek: pacman/AUR TUI; bitwarden-cli-bin: bw CLI (the repo bitwarden-cli needs nodejs-lts-jod, which conflicts with nodejs);
 # wlrctl: keyboard-driven pointer (SUPER+', SUPER+ALT+M, with wl-kbptr below); wlr-which-key: the SUPER+; leader menu;
 # tmux-fingers: prefix f hints in tmux (built from source, no curl installer); obs-cmd: OBS by keyboard (leader o);
-# voxtype-bin: offline dictation (SUPER+ALT+D, F9); downgrade: pacman cache rollback (hub Update group).
+# voxtype-bin: offline dictation (SUPER+ALT+D, F9); downgrade: pacman cache rollback (hub Update group);
+# carapace-bin: completions for commands zsh has none for (~/.config/zsh/completion.zsh).
 # Keep in sync with AUR_PACKAGES in apply-system.sh.
-for pkg in facad hyprdynamicmonitors-bin bibata-cursor-theme-bin shellcheck-bin ccusage wayscrollshot-bin pacseek bitwarden-cli-bin wlrctl wlr-which-key tmux-fingers obs-cmd voxtype-bin downgrade; do
+for pkg in facad hyprdynamicmonitors-bin bibata-cursor-theme-bin shellcheck-bin ccusage wayscrollshot-bin pacseek bitwarden-cli-bin wlrctl wlr-which-key tmux-fingers obs-cmd voxtype-bin downgrade carapace-bin; do
   yay -S --needed --noconfirm --sudoloop "$pkg" || warn "AUR install failed ($pkg) — continuing"
 done
 yay --save --cleanafter >/dev/null 2>&1 || true   # remove AUR build dirs after each install

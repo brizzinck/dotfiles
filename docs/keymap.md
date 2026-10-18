@@ -37,7 +37,7 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Editor | [Neovim: files and misc](#neovim-files-and-misc) | 17 |
 | Editor | [Neovim: moving and editing](#neovim-moving-and-editing) | 62 |
 | Menus and bar | [Menus: list grammar](#menus-list-grammar) | 19 |
-| Menus and bar | [Menus: keys of each menu](#menus-keys-of-each-menu) | 69 |
+| Menus and bar | [Menus: keys of each menu](#menus-keys-of-each-menu) | 74 |
 | Menus and bar | [TUIs and viewers](#tuis-and-viewers) | 3 |
 | Menus and bar | [Bar (waybar)](#bar-waybar) | 48 |
 | Apps and login | [Telegram](#telegram) | 6 |
@@ -1166,6 +1166,11 @@ Menu-specific keys keep the Alt+ form (works in both modes) and get a NORMAL let
 | `Tab` / `Shift+Tab` | Next / previous filter: global, workspace (git repository), directory, session | Shell history (Ctrl+R) |
 | `l` / `h` | Next / previous filter (same as Tab / Shift+Tab) (NORMAL mode, Esc first) | Shell history (Ctrl+R) |
 | `Enter` | Put the command on the line (it is not run) | Shell history (Ctrl+R) |
+| `Tab` / `Shift+Tab` | Move down / up | Completion menu (Tab) |
+| `Ctrl+L` | Accept and continue (into a directory, next path part) | Completion menu (Tab) |
+| `F1` / `F2` | Previous / next completion group | Completion menu (Tab) |
+| `Esc` | NORMAL mode: j k g G v / i a q as in every menu (Esc again quits) | Completion menu (Tab) |
+| `Enter` | Accept the completion | Completion menu (Tab) |
 
 ### TUIs and viewers
 

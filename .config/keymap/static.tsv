@@ -103,6 +103,11 @@ menu-keys	l	Follow the journal of that user's processes	Managed users (SUPER+SHI
 menu-keys	Tab / Shift+Tab	Next / previous filter: global, workspace (git repository), directory, session	Shell history (Ctrl+R)
 menu-keys	l / h	Next / previous filter (same as Tab / Shift+Tab)	Shell history (Ctrl+R)	NORMAL mode, Esc first
 menu-keys	Enter	Put the command on the line (it is not run)	Shell history (Ctrl+R)
+menu-keys	Tab / Shift+Tab	Move down / up	Completion menu (Tab)
+menu-keys	Ctrl+L	Accept and continue (into a directory, next path part)	Completion menu (Tab)
+menu-keys	F1 / F2	Previous / next completion group	Completion menu (Tab)
+menu-keys	Esc	NORMAL mode: j k g G v / i a q as in every menu (Esc again quits)	Completion menu (Tab)
+menu-keys	Enter	Accept the completion	Completion menu (Tab)
 tuis	j / k	Move (vim keys natively)	btop, wiremix, bluetui, yazi, lazygit, lazydocker, pacseek
 tuis	Ctrl+J / Ctrl+K / Ctrl+D / Ctrl+U	Move and page	pik
 tuis	hjkl w b e 0 $ g G v y /	vi keys (mode-keys vi)	tmux copy-mode and choose-tree
