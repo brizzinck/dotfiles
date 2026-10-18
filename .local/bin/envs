@@ -1797,6 +1797,10 @@ def cmd_import(a):
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
         with os.fdopen(fd, "r") as fh:
+            # a hard link shares its inode with a file we cannot see (`ln ~/x/secrets .env`): the shred would empty that one
+            if os.fstat(fh.fileno()).st_nlink > 1:
+                fail(f"{path} has more than one hard link (the same file is also reachable under another name): copy it to a "
+                     "fresh file first (`cp .env .env.new && mv .env.new .env`)", 1)
             text = fh.read()
     except OSError as e:
         fail(f"cannot read {path}: {e.strerror}")

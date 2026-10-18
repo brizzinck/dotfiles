@@ -776,6 +776,20 @@ check "19.4: mise exec runs with auto-install and not-found auto-install off, wh
 (cd "$PROJ" && "$ENVS" run --no-mise -- sh -c 'echo "${MISE_AUTO_INSTALL:-unset}"' >"$CAP/ai2.out" 2>/dev/null)
 check "19.4: --no-mise leaves the environment alone" test "$(cat "$CAP/ai2.out")" = unset
 
+# #5: a hard-linked .env is never imported or shredded
+reset; bind_proj
+printf 'X_TOKEN=NEWVAL-import-4\n' >"$T/outside.env"
+ln "$T/outside.env" "$PROJ/.env"
+e import .env -e stage --secrets X_TOKEN
+check "19.5: a .env with a second hard link is refused without a terminal" bash -c "[ $RC = 1 ] && grep -q 'hard link' '$ERR'"
+etty 'y\n' import .env -e stage --secrets X_TOKEN
+check "19.5: and on a terminal (no Shred prompt is reached)" test $RC = 1
+check "19.5: the other name of the file is intact and nothing reached the vault" bash -c "[ \"\$(cat '$T/outside.env')\" = 'X_TOKEN=NEWVAL-import-4' ] && ! grep -q NEWVAL-import-4 '$FAKE_DIR/vault.json'"
+rm -f "$PROJ/.env" "$T/outside.env"
+printf 'X_TOKEN=NEWVAL-import-5\n' >"$PROJ/.env"
+etty 'y\ny\n' import .env -e stage --secrets X_TOKEN
+check "19.5: control: a plain single-link .env is still imported" bash -c "[ $RC = 0 ] && grep -q NEWVAL-import-5 '$FAKE_DIR/vault.json'"
+scan "19.5"
 }
 
 sections_15_16() {
