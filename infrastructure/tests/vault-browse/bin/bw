@@ -80,11 +80,21 @@ case $cmd in
     esac ;;
   edit)
     need
+    if [[ $2 == folder ]]; then
+      decode | jq -c . >"$FAKE_DIR/last-folder-edit.json" || exit 1
+      jq -c --arg i "$3" --slurpfile n "$FAKE_DIR/last-folder-edit.json" '.folders |= map(if .id==$i then (. + {name: $n[0].name}) else . end)' "$FAKE_DIR/vault.json" | save_vault
+      jq -c --arg i "$3" '.folders[] | select(.id==$i)' "$FAKE_DIR/vault.json"
+      exit 0
+    fi
     decode | jq -c . >"$FAKE_DIR/last-edit.json" || exit 1
     jq -c --arg i "$3" --slurpfile n "$FAKE_DIR/last-edit.json" '.items |= map(if .id==$i then $n[0] else . end)' "$FAKE_DIR/vault.json" | save_vault
     cat "$FAKE_DIR/last-edit.json" ;;
   delete)
     need
+    if [[ $2 == folder ]]; then
+      jq -c --arg i "$3" '.folders |= map(select(.id != $i)) | .items |= map(if .folderId==$i then .folderId=null else . end)' "$FAKE_DIR/vault.json" | save_vault
+      exit 0
+    fi
     if [[ ${4:-} == --permanent ]]; then jq -c --arg i "$3" '.items |= map(select(.id != $i))' "$FAKE_DIR/vault.json" | save_vault
     else jq -c --arg i "$3" '.items |= map(if .id==$i then .deletedDate="2026-10-17T00:00:00.000Z" else . end)' "$FAKE_DIR/vault.json" | save_vault; fi ;;
   restore)

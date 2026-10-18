@@ -10,6 +10,11 @@ case ${1:-} in
   unlocked) locked && exit 1; exit 0 ;;
   lock) touch "$FAKE_DIR/rbw-locked"; exit 0 ;;
   stop-agent) exit 0 ;;
+  unlock)   # like the real client: the pinentry program asks, the test master password unlocks
+    [[ -n ${PINENTRY_BIN:-} ]] || exit 1
+    pw=$(printf 'GETPIN\nBYE\n' | "$PINENTRY_BIN" | sed -n 's/^D //p')
+    [[ $pw == master-pw ]] || { echo "rbw: incorrect password" >&2; exit 1; }
+    rm -f "$FAKE_DIR/rbw-locked"; exit 0 ;;
   sync) locked && exit 1; [[ -f $FAKE_DIR/rbw-sync-fail ]] && exit 1; cp "$FAKE_DIR/vault.json" "$VIEW"; exit 0 ;;
 esac
 locked && { echo "rbw: vault is locked" >&2; exit 1; }

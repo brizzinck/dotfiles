@@ -27,7 +27,7 @@ Run through `vault.sh bw CMD` (hub rows in actions.d/u6.tsv, interactive ones in
   vault-bw.py serve-stop      stop the per-session server (the session key stays; the next bw action restarts it)
 
 Backend (BW1): rbw does every read it can (lists, pickers, get, TOTP, history, sync). What only bw can do (edit, create,
-delete, restore, Trash, folders, templates, attachments) goes through ONE per-session `bw serve --hostname unix://...bw.sock`
+delete, restore, Trash, folders incl. rename and delete, templates, attachments) goes through ONE per-session `bw serve --hostname unix://...bw.sock`
 (no TCP, never): `bw` of the CLI is a ~1 s start per call, the server answers in milliseconds. The socket is
 $XDG_RUNTIME_DIR/vault/bw.sock (dir 700, socket 600), the server is a user unit `vault-bw-serve` started by this file
 (`_serve`: reads the 600 session file, puts the key into the environment of the one `bw serve` child, never argv; without a
@@ -607,6 +607,10 @@ def translate(args, stdin):
         return ("POST", "/attachment", {"itemid": opt["--itemid"]}, data, ctype, "data", True, None)
     if cmd == "edit" and len(tail) == 2 and tail[0] == "item" and stdin is not None:
         return ("PUT", f"/object/item/{q(tail[1], safe='')}", None, body(), "application/json", "data", True, None)
+    if cmd == "edit" and len(tail) == 2 and tail[0] == "folder" and stdin is not None:   # rename: body {"name": ...}
+        return ("PUT", f"/object/folder/{q(tail[1], safe='')}", None, body(), "application/json", "data", True, None)
+    if cmd == "delete" and len(tail) == 2 and tail[0] == "folder":   # its items stay, without a folder
+        return ("DELETE", f"/object/folder/{q(tail[1], safe='')}", None, None, None, "none", True, None)
     if cmd == "delete" and len(tail) == 2 and tail[0] == "item":
         return ("DELETE", f"/object/item/{q(tail[1], safe='')}", {"permanent": "true"} if opt.get("--permanent") else None,
                 None, None, "none", True, None)

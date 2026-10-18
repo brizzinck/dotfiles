@@ -170,6 +170,24 @@ class Handler(BaseHTTPRequestHandler):
                             i["deletedDate"] = "2026-10-17T00:00:00.000Z"
                 save(v)
                 return self.send(200, {"success": True})
+        if parts[:2] == ["object", "folder"] and len(parts) == 3:
+            if method == "PUT":
+                name = json.loads(body).get("name")
+                with open(f"{FAKE}/last-folder-edit.json", "w") as f:
+                    json.dump({"name": name}, f)
+                hit = [f for f in v["folders"] if f["id"] == parts[2]]
+                if not hit:
+                    return self.fail("Not found.")
+                hit[0]["name"] = name
+                save(v)
+                return self.ok(hit[0])
+            if method == "DELETE":
+                v["folders"] = [f for f in v["folders"] if f["id"] != parts[2]]
+                for i in v["items"]:
+                    if i.get("folderId") == parts[2]:
+                        i["folderId"] = None
+                save(v)
+                return self.send(200, {"success": True})
         if parts[:2] == ["object", "template"] and method == "GET" and len(parts) == 3:
             t = TEMPLATES.get(parts[2])
             return self.ok({"object": "template", "template": t}) if t is not None else self.fail("Unknown template.")

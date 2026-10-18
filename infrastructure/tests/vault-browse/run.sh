@@ -240,6 +240,19 @@ quick_bw1() {
     check "attachment upload keeps the file name: $(printf '%q' "$nm")" bash -c 'jq -e --arg n "$2" "any(.items[]|select(.id==\"i-github\")|.attachments[]?.fileName; . == \$n)" "$1" >/dev/null' _ "$FAKE/vault.json" "$nm"
     rm -f "$FAKE/$nm"
   done
+  # DEV-b C3: folder rename and delete have a REST form too (PUT / DELETE /object/folder/ID), the CLI is the fallback
+  : >"$FAKE/argv.log"
+  jq -nc '{name:"Work2"}' | base64 -w0 | python3 -I "$V" call --stdin edit folder f-work >/dev/null
+  check "server: rename folder = PUT /object/folder/ID (body not in argv)" bash -c 'grep -aqx "bw-serve PUT /object/folder/f-work" "$1/argv.log" && [ "$(jq -r ".folders[]|select(.id==\"f-work\")|.name" "$1/vault.json")" = Work2 ] && ! grep -aq Work2 "$1/argv.log"' _ "$FAKE"
+  python3 -I "$V" call delete folder f-work </dev/null
+  check "server: delete folder = DELETE /object/folder/ID, its items stay without a folder" bash -c 'grep -aqx "bw-serve DELETE /object/folder/f-work" "$1/argv.log" && [ "$(jq -r "[.folders[]|select(.id==\"f-work\")]|length" "$1/vault.json")" = 0 ] && [ "$(jq -r ".items[]|select(.id==\"i-github\")|.folderId" "$1/vault.json")" = null ]' _ "$FAKE"
+  : >"$FAKE/argv.log"
+  jq -nc '{name:"Linux2"}' | base64 -w0 | VAULT_BW_SERVE=0 python3 -I "$V" call --stdin edit folder f-linux >/dev/null
+  VAULT_BW_SERVE=0 python3 -I "$V" call delete folder f-mcp </dev/null
+  check "CLI fallback: edit folder / delete folder reach the vault" bash -c 'grep -aq "^bw edit folder f-linux" "$1/argv.log" && grep -aq "^bw delete folder f-mcp" "$1/argv.log" && [ "$(jq -r ".folders|map(.name)|join(\",\")" "$1/vault.json")" = Linux2 ]' _ "$FAKE"
+  : >"$FAKE/argv.log"
+  touch "$FAKE/rbw-locked"
+  check "fake rbw unlock: locked, then unlocked through the fake pinentry (master-pw)" bash -c '! rbw unlocked && rbw unlock && rbw unlocked' 
   check "server: an error answer keeps the CLI behaviour (exit 1, message on stderr)" bash -c 'out=$(python3 -I "$1" call get item i-nothing </dev/null 2>&1); rc=$?; [ $rc = 1 ] && grep -q "Not found" <<<"$out"' _ "$V"
   check "no REST form (Send create) falls back to the CLI process" bash -c ': >"$1/argv.log"; echo "{}" | base64 -w0 | python3 -I "$2" call --stdin send create >/dev/null 2>&1; grep -aq "^bw send create" "$1/argv.log"' _ "$FAKE" "$V"
   # lock stops the server, drops the session
