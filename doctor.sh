@@ -1153,6 +1153,7 @@ if [ -r "$users_lib" ]; then
     h=$(getent passwd "$u" | cut -d: -f6)
     [ -n "$h" ] && [ -d "$h" ] || continue
     [ "$(readlink "$h/.zshrc" 2>/dev/null)" = /srv/dotfiles/.zshrc ] || users_nolink="$users_nolink $u"
+    [ "$(readlink "$h/.local/bin/db" 2>/dev/null)" = /srv/dotfiles/.local/bin/db ] || users_nolink="$users_nolink $u(dev launchers)"
   done
   if [ -z "$users_nolink" ]; then ok users-links "profile links of the managed users point into /srv/dotfiles"; else users_report users-links "profile not linked for:$users_nolink (usr link USER)"; fi
   # shared nvim: ready and current (the install runs in the background; INFO while it has not finished)
