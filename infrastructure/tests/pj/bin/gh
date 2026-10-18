@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# fake gh: auth status, org list, repo list (JSON from FAKE_DIR/gh-user.json / gh-org.json), repo clone OWNER/NAME DEST
+echo "gh $*" >>"$FAKE_DIR/log"
+case "$1 $2" in
+  "auth status") [[ -e $FAKE_DIR/gh.loggedout ]] && exit 1; exit 0 ;;
+  "org list") echo orgone; exit 0 ;;
+  "repo list") if [[ ${3:-} == orgone ]]; then cat "$FAKE_DIR/gh-org.json"; else cat "$FAKE_DIR/gh-user.json"; fi; exit 0 ;;
+  "repo clone") mkdir -p "$4" && git init -q -b main "$4" && git -C "$4" remote add origin "https://github.com/$3.git"; exit 0 ;;
+esac
+exit 1

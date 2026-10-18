@@ -11,6 +11,8 @@ Keys: SUPER+P (Hyprland), tmux prefix F, zsh Ctrl+X p / NORMAL gp, hub row "Proj
   pj create DIR [--default]        create the session for DIR without showing it (prints its name; --default ignores
                                    .tmux-session.toml)
   pj rows [--json]                 the picker rows
+  pj clone [--here]                clone a repository from gh / glab and open it (the `c` key without the project list)
+  pj open --task | --clone         the Hyprland entry, straight to the new workmux task (repo list) or the clone picker
   pj kill NAME [--force]           kill a session (the `d` key without UI; --force skips the confirmation)
   pj layout [DIR]                  print the tmux commands a new session for DIR would run (nothing is created)
   pj trust [DIR]                   show the commands of DIR/.tmux-session.toml and trust this version
@@ -20,6 +22,8 @@ Keys: SUPER+P (Hyprland), tmux prefix F, zsh Ctrl+X p / NORMAL gp, hub row "Proj
 Picker keys (NORMAL letters, ua/ru twins from the shared library; Alt keys work in both modes):
   Enter       attach or create            o  alt-o   a window of its own (focus the window that shows it, else a new ghostty)
   d  alt-d    kill the session            t  alt-t   trust the repo's .tmux-session.toml
+  w  alt-w    new workmux task in the row's repo (branch picker, a window wm-* in the project session)
+  c  alt-c    clone a repository from gh / glab (cached list, destination prompt) and open it
   alt-Enter   create with the default layout, ignoring .tmux-session.toml
 
 Layout of a new session: repo = windows code (nvim), sh, ai (`claude` is typed, not run; `ai_autostart = true` in the config
@@ -38,8 +42,8 @@ runs it); other directory = sh. Override: <repo>/.tmux-session.toml, used only a
   size = 40                      # percent, optional
 
 Config: ${XDG_CONFIG_HOME:-~/.config}/pj/config.toml (roots, depth, zoxide, clone_dir, ai_autostart); missing = defaults.
-Test hooks (env): PJ_CONFIG PJ_STATE_DIR PJ_CACHE_DIR PJ_TMUX PJ_HYPRCTL PJ_HYPRD PJ_TERMINAL PJ_ZOXIDE PJ_NOTIFY PJ_HYPR=0|1
-PJ_REPO PJ_TIMING=1 FZF_MENU_HERE=1.
+Test hooks (env): PJ_CONFIG PJ_STATE_DIR PJ_CACHE_DIR PJ_TMUX PJ_HYPRCTL PJ_HYPRD PJ_TERMINAL PJ_ZOXIDE PJ_NOTIFY PJ_GH PJ_GLAB
+PJ_WORKMUX PJ_HYPR=0|1 PJ_REPO PJ_TIMING=1 FZF_MENU_HERE=1.
 """
 import os
 import re
@@ -64,6 +68,9 @@ HYPRD = shlex.split(os.environ.get("PJ_HYPRD") or "hyprd")
 TERMINAL = shlex.split(os.environ.get("PJ_TERMINAL") or "ghostty")
 ZOXIDE = shlex.split(os.environ.get("PJ_ZOXIDE") or "zoxide")
 NOTIFY = shlex.split(os.environ.get("PJ_NOTIFY") or "notify-send")
+GH = shlex.split(os.environ.get("PJ_GH") or "gh")
+GLAB = shlex.split(os.environ.get("PJ_GLAB") or "glab")
+WORKMUX = shlex.split(os.environ.get("PJ_WORKMUX") or "workmux")
 SELF = os.path.realpath(__file__)
 REPO = os.environ.get("PJ_REPO") or os.path.dirname(os.path.dirname(os.path.dirname(SELF)))
 
@@ -76,8 +83,9 @@ MAX_WINDOWS = 12
 DRY = False
 
 # NORMAL-mode letter -> action, Alt key -> action (Alt works in both modes)
-NORMAL_KEYS = [("o", "window"), ("d", "kill"), ("t", "trust")]
-ALT_KEYS = {"alt-o": "window", "alt-d": "kill", "alt-t": "trust", "alt-enter": "default"}
+NORMAL_KEYS = [("o", "window"), ("d", "kill"), ("w", "task"), ("c", "clone"), ("t", "trust")]
+ALT_KEYS = {"alt-o": "window", "alt-d": "kill", "alt-w": "task", "alt-c": "clone", "alt-t": "trust",
+            "alt-enter": "default"}
 
 
 class PjError(Exception):
@@ -606,23 +614,52 @@ def confirm(question, lines, here=None):
     return bool(row) and row.split("\t")[0] == "yes"
 
 
-def header_text(hypr):
+def pick_query(rows, prompt, header="", here=None, query="", extra=()):
+    """fzf-menu with --print-query: (row, query). A query that matches no row comes back as (None, query) (Enter on
+    nothing); a cancel is (None, None)."""
+    if not have("fzf-menu"):
+        raise PjError("fzf-menu is not installed")
+    here = is_tty() if here is None else here
+    cmd = menu_cmd(here) + ["-p", prompt, "--delimiter=\t", "--with-nth=2..", "--tabstop=4", "--print-query"]
+    if header:
+        cmd.append(f"--header={header}")
+    if query:
+        cmd.append(f"--query={query}")
+    cmd += list(extra)
+    p = subprocess.run(cmd, input="\n".join(rows) + "\n", stdout=subprocess.PIPE, text=True)
+    out = p.stdout.splitlines()
+    if p.returncode == 0 and len(out) >= 2:
+        return out[1], out[0]
+    if p.returncode != 0 and out:
+        return None, out[0]
+    return None, None
+
+
+def available():
+    """Which optional keys make sense here (the others are hidden from the header and not bound)."""
+    return {"window": hypr_ok(), "task": have(WORKMUX[0]), "clone": have(GH[0]) or have(GLAB[0])}
+
+
+def header_text(av, mode=""):
+    if mode == "task":
+        return "Enter: new workmux task in this repo"
     parts = ["Enter open"]
-    if hypr:
-        parts.append("o window")
-    parts += ["d kill", "t trust"]
+    for act_, label in (("window", "o window"), ("kill", "d kill"), ("task", "w task"), ("clone", "c clone")):
+        if av.get(act_, True):
+            parts.append(label)
+    parts.append("t trust")
     return " · ".join(parts)
 
 
-def run_menu(rows, hypr, here, query, notice):
+def run_menu(rows, av, here, query, notice, mode=""):
     me = f"python3 -I {shlex.quote(SELF)}"
     binds = "\n".join(f'{k}:become(printf "%s\\n%s\\n%s\\n" {{q}} {a} {{1}})' for k, a in NORMAL_KEYS
-                      if hypr or a != "window")
+                      if av.get(a, True))
     env = dict(os.environ, FZF_MENU_NORMAL_BINDS=binds)
-    keys = ",".join(k for k, a in ALT_KEYS.items() if hypr or a != "window")
+    keys = ",".join(k for k, a in ALT_KEYS.items() if av.get(a, True))
     args = ["-p", "project", "--delimiter=\t", "--with-nth=2..", "--tabstop=4", "--print-query", f"--expect={keys}",
             f"--preview={me} _preview {{1}}", "--preview-window=right,50%,wrap,border-left",
-            f"--header={(notice + chr(10)) if notice else ''}{header_text(hypr)}"]
+            f"--header={(notice + chr(10)) if notice else ''}{header_text(av, mode)}"]
     if query:
         args.append(f"--query={query}")
     cmd = menu_cmd(here, "large") + args
@@ -913,6 +950,240 @@ def kill_session(name, ctx, force=False, here=None):
     return f"killed {name}"
 
 
+# ───────────────────────────── workmux tasks ─────────────────────────────
+
+BRANCH_RE = re.compile(r"^[A-Za-z0-9._/@+-]+$")
+
+
+def workmux_env():
+    """workmux must talk to the server pj talks to: TMUX=<socket>,<pid>,0 of that server, no TMUX_PANE."""
+    sock = tm("display-message", "-p", "#{socket_path},#{pid}").stdout.strip()
+    env = {k: v for k, v in os.environ.items() if k != "TMUX_PANE"}
+    if sock.count(",") == 1:
+        env["TMUX"] = sock + ",0"
+    return env
+
+
+def log_line(text):
+    os.makedirs(STATE, mode=0o700, exist_ok=True)
+    fd = os.open(os.path.join(STATE, "last.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "a") as f:
+        f.write(text.rstrip("\n") + "\n")
+
+
+def wm_windows(session):
+    r = tm("list-windows", "-t", f"={session}:", "-F", "#{window_id}\t#{window_name}")
+    return [tuple(l.split("\t", 1)) for l in r.stdout.splitlines() if "\t" in l and l.split("\t", 1)[1].startswith("wm-")]
+
+
+def run_workmux(args, cwd, session):
+    """Run workmux with PJ's server in its environment; returns (new wm-* window id or None, error text)."""
+    before = {w for w, _ in wm_windows(session)}
+    if DRY:
+        print("DRY: " + shlex.join(WORKMUX + args) + f"  (cwd {cwd})")
+        return None, ""
+    r = run(WORKMUX + args, cwd=cwd, env=workmux_env(), timeout=120)
+    log_line(f"$ workmux {' '.join(args)}  (cwd {cwd}, rc {r.returncode})\n{r.stdout}{r.stderr}")
+    new = [w for w, _ in wm_windows(session) if w not in before]
+    if r.returncode != 0 and not new:
+        last = [l for l in (r.stderr + r.stdout).splitlines() if l.strip()]
+        return None, last[-1] if last else f"workmux failed (rc {r.returncode})"
+    return (new[-1] if new else None), ""
+
+
+def task_repo(ident):
+    """The repo a `w` on this row works in: a repo row, a worktree row's repo, a session that sits in a repo."""
+    p = path_of(ident)
+    if not p:
+        return None
+    return repo_of_worktree(p) or (p if os.path.isdir(os.path.join(p, ".git")) else None)
+
+
+def free_branches(repo):
+    r = git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads", timeout=3)
+    used = {read_head(os.path.join(repo, ".git"))} | {b for _, b in worktrees_of(repo)}
+    return [b for b in r.stdout.splitlines() if b and b not in used]
+
+
+def new_task(ident, cfg, ctx, here):
+    """`w`: a new workmux task (worktree + wm-* window) in the project session of the row's repo."""
+    repo = task_repo(ident)
+    if not repo:
+        return False, "w needs a repo (or a session or worktree of one)"
+    if not have(WORKMUX[0]):
+        return False, "workmux is not installed"
+    name = ensure_session(repo, cfg, ctx)
+    if name is None:
+        return False, ""
+    rows = [f"{b}\t{b}" for b in free_branches(repo)]
+    row, query = pick_query(rows, "branch", "type a new branch name or pick one, Enter", here)
+    branch = (row.split("\t")[0] if row else (query or "")).strip()
+    if not branch:
+        return False, ""
+    if not BRANCH_RE.match(branch) or branch.startswith("-"):
+        return False, f"not a usable branch name: {branch!r}"
+    win, err = run_workmux(["add", branch, "--parent-session", name, "-b"], repo, name)
+    if err:
+        return False, f"workmux add failed: {err}"
+    return True, activate(name, ctx, window=win)
+
+
+# ───────────────────────────── clone from gh / glab ─────────────────────────────
+
+REMOTE_TTL = 3600
+
+
+def remote_cache():
+    import json
+    try:
+        with open(os.path.join(CACHE, "remote.json")) as f:
+            d = json.load(f)
+        return d if isinstance(d.get("items"), list) else None
+    except (OSError, ValueError):
+        return None
+
+
+def fetch_remote():
+    """Repositories of the gh user and every gh org, plus glab --mine. Returns (items, error)."""
+    import json
+    items, err = [], ""
+    if have(GH[0]):
+        if run(GH + ["auth", "status"], timeout=20).returncode != 0:
+            err = "gh: not logged in, run gh auth login"
+        else:
+            owners = [""] + [o.strip() for o in run(GH + ["org", "list"], timeout=20).stdout.splitlines() if o.strip()]
+            for o in owners:
+                r = run(GH + ["repo", "list"] + ([o] if o else []) +
+                        ["--limit", "1000", "--json", "nameWithOwner,description,isArchived,pushedAt"], timeout=60)
+                try:
+                    for x in json.loads(r.stdout or "[]"):
+                        items.append({"src": "gh", "name": x["nameWithOwner"], "desc": x.get("description") or "",
+                                      "archived": bool(x.get("isArchived")), "pushed": x.get("pushedAt") or ""})
+                except (ValueError, KeyError, TypeError):
+                    pass
+    if have(GLAB[0]) and run(GLAB + ["auth", "status"], timeout=20).returncode == 0:
+        r = run(GLAB + ["repo", "list", "--mine", "-F", "json"], timeout=60)
+        try:
+            for x in json.loads(r.stdout or "[]"):
+                items.append({"src": "glab", "name": x["path_with_namespace"], "desc": x.get("description") or "",
+                              "archived": bool(x.get("archived")), "pushed": x.get("last_activity_at") or ""})
+        except (ValueError, KeyError, TypeError):
+            pass
+    seen, out = set(), []
+    for it in sorted(items, key=lambda i: i["pushed"], reverse=True):
+        if (it["src"], it["name"]) not in seen:
+            seen.add((it["src"], it["name"]))
+            out.append(it)
+    return out, err
+
+
+def save_remote(items):
+    import json
+    os.makedirs(CACHE, mode=0o700, exist_ok=True)
+    os.chmod(CACHE, 0o700)
+    tmp = os.path.join(CACHE, f"remote.json.{os.getpid()}")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump({"time": int(time.time()), "items": items}, f)
+    os.replace(tmp, os.path.join(CACHE, "remote.json"))
+
+
+def origin_slug(repo):
+    """owner/name (lower case) of the origin remote, read from .git/config without git; '' when there is none."""
+    try:
+        with open(os.path.join(repo, ".git", "config")) as f:
+            txt = f.read()
+    except OSError:
+        return ""
+    m = re.search(r'\[remote "origin"\][^\[]*?url\s*=\s*(\S+)', txt)
+    if not m:
+        return ""
+    u = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?/?$", m.group(1))
+    return u.group(1).lower() if u else ""
+
+
+def cloned_map(cfg):
+    out = {}
+    for r in walk_repos(list(dict.fromkeys(cfg["roots"] + [cfg["clone_dir"]])), cfg["depth"]):
+        slug = origin_slug(r)
+        if slug:
+            out.setdefault(slug, r)
+    return out
+
+
+def remote_rows(cfg, refresh=False):
+    """Tab separated rows for the clone picker: id c:SRC:owner/name (or login), display."""
+    cache = remote_cache()
+    err = ""
+    if refresh or cache is None:
+        items, err = fetch_remote()
+        if items:
+            save_remote(items)
+            cache = {"items": items}
+    items = (cache or {}).get("items", [])
+    if not items and (err or not (have(GH[0]) or have(GLAB[0]))):
+        return [f"login\t{err or 'gh: not logged in, run gh auth login'}"]
+    cloned = cloned_map(cfg)
+    rows = [f"login\t{err}"] if err and items else []
+    for it in items:
+        tag = "  [cloned]" if it["name"].lower() in cloned else ""
+        tag += "  [archived]" if it["archived"] else ""
+        rows.append(f"c:{it['src']}:{it['name']}\t" + clean(f"{it['src']:<4} {it['name']}  {it['desc']}{tag}"))
+    return rows
+
+
+def clone_flow(cfg, ctx, here):
+    """`c`: pick a remote repository, confirm the destination, clone it, open it. Returns (leave, message)."""
+    stale = True
+    cache = remote_cache()
+    if cache and time.time() - cache.get("time", 0) < REMOTE_TTL:
+        stale = False
+    rows = remote_rows(cfg) if cache else ["login\tloading the repository list ..."]
+    extra = []
+    if stale or not cache:
+        extra = [f"--bind=start:reload(python3 -I {shlex.quote(SELF)} _remote-rows --refresh)"]
+    row, _ = pick_query(rows, "clone", "Enter: clone · the list is cached for an hour", here, extra=extra)
+    if not row:
+        return False, ""
+    ident = row.split("\t")[0]
+    if ident == "login":
+        return False, row.split("\t", 1)[1] if "\t" in row else "not logged in"
+    _, src, slug = ident.split(":", 2)
+    have_dir = cloned_map(cfg).get(slug.lower())
+    if have_dir:
+        return open_row("r:" + have_dir, cfg, ctx)
+    default = os.path.join(cfg["clone_dir"], slug.split("/")[-1])
+    drow, dest = pick_query([f"dest\t{tilde(default)}"], "clone to", "edit the destination, Enter", here,
+                            query=default)
+    dest = os.path.abspath(os.path.expanduser((dest or "").strip()))
+    if drow is None and not dest:
+        return False, ""
+    if not dest or dest == "/" or dest == HOME:
+        return False, "pick a directory inside your projects"
+    if os.path.exists(dest) and (not os.path.isdir(dest) or os.listdir(dest)):
+        return False, f"{tilde(dest)} exists and is not empty"
+    tool = GH if src == "gh" else GLAB
+    argv = tool + ["repo", "clone", slug, dest]
+    if DRY:
+        print("DRY: " + shlex.join(argv))
+        return False, ""
+    if here:
+        print(f"pj: cloning {slug} into {tilde(dest)} ...", file=sys.stderr)
+        rc = subprocess.run(argv).returncode
+        out = ""
+    else:
+        notify("Cloning", slug)
+        r = run(argv, timeout=1800)
+        rc, out = r.returncode, (r.stdout + r.stderr)
+    log_line(f"$ {' '.join(argv)}  (rc {rc})\n{out}")
+    if rc != 0:
+        last = [l for l in out.splitlines() if l.strip()]
+        return False, f"clone failed: {last[-1] if last else 'rc ' + str(rc)}"
+    if not here:
+        notify("Cloned", f"{slug} -> {tilde(dest)}")
+    return open_row("r:" + dest, cfg, ctx)
+
+
 # ───────────────────────────── actions ─────────────────────────────
 
 def enter_worktree(wt, cfg, ctx):
@@ -931,6 +1202,11 @@ def enter_worktree(wt, cfg, ctx):
     name = ensure_session(repo, cfg, ctx)
     if name is None:
         return False, ""
+    if have(WORKMUX[0]) and repo != wt:
+        win, err = run_workmux(["open", handle, "--parent-session", name], repo, name)
+        if win or DRY:
+            return True, activate(name, ctx, window=win)
+        say(ctx, f"workmux open failed ({err or 'no window appeared'}); using a plain window")
     out = tm_chain([["new-window", "-d", "-t", f"={name}:", "-n", f"wt-{sanitize(handle)}", "-c", wt, "-P", "-F", PF]])
     return True, activate(name, ctx, window=out[0].split("\t")[0] if out else None)
 
@@ -978,6 +1254,10 @@ def act(action, ident, cfg, ctx, here):
         if action == "trust":
             p = path_of(ident)
             return False, trust_flow(p, cfg, here) if p else ""
+        if action == "task":
+            return new_task(ident, cfg, ctx, here)
+        if action == "clone":
+            return clone_flow(cfg, ctx, here)
         if action == "window":
             return open_row(ident, cfg, ctx, own_window=True)
         if action == "default":
@@ -987,16 +1267,23 @@ def act(action, ident, cfg, ctx, here):
         return False, str(e)
 
 
-def picker(cfg, ctx, here):
-    hypr = hypr_ok()
+def picker(cfg, ctx, here, mode=""):
+    av = available()
     notice, query = "", ""
     actions = {a for _, a in NORMAL_KEYS}
     while True:
         rows = collect(cfg)
-        rc, q, key, ident = run_menu(rows, hypr, here, query, notice)
+        if mode == "task":
+            rows = [x for x in rows if x["kind"] != "zoxide" and task_repo(x["id"])]
+        rc, q, key, ident = run_menu(rows, av, here, query, notice, mode)
         if rc != 0:
             return 0
         action = ALT_KEYS.get(key) or (key if key in actions else "enter")
+        if mode == "task" and action == "enter":
+            action = "task"
+        if action in av and not av[action]:
+            notice = "not available here"
+            continue
         query = q
         leave, msg = act(action, ident, cfg, ctx, here)
         if leave:
@@ -1109,9 +1396,10 @@ def resolve_arg(arg):
 
 def cmd_open(opts, args):
     cfg, _ = load_config()
+    mode = "task" if opts["task"] else ("clone" if opts["clone"] else "")
     if not hypr_ok():
         if is_tty():
-            return picker(cfg, make_ctx(opts), True)
+            return run_mode(cfg, make_ctx(opts), True, mode)
         notify("pj", "Hyprland is not reachable; run pj --here in a terminal")
         return 1
     ctx = Ctx("hypr", target=hypr_target())
@@ -1119,7 +1407,15 @@ def cmd_open(opts, args):
         leave, msg = open_row(resolve_arg(args[1]), cfg, ctx)
         say(ctx, msg)
         return 0
-    return picker(cfg, ctx, False)
+    return run_mode(cfg, ctx, False, mode)
+
+
+def run_mode(cfg, ctx, here, mode):
+    if mode == "clone":
+        leave, msg = clone_flow(cfg, ctx, here)
+        say(ctx, msg)
+        return 0
+    return picker(cfg, ctx, here, mode)
 
 
 def cmd_rows(opts):
@@ -1199,7 +1495,8 @@ def cmd_check():
 
 
 def parse(argv):
-    opts = {"here": False, "client": None, "dry": False, "force": False, "json": False}
+    opts = {"here": False, "client": None, "dry": False, "force": False, "json": False, "task": False,
+            "clone": False, "refresh": False}
     args, i = [], 0
     while i < len(argv):
         a = argv[i]
@@ -1216,6 +1513,12 @@ def parse(argv):
             opts["force"] = True
         elif a == "--json":
             opts["json"] = True
+        elif a == "--task":
+            opts["task"] = True
+        elif a == "--clone":
+            opts["clone"] = True
+        elif a == "--refresh":
+            opts["refresh"] = True
         elif a in ("-h", "--help"):
             return opts, ["help"]
         else:
@@ -1239,6 +1542,9 @@ def main(argv):
             return cmd_preview(args[1])
         if cmd == "check":
             return cmd_check()
+        if cmd == "_remote-rows":
+            print("\n".join(remote_rows(load_config()[0], opts["refresh"])))
+            return 0
         cfg, err = load_config()
         if err:
             print(f"pj: {err} (defaults used)", file=sys.stderr)
@@ -1248,6 +1554,11 @@ def main(argv):
             return cmd_trust(args, cfg)
         if cmd == "open":
             return cmd_open(opts, args)
+        if cmd == "clone":
+            leave, msg = clone_flow(cfg, make_ctx(opts), opts["here"] or is_tty())
+            if msg:
+                print(f"pj: {msg}", file=sys.stderr)
+            return 0
         if cmd == "create":
             if len(args) < 2:
                 raise PjError("usage: pj create DIR [--default]")

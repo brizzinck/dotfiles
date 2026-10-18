@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# fake glab: auth status, repo list --mine -F json (FAKE_DIR/glab.json), repo clone PATH DEST
+echo "glab $*" >>"$FAKE_DIR/log"
+case "$1 $2" in
+  "auth status") exit 0 ;;
+  "repo list") cat "$FAKE_DIR/glab.json"; exit 0 ;;
+  "repo clone") mkdir -p "$4" && git init -q -b main "$4" && git -C "$4" remote add origin "https://gitlab.com/$3.git"; exit 0 ;;
+esac
+exit 1

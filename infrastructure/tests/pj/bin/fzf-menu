@@ -1,6 +1,24 @@
 #!/usr/bin/env bash
-# fake fzf-menu: logs the arguments and the rows, answers with the first row that matches $FAKE_PICK (empty = cancel)
+# fake fzf-menu: logs the arguments and the rows, then answers like fzf would.
+# The answer is $FAKE_PICK, or the first line of the file $FAKE_PICKS (consumed, one line per call):
+#   PATTERN            the first row matching PATTERN (empty = cancelled)
+#   pick:PATTERN       the same
+#   act:ACTION:PATTERN a NORMAL-mode key (the library's become(printf query ACTION id)) on the first row matching PATTERN
+#   query:TEXT         Enter on a query that matches nothing (--print-query: the query, exit 1)
 rows=$(cat)
 { echo "fzf-menu $*"; printf '%s\n' "$rows" | sed 's/^/  row: /'; } >>"$FAKE_DIR/log"
-[[ -n ${FAKE_PICK:-} ]] || exit 1
-printf '%s\n' "$rows" | grep -m1 -i -- "$FAKE_PICK" || exit 1
+pq=0 exp=0 q=""
+for a in "$@"; do case $a in --print-query) pq=1 ;; --expect=*) exp=1 ;; --query=*) q=${a#--query=} ;; esac; done
+pick=${FAKE_PICK:-}
+if [[ -s ${FAKE_PICKS:-/nonexistent} ]]; then pick=$(head -1 "$FAKE_PICKS"); sed -i 1d "$FAKE_PICKS"; fi
+action=""
+case $pick in
+  query:*) ((pq)) && echo "${pick#query:}"; exit 1 ;;
+  act:*) rest=${pick#act:}; action=${rest%%:*}; pick=${rest#*:} ;;
+  pick:*) pick=${pick#pick:} ;;
+esac
+[[ -n $pick ]] || exit 1
+row=$(printf '%s\n' "$rows" | grep -m1 -i -- "$pick") || exit 1
+((pq)) && echo "$q"
+((exp)) && echo "$action"
+printf '%s\n' "$row"

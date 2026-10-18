@@ -15,6 +15,7 @@ REPO=$(cd "$HERE/../../.." && pwd)
 PJ="$REPO/.local/bin/pj"
 BIN="$HERE/bin"
 BIN_AI="$HERE/bin-ai"
+BIN_GLAB="$HERE/bin-glab"
 QUICK=0 KEEP=0
 for a in "$@"; do case $a in --quick) QUICK=1 ;; --keep) KEEP=1 ;; *) echo "usage: run.sh [--quick] [--keep]" >&2; exit 2 ;; esac; done
 
@@ -324,6 +325,109 @@ tm new-window -d -t =k4: -n wm-job
 FAKE_PICK="No" pjx kill k4 >/dev/null
 expect "kill: wm-* windows trigger the confirm and the text says worktrees stay" grep -q "workmux windows: wm-job" "$T/log"
 pjx kill k4 --force >/dev/null
+
+# ───────────────────────────── 7. workmux ─────────────────────────────
+echo "-- 7. workmux"
+# the picker pieces are driven by the fake fzf-menu (FAKE_PICKS); a real client takes the switch
+export FAKE_PICKS="$T/picks"
+attach wmain; WP=$LAST_PID
+wcl=$(client_of wmain)
+mkgit "$T/job/wmrepo"; git -C "$T/job/wmrepo" branch spare
+: >"$T/log"; printf 'pick:wmrepo\nquery:feat-x\n' >"$FAKE_PICKS"
+FZF_MENU_HERE=1 pjx --client "$wcl" open --task >/dev/null 2>&1
+expect "workmux: w runs 'workmux add BRANCH --parent-session S -b' in the repo with the private server in TMUX" bash -c 'grep -q "^workmux add feat-x --parent-session wmrepo -b | cwd=$1/job/wmrepo | TMUX=.*/$2,[0-9]*,0$" "$FAKE_DIR/log"' _ "$T" "$SOCK"
+expect "workmux: the project session was created for the repo" has_session wmrepo
+expect "workmux: the new wm-* window is selected and the client follows" wait_for "test \"\$(tmux -L $SOCK display-message -p -t =wmrepo: '#{window_name}')\" = wm-feat-x -a \"\$(tmux -L $SOCK list-clients -F '#{client_name} #{client_session}' | awk -v c='$wcl' '\$1 == c { print \$2 }')\" = wmrepo" 3
+expect "workmux: pj created no wm-* window itself (only the fake workmux did)" bash -c 'test "$(tmux -L "$1" list-windows -t =wmrepo: -F "#{window_name}" | grep -c "^wm-")" = 1' _ "$SOCK"
+expect "workmux: the branch list holds branches without a worktree and not the checked-out one" bash -c 'grep -A6 "^fzf-menu .*-p branch" "$FAKE_DIR/log" | grep -q "row: spare" && ! grep -A6 "^fzf-menu .*-p branch" "$FAKE_DIR/log" | grep -q "row: main"' 
+expect "workmux: the --task list holds repos only (no zoxide rows)" bash -c '! grep -A40 "^fzf-menu .*-p project" "$FAKE_DIR/log" | grep -q "row: z:"'
+# a failing workmux is reported, nothing selected
+: >"$T/log"; touch "$T/workmux.fail"; printf 'pick:wmrepo\nquery:feat-y\n' >"$FAKE_PICKS"
+out=$(FZF_MENU_HERE=1 pjx --client "$wcl" open --task 2>&1)
+expect "workmux: a failing workmux shows its last line (in the header of the reopened list)" grep -q "workmux add failed: workmux: boom" "$T/log"
+expect "workmux: the log keeps the output (0600)" bash -c 'grep -q boom "$1/state/last.log" && test "$(stat -c %a "$1/state/last.log")" = 600' _ "$T"
+rm -f "$T/workmux.fail"
+# a bad branch name
+printf 'pick:wmrepo\nquery:--evil\n' >"$FAKE_PICKS"; : >"$T/log"
+FZF_MENU_HERE=1 pjx --client "$wcl" open --task >/dev/null 2>&1
+expect "workmux: a branch name starting with - is refused (workmux not called)" bash -c '! grep -q "^workmux add" "$FAKE_DIR/log"'
+# worktree row: an existing window is selected; else workmux open; missing workmux = wt-* window
+tm new-window -d -t =alpha: -n wm-feat -c "$T/wt/alpha/feat"
+: >"$T/log"; printf 'pick:alpha ⎇ feat\n' >"$FAKE_PICKS"
+FZF_MENU_HERE=1 pjx --client "$wcl" >/dev/null 2>&1
+expect "workmux: Enter on a worktree row selects the window that already works in it (no workmux call)" bash -c 'test "$(tmux -L "$1" display-message -p -t =alpha: "#{window_name}")" = wm-feat && ! grep -q "^workmux" "$FAKE_DIR/log"' _ "$SOCK"
+tm kill-window -t =alpha:wm-feat
+: >"$T/log"; printf 'pick:alpha ⎇ feat\n' >"$FAKE_PICKS"
+FZF_MENU_HERE=1 pjx --client "$wcl" >/dev/null 2>&1
+expect "workmux: without a window Enter runs 'workmux open HANDLE --parent-session S'" grep -q "^workmux open feat --parent-session alpha | cwd=$T/job/alpha" "$T/log"
+expect "workmux: and selects the wm-feat window" test "$(tm display-message -p -t =alpha: '#{window_name}')" = wm-feat
+tm kill-window -t =alpha:wm-feat
+: >"$T/log"; printf 'pick:alpha ⎇ feat\n' >"$FAKE_PICKS"
+FZF_MENU_HERE=1 PJ_WORKMUX=/nonexistent/workmux pjx --client "$wcl" >/dev/null 2>&1
+expect "workmux: workmux missing -> a plain wt-feat window in the project session" test "$(tm display-message -p -t =alpha: '#{window_name}')" = wt-feat
+expect "workmux: the fallback window works in the worktree" test "$(tm display-message -p -t '=alpha:wt-feat' '#{pane_current_path}')" = "$T/wt/alpha/feat"
+expect "workmux: w is hidden without workmux (header)" bash -c 'printf "p\n" >"$1"; : >"$2/log"; FZF_MENU_HERE=1 FAKE_PICK= PJ_WORKMUX=/nonexistent/workmux PATH="$3" "$4" --here >/dev/null 2>&1; ! grep "^fzf-menu .*-p project" "$2/log" | grep -q "w task"' _ "$T/x" "$T" "$BIN:$MIN_PATH" "$PJ"
+kill "$WP" 2>/dev/null
+
+# ───────────────────────────── 8. clone ─────────────────────────────
+echo "-- 8. clone"
+cat >"$T/gh-user.json" <<'EOF2'
+[{"nameWithOwner":"me/alpha-remote","description":"Alpha remote","isArchived":false,"pushedAt":"2026-10-02T00:00:00Z"},
+ {"nameWithOwner":"me/cloned-one","description":"Already here","isArchived":false,"pushedAt":"2026-10-01T00:00:00Z"}]
+EOF2
+cat >"$T/gh-org.json" <<'EOF2'
+[{"nameWithOwner":"orgone/tool","description":"An org tool","isArchived":true,"pushedAt":"2026-09-01T00:00:00Z"}]
+EOF2
+printf '[{"path_with_namespace":"grp/labrepo","description":"On gitlab","archived":false,"last_activity_at":"2026-10-03T00:00:00Z"}]\n' >"$T/glab.json"
+mkgit "$T/job/cloned-one"; git -C "$T/job/cloned-one" remote add origin git@github.com:me/cloned-one.git
+printf 'roots = ["%s"]\nclone_dir = "%s"\n' "$T/job" "$T/job" >"$T/config.clone"
+export PJ_CONFIG="$T/config.clone"
+attach cmain; CP=$LAST_PID
+ccl=$(client_of cmain)
+: >"$T/log"; rm -rf "$T/cache"/*
+FAKE_PICK= FZF_MENU_HERE=1 pjx clone --here --client "$ccl" >/dev/null 2>&1
+expect "clone: with no cache the picker opens at once and reloads in the background" bash -c 'grep -q "^fzf-menu .*-p clone .*start:reload(.*_remote-rows --refresh)" "$FAKE_DIR/log"'
+out=$(pjx _remote-rows --refresh)
+expect "clone: rows from gh (user and org) sorted by push date" bash -c 'printf "%s\n" "$1" | head -1 | grep -q "^c:gh:me/alpha-remote	gh .*me/alpha-remote  Alpha remote" && printf "%s\n" "$1" | grep -q "^c:gh:orgone/tool	.*\[archived\]"' _ "$out"
+expect "clone: an origin found in .git/config marks [cloned]" bash -c 'printf "%s\n" "$1" | grep "me/cloned-one" | grep -q "\[cloned\]"' _ "$out"
+expect "clone: the cache is 0600 in a 0700 dir" bash -c 'test "$(stat -c %a "$1/cache/remote.json")" = 600 && test "$(stat -c %a "$1/cache")" = 700' _ "$T"
+: >"$T/log"; printf 'pick:alpha-remote\npick:dest\n' >"$FAKE_PICKS"
+FZF_MENU_HERE=1 pjx clone --here --client "$ccl" >/dev/null 2>&1
+expect "clone: a fresh cache means no gh list call and no reload bind" bash -c '! grep -q "^gh repo list" "$FAKE_DIR/log" && ! grep -q "start:reload" "$FAKE_DIR/log"'
+expect "clone: the destination prompt starts at clone_dir/name" grep -q -- "--query=$T/job/alpha-remote" "$T/log"
+expect "clone: runs gh repo clone OWNER/NAME DEST" grep -q "^gh repo clone me/alpha-remote $T/job/alpha-remote" "$T/log"
+expect "clone: the clone is opened like Enter (session, client switched)" wait_for "test \"\$(tmux -L $SOCK list-clients -F '#{client_name} #{client_session}' | awk -v c='$ccl' '\$1 == c { print \$2 }')\" = alpha-remote" 3
+expect "clone: the new repo got the default layout" test "$(tm list-windows -t =alpha-remote: -F '#{window_name}' | tr '\n' ' ')" = "code sh ai "
+: >"$T/log"; printf 'pick:cloned-one\n' >"$FAKE_PICKS"
+FZF_MENU_HERE=1 pjx clone --here --client "$ccl" >/dev/null 2>&1
+expect "clone: an already cloned repo is opened instead of cloned" bash -c '! grep -q "^gh repo clone" "$FAKE_DIR/log"' 
+expect "clone: ...and its session exists" has_session cloned-one
+: >"$T/log"; printf 'pick:orgone/tool\nquery:%s\n' "$T/job/alpha" >"$FAKE_PICKS"
+out=$(FZF_MENU_HERE=1 pjx clone --here --client "$ccl" 2>&1)
+expect "clone: an existing non-empty destination is refused" bash -c 'printf "%s\n" "$1" | grep -q "exists and is not empty" && ! grep -q "^gh repo clone" "$FAKE_DIR/log"' _ "$out"
+touch "$T/gh.loggedout"
+out=$(pjx _remote-rows --refresh | head -1)
+expect "clone: not logged in = one row that says gh auth login" bash -c 'printf "%s\n" "$1" | grep -q "^login	gh: not logged in, run gh auth login"' _ "$out"
+rm -f "$T/gh.loggedout"
+# a failing clone is reported
+: >"$T/log"; printf 'pick:alpha-remote\nquery:%s\n' "$T/job/never/x" >"$FAKE_PICKS"
+mkdir -p "$T/job/never"
+cat >"$T/bin-fail-gh" <<'EOF2'
+#!/usr/bin/env bash
+case "$1 $2" in "repo clone") echo "fatal: could not read from remote" >&2; exit 1 ;; esac
+exit 0
+EOF2
+chmod +x "$T/bin-fail-gh"
+rm -rf "$T/job/alpha-remote"; tm kill-session -t =alpha-remote
+out=$(FZF_MENU_HERE=1 PJ_GH="$T/bin-fail-gh" pjx clone --here --client "$ccl" 2>&1)
+expect "clone: a failing clone is reported (the tool's own output stays visible in the terminal)" bash -c 'printf "%s\n" "$1" | grep -q "fatal: could not read from remote" && printf "%s\n" "$1" | grep -q "clone failed"' _ "$out"
+# glab rows when glab exists and is logged in
+rm -rf "$T/cache"/*
+out=$(PATH="$BIN:$BIN_GLAB:$MIN_PATH" "$PJ" _remote-rows --refresh)
+expect "clone: glab rows join when glab is installed and logged in" bash -c 'printf "%s\n" "$1" | grep -q "^c:glab:grp/labrepo	glab .*On gitlab"' _ "$out"
+expect "clone: gh and glab missing = a login row, the c key is hidden" bash -c 'PJ_GH=/nonexistent/gh PJ_GLAB=/nonexistent/glab FZF_MENU_HERE=1 FAKE_PICK= PATH="$1:$2" "$3" --here >/dev/null 2>&1; ! grep "^fzf-menu .*-p project" "$4/log" | tail -1 | grep -q "c clone"' _ "$BIN" "$MIN_PATH" "$PJ" "$T"
+export PJ_CONFIG="$T/config.toml"
+kill "$CP" 2>/dev/null
 
 # ───────────────────────────── 9. modal UI ─────────────────────────────
 if ((QUICK)); then

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# fake workmux: logs argv, cwd and $TMUX; `add BRANCH` / `open NAME` create the window wm-<name> in the parent session of
+# the server named by $TMUX (like the real one); FAKE_DIR/workmux.fail makes it fail
+echo "workmux $* | cwd=$PWD | TMUX=${TMUX:-}" >>"$FAKE_DIR/log"
+cmd=$1; shift
+name=${1:-}; sess=""
+while (($#)); do [[ $1 == --parent-session ]] && sess=$2; shift; done
+if [[ -e $FAKE_DIR/workmux.fail ]]; then echo "workmux: boom, cannot create" >&2; exit 1; fi
+tmux new-window -d -t "=$sess:" -n "wm-$(basename "$name")" -c "$PWD" 2>/dev/null
