@@ -11,8 +11,7 @@ set -u
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/gitleaks-lib" || exit 1
 gl_init pre-commit
 trap 'rm -f "$cfg"' EXIT
-args=(git --staged --no-banner --redact --ignore-gitleaks-allow --exit-code 3 -l warn -v)
-[ -s "$cfg" ] && args+=(-c "$cfg")
+args=(git --staged --no-banner --redact --ignore-gitleaks-allow --exit-code 3 -l warn -v -c "$cfg")
 [ -t 2 ] || args+=(--no-color)
 gitleaks "${args[@]}" "$top" >&2; rc=$?
 case $rc in

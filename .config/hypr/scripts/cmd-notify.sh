@@ -235,8 +235,12 @@ cmd_notify() {
   fi
   cmd=${DF_CMD:-} dir=${DF_CMD_DIR:-$PWD}
   if ((!hidden)) && command -v gitleaks >/dev/null 2>&1; then
-    printf '%s' "$cmd" | gitleaks stdin --no-banner --redact --exit-code 3 -l error >/dev/null 2>&1
-    [[ $? == 3 ]] && hidden=1
+    # explicit -c (default rules only): without it gitleaks auto-loads ./.gitleaks.toml of the working directory, and an empty or
+    # allowlisting file there would let a secret through; cwd is / as well
+    local glc rc; glc=$(mktemp) && printf '%s\n' '[extend]' 'useDefault = true' >"$glc"
+    (cd / && printf '%s' "$cmd" | gitleaks stdin --no-banner --redact --exit-code 3 -l error -c "$glc" >/dev/null 2>&1); rc=$?
+    rm -f "$glc"
+    [[ $rc == 3 ]] && hidden=1
   fi
   if ((hidden)); then short='(command hidden)'; else short=$(toast_text "$cmd"); fi
   dur=$(human_duration "$ms")

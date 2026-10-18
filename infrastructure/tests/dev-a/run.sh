@@ -134,6 +134,37 @@ s1_lint() {
   git -C "$r" checkout -q -- .gitleaks.toml
   git -C "$r" rm -q --cached leak.txt; git -C "$r" commit -q --no-verify -m rm
   out=$(bash -c ". '$REPO/.githooks/gitleaks-lib'; gl_history_scan '$r'"); rc=$?; eq "L6: the history still holds the leak after a delete commit" "$rc" 3
+  s1_emptycfg
+}
+
+# FIX5-1: an empty / rule-less committed .gitleaks.toml (or one in the environment) must not turn the gates off: -c is always passed
+s1_emptycfg() {
+  local r="$T/ec" tok out rc lib="$REPO/.githooks/gitleaks-lib"
+  tok="ghp_$(printf '%s' 'Eq8wE5gH7jK9mN1pQ3sT5vW7yZ9bC1dE3fG5')"
+  mkdir -p "$r/.githooks" && git init -q -b main "$r" && git -C "$r" config user.email t@t && git -C "$r" config user.name t
+  git -C "$r" config commit.gpgsign false; git -C "$r" config core.hooksPath .githooks
+  cp "$REPO/.githooks/pre-commit" "$REPO/.githooks/pre-push" "$lib" "$r/.githooks/"
+  : >"$r/.gitleaks.toml"; git -C "$r" add .githooks .gitleaks.toml; git -C "$r" commit -q --no-verify -m base
+  printf 'token = "%s"\n' "$tok" >"$r/leak.txt"; git -C "$r" add leak.txt
+  out=$(git -C "$r" commit -q -m leak 2>&1); rc=$?
+  eq "FIX5-1: pre-commit blocks a leak although the committed .gitleaks.toml is EMPTY" "$rc" 1
+  git -C "$r" commit -q --no-verify -m leak
+  out=$(bash -c ". '$lib'; gl_history_scan '$r'"); rc=$?
+  eq "FIX5-1: gl_history_scan finds the leak with an EMPTY committed config" "$rc" 3
+  [[ $(bash -c ". '$lib'; gl_committed_cfg_problems '$r'") == *"empty"* ]] && pass "FIX5-1: the lint reports an empty committed config" || fail "FIX5-1 lint empty"
+  git init -q --bare -b main "$T/ec-remote.git"; git -C "$r" remote add origin "$T/ec-remote.git"
+  out=$(git -C "$r" push origin main 2>&1); rc=$?
+  ((rc != 0)) && [[ $out == *"pre-push: gitleaks found possible secrets"* ]] && pass "FIX5-1: pre-push blocks the leak with an EMPTY committed config" || fail "FIX5-1 pre-push (rc=$rc): $out"
+  # a committed config that does not extend the defaults has no rules either
+  printf 'title = "x"\n' >"$r/.gitleaks.toml"; git -C "$r" add .gitleaks.toml; git -C "$r" commit -q --no-verify -m norules
+  out=$(bash -c ". '$lib'; gl_history_scan '$r'"); rc=$?; eq "FIX5-1: a committed config without useDefault falls back to the default rules" "$rc" 3
+  # GITLEAKS_CONFIG in the environment does not replace -c
+  : >"$T/empty.toml"
+  out=$(GITLEAKS_CONFIG="$T/empty.toml" bash -c ". '$lib'; gl_history_scan '$r'"); rc=$?; eq "FIX5-1: GITLEAKS_CONFIG in the environment does not silence the scan" "$rc" 3
+  # no committed file at all: lint says so, the scan still runs with the default rules (the working file is not used)
+  git -C "$r" rm -q --cached .gitleaks.toml; git -C "$r" commit -q --no-verify -m nocfg; : >"$r/.gitleaks.toml"
+  [[ $(bash -c ". '$lib'; gl_committed_cfg_problems '$r'") == *"no committed"* ]] && pass "FIX5-1: the lint reports a missing committed config" || fail "FIX5-1 lint missing"
+  out=$(bash -c ". '$lib'; gl_history_scan '$r'"); rc=$?; eq "FIX5-1: no committed config: the empty WORKING file is not used" "$rc" 3
 }
 
 # the pre-push hook: commits that never ran pre-commit (--no-verify, merge, cherry-pick, rebase, am, an evil merge) are caught
@@ -602,6 +633,9 @@ s4() {
     reset_log
     DF_CMD="curl -H 'Authorization: Bearer ghp_$(printf '%s' 'aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bC1dE3fG5')'" DF_CMD_DIR=/tmp bash "$CN" notify --exit 0 --ms 31000 --pid "$SHELL_PID"
     [[ $(cat "$FAKE/notify.log") == *"(command hidden)"* ]] && pass "a command gitleaks flags is hidden too" || fail "gitleaks hiding: $(cat "$FAKE/notify.log")"
+    reset_log; mkdir -p "$T/ec-cwd"; : >"$T/ec-cwd/.gitleaks.toml"
+    (cd "$T/ec-cwd" && DF_CMD="curl -H 'Authorization: Bearer ghp_$(printf '%s' 'aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bC1dE3fG5')'" DF_CMD_DIR=/tmp bash "$CN" notify --exit 0 --ms 31000 --pid "$SHELL_PID")
+    [[ $(cat "$FAKE/notify.log") == *"(command hidden)"* ]] && pass "FIX5-1: an empty .gitleaks.toml in the working directory does not unhide a leak" || fail "FIX5-1 cwd config: $(cat "$FAKE/notify.log")"
   fi
   reset_log
   bash "$CN" off

@@ -3,7 +3,9 @@
 #   gl_init HOOK    sets top (work tree), hookrepo (repo that holds the hooks), cfg (temp file with the COMMITTED .gitleaks.toml;
 #                   the caller removes it); exits 1 with a message when gitleaks is missing or a .gitleaksignore exists
 # The config comes from the committed file of the scanned repo, else of the repo that holds the hooks (the nvim submodule has
-# none), else the working file (first commit of the file); an empty file is never passed (it would have NO rules).
+# none), else a temp config that only extends the default rules; never the working file. `-c` is ALWAYS passed: without it
+# gitleaks auto-loads `<source>/.gitleaks.toml` (or $GITLEAKS_CONFIG), and an empty or rule-less file there has NO rules, so a
+# truncated committed file would silence every gate. A committed file is only used when it is non-empty and extends the defaults.
 gl_init() {
   local hook=$1
   top=$(git rev-parse --show-toplevel) || exit 1
@@ -17,13 +19,21 @@ gl_init() {
     exit 1
   fi
   cfg=$(mktemp) || exit 1
-  gl_load_cfg || : >"$cfg"
+  gl_load_cfg
+}
+# gl_default_cfg FILE: the fallback config, the default rules only
+gl_default_cfg() { printf '%s\n' 'title = "default rules"' '[extend]' 'useDefault = true' >"$1"; }
+# gl_usable_cfg FILE: non-empty and it extends the default rules (otherwise gitleaks would run with no or fewer rules)
+gl_usable_cfg() { [ -s "$1" ] && grep -Eq '^[[:space:]]*useDefault[[:space:]]*=[[:space:]]*true' "$1"; }
+# gl_pick_cfg REPO FILE: the committed .gitleaks.toml of REPO into FILE when it is usable, else the default-only config in FILE
+gl_pick_cfg() {
+  git -C "$1" show HEAD:.gitleaks.toml >"$2" 2>/dev/null && gl_usable_cfg "$2" && return 0
+  gl_default_cfg "$2"; return 1
 }
 gl_load_cfg() {
-  git -C "$top" show HEAD:.gitleaks.toml >"$cfg" 2>/dev/null && [ -s "$cfg" ] && return 0
-  git -C "$hookrepo" show HEAD:.gitleaks.toml >"$cfg" 2>/dev/null && [ -s "$cfg" ] && return 0
-  cat "$top/.gitleaks.toml" >"$cfg" 2>/dev/null && [ -s "$cfg" ] && return 0
-  cat "$hookrepo/.gitleaks.toml" >"$cfg" 2>/dev/null && [ -s "$cfg" ]
+  gl_pick_cfg "$top" "$cfg" && return 0
+  gl_pick_cfg "$hookrepo" "$cfg"
+  return 0
 }
 
 # gl_cfg_problems FILE: print one line per way a .gitleaks.toml could silence real findings (doctor `gitleaks-history` FAILs on
@@ -46,20 +56,24 @@ gl_cfg_problems() {
   return 0
 }
 
-# gl_committed_cfg_problems REPO: gl_cfg_problems of the COMMITTED .gitleaks.toml of REPO (nothing when there is none)
+# gl_committed_cfg_problems REPO: gl_cfg_problems of the COMMITTED .gitleaks.toml of REPO; a missing or empty file is a problem
+# too (the hooks then fall back to the default rules, but the allowlist is gone and the file was meant to be there)
 gl_committed_cfg_problems() {
   local c; c=$(mktemp) || return 0
-  if git -C "$1" show HEAD:.gitleaks.toml >"$c" 2>/dev/null && [ -s "$c" ]; then gl_cfg_problems "$c"; fi
+  if ! git -C "$1" show HEAD:.gitleaks.toml >"$c" 2>/dev/null; then echo "there is no committed .gitleaks.toml (the hooks fall back to the default rules only)"
+  elif [ ! -s "$c" ]; then echo "the committed .gitleaks.toml is empty (it would have no rules; the hooks ignore it)"
+  else gl_cfg_problems "$c"; fi
   rm -f "$c"
 }
 
-# gl_history_scan REPO: scan the whole history with the COMMITTED .gitleaks.toml, never the working file (an uncommitted broad
-# allowlist must not silence it), --redact. Prints gitleaks' output; returns 0 clean, 3 findings, anything else = failed to run.
+# gl_history_scan REPO: scan the whole history with the COMMITTED .gitleaks.toml (default rules when it is missing, empty or does
+# not extend them), never the working file (an uncommitted broad allowlist must not silence it) and always with an explicit -c,
+# --redact. Prints gitleaks' output; returns 0 clean, 3 findings, anything else = failed to run.
 gl_history_scan() {
   local repo=$1 c rc
   c=$(mktemp) || return 1
-  if ! { git -C "$repo" show HEAD:.gitleaks.toml >"$c" 2>/dev/null && [ -s "$c" ]; }; then rm -f "$c"; c=''; fi
-  gitleaks git --no-banner --redact -l error --exit-code 3 ${c:+-c "$c"} "$repo" 2>&1; rc=$?
-  [ -z "$c" ] || rm -f "$c"
+  gl_pick_cfg "$repo" "$c"
+  gitleaks git --no-banner --redact -l error --exit-code 3 -c "$c" "$repo" 2>&1; rc=$?
+  rm -f "$c"
   return $rc
 }
