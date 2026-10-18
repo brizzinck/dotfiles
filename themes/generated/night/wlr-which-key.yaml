@@ -11,7 +11,6 @@ padding: 18
 rows_per_column: 12
 column_padding: 28
 anchor: center
-namespace: "wlr_which_key"
 # the leader menu owns the keyboard while it is open; every key also works on the ua and ru layouts
 inhibit_compositor_keyboard_shortcuts: true
 auto_kbd_layout: true

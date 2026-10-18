@@ -19,6 +19,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 HUB_DIR = Path(__file__).resolve().parent
@@ -146,6 +147,30 @@ def markdown():
     return "\n".join(lines) + "\n"
 
 
+def parse_problem():
+    """Let the installed wlr-which-key parse the rendered config without a display: it reads the config before it
+    connects to Wayland, so with no WAYLAND_DISPLAY a good config ends in a connection error and a bad one in
+    "Failed to deserialize configuration" (an unknown key such as `namespace` in 1.3.0 made the leader exit at once)."""
+    binary = shutil.which("wlr-which-key")
+    if not binary:
+        return ""
+    with tempfile.TemporaryDirectory(prefix="leader-check.") as tmp:
+        cfg = Path(tmp) / "wlr-which-key" / "leader.yaml"
+        cfg.parent.mkdir()
+        cfg.write_text(render())
+        env = {k: v for k, v in os.environ.items() if k not in ("WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DISPLAY")}
+        env["XDG_CONFIG_HOME"] = tmp
+        env["XDG_RUNTIME_DIR"] = tmp
+        try:
+            r = subprocess.run([binary, "leader"], env=env, capture_output=True, text=True, timeout=5, cwd=tmp)
+        except subprocess.TimeoutExpired:
+            return "wlr-which-key did not exit without a display"
+    out = (r.stdout + r.stderr).strip()
+    if "deserialize" in out or "configuration" in out.lower():
+        return " ".join(out.split())[:300]
+    return ""
+
+
 def notify(text):
     subprocess.run(["notify-send", "-a", "leader", "-u", "low", "-t", "4000", "Leader menu", text], check=False)
 
@@ -159,6 +184,10 @@ def main(argv):
         for e in errors:
             print(f"leader: {e}", file=sys.stderr)
         if errors:
+            return 1
+        problem = parse_problem()
+        if problem:
+            print(f"leader: wlr-which-key rejects the rendered config: {problem}", file=sys.stderr)
             return 1
         items = sum(len(b) if isinstance(b, list) else 1 for _, _, b in menu)
         print(f"leader: {len(menu)} top-level entries, {items} items, no problems")
