@@ -716,6 +716,19 @@ section_config() {
   # coredump limits
   install_file "$INFRA/systemd/coredump-limits.conf" /etc/systemd/coredump.conf.d/limits.conf
 
+  # stop timeouts: a hanging service must not hold a reboot or poweroff (20 s per system unit, 30 s for a user manager,
+  # whose own units get 10 s from ~/.config/systemd/user.conf.d); the manager reads system.conf.d only on a re-exec
+  local stop_changed=0 st
+  for st in "stop-timeout.conf:/etc/systemd/system.conf.d/10-dotfiles-stop-timeout.conf" \
+    "user-at-stop-timeout.conf:/etc/systemd/system/user@.service.d/10-dotfiles-stop-timeout.conf"; do
+    cmp -s -- "$INFRA/systemd/${st%%:*}" "${st#*:}" 2>/dev/null || stop_changed=1
+    install_file "$INFRA/systemd/${st%%:*}" "${st#*:}"
+  done
+  if [ "$stop_changed" = 1 ]; then
+    run systemctl daemon-reexec
+    changed "systemd re-executed: stop timeouts 20 s (system units) / 30 s (user managers) apply to the next shutdown"
+  fi
+
   # TLP drop-ins (61-battery-care.conf only sets STOP_CHARGE_THRESH_*, no overlap with 62-power.conf, which sets
   # platform profile, EPP and boost for all three tlp-pd profiles). TLP reads /etc/tlp.d only on a run, so it is
   # started again (applies the active profile) exactly when one of the two files changed.

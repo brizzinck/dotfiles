@@ -1414,6 +1414,16 @@ else
 fi
 if [ -e "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/idle-off" ]; then info hypridle-alive "idle is switched off on purpose (SUPER+CTRL+I)"; elif pgrep -x hypridle >/dev/null 2>&1; then ok hypridle-alive "hypridle runs"; else bad hypridle-alive "hypridle is not running (the hypridle-watch timer starts it within a minute, or SUPER+CTRL+I)"; fi
 if systemctl --user is-enabled hypridle-watch.timer >/dev/null 2>&1; then ok hypridle-watch "user timer hypridle-watch.timer restarts hypridle when it died"; else bad hypridle-watch "hypridle-watch.timer not enabled (stow ., systemctl --user enable --now hypridle-watch.timer)"; fi
+# stop timeouts (a hanging service must not hold a reboot): the owner's user manager reads user.conf.d (stowed), the
+# system side comes from apply-system.sh --only config
+st_bad=""
+[ "$(systemctl --user show -p DefaultTimeoutStopUSec --value 2>/dev/null)" = 10s ] || st_bad="$st_bad user manager default stop timeout is not 10 s (stow ., systemctl --user daemon-reexec);"
+for st_f in "stop-timeout.conf:/etc/systemd/system.conf.d/10-dotfiles-stop-timeout.conf" "user-at-stop-timeout.conf:/etc/systemd/system/user@.service.d/10-dotfiles-stop-timeout.conf"; do
+  cmp -s "$DOTFILES/infrastructure/systemd/${st_f%%:*}" "${st_f#*:}" || st_bad="$st_bad ${st_f#*:} differs or is missing;"
+done
+if [ -z "$st_bad" ]; then ok stop-timeouts "user units 10 s, system units 20 s, user managers 30 s"
+elif [ ! -e /etc/systemd/system.conf.d/10-dotfiles-stop-timeout.conf ]; then info stop-timeouts "${st_bad# } (sudo ./apply-system.sh --only config)"
+else bad stop-timeouts "${st_bad# } (sudo ./apply-system.sh --only config)"; fi
 if systemctl --user is-active crash-watch.service >/dev/null 2>&1; then ok crash-watch "crash-watch.service follows the coredump journal (toast, details, ask Claude, mute)"; else bad crash-watch "crash-watch.service is not running (stow ., systemctl --user enable --now crash-watch.service)"; fi
 if command -v voxtype >/dev/null 2>&1; then
   dict_model="$(cat "${XDG_STATE_HOME:-$HOME/.local/state}/dictation/model" 2>/dev/null)"; dict_model="${dict_model:-small}"

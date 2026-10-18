@@ -16,6 +16,9 @@ ExecStartPre=%h/.local/bin/ee-ctl quit-stray
 ExecStartPre=%h/.local/bin/ee-ctl prepare
 ExecStart=/usr/bin/easyeffects --service-mode --hide-window
 ExecStartPost=%h/.local/bin/ee-ctl load --wait 15
-ExecStop=/usr/bin/easyeffects --quit
+# bounded: at a reboot or logout the Wayland socket can already be gone and `easyeffects --quit` then waits; systemd
+# sends SIGTERM after it anyway
+ExecStop=-/usr/bin/timeout -k 1 5 /usr/bin/easyeffects --quit
+TimeoutStopSec=10
 Restart=on-failure
 RestartSec=2
