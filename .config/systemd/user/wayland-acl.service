@@ -1,6 +1,0 @@
-[Unit]
-Description=Give the managed users (td clipboard, tgconfirm popup) access to the session compositor's Wayland socket only
-
-[Service]
-Type=oneshot
-ExecStart=%h/.config/hypr/scripts/wayland-acl.sh
