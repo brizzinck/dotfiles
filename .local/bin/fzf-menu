@@ -236,10 +236,19 @@ hot_request() { # REQ -> 0 when answered (also cancelled by a dead server), 1 wh
     read -r -t 0.01 -u 8 && return 0
   done
   if [[ ! -e $req/started ]]; then
-    # claim the request for the cold path; when the claim fails the server took it a moment ago: wait for its `started`
+    # claim the request for the cold path; when the claim fails the server owns it (it may stall for seconds under load between
+    # its `mkdir owner` and writing `started`): never go cold then, that would be a second menu. Wait for `started` (or an
+    # answer) as long as the server process lives; when it died without either, the request counts as cancelled.
     if mkdir "$req/owner" 2>/dev/null; then exec 8>&-; return 1; fi
-    for ((i = 0; i < 100; i++)); do [[ -e $req/started ]] && break; sleep 0.01; done
-    [[ -e $req/started ]] || { exec 8>&-; return 1; }
+    while [[ ! -e $req/started && ! -e $req/rc ]]; do
+      spid=$(cat "$RUN/server.pid" 2>/dev/null)
+      if [[ -z $spid ]] || ! kill -0 "$spid" 2>/dev/null; then
+        [[ -e $req/started || -e $req/rc ]] || echo 1 >"$req/rc"
+        break
+      fi
+      sleep 0.01
+    done
+    [[ -e $req/rc ]] && { exec 8>&-; return 0; }
   fi
   spid=$(cat "$req/started" 2>/dev/null)
   while ! read -r -t 0.5 -u 8; do

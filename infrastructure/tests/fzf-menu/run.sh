@@ -293,6 +293,45 @@ expect "5f: the next request is served, status 0" test "$RC" = 0 -a "$(cat "$T/m
 expect "5f: ... hot, by the same server" grep -q 'hot=1' "$T/m5f.trace"
 fi
 
+if ((!QUICK)); then
+# ── case 5j (FIX3 F2): the server won the claim but stalls before `started`: the client waits, never a second (cold) menu ──
+echo "== case 5j: lost claim =="
+claim_case() { # MODE slow|die: a fake server that wins `mkdir owner`, then stalls 1.8 s (slow) or dies (die)
+  local mode=$1
+  fresh
+  mkdir -p "$RUN" && chmod 700 "$RUN"
+  mkfifo "$RUN/server.fifo"
+  sleep 600 & SP=$!
+  echo "$SP" >"$RUN/server.pid"
+  (
+    exec 3<>"$RUN/server.fifo"
+    read -r -u 3 rq
+    mkdir "$rq/owner"
+    if [[ $mode == slow ]]; then
+      sleep 1.8
+      echo "$BASHPID" >"$rq/started.tmp" && mv -f "$rq/started.tmp" "$rq/started"
+      echo picked >"$rq/out"; echo 0 >"$rq/rc"; echo finished 1<>"$rq/done"   # O_RDWR: a plain write blocks on a fifo nobody reads
+      sleep 0.3
+    else
+      kill "$SP"
+      sleep 0.2
+    fi
+  ) &
+  CLAUSER=$!
+  FZF_MENU_NO_SERVER=1 "$FM" -p t5j < <(seq 3) >"$T/m5j.out" 2>/dev/null &
+  CLIENT_PID=$!
+  wait_client 6 || tmux -L "$S" kill-server 2>/dev/null   # a client that went cold waits for its fake terminal: let that end too
+  wait "$CLAUSER" 2>/dev/null
+  kill "$SP" 2>/dev/null
+}
+claim_case slow
+expect "5j: a slow server that owns the request is waited for: its answer comes back (old code: gave up after 1 s)" test "$RC" = 0 -a "$(cat "$T/m5j.out")" = picked
+expect "5j: ... and no cold menu was opened (old code: a second window)" test ! -s "$FT_DIR/term.log"
+claim_case die
+expect "5j: a server that died holding the claim = cancelled (status 1, no output)" test "$RC" = 1 -a ! -s "$T/m5j.out"
+expect "5j: ... and no cold menu was opened (old code: the same request ran again cold)" test ! -s "$FT_DIR/term.log"
+fi
+
 # ── case 5g (LOW #10): a standby that meets the probe lock for a moment waits for it instead of exiting ──
 echo "== case 5g: standby vs probe =="
 fresh
