@@ -780,7 +780,7 @@ if grep -q 'Everforest-Cursor' "$DOTFILES/.config/hypr/hyprland.lua"; then ok cu
 # ── audio: the lingering user manager starts pipewire + wireplumber before the owner owns seat0 (no /dev/snd ACL): cards can
 # stay on profile off. audio-ensure --check = no card off with a usable saved profile, hardware sink + source, default source no monitor
 if command -v pactl >/dev/null 2>&1 && pactl info >/dev/null 2>&1; then
-  audio_err="$("$DOTFILES/.local/bin/audio-ensure" --check 2>&1)" && ok audio "cards on their saved profiles, hardware sink and source present, default source is a microphone" \
+  audio_err="$("$DOTFILES/.local/bin/audio-ensure" --check 2>&1)" && ok audio "cards on their saved profiles, hardware sink and source present, default source is a microphone (not easyeffects_source)" \
     || bad audio "$(printf '%s' "$audio_err" | paste -sd';' | sed 's/;/; /g') (fix: ~/.local/bin/audio-ensure)"
 else
   info audio "PipeWire not reachable from this shell, skipped"
@@ -802,6 +802,59 @@ fi
 check audio-hda-ucm "wireplumber rule turns UCM off for the 83HY HDA card (the built-in mic is the codec's, not the ACP PDM)" \
   "$HOME/.config/wireplumber/wireplumber.conf.d/51-hda-no-ucm.conf missing or not stowed (cd ~/dotfiles && stow .)" \
   grep -q 'api.alsa.use-ucm = false' "$HOME/.config/wireplumber/wireplumber.conf.d/51-hda-no-ucm.conf"
+
+# ── AUDIO2: EasyEffects (RNNoise) in front of every microphone. The default source stays the best real microphone (52-mic-priority.conf),
+# EasyEffects follows it and moves the recording apps into easyeffects_source; audio-ensure --boot starts easyeffects.service and checks it.
+ee_installed=0; [ -x /usr/bin/easyeffects ] && ee_installed=1
+if [ "$ee_installed" = 1 ]; then
+  ee_bad=()
+  ee_prep="$HOME/.config/easyeffects/db/easyeffectsrc"
+  ee_link="$HOME/.local/share/easyeffects/input/mic-clean.json"
+  ee_src="$DOTFILES/.config/audio/easyeffects-mic.json"
+  for f in .config/wireplumber/wireplumber.conf.d/52-mic-priority.conf .config/systemd/user/easyeffects.service .config/audio/easyeffects-mic.json; do
+    [ "$(readlink -f "$HOME/$f" 2>/dev/null)" = "$(readlink -f "$DOTFILES/$f")" ] || ee_bad+=("$f is not stowed (cd ~/dotfiles && stow .)")
+  done
+  if [ -e "$ee_link" ] || [ -L "$ee_link" ]; then
+    [ "$(readlink -f "$ee_link")" = "$(readlink -f "$ee_src")" ] || ee_bad+=("preset link $ee_link does not resolve to the repo preset (ee-ctl prepare)")
+  elif [ -e "$ee_prep" ]; then
+    ee_bad+=("preset link $ee_link is missing (ee-ctl prepare)")
+  fi
+  [ ! -L "$HOME/.config/easyeffects" ] || ee_bad+=("$HOME/.config/easyeffects is a symlink (the old repo-tracked setup; ee-ctl prepare needs a real directory)")
+  if [ -f "$ee_prep" ] && grep -Eq '(pitch|autotune|autogain)#' "$ee_prep"; then ee_bad+=("the EasyEffects rc still lists pitch/autotune/autogain (ee-ctl restart)"); fi
+  [ ! -e "$HOME/.config/autostart/com.github.wwmm.easyeffects.desktop" ] || ee_bad+=("the XDG autostart file com.github.wwmm.easyeffects.desktop is back")
+  ! grep -q 'exec_cmd("easyeffects' "$DOTFILES/.config/hypr/hyprland.lua" || ee_bad+=("hyprland.lua starts easyeffects directly (the unit does it)")
+  if [ "${#ee_bad[@]}" -eq 0 ]; then
+    ok audio-ee-files "preset linked to the repo, 52-mic-priority.conf + easyeffects.service stowed, old pitch/autotune setup and autostart gone"
+  else
+    bad audio-ee-files "$(printf '%s; ' "${ee_bad[@]}" | sed 's/; $//')"
+  fi
+  if command -v pactl >/dev/null 2>&1 && pactl info >/dev/null 2>&1; then
+    ee_out="$("$DOTFILES/.local/bin/audio-ensure" --ee 2>&1)"; ee_rc=$?
+    case "$ee_rc" in
+      0) ok audio-ee-chain "microphone -> EasyEffects RNNoise -> apps, default source $(pactl get-default-source 2>/dev/null)$(printf '%s' "$ee_out" | grep '^note:' | paste -sd';' | sed 's/^/ (/; s/$/)/; s/^ ()$//')" ;;
+      1) bad audio-ee-chain "$(printf '%s' "$ee_out" | grep -v '^note:' | paste -sd';' | sed 's/;/; /g') (fix: ee-ctl restart, or ~/.local/bin/audio-ensure)" ;;
+      *) info audio-ee-chain "$ee_out" ;;
+    esac
+    ee_sig="$("$DOTFILES/.local/bin/audio-ensure" --mic --chain 2>&1)"; ee_src_rc=$?
+    case "$ee_src_rc" in
+      0) ok audio-ee-signal "$ee_sig" ;;
+      1 | 4) bad audio-ee-signal "$ee_sig (fix: ee-ctl restart, ~/.local/bin/audio-ensure --ee --verbose)" ;;
+      *) info audio-ee-signal "$ee_sig" ;;
+    esac
+  else
+    info audio-ee-chain "PipeWire not reachable from this shell, skipped"
+    info audio-ee-signal "PipeWire not reachable from this shell, skipped"
+  fi
+  # the dictation daemon keeps the raw microphone (offline A/B: RNNoise in front of Whisper did not help, CLAUDE.md "Audio")
+  if "$DOTFILES/.config/hypr/scripts/dictation.sh" run --dry-run 2>/dev/null | grep -q 'node.dont-move'; then
+    ok audio-dictation-raw "dictation.sh run exports PIPEWIRE_PROPS node.dont-move (Whisper hears the raw microphone)"
+  else
+    bad audio-dictation-raw "dictation.sh run does not set node.dont-move (EasyEffects would feed Whisper)"
+  fi
+else
+  info audio-ee-files "EasyEffects is not installed, mic chain checks skipped"
+fi
+if ae_out="$("$DOTFILES/infrastructure/tests/audio/run.sh" --quick 2>&1)"; then ok audio-tests "mic chain (ee-ctl, audio-ensure, picker, toggles, static files): $(printf '%s' "$ae_out" | tail -1)"; else bad audio-tests "$(printf '%s' "$ae_out" | grep -m1 '^FAIL') (infrastructure/tests/audio/run.sh)"; fi
 
 # ── palette variant (black | night): link present, generated fragments in sync with the token source ───────────
 theme_link="${XDG_STATE_HOME:-$HOME/.local/state}/theme/current"
