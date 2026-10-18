@@ -1468,6 +1468,59 @@ else
   info envs-global "no ~/.config/envs/global.toml yet (cd ~/dotfiles && stow .)"
 fi
 
+# ── DEV-e: local LLM (llm; llama.cpp on Vulkan, started on demand by llm.socket, unloaded after 5 idle minutes). Nothing here
+#    connects to llm.sock: that would load the model (`llm status` reads systemd and the cached device list only) ───────────────
+le_llm="$DOTFILES/.local/bin/llm"
+le_srv=/usr/bin/llama-server le_vk=/usr/lib/ggml/libggml-vulkan.so
+le_sd="$(systemctl --user show llm-server.service -p ActiveState --value 2>/dev/null)"
+if [ -x "$le_srv" ] && [ -e "$le_vk" ]; then ok llm-pkg "llama-server and the ggml Vulkan backend are installed ($(pacman -Q llama-cpp 2>/dev/null | cut -d' ' -f2), ggml-vulkan $(pacman -Q ggml-vulkan 2>/dev/null | cut -d' ' -f2))"
+elif [ -x "$le_srv" ]; then bad llm-pkg "llama-cpp is installed but $le_vk is missing: llama-server would silently run on the CPU (sudo ~/dotfiles/apply-system.sh --only install)"
+else info llm-pkg "llama-cpp and ggml-vulkan are not installed (sudo ~/dotfiles/apply-system.sh --only install)"; fi
+le_json=""
+if [ -x "$le_llm" ] && [ -x "$le_srv" ]; then le_json="$("$le_llm" status --json 2>/dev/null)"; fi
+if [ -z "$le_json" ]; then info llm-vulkan "packages missing: no device list"
+elif [ "$(printf '%s' "$le_json" | jq -r '.gpu')" = true ]; then ok llm-vulkan "$(printf '%s' "$le_json" | jq -r '.devices | map(select(test("^Vulkan"))) | first')"
+else bad llm-vulkan "llama-server lists no real Vulkan device ($(printf '%s' "$le_json" | jq -r '.devices | join("; ")')); it would run on the CPU or not at all"; fi
+if [ -x "$le_llm" ]; then
+  le_mj="$("$le_llm" status --json 2>/dev/null)"
+  le_ms="$(printf '%s' "${le_mj:-{\}}" | jq -r '.model_state // "unknown"')" le_mn="$(printf '%s' "${le_mj:-{\}}" | jq -r '.model // "?"')"
+  case "$le_ms" in
+    fetched) ok llm-model "active model $le_mn is downloaded and unchanged since its sha256 check" ;;
+    missing|partial) info llm-model "active model $le_mn is $le_ms (llm models fetch)" ;;
+    *) bad llm-model "active model $le_mn is $le_ms (llm models fetch $le_mn re-verifies it)" ;;
+  esac
+else
+  bad llm-model ".local/bin/llm missing"
+fi
+le_sock="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/llm/llm.sock"
+if [ ! -x "$le_srv" ]; then info llm-socket "packages missing"
+else
+  le_bad=""
+  [ "$(systemctl --user is-enabled llm.socket 2>/dev/null)" = enabled ] || le_bad="$le_bad llm.socket is not enabled (systemctl --user enable --now llm.socket);"
+  [ "$(systemctl --user is-active llm.socket 2>/dev/null)" = active ] || le_bad="$le_bad llm.socket is not listening;"
+  [ -S "$le_sock" ] || le_bad="$le_bad $le_sock is missing;"
+  [ -S "$le_sock" ] && [ "$(stat -c %a "$le_sock")" = 600 ] || le_bad="$le_bad socket mode is not 0600;"
+  [ "$(stat -c %a "$(dirname "$le_sock")" 2>/dev/null)" = 700 ] || le_bad="$le_bad socket directory mode is not 0700;"
+  if [ -z "$le_bad" ]; then ok llm-socket "llm.socket enabled and listening, socket 0600 in a 0700 directory"; else bad llm-socket "${le_bad# }"; fi
+fi
+le_bad=""
+ss -ltnpH 2>/dev/null | grep -q 'llama-server' && le_bad="$le_bad a llama-server process listens on a TCP port;"
+for le_u in "systemctl is-enabled" "systemctl --user is-enabled"; do
+  case "$($le_u llama-server.service 2>/dev/null)" in enabled|enabled-runtime|linked*|alias) le_bad="$le_bad the packaged llama-server.service is enabled ($le_u): systemctl [--user] disable --now llama-server.service;" ;; esac
+done
+if [ -z "$le_bad" ]; then ok llm-no-tcp "no llama-server listens on TCP, the packaged llama-server.service units are not enabled"; else bad llm-no-tcp "${le_bad# }"; fi
+if [ "$le_sd" = active ]; then info llm-state "loaded since $(systemctl --user show llm-server.service -p ActiveEnterTimestamp --value) ($(printf '%s' "${le_mj:-{\}}" | jq -r '.model // "?"'), MemoryCurrent $(systemctl --user show llm-server.service -p MemoryCurrent --value | awk '$1 ~ /^[0-9]+$/ {printf "%.0f MB", $1/1e6; next} {print "?"}'))"
+else info llm-state "not loaded (it starts on the first request and unloads 5 minutes after the last one)"; fi
+le_tf="${XDG_STATE_HOME:-$HOME/.local/state}/llm/token"
+if [ -e "$le_tf" ]; then
+  if [ "$(stat -c %a "$le_tf")" = 600 ] && [ "$(stat -c %a "$(dirname "$le_tf")")" = 700 ]; then ok llm-token "token file 0600 in a 0700 directory"; else bad llm-token "token file mode $(stat -c %a "$le_tf") or directory mode $(stat -c %a "$(dirname "$le_tf")") (chmod 600 / 700, or llm token rotate)"; fi
+else info llm-token "no token yet (llm token ensure; the client creates it on first use)"; fi
+if [ -x "$DOTFILES/infrastructure/tests/llm/run.sh" ]; then
+  if le_t="$("$DOTFILES/infrastructure/tests/llm/run.sh" --quick 2>&1)"; then ok llm-tests "llm against a fake llama-server: $(printf '%s' "$le_t" | tail -1)"; else bad llm-tests "$(printf '%s' "$le_t" | grep -m1 '^FAIL') (infrastructure/tests/llm/run.sh)"; fi
+else
+  bad llm-tests "infrastructure/tests/llm/run.sh missing"
+fi
+
 # ── stow symlinks: every tracked config file must resolve to the repo copy ──────
 broken=""
 n_links=0
