@@ -17,6 +17,7 @@ import sys
 import time
 import types
 import unicodedata
+import uuid
 
 HERE = Path(__file__).resolve().parent
 
@@ -234,7 +235,7 @@ def effective(cfg, env, selected=None):
     for name in legacy:
         if name in refs:
             ref = refs[name]
-            if E.managed_user() or (ref.folder, ref.item, ref.kind, ref.field) != (E.env_folder(cfg.project), env, "field", name):
+            if (ref.folder, ref.item, ref.kind, ref.field) != (E.env_folder(cfg.project), env, "field", name):
                 E.fail(f"{name}: conflicting legacy and inline mapping", 4)
         elif name in plain:
             E.fail(f"{name}: literal value conflicts with legacy declaration; run envs import", 4)
@@ -422,6 +423,138 @@ def resolve_refs(cfg, env, specs, wanted, record):
     for _, snap, _ in specs["docs"]:
         snap.verify()
     return values
+
+
+def managed_put(cfg, env, values, overwrite):
+    """One self-scope batch, with metadata-only retry identity and independent scoped readback."""
+    E.refuse_agent("write")
+    if not E.managed_user() or not E.PROJECT_RE.fullmatch(cfg.project) or not E.ENV_RE.fullmatch(env):
+        E.fail("invalid native write target", 4)
+    if cfg.project in (".", "..") or type(overwrite) is not bool or not 1 <= len(values) <= 64:
+        E.fail("invalid native write batch", 4)
+    names = sorted(values)
+    chunks, chunk = [], []
+    for name in names:
+        value = values[name]
+        if (E.bad_var_name(name) or len(name) > 100 or not isinstance(value, str) or not 6 <= len(value) <= 5000
+                or len(value.encode("utf-8")) > 20000 or "\x00" in value):
+            E.fail("native secret names or values exceed supported limits; source retained", 4)
+        probe = {"v": 1, "op": "get", "id": "0" * 36, "fields": ["field:" + n for n in chunk + [name]]}
+        if len(chunk) == 64 or len(json.dumps(probe).encode()) + 1 > 4096:
+            if not chunk:
+                E.fail("native field name exceeds readback limits; source retained", 4)
+            chunks.append(chunk); chunk = []
+        chunk.append(name)
+        if len(json.dumps({"v": 1, "op": "get", "id": "0" * 36, "fields": ["field:" + n for n in chunk]}).encode()) + 1 > 4096:
+            E.fail("native field name exceeds readback limits; source retained", 4)
+    if chunk:
+        chunks.append(chunk)
+    key = D.digest([E.managed_user(), cfg.project, env])
+    with metadata_lock():
+        records = read_state("native-writes.json")
+        prior = records.get(key)
+        if prior is not None and (not isinstance(prior, dict) or prior.get("phase") not in ("pending", "complete")):
+            E.fail("native write recovery metadata requires review; source retained", 4)
+        if prior and prior["phase"] == "pending":
+            request_id = prior.get("request_id")
+            if prior.get("names") != names:
+                E.fail("pending native write has different names; reconcile the original request first", 4)
+            try:
+                parsed = uuid.UUID(request_id, version=4)
+                if str(parsed) != request_id:
+                    raise ValueError()
+            except (ValueError, TypeError, AttributeError):
+                E.fail("native write recovery metadata requires review; source retained", 4)
+        else:
+            request_id = str(uuid.uuid4())
+        message = {"v": 1, "op": "env-put", "project": cfg.project, "env": env,
+                   "values": values, "overwrite": overwrite, "request_id": request_id}
+        if len(json.dumps(message).encode()) + 1 > 256 * 1024:
+            E.fail("native write batch exceeds request limits; source retained", 4)
+        records[key] = {"phase": "pending", "request_id": request_id, "names": names}
+        write_state("native-writes.json", records)
+    try:
+        receipt = E.share(message)
+        expected_keys = {"v", "ok", "id", "project", "env", "names", "verified"}
+        if (not isinstance(receipt, dict) or set(receipt) != expected_keys or receipt.get("v") != 1
+                or receipt.get("ok") is not True or receipt.get("verified") is not True
+                or receipt.get("project") != cfg.project or receipt.get("env") != env or receipt.get("names") != names):
+            E.fail("unverified native write receipt", 1)
+        ident = receipt["id"]
+        if not isinstance(ident, str) or str(uuid.UUID(ident)) != ident:
+            E.fail("unverified native write identity", 1)
+        description = E.share({"v": 1, "op": "describe", "id": ident})["item"]
+        if (description.get("id") != ident or description.get("folder") != E.env_folder(cfg.project)
+                or description.get("name") != env or description.get("type") not in ("note", "securenote", "secure note", "2")):
+            E.fail("native write readback target differs", 1)
+        for name in names:
+            fields = [f for f in description.get("fields", []) if f.get("name") == "field:" + name]
+            if len(fields) != 1 or fields[0].get("hidden") is not True:
+                E.fail("native write field metadata differs", 1)
+        for batch in chunks:
+            result = E.share({"v": 1, "op": "get", "id": ident, "fields": ["field:" + name for name in batch]})
+            expected = {"field:" + name: values[name] for name in batch}
+            if result.get("id") != ident or result.get("values") != expected or result.get("missing") != []:
+                E.fail("native write readback differs", 1)
+    except E.Fail as error:
+        E.fail("native vault write or readback incomplete; source retained; retry the original request", error.code)
+    except (ValueError, TypeError, KeyError, AttributeError):
+        E.fail("native vault write or readback incomplete; source retained; retry the original request", 1)
+    with metadata_lock():
+        records = read_state("native-writes.json")
+        if records.get(key) != {"phase": "pending", "request_id": request_id, "names": names}:
+            E.fail("native write recovery metadata changed; source retained", 4)
+        records[key]["phase"] = "complete"
+        write_state("native-writes.json", records)
+    return receipt
+
+
+def managed_set(args):
+    E.refuse_agent("set")
+    if "=" in args.name or args.extra:
+        E.fail("values never go on the command line; use the hidden prompt or --stdin", 2)
+    if E.bad_var_name(args.name) or len(args.name) > 100:
+        E.fail("invalid or reserved secret name", 2)
+    if args.all or args.plain or args.description is not None:
+        E.fail("native set supports one environment and inline secret fields only", 4)
+    cfg = E.cfg_for(args)
+    env = E.choose_env(cfg, args.env)
+    E.guard_protected(cfg, env, getattr(args, "prod", False), "set in")
+    E.require_bound(cfg)
+    specs = effective(cfg, env)
+    ref = specs["refs"].get(args.name)
+    expected = (E.env_folder(cfg.project), env, "field", args.name)
+    if ref and (ref.folder, ref.item, ref.kind, ref.field) != expected:
+        E.fail("set target is not the canonical account-local field; source retained", 4)
+    selected = [row for row in specs["docs"] if any(record.name == args.name for record in row[2].records)]
+    if len(selected) > 1:
+        E.fail("duplicate secret assignment requires import", 4)
+    if selected and not ref:
+        E.fail("literal assignment requires envs import; source retained", 4)
+    default = "global.env" if cfg.is_global else ".env"
+    sources = source_selection(cfg, env) or [default]
+    if not selected and len(sources) != 1:
+        E.fail("multiple approved sources require an explicit reference before set", 4)
+    path = source_path(cfg, selected[0][0] if selected else sources[0])
+    if selected:
+        _, snapshot, document = selected[0]
+    else:
+        snapshot = module("imports").read_optional(path, sys.modules[__name__], private=cfg.is_global)
+        document = D.DotenvDocument(snapshot.text if snapshot else "")
+    value = E.read_value(args.name, args.stdin)
+    base = state_path("placeholder").parent.parent / "usr/secrets-backups"
+    recovery = private_dir(base / ("envs-set-" + str(time.time_ns()) + "-" + os.urandom(6).hex()))
+    if snapshot:
+        module("imports").backup(snapshot, recovery / "source.env", sys.modules[__name__])
+        snapshot.verify()
+    with E.write_lock():
+        managed_put(cfg, env, {args.name: value}, True)
+        value = None
+        if snapshot:
+            snapshot.verify()
+        module("imports").publish(path, snapshot, document.rewrite({args.name: D.format_bw_ref(*expected[:2], expected[3])}),
+                                  sys.modules[__name__], recovery)
+    E.say(args.name + ": set; run envs bind" + (" -g" if cfg.is_global else "") + " before using the reference")
 
 
 def cmd_refs(args):

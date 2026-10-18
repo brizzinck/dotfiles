@@ -1063,7 +1063,8 @@ def edit_mise(path, fn):
 # ───────────────────────────── rbw (read) and bw (write) ─────────────────────────────
 # The owner reads through rbw and writes through bw (vault-bw.py). A managed user (td, yc: a non-service row of managed.tsv) has no
 # rbw and no bw of its own: it reads Users/<me>/Env/<project> and Shared/Env/<project> through the vault-share broker that runs in
-# the owner's session (scripts/vault-share.py), and every write command is refused (the owner writes: `envs set NAME --for td`).
+# the owner's session (scripts/vault-share.py). Native human set/import use its explicit self-scope write capability;
+# other mutation families remain owner-only. The broker, not a client folder or item ID, selects write authority.
 
 FOLDER_PREFIX = ""            # "Users/td/" or "Shared/" while the owner runs a command with --for td / --shared
 _MANAGED = None
@@ -1104,7 +1105,8 @@ def managed_user():
 
 
 def env_folder(project):
-    return f"{FOLDER_PREFIX}Env/{project}"
+    me = managed_user()
+    return f"Users/{me}/Env/{project}" if me else f"{FOLDER_PREFIX}Env/{project}"
 
 
 def env_folders(project):
@@ -1816,6 +1818,8 @@ def targets(cfg, a):
 
 def cmd_set(a):
     refuse_agent("set")
+    if managed_user():
+        return extras("managed_set", a)
     cfg = cfg_for(a)
     if "=" in a.name or a.extra:
         fail("values never go on the command line: history and ps would see them. Use the hidden prompt or --stdin. "
@@ -3002,7 +3006,7 @@ def apply_scope(a):
     if not user and not shared:
         return
     if managed_user():
-        fail("--for and --shared are for the owner: a managed user cannot write", 4)
+        fail("--for and --shared are owner-only; managed writes use only the account's own scope", 4)
     if user and shared:
         fail("--for and --shared exclude each other", 2)
     if user:
@@ -3255,8 +3259,8 @@ def main(argv):
             return 0
         apply_scope(a)
         if managed_user() and a.cmd == "send":
-            fail("Send creation is available only in the owner's session; managed users use a read-only vault broker", 4)
-        if managed_user() and a.cmd in WRITE_CMDS:
+            fail("Send creation is available only in the owner's session; managed users cannot create Sends", 4)
+        if managed_user() and a.cmd in WRITE_CMDS - {"set", "import"}:
             me = managed_user()
             fail(f"values in Users/{me}/Env are written by the owner: `envs set NAME --for {me}` on his terminal", 4)
         return HANDLERS[a.cmd](a) or 0

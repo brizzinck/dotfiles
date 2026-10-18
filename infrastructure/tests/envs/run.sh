@@ -1096,8 +1096,9 @@ touch "$FAKE_DIR/rbw-locked"
 N=$((N + 1)); (cd "$DEMO" && asTD "$ENVS" run -- true >"$CAP/$N.out" 2>"$CAP/$N.err" </dev/null); RC=$?; OUT="$CAP/$N.out"; ERR="$CAP/$N.err"
 check "21.2 a locked vault: exit 3 with the broker's message, no prompt" bash -c "[ $RC = 3 ] && grep -q \"owner's vault is locked\" '$ERR'"
 rm -f "$FAKE_DIR/rbw-locked"
-# 21.3 writes are refused
-for c in "set X --stdin" "unset TOKEN -e dev" "rename TOKEN TOKEN2" "copy dev stage" "env new qa" "project rename other" "import" "convert TOKEN"; do
+# 21.3 unsupported mutation families remain owner-only. Native set/import are
+# independently covered by native_test.py, including policy denials and source retention.
+for c in "unset TOKEN -e dev" "rename TOKEN TOKEN2" "copy dev stage" "env new qa" "project rename other" "convert TOKEN"; do
   N=$((N + 1)); (cd "$DEMO" && asTD "$ENVS" $c >"$CAP/$N.out" 2>"$CAP/$N.err" </dev/null); RC=$?
   check "21.3 '$c' as td: exit 4 and the owner's command is named" bash -c "[ $RC = 4 ] && grep -q 'envs set NAME --for td' '$CAP/$N.err'"
 done
@@ -1183,7 +1184,7 @@ if ((QUICK)); then
     ok "runtime bounded masking and private tmpfs unit groups"
   else bad "runtime unit groups" "$(printf '%s' "$result" | tail -12)"; fi
 else
-  for module in references policy imports runtime send precedence; do
+  for module in references policy imports native runners runtime send precedence; do
     if result=$(env -u DISPLAY -u WAYLAND_DISPLAY -u HYPRLAND_INSTANCE_SIGNATURE /usr/bin/python3 -I -B "$HERE/${module}_test.py" 2>&1); then
       ok "$module isolated integration groups"
       [[ $module != precedence ]] || printf '%s\n' "$result" | grep -E '^(PASS|SKIP|loader probes:)'

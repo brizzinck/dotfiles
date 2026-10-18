@@ -111,8 +111,6 @@ def shell_literal(value):
 def run(args, c):
     E, D = c.E, c.D
     E.refuse_agent("import")  # Before opening the source or examining any literal value.
-    if E.managed_user():
-        E.fail("imports are available only in the owner's session", 4)
     global_ = getattr(args, "global_", False)
     cfg = E.load_global(augment=False) if global_ else E.load_cfg(augment=False)
     E.require_bound(cfg)
@@ -199,28 +197,31 @@ def run(args, c):
     with E.write_lock():
         if secrets:
             try:
-                manager = E.bw_open()
-                item = E.bw_env_item(manager, cfg.project, env, create=False)
-                if item is not None:
-                    E.item_field_names(item)
-                    existing = {field["name"]: field.get("value") for field in item.get("fields", [])}
-                    conflicts = [name for name in secrets if name in existing and existing[name] != values[name] and not args.overwrite]
-                    if conflicts:
-                        E.fail("existing vault fields differ; use --overwrite only after review; source retained", 4)
+                if E.managed_user():
+                    c.managed_put(cfg, env, {name: values[name] for name in secrets}, args.overwrite)
                 else:
-                    item = E.bw_env_item(manager, cfg.project, env, create=True)
-                edited = copy.deepcopy(item)
-                for name in secrets:
-                    E.item_set_field(edited, name, values[name])
-                E.bw_save(manager, edited)
-                check = manager.bw_json("get", "item", item["id"])
-                E.item_field_names(check)
-                verified = {field["name"]: field.get("value") for field in check.get("fields", [])}
-                if check.get("id") != item["id"] or any(verified.get(name) != values[name] for name in secrets):
-                    E.fail("vault readback failed", 1)
-                manager.refresh_rbw()
-            except E.Fail:
-                E.fail("vault write or verification failed; source retained", 1)
+                    manager = E.bw_open()
+                    item = E.bw_env_item(manager, cfg.project, env, create=False)
+                    if item is not None:
+                        E.item_field_names(item)
+                        existing = {field["name"]: field.get("value") for field in item.get("fields", [])}
+                        conflicts = [name for name in secrets if name in existing and existing[name] != values[name] and not args.overwrite]
+                        if conflicts:
+                            E.fail("existing vault fields differ; use --overwrite only after review; source retained", 4)
+                    else:
+                        item = E.bw_env_item(manager, cfg.project, env, create=True)
+                    edited = copy.deepcopy(item)
+                    for name in secrets:
+                        E.item_set_field(edited, name, values[name])
+                    E.bw_save(manager, edited)
+                    check = manager.bw_json("get", "item", item["id"])
+                    E.item_field_names(check)
+                    verified = {field["name"]: field.get("value") for field in check.get("fields", [])}
+                    if check.get("id") != item["id"] or any(verified.get(name) != values[name] for name in secrets):
+                        E.fail("vault readback failed", 1)
+                    manager.refresh_rbw()
+            except E.Fail as error:
+                E.fail("vault write or verification failed; source retained", error.code if E.managed_user() else 1)
         transaction["phase"] = "vault-verified"
         c.write_state("import-status.json", transaction)
         snap.verify()
