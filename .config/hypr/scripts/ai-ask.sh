@@ -182,7 +182,7 @@ cmd_session() {
       # only the telegram (+ telegram-send) MCP servers (strict), no web tools; Bash exists only for wl-copy (other commands still
       # ask). send_message is pre-allowed because its own popup is the confirmation: nothing leaves until you press its key code.
       exec_claude "$PROMPT_TELEGRAM" --strict-mcp-config --mcp-config "$DIR/mcp.json" --tools "Bash" \
-        --allowedTools "mcp__telegram,mcp__telegram-send__send_message,mcp__telegram-send__status,Bash(wl-copy:*)" ;;
+        --allowedTools "mcp__telegram,mcp__telegram-send__send_message,mcp__telegram-send__send_file,mcp__telegram-send__status,Bash(wl-copy:*)" ;;
     *) echo "ai-ask: unknown session kind: $kind" >&2; exit 2 ;;
   esac
 }

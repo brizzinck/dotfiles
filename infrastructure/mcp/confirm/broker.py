@@ -26,6 +26,7 @@ Protocol: one JSON line in, one JSON line out per connection.
   {"op":"disable"}                                   -> {"ok":true,"status":"disabled"}
   {"op":"send","account","chat","text","reply_to"?}  -> {"ok":bool,"status":"sent"|"cancelled"|"timeout"|"disabled"|"rejected",
                                                          "message_id"?,"name"?,"reason"?}
+  {"op":"send_file","account","chat","text","attachment","reply_to"?} -> same popup/response; attachment is a bounded byte snapshot
 State for readers (waybar, hub, mcp-telegram-send status): /run/tgconfirm/state.json (0644, no secrets).
 Audit (journald, stderr): action, account, chat id, length, sha256 prefix of the text, result. Never the text.
 
@@ -53,6 +54,10 @@ import sys
 import time
 import urllib.error
 import urllib.request
+
+# Explicit local path also supports the doctor's isolated (-I) invocation.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from telegram_files import MAX_REQUEST_BYTES, MAX_CAPTION, validate_attachment, attachment_description
 
 MAX_TEXT = 4096
 POPUP_TIMEOUT = 60            # seconds the owner has to press the code
@@ -442,13 +447,21 @@ class Broker:
         if not self.enabled():
             return {"ok": False, "status": "disabled", "reason": "sending is disabled (owner: hub > Telegram: allow sending)"}
         account = msg.get("account", "main")
-        text, chat, reply_to = msg.get("text"), msg.get("chat"), msg.get("reply_to")
+        is_file = msg.get('op') == 'send_file'
+        text, chat, reply_to = msg.get("text", '' if is_file else None), msg.get("chat"), msg.get("reply_to")
+        attachment = msg.get('attachment') if is_file else None
         if not isinstance(account, str) or account not in self.accounts:
             return {"ok": False, "status": "rejected", "reason": f"unknown account (known: {', '.join(sorted(self.accounts))})"}
-        if not isinstance(text, str) or not text.strip():
+        if is_file:
+            try:
+                validate_attachment(attachment)
+            except ValueError as e:
+                return {'ok': False, 'status': 'rejected', 'reason': str(e)}
+        if not isinstance(text, str) or (not is_file and not text.strip()):
             return {"ok": False, "status": "rejected", "reason": "the text is empty"}
-        if len(text) > MAX_TEXT:
-            return {"ok": False, "status": "rejected", "reason": f"the text is longer than {MAX_TEXT} characters"}
+        max_text = MAX_CAPTION if is_file else MAX_TEXT
+        if len(text.encode('utf-16-le')) // 2 > max_text:
+            return {"ok": False, "status": "rejected", "reason": f"the text is longer than {max_text} characters"}
         if isinstance(chat, bool) or not isinstance(chat, (str, int)) or not str(chat).strip() or len(str(chat)) > 128:
             return {"ok": False, "status": "rejected", "reason": "chat must be a numeric id, an @username or the title of an allowed chat"}
         if reply_to in ("", 0):
@@ -475,9 +488,10 @@ class Broker:
                 log(f"send account={account} chat={chat_id} len={n} sha256={h} result=rejected(rate)")
                 return {"ok": False, "status": "rejected",
                         "reason": f"rate limit ({RATE[0]} confirmation popups per {RATE[1] // 60} minutes), try later"}
-            res = await self.popup({"kind": "send", "title": "Send this Telegram message?", "account": account, "name": info.get("name", "?"),
+            popup_text = attachment_description(attachment) + '\n\nCaption:\n' + text if is_file else text
+            res = await self.popup({"kind": "send", "title": "Send this Telegram file?" if is_file else "Send this Telegram message?", "account": account, "name": info.get("name", "?"),
                                     "username": info.get("username", ""), "chat_id": chat_id, "chat_kind": info.get("kind", ""),
-                                    "reply_preview": info.get("reply_preview", ""), "reply_to": reply_to, "text": text})
+                                    "reply_preview": info.get("reply_preview", ""), "reply_to": reply_to, "text": popup_text})
             if res != "confirmed":
                 log(f"send account={account} chat={chat_id} len={n} sha256={h} result={clean_line(res)}")
                 if res.startswith("error"):
@@ -487,13 +501,19 @@ class Broker:
                 return {"ok": False, "status": "disabled", "reason": "sending was switched off"}
             # shielded: once the owner confirmed, a hang-up of the client must not tear the call down half way; the log line
             # below is written either way. (A client that left DURING the popup never gets here: the popup is cancelled.)
-            code, out = await asyncio.shield(self.x_send(account, {"action": "send", "chat_id": chat_id, "text": text, "reply_to": reply_to,
-                                                                   "request_id": secrets.token_hex(12)}, SEND_WAIT))
+            payload = {"action": "send_file" if is_file else "send", "chat_id": chat_id, "text": text,
+                       "reply_to": reply_to, "request_id": secrets.token_hex(12)}
+            if is_file:
+                payload['attachment'] = attachment
+                log(f"file account={account} chat={chat_id} size={attachment['size']} sha256={attachment['sha256']} result=confirmed")
+            code, out = await asyncio.shield(self.x_send(account, payload, SEND_WAIT))
             if code == 200 and out.get("ok"):
                 log(f"send account={account} chat={chat_id} len={n} sha256={h} result=sent id={out.get('message_id')}")
                 return {"ok": True, "status": "sent", "message_id": out.get("message_id"), "name": name, "chat_id": chat_id}
             why = clean_line(out.get("error") or f"telegram-mcp answered {code}")
             log(f"send account={account} chat={chat_id} len={n} sha256={h} result=failed({why})")
+            if code == 0 or 'outcome unknown' in why or code >= 500:
+                return {'ok': False, 'status': 'unknown', 'reason': why, 'name': name}
             return {"ok": False, "status": "rejected", "reason": why, "name": name}
         finally:
             self.lock.release()
@@ -511,7 +531,7 @@ class Broker:
             return self.status()
         if op == "disable":
             return self.op_disable()
-        if op in ("enable", "send"):
+        if op in ("enable", "send", "send_file"):
             try:
                 return await asyncio.wait_for(self.op_enable(msg) if op == "enable" else self.op_send(msg), REQUEST_BUDGET)
             except asyncio.TimeoutError:
@@ -547,7 +567,7 @@ class Broker:
             else:
                 try:
                     line = await asyncio.wait_for(reader.readline(), 5)
-                    if len(line) > 70000:
+                    if len(line) > MAX_REQUEST_BYTES:
                         raise ValueError
                     msg = json.loads(line)
                     if not isinstance(msg, dict):
@@ -581,7 +601,7 @@ class Broker:
             os.unlink(path)
         old = os.umask(0o111)       # socket rw for everyone; the peer uid is checked on every connection
         try:
-            server = await asyncio.start_unix_server(self.handle, path=path, limit=70000)
+            server = await asyncio.start_unix_server(self.handle, path=path, limit=MAX_REQUEST_BYTES)
         finally:
             os.umask(old)
         os.chmod(path, 0o666)

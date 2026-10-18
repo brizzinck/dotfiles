@@ -10,7 +10,7 @@ until the owner has pressed the per-message key code in that popup. The answer c
 
 After a sent message this process (it runs in the owner's session, so it has the notification bus) shows "Sent to NAME".
 
-Tools (the gateway's toolFilter allows exactly these two): send_message, status. The broker is infrastructure/mcp/confirm/broker.py
+Tools (the gateway's toolFilter allows exactly these three): send_message, send_file, status. The broker is infrastructure/mcp/confirm/broker.py
 (see CLAUDE.md, "Telegram sending (M1-send)"). Test hooks: TGSEND_SOCK (socket path), TGSEND_WAIT (seconds to wait for an answer), TGSEND_NO_NOTIFY=1 (no notification).
 """
 
@@ -25,6 +25,8 @@ import time
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
+
+from telegram_files import snapshot_file, MAX_CAPTION
 
 SOCK = os.environ.get("TGSEND_SOCK", "/run/tgconfirm/req.sock")
 # The broker bounds a whole request to 115 s (lock 10 + resolve 12 + popup 65 + send 25 = 112) and the gateway waits 150 s, so this
@@ -103,6 +105,29 @@ async def send_message(chat: str | int, text: str, reply_to: int | None = None, 
     out = await ask({"op": "send", "account": account, "chat": chat, "text": text, "reply_to": reply_to})
     if out.get("status") == "sent":
         notify_sent(str(out.get("name") or chat))
+    return render(out)
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
+async def send_file(chat: str | int, file_path: str, caption: str = '',
+                    reply_to: int | None = None, account: str = 'main') -> str:
+    """Ask to send a local file (1 byte..5 MiB) as a document with original bytes.
+    NOTHING is sent until the owner confirms the recipient, filename, byte size,
+    SHA-256 and complete caption in the popup. The file is snapshotted before the
+    popup, so editing it afterwards cannot change the approved attachment.
+    URLs, symlinks and non-regular files are refused. Caption: at most 1024 UTF-16
+    units. Never ask for the popup code; after cancellation do not retry unasked.
+    """
+    if len(caption.encode('utf-16-le')) // 2 > MAX_CAPTION:
+        return 'rejected: caption is longer than 1024 characters. Nothing was sent.'
+    try:
+        attachment = snapshot_file(file_path)
+    except (OSError, ValueError) as e:
+        return f'rejected: cannot snapshot the file ({type(e).__name__}). Choose a regular file of 1 byte..5 MiB. Nothing was sent.'
+    out = await ask(dict(op='send_file', account=account, chat=chat, text=caption,
+                         reply_to=reply_to, attachment=attachment))
+    if out.get('status') == 'sent':
+        notify_sent(str(out.get('name') or chat))
     return render(out)
 
 

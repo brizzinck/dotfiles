@@ -7,6 +7,8 @@ import importlib.util
 import json
 import os
 import sys
+import base64
+import hashlib
 
 repo = sys.argv[1]
 spec = importlib.util.spec_from_file_location("serve", os.path.join(repo, "infrastructure/mcp/telegram/serve.py"))
@@ -107,6 +109,10 @@ class FakeBackend:
         self.calls.append(("send", account, chat_id, text, reply_to))
         return {"message_id": 100 + len([c for c in self.calls if c[0] == "send"]), "chat_id": chat_id}
 
+    async def send_file(self, account, chat_id, text, reply_to, allowed, attachment):
+        self.calls.append(('file', account, chat_id, text, reply_to, attachment))
+        return {'message_id': 999, 'chat_id': chat_id}
+
 
 async def post(app, token, body, path="/x-send", method="POST", raw=None):
     sent, payload = [], raw if raw is not None else json.dumps(body).encode()
@@ -171,7 +177,7 @@ async def send_tests():
     check("/x-send: send needs the numeric id from resolve (400)", st == 400)
     st, _, _ = await post(app, SEND_TOKEN, None, raw=b"not json")
     check("/x-send: bad JSON is refused (400)", st == 400)
-    st, _, _ = await post(app, SEND_TOKEN, None, raw=b"x" * 70000)
+    st, _, _ = await post(app, SEND_TOKEN, None, raw=b"x" * (serve.SEND_BODY_MAX + 1))
     check("/x-send: an oversized body is refused (413)", st == 413)
     st, js, _ = await post(app, SEND_TOKEN, {"action": "resolve", "account": "main", "chat": "Work chat", "reply_to": 5})
     check("/x-send: resolve returns the name, id and the reply preview", st == 200 and js["name"] == "Work chat" and js["chat_id"] == -1001111 and js["reply_preview"] == "hi")
@@ -233,12 +239,43 @@ async def unconfigured_tests():
 
 asyncio.run(unconfigured_tests())
 
+
+async def file_tests():
+    be = FakeBackend()
+    app = serve.SendRoute(serve.BearerAuth(inner, MCP_TOKEN), cfg, '', be)
+    attachment = dict(name='chart.png', size=5, data=base64.b64encode(b'bytes').decode(),
+                      sha256=hashlib.sha256(b'bytes').hexdigest())
+    data = dict(action='send_file', account='main', chat_id=42, text='Caption **literal**',
+                attachment=attachment, request_id='file-test-0001', reply_to=7)
+    st, _, _ = await post(app, MCP_TOKEN, data)
+    check('file: MCP token cannot upload', st == 401 and not be.calls)
+    st, _, _ = await post(app, SEND_TOKEN, {**data, 'chat_id': 777})
+    check('file: readable but not sendable chat cannot upload', st == 403 and not be.calls)
+    st, _, _ = await post(app, SEND_TOKEN, {**data, 'attachment': {**attachment, 'data': 'wrong'}})
+    check('file: corrupt bytes rejected before upload', st == 400 and not be.calls)
+    st, _, _ = await post(app, SEND_TOKEN, {**data, 'text': '😀' * 513})
+    check('file: caption length counts UTF-16 units', st == 413 and not be.calls)
+    st, js, _ = await post(app, SEND_TOKEN, data)
+    check('file: approved bytes, caption and reply reach upload', st == 200 and js['message_id'] == 999
+          and be.calls[-1] == ('file', 'main', 42, data['text'], 7, attachment))
+    st, js, _ = await post(app, SEND_TOKEN, data)
+    check('file: retry with same request id uploads once', js.get('replayed') and len(be.calls) == 1)
+    st, _, _ = await post(app, SEND_TOKEN, {**data, 'request_id': 'file-empty-caption', 'text': ''})
+    check('file: empty caption is allowed', st == 200)
+
+
+with contextlib.redirect_stderr(io.StringIO()):
+    asyncio.run(file_tests())
+
 py_ok = os.environ.get("TELEGRAM_MCP_PY") and os.path.exists(os.environ["TELEGRAM_MCP_PY"])
 if os.environ.get("RUN_REAL_SERVER") == "1":
     # inside the telegram-mcp venv: the real tool surface in read-only mode
     sys.path.insert(0, os.environ["TELEGRAM_MCP_SRC"])
     import telegram_mcp.runner  # noqa: F401  (registers the tools)
     from telegram_mcp import runtime
+
+    import call_metadata
+    call_metadata.install()
 
     runtime._apply_exposed_tools_mode()
     tools = {t.name: t for t in runtime.mcp._tool_manager.list_tools()}
@@ -273,6 +310,10 @@ if os.environ.get("RUN_REAL_SERVER") == "1":
             FakeClient.sent.append((entity, text, reply_to, parse_mode))
             return FakeMsg()
 
+        async def send_file(self, entity, stream, **kwargs):
+            FakeClient.sent.append((entity, stream.read(), stream.name, kwargs))
+            return FakeMsg()
+
     async def fake_resolve(ident, client=None):
         lookups.append(ident)
         if ident in ents:
@@ -286,6 +327,14 @@ if os.environ.get("RUN_REAL_SERVER") == "1":
     be = serve.TelethonBackend()
 
     async def glue():
+        att = dict(name='chart.png', size=5, data=base64.b64encode(b'bytes').decode(),
+                   sha256=hashlib.sha256(b'bytes').hexdigest())
+        await be.send_file('main', 42, '**caption**', 7, scfg['allowed'], att)
+        check('glue: files upload original bytes as documents without formatting',
+              FakeClient.sent[-1] == (user, b'bytes', 'chart.png',
+                                     dict(caption='**caption**', reply_to=7, force_document=True, parse_mode=None)))
+        FakeClient.sent.clear()
+        lookups.clear()
         r = await be.resolve("main", "work chat", scfg["ids"], scfg["allowed"])
         check("glue: a title resolves among the allowed chats only", r["chat_id"] == -1000000001111 and r["name"] == "Work chat" and r["kind"] == "Supergroup")
         r = await be.resolve("main", "@ann", scfg["ids"], scfg["allowed"], reply_to=7)
@@ -323,6 +372,50 @@ if os.environ.get("RUN_REAL_SERVER") == "1":
             check("glue: an unknown account is refused", e.status == 400)
 
     asyncio.run(glue())
+
+    async def call_stats_tests():
+        from telegram_mcp.tools import messages
+        call = types.MessageService(id=12, peer_id=types.PeerUser(42),
+                                    date=datetime.datetime(2026, 9, 1, tzinfo=datetime.timezone.utc),
+                                    action=types.MessageActionPhoneCall(call_id=123, duration=3600,
+                                                                        reason=types.PhoneCallDiscardReasonHangup()))
+        check('calls: real history formatter preserves duration, id and reason',
+              messages.message_to_dict(call)['call'] == dict(id='123', duration_seconds=3600,
+                                                              reason='PhoneCallDiscardReasonHangup', video=False))
+        check('calls: text listing also includes duration', '"duration_seconds": 3600' in messages.format_message_line(call))
+        queries = []
+
+        async def iterator(entity, **kwargs):
+            queries.append((entity, kwargs))
+            yield call
+
+        cl = runtime.clients['default']
+        cl.iter_messages = iterator
+        original_allowed = runtime.is_chat_allowed
+        runtime.is_chat_allowed = lambda chat, entity=None: chat == 42
+        try:
+            fn = tools['get_call_statistics'].fn
+            out = json.loads(await fn(chat_id=42, timezone='Europe/Kyiv'))
+            check('calls: read tool sums hours from bounded per-chat history without global search',
+                  out['hours'] == 1 and out['complete'] and len(queries) == 1
+                  and queries[0][1] == dict(limit=2001, offset_id=0, wait_time=0))
+            check('calls: exact call records are available for cross-page deduplication',
+                  out['call_records'][0]['id'] == '123' and out['call_records'][0]['duration_seconds'] == 3600)
+            async def two_messages(entity, **kwargs):
+                queries.append((entity, kwargs))
+                yield call
+                yield call
+            cl.iter_messages = two_messages
+            out = json.loads(await fn(chat_id=42, limit=1, offset_id=99))
+            check('calls: a full page returns an exclusive message cursor and partial totals',
+                  out['complete'] is False and out['next_offset_id'] == 12 and out['scanned_messages'] == 1
+                  and queries[-1][1] == dict(limit=2, offset_id=99, wait_time=0))
+            denied = await fn(chat_id=555)
+            check('calls: forbidden chat rejected before history is queried', len(queries) == 2 and isinstance(denied, str))
+        finally:
+            runtime.is_chat_allowed = original_allowed
+
+    asyncio.run(call_stats_tests())
     serve.install_auth(runtime.mcp, "tok-" + "z" * 40)
     from starlette.testclient import TestClient
 

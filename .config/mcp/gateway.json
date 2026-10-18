@@ -40,7 +40,7 @@
           "list": [
             "get_me", "list_chats", "get_chats", "get_chat", "get_full_chat", "get_history", "get_messages",
             "list_messages", "search_messages", "get_message_context", "get_message_link", "get_pinned_messages",
-            "get_message_reactions", "list_topics", "get_media_info", "transcribe_voice"
+            "get_message_reactions", "list_topics", "get_media_info", "transcribe_voice", "get_call_statistics"
           ]
         }
       }
@@ -50,7 +50,7 @@
       "args": ["${HOME}/.config/mcp/telegram-send.py"],
       "timeout": "150s",
       "options": {
-        "toolFilter": { "mode": "allow", "list": ["send_message", "status"] }
+        "toolFilter": { "mode": "allow", "list": ["send_message", "send_file", "status"] }
       }
     },
     "chrome-devtools": {

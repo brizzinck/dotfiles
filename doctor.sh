@@ -536,7 +536,7 @@ if [ -x "$HOME/.local/bin/mcp-gateway" ]; then
   tg_dir="$DOTFILES/infrastructure/mcp/telegram"
   if [ -x /usr/local/lib/telegram-mcp/run ] && [ -r /etc/systemd/system/telegram-mcp.service ]; then
     tg_drift=""
-    for tg_f in run serve.py creds-install login.py; do cmp -s "$tg_dir/$tg_f" "/usr/local/lib/telegram-mcp/$tg_f" || tg_drift="$tg_drift $tg_f"; done
+    for tg_f in run serve.py creds-install login.py call_metadata.py telegram_files.py; do cmp -s "$tg_dir/$tg_f" "/usr/local/lib/telegram-mcp/$tg_f" || tg_drift="$tg_drift $tg_f"; done
     for tg_f in telegram-mcp.service telegram-whisper.service telegram-whisper-proxy.service telegram-whisper-proxy.socket; do cmp -s "$tg_dir/$tg_f" "/etc/systemd/system/$tg_f" || tg_drift="$tg_drift $tg_f"; done
     if [ -z "$tg_drift" ]; then ok mcp-tg-files "telegram-mcp scripts and units match the repo"; else bad mcp-tg-files "installed files differ from the repo:$tg_drift (sudo ./apply-system.sh --only mcp)"; fi
   else
@@ -573,8 +573,8 @@ if [ -x "$HOME/.local/bin/mcp-gateway" ]; then
   esac
   # Telegram sending (M1-send): the repo-side facts always, the machine-side ones once the root part ran (INFO until then)
   snd_bad=""
-  jq -e '.mcpServers["telegram-send"].options.toolFilter | .mode == "allow" and ((.list | sort) == ["send_message", "status"])' "$HOME/.config/mcp/gateway.json" >/dev/null 2>&1 \
-    || snd_bad="$snd_bad; gateway.json: telegram-send toolFilter is not an allow list of exactly send_message + status"
+  jq -e '.mcpServers["telegram-send"].options.toolFilter | .mode == "allow" and ((.list | sort) == ["send_file", "send_message", "status"])' "$HOME/.config/mcp/gateway.json" >/dev/null 2>&1 \
+    || snd_bad="$snd_bad; gateway.json: telegram-send toolFilter must allow exactly send_file + send_message + status"
   grep -qs 'telegram-send' "${CODEX_HOME:-$HOME/.codex}/config.toml" && snd_bad="$snd_bad; telegram-send is registered for Codex (Codex has no permission rules: mcp-add removes it)"
   for snd_f in /etc/credstore.encrypted/telegram-mcp.send_token /etc/credstore.encrypted/tgconfirm.send_token; do
     [ -r "$snd_f" ] && snd_bad="$snd_bad; $snd_f is readable by $USER"
@@ -582,7 +582,7 @@ if [ -x "$HOME/.local/bin/mcp-gateway" ]; then
   find "$mcp_state" -maxdepth 1 -iname '*send*token*' 2>/dev/null | grep -q . && snd_bad="$snd_bad; a send token file exists in $mcp_state"
   if [ -r /etc/systemd/system/tgconfirm.service ]; then
     snd_drift=""
-    for snd_f in broker.py popup.py; do cmp -s "$DOTFILES/infrastructure/mcp/confirm/$snd_f" "/usr/local/lib/tgconfirm/$snd_f" || snd_drift="$snd_drift $snd_f"; done
+    for snd_f in broker.py popup.py telegram_files.py; do cmp -s "$DOTFILES/infrastructure/mcp/confirm/$snd_f" "/usr/local/lib/tgconfirm/$snd_f" || snd_drift="$snd_drift $snd_f"; done
     cmp -s "$DOTFILES/infrastructure/mcp/confirm/tgconfirm.service" /etc/systemd/system/tgconfirm.service || snd_drift="$snd_drift tgconfirm.service"
     cmp -s "$tg_dir/send.conf" /usr/local/lib/telegram-mcp/send.conf || snd_drift="$snd_drift send.conf"
     if [ -z "$snd_drift" ]; then ok mcp-send-files "tgconfirm broker, popup, unit and send.conf match the repo"; else bad mcp-send-files "installed files differ from the repo:$snd_drift (sudo ./apply-system.sh --only mcp)"; fi
@@ -617,7 +617,7 @@ if [ -x "$HOME/.local/bin/mcp-gateway" ]; then
       esac
     fi
     if [ -z "$snd_bad" ] && [ -n "$snd_restart" ]; then info mcp-send-route "$snd_restart; the other route checks hold (run doctor again in a few seconds)"
-    elif [ -z "$snd_bad" ]; then ok mcp-send-route "/x-send refuses the MCP token, telegram-send is Claude-only with an allow list of send_message + status, no send credential readable, tgconfirm has only the Wayland socket"
+    elif [ -z "$snd_bad" ]; then ok mcp-send-route "/x-send refuses the MCP token, telegram-send is Claude-only with send_file + send_message + status, no send credential readable, tgconfirm has only the Wayland socket"
     else bad mcp-send-route "${snd_bad#; }"; fi
   else
     info mcp-send-files "tgconfirm is not installed yet: sudo ./apply-system.sh --only users,mcp, then mcp-telegram-setup send-chats"

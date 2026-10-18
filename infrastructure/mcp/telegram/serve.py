@@ -31,6 +31,10 @@ import json
 import os
 import sys
 import time
+import io
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from telegram_files import MAX_REQUEST_BYTES, MAX_CAPTION, validate_attachment
 
 SRC = os.environ.get("TELEGRAM_MCP_SRC", "/opt/telegram-mcp/src")
 
@@ -82,7 +86,7 @@ SEND_PATH = "/x-send"
 SEND_MAX_TEXT = 4096           # Telegram's own limit for one message
 SEND_RATE = (5, 600)           # at most 5 send attempts per 600 s (all accounts together)
 RESOLVE_RATE = (30, 600)       # at most 30 resolve calls per 600 s: the broker limits requests too, this is the second wall
-SEND_BODY_MAX = 65536
+SEND_BODY_MAX = MAX_REQUEST_BYTES
 SEND_ID_RE = None              # set below (re is only needed here)
 
 import re  # noqa: E402
@@ -265,6 +269,21 @@ class TelethonBackend:
             raise SendError(502, f"Telegram refused the message ({type(e).__name__})")
         return {"message_id": getattr(msg, "id", None), "chat_id": rt.get_marked_id(entity)}
 
+    async def send_file(self, account, chat_id, text, reply_to, allowed, attachment):
+        content = validate_attachment(attachment)
+        rt, cl = self.rt(), self.client(account)
+        entity = await self._entity(cl, chat_id)
+        if rt.get_marked_id(entity) not in allowed:
+            raise SendError(403, NOT_ALLOWED)
+        stream = io.BytesIO(content)
+        stream.name = attachment['name']
+        try:
+            msg = await cl.send_file(entity, stream, caption=text, reply_to=reply_to,
+                                     force_document=True, parse_mode=None)
+        except Exception as e:
+            raise SendError(502, f"Telegram upload failed ({type(e).__name__}); outcome unknown, check the chat")
+        return {"message_id": getattr(msg, 'id', None), "chat_id": rt.get_marked_id(entity)}
+
 
 async def _json(send, status: int, payload: dict) -> None:
     body = json.dumps(payload).encode()
@@ -363,15 +382,23 @@ class SendRoute:
                 raise
             audit("resolve", account, out["chat_id"], None, "ok")
             return out
-        if action != "send":
+        if action not in ("send", "send_file"):
             raise SendError(400, "unknown action")
         chat_id, text, rid = data.get("chat_id"), data.get("text"), data.get("request_id")
         if isinstance(chat_id, bool) or not isinstance(chat_id, int):
             raise SendError(400, "chat_id must be the numeric id returned by resolve")
-        if not isinstance(text, str) or not text.strip():
+        attachment = None
+        if action == 'send_file':
+            attachment = data.get('attachment')
+            try:
+                validate_attachment(attachment)
+            except ValueError as e:
+                raise SendError(400, str(e))
+        if not isinstance(text, str) or (action == 'send' and not text.strip()):
             raise SendError(400, "text is empty")
-        if len(text) > SEND_MAX_TEXT:
-            raise SendError(413, f"text is longer than {SEND_MAX_TEXT} characters")
+        max_text = MAX_CAPTION if attachment is not None else SEND_MAX_TEXT
+        if len(text.encode('utf-16-le')) // 2 > max_text:
+            raise SendError(413, f"text is longer than {max_text} characters")
         if not isinstance(rid, str) or not SEND_ID_RE.match(rid):
             raise SendError(400, "request_id is required (8-64 characters of A-Za-z0-9_-)")
         if chat_id not in self.cfg["allowed"]:   # cheap check before any Telegram call
@@ -388,7 +415,12 @@ class SendRoute:
                 raise SendError(429, f"rate limit: {SEND_RATE[0]} messages per {SEND_RATE[1] // 60} minutes")
             self.sent_at.append(now)
             try:
-                out = await self.backend.send(account, chat_id, text, reply_to, self.cfg["allowed"])
+                if attachment is not None:
+                    audit('file', account, chat_id, None,
+                          f"size={attachment['size']} sha256={attachment['sha256']}")
+                    out = await self.backend.send_file(account, chat_id, text, reply_to, self.cfg['allowed'], attachment)
+                else:
+                    out = await self.backend.send(account, chat_id, text, reply_to, self.cfg["allowed"])
             except SendError as e:
                 audit("send", account, chat_id, text, f"refused({e.status})")
                 raise
@@ -425,6 +457,9 @@ def main() -> None:
     os.chdir(os.environ.get("TELEGRAM_MCP_WORKDIR", "/var/lib/telegram-mcp"))
     import telegram_mcp.runner as runner  # builds the Telethon clients from the environment, registers the tools
     from telegram_mcp import runtime
+
+    import call_metadata
+    call_metadata.install()
 
     install_auth(runtime.mcp, token, send_cfg, send_reason)
     print("telegram-mcp: read-only, allowlist of "

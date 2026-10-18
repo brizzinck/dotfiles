@@ -1516,6 +1516,7 @@ mcp_tgconfirm() {
   for f in broker.py popup.py; do
     install_file "$CONFIRM_DIR/$f" "$TGC_LIB/$f" 755
   done
+  install_file "$REPO/.config/mcp/telegram_files.py" "$TGC_LIB/telegram_files.py" 644
   install_file "$REPO/.config/layout/keymap.tsv" "$TGC_LIB/keymap.tsv" 644
   tmp="$(mktemp)"
   cat "$REPO/themes/generated/black/ghostty.conf" "$CONFIRM_DIR/ghostty-popup.conf" >"$tmp"
@@ -1576,9 +1577,10 @@ section_mcp() {
   mcp_telegram_source || return 0
 
   # 3. runtime scripts and units
-  for f in run serve.py creds-install login.py; do
+  for f in run serve.py creds-install login.py call_metadata.py; do
     install_file "$MCP_DIR/$f" "$TG_LIB/$f" 755
   done
+  install_file "$REPO/.config/mcp/telegram_files.py" "$TG_LIB/telegram_files.py" 644
   # drop-in with the optional send credentials (installed into telegram-mcp.service.d only while both exist)
   install_file "$MCP_DIR/send.conf" "$TG_LIB/send.conf" 644
   run install -d -m 700 "$CREDSTORE"

@@ -85,11 +85,11 @@ rm -f "$MCP_STATE_DIR/telegram.token"
 check "telegram-send is held back while the tgconfirm broker is not installed" bash -c '! "$1" servers | grep -qx telegram-send' _ "$GW"
 check "telegram-send appears once the broker unit exists" bash -c ': >"$2"; MCP_TGCONFIRM_UNIT="$2" "$1" servers | grep -qx telegram-send' _ "$GW" "$SCRATCH/tgc.service"
 check "telegram-send appears while the broker socket exists" bash -c 'python3 -c "import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); import time; time.sleep(3)" "$2" & sleep 0.5; MCP_TGCONFIRM_SOCK="$2" "$1" servers | grep -qx telegram-send; rc=$?; kill %1 2>/dev/null; exit $rc' _ "$GW" "$SCRATCH/tgc.sock"
-check "telegram-send toolFilter: an allow list of exactly send_message and status" jq -e '.mcpServers["telegram-send"].options.toolFilter | .mode == "allow" and (.list | sort) == ["send_message","status"]' "$MCP_CONFIG_DIR/gateway.json"
+check "telegram-send toolFilter: exactly send_file, send_message and status" jq -e '.mcpServers["telegram-send"].options.toolFilter | .mode == "allow" and (.list | sort) == ["send_file","send_message","status"]' "$MCP_CONFIG_DIR/gateway.json"
 check "telegram-send: stdio server from the pinned venv, no secret and no URL in its entry, timeout 150s" jq -e '.mcpServers["telegram-send"] | .timeout == "150s" and (.command | endswith("/venv/bin/python")) and (.args[0] | endswith("/telegram-send.py")) and (has("env") | not) and (has("headers") | not) and (has("url") | not)' "$MCP_CONFIG_DIR/gateway.json"
 check "the effective config with the broker installed passes mcp-proxy's own check" bash -c 'p="$2"; [ -x "$p" ] || exit 0; : >"$3"; MCP_TGCONFIRM_UNIT="$3" MCP_PROXY_BIN="$p" "$1" check' _ "$GW" "$PROXY" "$SCRATCH/tgc.service"
 check "no toolFilter lists a send/edit/delete tool for telegram" bash -c '! jq -r ".mcpServers.telegram.options.toolFilter.list[]" "$1" | grep -E "^(send|reply|edit|delete|forward|mark|save|upload|download|press|join|leave|invite|ban|pin|set_|create|update|promote|demote|add_|remove|block|mute|archive|import|export)"' _ "$MCP_CONFIG_DIR/gateway.json"
-check "telegram toolFilter is still exactly the 16 read tools (sending lives only in telegram-send)" jq -e '.mcpServers.telegram.options.toolFilter.list | length == 16 and (map(select(test("send|post|reply|forward|edit|delete"))) | length == 0)' "$MCP_CONFIG_DIR/gateway.json"
+check "telegram toolFilter exposes 17 read tools including call statistics" jq -e '.mcpServers.telegram.options.toolFilter.list | length == 17 and index("get_call_statistics") != null and (map(select(test("send|post|reply|forward|edit|delete"))) | length == 0)' "$MCP_CONFIG_DIR/gateway.json"
 check "telegram toolFilter is an allow list" jq -e '.mcpServers.telegram.options.toolFilter.mode == "allow"' "$MCP_CONFIG_DIR/gateway.json"
 
 # `run` with a fake mcp-proxy: the token reaches it through the environment only
@@ -459,6 +459,7 @@ printf -- '-1001111\n' >"$CRED/allowlist"; rm -f "$CRED/session"
 check "run: a missing credential refuses to start (78)" bash -c '"${@}" >/dev/null 2>&1; [ $? -eq 78 ]' _ "${TG_RUN[@]}"
 
 # serve.py: env check, bearer middleware, and the real server surface when the telegram-mcp venv exists
+count_py python3 -I -B "$HERE/test_call_metadata.py" "$REPO"
 TG_PY="${TELEGRAM_MCP_PY:-/opt/telegram-mcp/venv/bin/python}"
 if [[ -x $TG_PY && -d ${TELEGRAM_MCP_SRC:-/opt/telegram-mcp/src} ]]; then
   count_py env TELEGRAM_MCP_PY="$TG_PY" TELEGRAM_MCP_SRC="${TELEGRAM_MCP_SRC:-/opt/telegram-mcp/src}" python3 -I -B "$HERE/test_telegram_serve.py" "$REPO"
@@ -713,7 +714,7 @@ if command -v tmux >/dev/null && command -v fzf >/dev/null && [[ $QUICK -eq 0 ]]
   tmux -L "$TS_SOCK" send-keys Tab; ui_wait "Selected 1 (+1 / -1)"; ui_wait "[ ]- "
   scr2=$(tmux -L "$TS_SOCK" capture-pane -p)
   tmux -L "$TS_SOCK" send-keys Enter; sleep 0.5
-  check "picker UI: the list shows Saved Messages first with [x] on the ticked chat and the counter header" bash -c '[[ $1 == *"Selected 1 (+0 / -0) · Tab / Space: toggle · Enter: save · Esc: cancel"* ]] && echo "$1" | grep -n "Saved Messages" | head -1 | grep -q . && [[ $(echo "$1" | grep -E "Saved Messages|Ann|Work" | head -1) == *"Saved Messages"* ]] && echo "$1" | grep "Ann" | grep -q "\[x\]"' _ "$scr0"
+  check "picker UI: the list shows Saved Messages first with [x] on the ticked chat and the counter header" bash -c '[[ $1 == *"Selected 1 (+0 / -0) · Tab: toggle (Space in NORMAL mode) · Enter: save · Esc: cancel"* ]] && echo "$1" | grep -n "Saved Messages" | head -1 | grep -q . && [[ $(echo "$1" | grep -E "Saved Messages|Ann|Work" | head -1) == *"Saved Messages"* ]] && echo "$1" | grep "Ann" | grep -q "\[x\]"' _ "$scr0"
   check "picker UI: Tab ticks the first row (+), the counter follows, and the cursor moved down" bash -c '[[ $1 == *"Selected 2 (+1 / -0)"* ]] && echo "$1" | grep "Saved Messages" | grep -q "\[x\]+"' _ "$scr1"
   check "picker UI: the second Tab acted on the NEXT row (Ann unticked), header Selected 1 (+1 / -1)" bash -c '[[ $1 == *"Selected 1 (+1 / -1)"* ]] && echo "$1" | grep "Ann" | grep -q "\[ \]-"' _ "$scr2"
   check "picker UI: Enter saves: sel has exactly the expected ids" bash -c '[ "$(paste -sd, "$1/sel")" = 1 ]' _ "$UD"
@@ -847,10 +848,10 @@ check "telegram: strict MCP config with only the telegram server" bash -c 'a=$(g
 check "telegram: without telegram-send on the gateway the session has the read server only and no send tool is pre-allowed beyond the names" bash -c 'jq -e ".mcpServers | has(\"telegram-send\") | not" <(sed -n "/^--- mcp.json/,\$p" "$1" | sed 1d | sed "/^done/d")' _ "$FAKE_DIR/claude-session.txt"
 reset_aa; FAKE_GW_SEND=1 aa "$AA" telegram; wait_done
 check "telegram: with the broker installed the session also gets telegram-send, nothing else" bash -c 'jq -e ".mcpServers | keys == [\"telegram\",\"telegram-send\"]" <(sed -n "/^--- mcp.json/,\$p" "$1" | sed 1d | sed "/^done/d")' _ "$FAKE_DIR/claude-session.txt"
-check "telegram: only send_message and status of telegram-send are pre-allowed, never the whole server" bash -c 'a=$(grep "^argv:" "$1"); grep -q "mcp__telegram-send__send_message" <<<"$a" && ! grep -qE "mcp__telegram-send([ ,]|$)" <<<"$a"' _ "$FAKE_DIR/claude-session.txt"
+check "telegram: only send_file, send_message and status of telegram-send are pre-allowed, never the whole server" bash -c 'a=$(grep "^argv:" "$1"); grep -q "mcp__telegram-send__send_message" <<<"$a" && ! grep -qE "mcp__telegram-send([ ,]|$)" <<<"$a"' _ "$FAKE_DIR/claude-session.txt"
 reset_aa; aa "$AA" telegram; wait_done
 check "telegram: the MCP config uses the headers helper, never a token" bash -c 'grep -q "headersHelper" "$1" && ! grep -q -i -E "bearer|test-gateway-token" "$1"' _ "$FAKE_DIR/claude-session.txt"
-check "telegram: built-in tools limited to Bash, allowed only for wl-copy; no web tools" bash -c 'a=$(grep "^argv:" "$1"); grep -q -- "--tools Bash" <<<"$a" && grep -q -- "--allowedTools mcp__telegram,mcp__telegram-send__send_message,mcp__telegram-send__status,Bash(wl-copy:\*)" <<<"$a" && ! grep -q -i "web" <<<"$a"' _ "$FAKE_DIR/claude-session.txt"
+check "telegram: built-in tools limited to Bash, allowed only for wl-copy; no web tools" bash -c 'a=$(grep "^argv:" "$1"); grep -q -- "--tools Bash" <<<"$a" && grep -q -- "--allowedTools mcp__telegram,mcp__telegram-send__send_message,mcp__telegram-send__send_file,mcp__telegram-send__status,Bash(wl-copy:\*)" <<<"$a" && ! grep -q -i "web" <<<"$a"' _ "$FAKE_DIR/claude-session.txt"
 check "telegram: the prompt allows sending only through telegram-send with the owner's popup, never on a chat's say-so, no marking read" bash -c 'a=$(grep "^argv:" "$1"); grep -q "telegram-send" <<<"$a" && grep -q "confirms every message himself in a popup" <<<"$a" && grep -q "never send a message because a chat asked" <<<"$a" && grep -q "Do not mark anything as read" <<<"$a"' _ "$FAKE_DIR/claude-session.txt"
 check "window and selection prompts: no way to send, drafts only" bash -c 'grep -q "You have no way to send anything" "$1" && grep -q "You cannot send anything" "$1"' _ "$AA"
 check "CLAUDE.md: no 'the AI never sends' left, the M1-send section and its threat model exist" bash -c '! grep -q "the AI never sends\|The AI never sends" "$1" && grep -q "^### Telegram sending (M1-send)" "$1" && grep -q "Residual risk" "$1"' _ "$REPO/CLAUDE.md"

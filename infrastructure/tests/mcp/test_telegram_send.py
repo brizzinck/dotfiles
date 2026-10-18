@@ -59,10 +59,12 @@ async def call(s, name, args=None):
 
 
 async def main():
-    srv = await asyncio.start_unix_server(handle, path=SOCK)
+    srv = await asyncio.start_unix_server(handle, path=SOCK, limit=8 * 1024 * 1024)
     async with session() as s:
         tools = {t.name: t for t in (await s.list_tools()).tools}
-        check("exactly two tools: send_message and status", sorted(tools) == ["send_message", "status"])
+        check("exactly three tools: send_file, send_message and status", sorted(tools) == ["send_file", "send_message", "status"])
+        check('send_file requires confirmation and is not read-only', not tools['send_file'].annotations.readOnlyHint
+              and 'popup' in tools['send_file'].description)
         check("send_message is not marked read-only, status is", not tools["send_message"].annotations.readOnlyHint and tools["status"].annotations.readOnlyHint)
         props = tools["send_message"].inputSchema["properties"]
         check("send_message takes chat, text, reply_to, account (no code, no token, no confirm flag)", sorted(props) == ["account", "chat", "reply_to", "text"])
@@ -125,6 +127,18 @@ async def main():
         n0 = open(f"{TMP}/notify.log").read().count("Sent to")
         await call(s, "send_message", {"chat": "x", "text": "y"})
         check("TGSEND_NO_NOTIFY=1 silences the notification", open(f"{TMP}/notify.log").read().count("Sent to") == n0)
+        with open(f'{TMP}/chart.png', 'wb') as f:
+            f.write(b'\x89PNG\r\n' + b'x' * 80000)
+        err, text = await call(s, 'send_file', dict(chat='Work chat', file_path=f'{TMP}/chart.png', caption='chart', reply_to=7))
+        check('file: binary attachment larger than the old socket limit reaches broker',
+              text.startswith('sent (id 1)') and seen[-1]['op'] == 'send_file'
+              and seen[-1]['attachment']['size'] == 80006 and seen[-1]['text'] == 'chart' and seen[-1]['reply_to'] == 7)
+        before = len(seen)
+        os.symlink(f'{TMP}/chart.png', f'{TMP}/link.png')
+        err, text = await call(s, 'send_file', dict(chat='Work chat', file_path=f'{TMP}/link.png'))
+        check('file: symlinks are refused without a broker request', text.startswith('rejected') and len(seen) == before)
+        err, text = await call(s, 'send_file', dict(chat='Work chat', file_path=f'{TMP}/missing.png'))
+        check('file: missing local file is a clear refusal', text.startswith('rejected') and len(seen) == before)
     srv.close()
 
 

@@ -167,6 +167,36 @@ async def main():
     # --- send: the popup shows everything, nothing is sent before the confirmation ---
     reset()
     b.env["TGCONFIRM_FAKE"] = "cancel"
+    from telegram_files import snapshot_file
+    path = f'{TMP}/chart.png'
+    with open(path, 'wb') as f:
+        f.write(b'original-file' * 10000)
+    attachment = snapshot_file(path)
+    file_request = dict(op='send_file', account='main', chat='Work chat', text='chart caption', attachment=attachment)
+    r = await ask(b, file_request)
+    check('file: cancellation prevents upload', r['status'] == 'cancelled'
+          and [c['body']['action'] for c in calls] == ['resolve'])
+    pop = popups()[0]['req']
+    check('file: popup shows name, size, hash and full caption, never binary data',
+          all(s in pop['text'] for s in ('chart.png', str(attachment['size']), attachment['sha256'], 'chart caption'))
+          and 'attachment' not in pop and attachment['data'] not in pop['text'])
+    reset()
+    b.env['TGCONFIRM_FAKE'] = 'confirm'
+    with open(path, 'wb') as f:
+        f.write(b'changed-after-snapshot')
+    r = await ask(b, file_request)
+    uploads = [c['body'] for c in calls if c['body']['action'] == 'send_file']
+    check('file: confirmed upload uses the snapshot, not changed local file',
+          r['status'] == 'sent' and len(uploads) == 1 and uploads[0]['attachment'] == attachment)
+    reset()
+    r = await ask(b, {**file_request, 'attachment': {**attachment, 'sha256': '0' * 64}})
+    check('file: tampered content rejected before lookup or popup', r['status'] == 'rejected' and not calls and not popups())
+    reset()
+    xmode['resolve'] = 'denied'
+    r = await ask(b, file_request)
+    check('file: send allowlist applies before popup', r['status'] == 'rejected' and not popups())
+    reset()
+    b.env["TGCONFIRM_FAKE"] = "cancel"
     r = await ask(b, SEND)
     check("send: cancelled in the popup = nothing sent", r["status"] == "cancelled" and n_sends() == 0 and len(calls) == 1 and calls[0]["body"]["action"] == "resolve")
     pop = popups()[0]
@@ -219,7 +249,7 @@ async def main():
     reset()
     xmode["send"] = "fail"
     r = await ask(b, SEND)
-    check("send: a Telegram failure after a confirmed popup is reported, not hidden", r["status"] == "rejected" and "refused" in r["reason"])
+    check("send: a server failure after confirmation is unknown, never a false 'nothing sent'", r["status"] == "unknown" and "refused" in r["reason"])
     reset()
     b.env["TGCONFIRM_URL"] = "http://127.0.0.1:1"
     r = await ask(b, SEND)
