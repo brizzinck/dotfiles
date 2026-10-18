@@ -1,0 +1,50 @@
+[Unit]
+Description=Local LLM: llama-server on Vulkan (unix socket only, started on demand, unloaded when unneeded)
+Documentation=file://%h/dotfiles/CLAUDE.md
+ConditionPathExists=/usr/bin/llama-server
+# stopped again when nothing needs it (llm-proxy.service exits after 5 idle minutes): model and Vulkan context are gone then
+StopWhenUnneeded=yes
+
+[Service]
+Type=simple
+# `llm _serve` checks the model and the token, removes a stale socket, logs the device line and execs llama-server with the
+# fixed flags (docs: CLAUDE.md "Local LLM"); the packaged llama-server.service units are never enabled
+ExecStart=%h/.local/bin/llm _serve
+RuntimeDirectory=llm-server
+RuntimeDirectoryMode=0700
+# counts as started when /health answers, so the proxy never forwards before the model is loaded (the first start ever also
+# compiles the Vulkan pipelines, which can take half a minute; the argument $MAINPID stops the wait when the server died)
+ExecStartPost=/usr/bin/timeout 180 /usr/bin/bash -c 'until curl -sf --unix-socket "$1" http://llm/health >/dev/null; do kill -0 "$2" 2>/dev/null || exit 1; sleep 0.3; done' llm-wait %t/llm-server/llama.sock $MAINPID
+TimeoutStartSec=200
+Restart=no
+# limits: host RAM only (GPU memory is bounded by the model size + context + one slot, see CLAUDE.md)
+Nice=5
+CPUWeight=50
+IOWeight=50
+CPUQuota=400%
+MemoryHigh=2G
+MemoryMax=4G
+MemorySwapMax=0
+TasksMax=64
+OOMScoreAdjust=500
+# sandbox: /dev/dri stays reachable (no PrivateDevices); the Mesa shader cache lives under ~/.cache
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=-%C
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+ProtectClock=yes
+# no network namespace access at all: the socket is a file under /run (reached through the filesystem), nothing needs TCP
+PrivateNetwork=yes
+UMask=0077
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=yes
+SystemCallArchitectures=native

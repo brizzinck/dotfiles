@@ -13,7 +13,19 @@ QUICK=0 KEEP=0 ONLY=""
 for a in "$@"; do case $a in --quick) QUICK=1 ;; --keep) KEEP=1 ;; --only=*) ONLY=${a#--only=} ;; *) echo "usage: run.sh [--quick] [--keep] [--only=N,M]" >&2; exit 2 ;; esac; done
 
 T=$(mktemp -d "${TMPDIR:-/tmp}/llm-test.XXXXXX")
+LIVE_UNITS=""
+# the REAL user manager (the test environment points XDG_RUNTIME_DIR at a private dir)
+sc() { XDG_RUNTIME_DIR="/run/user/$(id -u)" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus" /usr/bin/systemctl --user "$@"; }
+live_cleanup() {
+  [ -n "$LIVE_UNITS" ] || return 0
+  sc stop llmtest.socket llmtest-proxy.service llmtest-server.service >/dev/null 2>&1
+  rm -f $LIVE_UNITS "/run/user/$(id -u)/llmtest-token"
+  rmdir "/run/user/$(id -u)/llmtest" 2>/dev/null
+  sc daemon-reload >/dev/null 2>&1
+  LIVE_UNITS=""
+}
 cleanup() {
+  live_cleanup
   [ -n "${SRV_PID:-}" ] && kill "$SRV_PID" 2>/dev/null
   [ "$KEEP" = 1 ] && { echo "kept $T"; return; }
   rm -rf "$T"
@@ -219,8 +231,131 @@ EOF
   check "token usage error = exit 2" $([ $RC = 2 ] && echo 0 || echo 1)
 }
 
+sec_serve() {
+  echo "-- 3 _serve: argv, checks, token, stale socket"
+  export FAKE_CURL_SRC="$T/src-default.bin"
+  run models fetch tm-default; unset FAKE_CURL_SRC
+  rm -f "$ST/model" "$ST/token"
+  export LLM_SERVER_BIN="$HERE/fake_server.py"
+  run _serve --dry-run
+  argv=$OUT
+  check "dry-run exits 0 and prints one argument per line" $([ $RC = 0 ] && [ "$(head -1 <<<"$argv")" = "$HERE/fake_server.py" ] && echo 0 || echo 1) "$RC $ERR"
+  for want in "--host" "$XDG_RUNTIME_DIR/llm-server/llama.sock" "--api-key-file" "$ST/token" "--cache-ram" "--no-webui" "--no-slots" "--offline" "--reasoning"; do
+    check "argv has $want" $(grep -qxF -- "$want" <<<"$argv" && echo 0 || echo 1)
+  done
+  a=$(tr '\n' ' ' <<<"$argv")
+  check "argv: -np 1, --cache-ram 0, --reasoning off, -ngl all, -fa auto, -c 8192, -t 4 -tb 4" $(has "$a" " -np 1 " && has "$a" "--cache-ram 0 " && has "$a" "--reasoning off " && has "$a" " -ngl all " && has "$a" " -fa auto " && has "$a" " -c 8192 " && has "$a" " -t 4 -tb 4" && echo 0 || echo 1) "$a"
+  check "argv: model file and alias" $(has "$a" "-m $MD/tm-default.gguf " && has "$a" "-a tm-default " && echo 0 || echo 1) "$a"
+  check "argv: no --port, no -v / --verbose, no --log-prompts-dir, no TCP address" $(! grep -qE '^(--port|-v|--verbose|--log-verbose|--log-prompts-dir|--log-file)$' <<<"$argv" && ! grep -qE '^(127\.|0\.0\.0\.0|::)' <<<"$argv" && echo 0 || echo 1)
+  check "dry-run created the token (0600) but no socket dir" $([ "$(stat -c %a "$ST/token")" = 600 ] && [ ! -e "$XDG_RUNTIME_DIR/llm-server" ] && echo 0 || echo 1)
+  # server.conf: keys, local override, unknown and bad values
+  mkdir -p "$T/conf"
+  printf 'ctx=4096\nthreads=2  # comment\nflash_attn=off\ngpu_layers=0\nbogus=1\n' >"$T/conf/server.conf"
+  printf 'ctx=999999\nthreads=3\n' >"$T/conf/server.local.conf"
+  LLM_CONFIG_DIR="$T/conf" run _serve --dry-run
+  a=$(tr '\n' ' ' <<<"$OUT")
+  check "server.conf values and the local override are applied" $(has "$a" " -c 4096 " && has "$a" " -t 3 -tb 3" && has "$a" " -fa off " && has "$a" " -ngl 0 " && echo 0 || echo 1) "$a"
+  check "unknown key and bad value are warned about, not used" $(has "$ERR" "unknown key 'bogus'" && has "$ERR" "bad value for ctx" && echo 0 || echo 1) "$ERR"
+  # the active model comes from the state file
+  export FAKE_CURL_SRC="$T/src-alt.bin"; run models fetch tm-alt; run model tm-alt; unset FAKE_CURL_SRC
+  run _serve --dry-run
+  check "the active model is the one served" $(has "$OUT" "$MD/tm-alt.gguf" && has "$OUT" "tm-alt" && echo 0 || echo 1)
+  # checks: missing / changed model = 78, missing server binary = 78
+  touch -d '2002-02-02' "$MD/tm-alt.gguf"
+  run _serve --dry-run
+  check "changed model file = exit 78 with the fix" $([ $RC = 78 ] && has "$ERR" "llm models fetch tm-alt" && echo 0 || echo 1) "$RC $ERR"
+  rm -f "$MD/tm-alt.gguf"
+  run _serve --dry-run
+  check "missing model file = exit 78" $([ $RC = 78 ] && has "$ERR" "missing" && echo 0 || echo 1) "$ERR"
+  rm -f "$ST/model"
+  LLM_SERVER_BIN="$T/nope" run _serve
+  check "missing llama-server = exit 78 naming apply-system.sh" $([ $RC = 78 ] && has "$ERR" "apply-system.sh --only install" && echo 0 || echo 1) "$ERR"
+  run _serve --bogus
+  check "_serve usage error = exit 2" $([ $RC = 2 ] && echo 0 || echo 1)
+  # real run: stale socket removed, device line logged, fake server up
+  mkdir -p "$XDG_RUNTIME_DIR/llm-server"; : >"$XDG_RUNTIME_DIR/llm-server/llama.sock"
+  "$LLM" _serve >"$T/serve.out" 2>"$T/serve.err" &
+  SRV_PID=$!
+  for _ in $(seq 50); do [ -S "$XDG_RUNTIME_DIR/llm-server/llama.sock" ] && break; sleep 0.1; done
+  check "_serve execs the server on the unix socket (stale socket file replaced)" $([ -S "$XDG_RUNTIME_DIR/llm-server/llama.sock" ] && echo 0 || echo 1)
+  check "device line is logged first" $(grep -q '^llm: model tm-default, devices: Vulkan0: AMD Radeon 860M' "$T/serve.out" && echo 0 || echo 1) "$(cat "$T/serve.out")"
+  check "server dir is 0700" $([ "$(stat -c %a "$XDG_RUNTIME_DIR/llm-server")" = 700 ] && echo 0 || echo 1)
+  code=$(/usr/bin/curl -s --unix-socket "$XDG_RUNTIME_DIR/llm-server/llama.sock" -o /dev/null -w '%{http_code}' http://x/health 2>/dev/null)
+  check "the server answers /health through the socket" $([ "$code" = 200 ] && echo 0 || echo 1) "$code"
+  kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null; SRV_PID=
+  unset LLM_SERVER_BIN
+}
+
+sec_units() {
+  echo "-- 4 unit files"
+  U="$REPO/.config/systemd/user"
+  sock=$(<"$U/llm.socket"); srv=$(<"$U/llm-server.service"); prx=$(<"$U/llm-proxy.service")
+  check "socket is under %t, SocketMode=0600, DirectoryMode=0700, Service=llm-proxy.service" $(has "$sock" "ListenStream=%t/llm/llm.sock" && has "$sock" "SocketMode=0600" && has "$sock" "DirectoryMode=0700" && has "$sock" "Service=llm-proxy.service" && echo 0 || echo 1)
+  check "no ListenStream with an address or port (unix socket only)" $(! grep -E '^ListenStream=' "$U/llm.socket" | grep -vq '^ListenStream=%t/' && ! grep -qE 'ListenStream=[0-9.:]+$|ListenStream=\[|127\.0\.0\.1|0\.0\.0\.0' "$U/llm.socket" && echo 0 || echo 1)
+  check "socket is wanted by sockets.target (the only thing started at login)" $(has "$sock" "WantedBy=sockets.target" && echo 0 || echo 1)
+  check "server: StopWhenUnneeded=yes, no [Install], Restart=no" $(has "$srv" "StopWhenUnneeded=yes" && ! has "$srv" "[Install]" && has "$srv" "Restart=no" && echo 0 || echo 1)
+  check "proxy: --exit-idle-time=5min towards the backend socket, no [Install], Requires+After the server" $(has "$prx" "--exit-idle-time=5min %t/llm-server/llama.sock" && ! has "$prx" "[Install]" && has "$prx" "Requires=llm-server.service" && has "$prx" "After=llm-server.service" && echo 0 || echo 1)
+  check "server limits: MemoryMax=, MemoryHigh=, CPUQuota=, MemorySwapMax=0, TasksMax=, Nice=, OOMScoreAdjust=" $(for k in MemoryMax= MemoryHigh= CPUQuota= MemorySwapMax=0 TasksMax= Nice= OOMScoreAdjust= CPUWeight= IOWeight=; do has "$srv" "$k" || exit 1; done && echo 0 || echo 1)
+  check "server sandbox: NoNewPrivileges, PrivateTmp, ProtectSystem=strict, ProtectHome=read-only, AF_UNIX only, no PrivateDevices" $(has "$srv" "NoNewPrivileges=yes" && has "$srv" "PrivateTmp=yes" && has "$srv" "ProtectSystem=strict" && has "$srv" "ProtectHome=read-only" && has "$srv" "RestrictAddressFamilies=AF_UNIX" && ! grep -q '^PrivateDevices' "$U/llm-server.service" && echo 0 || echo 1)
+  check "proxy sandbox: AF_UNIX only, ProtectSystem=strict" $(has "$prx" "RestrictAddressFamilies=AF_UNIX" && has "$prx" "ProtectSystem=strict" && echo 0 || echo 1)
+  check "server waits for /health with a bound and stops waiting when the server died" $(has "$srv" "ExecStartPost=" && has "$srv" "timeout 180" && has "$srv" "/health" && has "$srv" 'kill -0' && has "$srv" "TimeoutStartSec=200" && echo 0 || echo 1)
+  check "server ExecStart is llm _serve, condition on /usr/bin/llama-server" $(has "$srv" "ExecStart=%h/.local/bin/llm _serve" && has "$srv" "ConditionPathExists=/usr/bin/llama-server" && echo 0 || echo 1)
+  check "no unit pulls the packaged llama-server.service or listens on a TCP port" $(! grep -vE '^\s*#' "$U"/llm*.service "$U/llm.socket" | grep -qE 'llama-server\.service|--port|ListenStream=[0-9]' && echo 0 || echo 1)
+  if command -v systemd-analyze >/dev/null; then
+    v=$(HOME=$(getent passwd "$(id -u)" | cut -d: -f6) systemd-analyze --user verify "$U/llm.socket" "$U/llm-proxy.service" "$U/llm-server.service" 2>&1 | grep -i 'llm' | grep -v 'marked executable')
+    check "systemd-analyze --user verify: no complaint about the llm units" $([ -z "$v" ] && echo 0 || echo 1) "$v"
+  fi
+}
+
+sec_live() {
+  echo "-- live: the three units as transient llmtest-* copies in the real user manager (fake server, 3 s idle)"
+  if [ "$QUICK" = 1 ]; then echo "skipped (--quick)"; return; fi
+  local rr="/run/user/$(id -u)" U="$REPO/.config/systemd/user" ud
+  ud="$rr/systemd/user"
+  if [ ! -S "$rr/bus" ] || ! sc show -p Version >/dev/null 2>&1; then
+    echo "skipped (no user manager)"; return
+  fi
+  mkdir -p "$ud"
+  # the server runs with PrivateTmp: the token file lives in the runtime dir (0700, not in /tmp)
+  head -c 24 /dev/urandom | base64 | tr -d '/+=\n' >"$rr/llmtest-token"
+  local tok; tok=$(<"$rr/llmtest-token")
+  sed -e 's#%t/llm/llm.sock#%t/llmtest/llm.sock#' -e 's#llm-proxy.service#llmtest-proxy.service#' "$U/llm.socket" >"$ud/llmtest.socket"
+  sed -e 's#llm-server.service#llmtest-server.service#g' -e 's#--exit-idle-time=5min#--exit-idle-time=3s#' -e 's#%t/llm-server/#%t/llmtest-server/#g' "$U/llm-proxy.service" >"$ud/llmtest-proxy.service"
+  sed -e '/^ConditionPathExists=/d' -e '/^Documentation=/d' -e 's#%t/llm-server/#%t/llmtest-server/#g' -e 's#^RuntimeDirectory=llm-server#RuntimeDirectory=llmtest-server#' \
+      -e "s#^ExecStart=.*#ExecStart=/usr/bin/python3 -I $HERE/fake_server.py --host %t/llmtest-server/llama.sock --api-key-file $rr/llmtest-token --log %t/llmtest-server/requests.log#" "$U/llm-server.service" >"$ud/llmtest-server.service"
+  LIVE_UNITS="$ud/llmtest.socket $ud/llmtest-proxy.service $ud/llmtest-server.service"
+  sc daemon-reload
+  sc start llmtest.socket
+  active() { sc is-active "$1" 2>/dev/null; }
+  local sock="$rr/llmtest/llm.sock"
+  check "socket unit is listening, mode 0600, dir 0700" $([ "$(active llmtest.socket)" = active ] && [ "$(stat -c %a "$sock")" = 600 ] && [ "$(stat -c %a "$rr/llmtest")" = 700 ] && echo 0 || echo 1) "$(ls -l "$rr/llmtest" 2>&1)"
+  check "before the first connection proxy and server are inactive" $([ "$(active llmtest-server.service)" != active ] && [ "$(active llmtest-proxy.service)" != active ] && echo 0 || echo 1)
+  local code
+  code=$(/usr/bin/curl -s --max-time 30 --unix-socket "$sock" -o /dev/null -w '%{http_code}' http://x/health)
+  check "first connect starts proxy + server and /health answers 200 through the proxy" $([ "$code" = 200 ] && echo 0 || echo 1) "$code"
+  check "both units are active after the first connect" $([ "$(active llmtest-server.service)" = active ] && [ "$(active llmtest-proxy.service)" = active ] && echo 0 || echo 1)
+  code=$(/usr/bin/curl -s --max-time 30 --unix-socket "$sock" -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' -d '{"model":"x","messages":[{"role":"user","content":"hi"}]}' -o "$T/live-resp" -w '%{http_code}' http://x/v1/chat/completions)
+  check "a chat request works through socket -> proxy -> server (bearer token)" $([ "$code" = 200 ] && grep -q 'fake reply' "$T/live-resp" && echo 0 || echo 1) "$code $(cat "$T/live-resp" 2>/dev/null)"
+  code=$(/usr/bin/curl -s --max-time 30 --unix-socket "$sock" -H 'Authorization: Bearer wrong' -d '{}' -o /dev/null -w '%{http_code}' http://x/v1/chat/completions)
+  check "a wrong token is refused with 401" $([ "$code" = 401 ] && echo 0 || echo 1) "$code"
+  local i gone=1
+  for i in $(seq 40); do
+    if [ "$(active llmtest-server.service)" != active ] && [ "$(active llmtest-proxy.service)" != active ]; then gone=0; break; fi
+    sleep 0.5
+  done
+  check "4 s idle later proxy and server are inactive (the model would be unloaded)" $gone "$(active llmtest-proxy.service) $(active llmtest-server.service)"
+  check "the socket still listens after the unload" $([ "$(active llmtest.socket)" = active ] && [ -S "$sock" ] && echo 0 || echo 1)
+  check "the backend runtime dir is gone with the server" $([ ! -e "$rr/llmtest-server" ] && echo 0 || echo 1)
+  code=$(/usr/bin/curl -s --max-time 30 --unix-socket "$sock" -o /dev/null -w '%{http_code}' http://x/health)
+  check "the next connection starts it again" $([ "$code" = 200 ] && [ "$(active llmtest-server.service)" = active ] && echo 0 || echo 1) "$code"
+  sc stop llmtest-proxy.service llmtest-server.service >/dev/null 2>&1
+  check "stopping proxy and server (llm stop) leaves both inactive and the socket listening" $([ "$(active llmtest-server.service)" != active ] && [ "$(active llmtest-proxy.service)" != active ] && [ "$(active llmtest.socket)" = active ] && echo 0 || echo 1)
+  live_cleanup
+  check "cleanup removed the test units" $([ ! -e "$ud/llmtest.socket" ] && [ "$(sc is-active llmtest.socket 2>/dev/null)" != active ] && echo 0 || echo 1)
+}
+
 # ----------------------------------------------------------------------------------------------------------------------------
-SECTIONS=(models:sec_models model:sec_model)
+SECTIONS=(models:sec_models model:sec_model serve:sec_serve units:sec_units live:sec_live)
 n=0
 for s in "${SECTIONS[@]}"; do
   n=$((n + 1))

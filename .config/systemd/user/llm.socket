@@ -1,0 +1,16 @@
+[Unit]
+Description=Local LLM socket (unix only, no TCP; starts llama-server on the first connection)
+Documentation=file://%h/dotfiles/CLAUDE.md
+
+[Socket]
+# %t = $XDG_RUNTIME_DIR (0700): no other user can reach it. Only this socket listens at boot (zero memory), the model is
+# loaded when something connects and unloaded again 5 idle minutes later (llm-proxy.service exits, llm-server.service stops).
+ListenStream=%t/llm/llm.sock
+SocketMode=0600
+DirectoryMode=0700
+Service=llm-proxy.service
+# a stopped or disabled socket leaves no stale file behind (the client treats the file as "socket is up")
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

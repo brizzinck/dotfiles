@@ -1,0 +1,23 @@
+[Unit]
+Description=Proxy from llm.sock to the on-demand llama-server (exits after 5 idle minutes, which unloads the model)
+Documentation=file://%h/dotfiles/CLAUDE.md
+Requires=llm-server.service
+After=llm-server.service
+
+[Service]
+Type=simple
+# the connection is only forwarded once llm-server.service is started, which means /health answered (model loaded)
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd --exit-idle-time=5min %t/llm-server/llama.sock
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateNetwork=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+UMask=0077
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native

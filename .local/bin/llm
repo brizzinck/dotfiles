@@ -7,9 +7,12 @@ Docs: CLAUDE.md "Local LLM (DEV-e)".
                                curl (resumable), checks the pinned sha256 before the rename and stamps the file
   llm model [NAME|--pick]      show / set the active model (state file ~/.local/state/llm/model); --pick = fzf-menu list
   llm token ensure|rotate|path the bearer token of the server (~/.local/state/llm/token, 0600, dir 0700)
+  llm _serve [--dry-run]       service entry of llm-server.service (checks, stale socket, device line, exec llama-server);
+                               --dry-run prints the argv
 
 Exit codes: 0 ok, 1 error, 2 usage, 3 not available (package / model / socket missing; the message says the fix), 4 timeout,
-130 interrupted. Test hooks (never needed by hand): LLM_STATE_DIR, LLM_DATA_DIR, LLM_MODELS_DIR, LLM_CONFIG_DIR, LLM_CATALOG.
+130 interrupted. Test hooks (never needed by hand): LLM_STATE_DIR, LLM_DATA_DIR, LLM_MODELS_DIR, LLM_CONFIG_DIR, LLM_CATALOG, LLM_SERVER_BIN,
+LLM_RUNTIME_DIR.
 """
 import hashlib
 import os
@@ -33,6 +36,11 @@ MODELS_DIR = Path(os.environ.get("LLM_MODELS_DIR") or DATA / "models")
 CONF = Path(os.environ.get("LLM_CONFIG_DIR") or _xdg("XDG_CONFIG_HOME", ".config") / "llm")
 CATALOG = Path(os.environ.get("LLM_CATALOG") or CONF / "models.tsv")
 TOKEN_FILE = STATE / "token"
+RUN = Path(os.environ.get("LLM_RUNTIME_DIR") or os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+SERVER_DIR = RUN / "llm-server"
+BACKEND_SOCK = SERVER_DIR / "llama.sock"
+PUBLIC_SOCK = RUN / "llm" / "llm.sock"
+SERVER_BIN = os.environ.get("LLM_SERVER_BIN") or "/usr/bin/llama-server"
 
 
 class Fail(Exception):
@@ -379,7 +387,89 @@ def cmd_token(args):
 
 
 # --------------------------------------------------------------------------------------------------------------
-COMMANDS = {"models": cmd_models, "model": cmd_model, "token": cmd_token}
+SERVER_CONF_KEYS = {
+    "ctx": lambda v: v.isdigit() and 512 <= int(v) <= 131072,
+    "threads": lambda v: v.isdigit() and 1 <= int(v) <= 64,
+    "flash_attn": lambda v: v in ("auto", "on", "off"),
+    "gpu_layers": lambda v: v == "all" or v.isdigit(),
+}
+
+
+def server_conf():
+    """tracked server.conf, then ~/.config/llm/server.local.conf; unknown keys and bad values are ignored with a warning."""
+    conf = {"ctx": "8192", "threads": "4", "flash_attn": "auto", "gpu_layers": "all"}
+    for path in (CONF / "server.conf", CONF / "server.local.conf"):
+        try:
+            text = path.read_text()
+        except OSError:
+            continue
+        for n, line in enumerate(text.splitlines(), 1):
+            line = line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            k, _, v = line.partition("=")
+            k, v = k.strip(), v.strip()
+            if k not in SERVER_CONF_KEYS:
+                err(f"warning: {path.name}:{n}: unknown key '{k}' ignored")
+            elif not SERVER_CONF_KEYS[k](v):
+                err(f"warning: {path.name}:{n}: bad value for {k} ignored")
+            else:
+                conf[k] = v
+    return conf
+
+
+def server_argv(model, conf):
+    """The fixed llama-server flags. Never -v, never --log-prompts-dir (selections and diffs must not reach the journal),
+    never --port (unix socket only)."""
+    return [SERVER_BIN, "--host", str(BACKEND_SOCK), "--api-key-file", str(TOKEN_FILE), "-m", str(model_path(model)),
+            "-a", model["id"], "-ngl", conf["gpu_layers"], "-fa", conf["flash_attn"], "-c", conf["ctx"], "-np", "1",
+            "--cache-ram", "0", "--no-webui", "--no-slots", "--offline", "--reasoning", "off",
+            "-t", conf["threads"], "-tb", conf["threads"]]
+
+
+def device_summary():
+    try:
+        p = subprocess.run([SERVER_BIN, "--list-devices"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+    lines = [l.strip() for l in (p.stdout + p.stderr).splitlines()
+             if l.strip().startswith(("Vulkan", "CUDA", "ROCm", "CPU", "Metal", "SYCL"))]
+    return "; ".join(lines) or "none listed"
+
+
+def cmd__serve(args):
+    dry = "--dry-run" in args
+    if [a for a in args if a != "--dry-run"]:
+        raise Fail("usage: llm _serve [--dry-run]", 2)
+    rows = catalogue()
+    model = find_model(active_id(rows), rows)
+    state, detail = stamp_state(model)
+    if state != "fetched":
+        raise Fail(f"model {model['id']} is {state}{' (' + detail + ')' if detail else ''}; run: llm models fetch {model['id']}", 78)
+    if not dry and not os.access(SERVER_BIN, os.X_OK):
+        raise Fail(f"{SERVER_BIN} is missing; run: sudo ~/dotfiles/apply-system.sh --only install", 78)
+    try:
+        token_ensure()
+    except OSError:
+        pass  # the unit sandbox may not allow writing the state dir: the client creates the token before it connects
+    if not TOKEN_FILE.exists():
+        raise Fail("no token file; run: llm token ensure", 78)
+    argv = server_argv(model, server_conf())
+    if dry:
+        print("\n".join(argv))
+        return 0
+    SERVER_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(SERVER_DIR, 0o700)
+    try:
+        BACKEND_SOCK.unlink()
+    except FileNotFoundError:
+        pass
+    print(f"llm: model {model['id']}, devices: {device_summary()}", flush=True)
+    os.execv(argv[0], argv)
+
+
+# --------------------------------------------------------------------------------------------------------------
+COMMANDS = {"_serve": cmd__serve, "models": cmd_models, "model": cmd_model, "token": cmd_token}
 
 
 def main(argv):
