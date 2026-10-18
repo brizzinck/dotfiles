@@ -357,6 +357,14 @@ expect "clipboard: a directory created later inherits the deny (default ACL)" "u
 expect "clipboard: a socket created later inherits the deny" "user:nobody:---" "$(getfacl -p "$T/rt/later-sock" 2>/dev/null | grep '^user:nobody:')"
 expect "clipboard: the modes creators ask for are unchanged by the default ACL (dir 755, socket 666 after chmod, file 644)" "755 666 644" "$(stat -c %a "$T/rt/later" "$T/rt/later-sock" "$T/rt/later-file" | paste -sd' ')"
 expect "clipboard first-level subdirectory denied (no traversal)" "user:nobody:---" "$(getfacl -p "$T/rt/hub" 2>/dev/null | grep '^user:nobody:')"
+(cd "$T/rt" && python3 -I -B -c '
+import socket, os
+s = socket.socket(socket.AF_UNIX); s.bind("private-sock"); os.chmod("private-sock", 0o600)
+os.makedirs("private-dir", mode=0o700)
+')
+USR_MANAGED_TSV="$T/clip.tsv" "$USR" clipboard-acl >/dev/null 2>&1
+expect "clipboard: a 0600 socket and a 0700 directory keep their modes after a run (setfacl -m would widen the mask through the default group::rwx)" "600 700" "$(stat -c %a "$T/rt/private-sock" "$T/rt/private-dir" | paste -sd' ')"
+expect "clipboard: ... and are denied" "user:nobody:---" "$(getfacl -p "$T/rt/private-sock" 2>/dev/null | grep '^user:nobody:')"
 # a wayland-only user (the tgconfirm popup) gets exactly the same ACL
 printf 'nobody\t-\tservice,noacl,wayland\taqua\n' >"$T/wl.tsv"
 setfacl -bk "$T/rt" "$T/rt/wayland-9" "$T/rt/pipewire-0" "$T/rt/bus" 2>/dev/null

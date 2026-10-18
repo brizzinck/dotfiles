@@ -110,16 +110,18 @@ cmd_clipboard_acl() {
     # group / other / mask entries are rwx so the modes the creators ask for are unchanged (a default ACL replaces the umask).
     setfacl -d -m "u::rwx,g::rwx,o::rwx,m::rwx,u:$u:---" "$rt" 2>/dev/null || true
     setfacl -m "u:$u:rw" "$rt/$wl"
+    # (-n on the deny entries: setfacl -m recomputes the mask as the union of the group entry and the named ones, and the default
+    # group::rwx above makes that rwx, which widened the 0600 llm.sock to 0670 for the group; a deny entry needs no mask)
     # sockets: every one under the runtime dir (the first level, and those in subdirectories such as systemd/io.systemd.Manager or
     # pulse/native, which are 0666 and would be reachable through the traverse-only x), except the Wayland socket
     while IFS= read -r -d '' f; do
       [ "$f" = "$rt/$wl" ] && continue
-      setfacl -m "u:$u:---" "$f" 2>/dev/null && n=$((n + 1))
+      setfacl -n -m "u:$u:---" "$f" 2>/dev/null && n=$((n + 1))
     done < <(find "$rt" -xdev -mindepth 1 -maxdepth 4 -type s -print0 2>/dev/null)
     # first-level subdirectories and files: no traversal and no reading, so world-readable files in 0755 directories (hub/, pinned/,
     # systemd/, ...) and loose ones (cliphist-mode, *.lock) stay out of reach.
     while IFS= read -r -d '' f; do
-      setfacl -m "u:$u:---" "$f" 2>/dev/null && d=$((d + 1))
+      setfacl -n -m "u:$u:---" "$f" 2>/dev/null && d=$((d + 1))
     done < <(find "$rt" -xdev -mindepth 1 -maxdepth 1 \( -type d -o -type f \) -print0 2>/dev/null)
     note "clipboard ACL for $u: $rt x, $wl rw, $n other sockets and $d subdirectories/files closed"
   done
