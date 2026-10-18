@@ -352,8 +352,9 @@ def tsv_safe(text):
 def git_common_dir(root):
     """(realpath of the git common dir shared by every worktree of the repo, top-level directory) read from .git without a
     process, or (None, None) = not a git checkout we trust. A `.git` FILE counts only for a real linked worktree: its gitdir
-    must hold `commondir` and a `gitdir` back-link that resolves to this very file, so an unpacked archive whose `.git` says
-    `gitdir: ../billing/.git` (or a `.git` symlink) cannot borrow another checkout's binding. git itself is never asked: it
+    must hold `commondir` and a `gitdir` back-link that resolves to this very file AND lie inside `<common>/worktrees/`, so an
+    unpacked archive whose `.git` says `gitdir: ../billing/.git` or `gitdir: fakegit` (its own forged `commondir` + back-link)
+    or is a `.git` symlink cannot borrow another checkout's binding. git itself is never asked: it
     trusts the same file."""
     d = Path(root).resolve()
     for cand in [d, *d.parents]:
@@ -377,7 +378,12 @@ def git_common_dir(root):
                 if os.path.realpath(b) != os.path.realpath(g):
                     return None, None
                 c = Path(cd.read_text().strip())
-                return os.path.realpath(c if c.is_absolute() else gd / c), cand
+                common = os.path.realpath(c if c.is_absolute() else gd / c)
+                # the gitdir must be one of the common dir's own `worktrees/<name>`: an archive can ship `commondir` and the
+                # back-link, but it cannot put a directory into another clone's .git/worktrees
+                if os.path.realpath(gd.parent) != os.path.join(common, "worktrees"):
+                    return None, None
+                return common, cand
         except OSError:
             return None, None
     return None, None

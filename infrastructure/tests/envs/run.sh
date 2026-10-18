@@ -744,6 +744,35 @@ check "7: same for .nvmrc" bash -c "! grep -q '|install' '$FAKE_DIR/mise.log' &&
 check "7: the global mise config disables the asdf and vfox plugin backends" grep -q '^disable_backends = \["asdf", "vfox"\]' "$REPO/.config/mise/config.toml"
 }
 
+sections_19() {
+# ───────────── 19 FIX-DEVb2: the open findings of REVIEW-FIXDEVb-5.md, each reproduced; all of these fail on the old code
+section "19 FIX-DEVb2: review attacks"
+
+# #1 (HIGH): a forged linked worktree (own commondir + back-link) borrowed a bound clone's binding
+reset; bind_proj
+JOB="$T/job"; rm -rf "$JOB"; mkdir -p "$JOB/downloaded/fakegit"
+cp "$PROJ/.envs.toml" "$PROJ/.mise.toml" "$JOB/downloaded/"
+printf 'gitdir: fakegit\n' >"$JOB/downloaded/.git"
+printf '%s\n' "$PROJ/.git" >"$JOB/downloaded/fakegit/commondir"
+printf '../.git\n' >"$JOB/downloaded/fakegit/gitdir"
+EDIR="$JOB/downloaded" e status
+check "19.1: a .git file with its own commondir and back-link (the reviewer's fakegit) does not borrow the binding" grep -q 'binding  unbound' "$OUT"
+EDIR="$JOB/downloaded" e run -- sh -c 'echo $DATABASE_URL'
+check "19.1: ... envs run there is refused without a prompt and prints no secret (exit 4)" bash -c "[ $RC = 4 ] && ! grep -q SECRET '$OUT'"
+rm -rf "$JOB/downloaded/fakegit"; mkdir -p "$JOB/downloaded/fakegit2/x"
+printf 'gitdir: fakegit2/x\n' >"$JOB/downloaded/.git"
+printf '../..\n' >"$JOB/downloaded/fakegit2/x/commondir"
+printf '../../../.git\n' >"$JOB/downloaded/fakegit2/x/gitdir"
+EDIR="$JOB/downloaded" e status
+check "19.1: a gitdir that merely sits two levels below its own common dir (not in .../worktrees/) is refused" grep -q 'binding  unbound' "$OUT"
+(cd "$PROJ" && git add -A >/dev/null 2>&1 && git commit -qm init >/dev/null 2>&1 && git worktree add -q "$T/wt" -b wt >/dev/null 2>&1)
+EDIR="$T/wt" e run -- true
+check "19.1: control: a real linked worktree (gitdir in <common>/worktrees/) still shares the binding" test $RC = 0
+EDIR=""; rm -rf "$JOB"
+scan "19.1"
+
+}
+
 sections_15_16() {
 if ((QUICK)); then
   printf '\n(--quick: the tmux TUI section and the timing section are skipped)\n'
@@ -852,7 +881,8 @@ fi
 
 }
 
-if [[ -z $ONLY ]]; then sections_1_14; sections_17; sections_18; fi
+if [[ -z $ONLY ]]; then sections_1_14; sections_17; sections_18; sections_19; fi
+[[ $ONLY == 19 ]] && sections_19
 sections_15_16
 
 printf '\nenvs test: %d passed, %d failed\n' "$PASS" "$FAILS"
