@@ -766,12 +766,12 @@ def menu_rows(state):
                     where += f" -> {hostport(*got)}" if got else " -> no published port"
             envs_s = ",".join(c["envs"]) if isinstance(c.get("envs"), list) else "all"
             ro = bool(c.get("read_only")) or (str(sc.root), n) in state.ro
-            rows.append((row_id("c", sc.root, n), f"{n:<14} {str(c.get('driver')):<10} {envs_s:<12} {where:<44} {'[ro]' if ro else '    '} {sc.label}"))
+            rows.append((row_id("c", sc.root, n), f"{n:<14} {'[ro]' if ro else '    '} {str(c.get('driver')):<10} {envs_s:<12} {where:<44} {sc.label}"))
     for r in ps:
         if r["state"] == "running" and image_kind(r["image"]) and not any(
                 find_container(c, None if sc.is_global else sc.root, [r]) for sc in scopes for c in sc.conns.values()
                 if any(k in c for k in ("docker", "container"))):
-            rows.append((row_id("d", None, r["name"]), f"{r['name']:<14} {image_kind(r['image']):<10} {'-':<12} {'docker:' + r['image']:<44}      docker (no config)"))
+            rows.append((row_id("d", None, r["name"]), f"{r['name']:<14}      {image_kind(r['image']):<10} {'-':<12} {'docker:' + r['image']:<44} docker (no config)"))
     return rows, scopes, n_conn
 
 

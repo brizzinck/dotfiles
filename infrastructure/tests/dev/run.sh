@@ -699,6 +699,98 @@ check "13u: apply-system.sh and install.sh list hurl act glab python-pipx (in sy
 check "13u: install-hints.tsv offers hurl, act and glab" bash -c "grep -q '^hurl	hurl' '$REPO/.config/hub/install-hints.tsv' && grep -q '^act	act' '$REPO/.config/hub/install-hints.tsv' && grep -q '^glab	glab' '$REPO/.config/hub/install-hints.tsv'"
 }
 
+tmux_menu_section() { # full runs only: the real fzf-menu modal in a private tmux server
+section "13+14 db menu and ci job picker (private tmux server, real fzf-menu --here)"
+reset
+tm() { tmux -L "$SOCK" "$@"; }
+screen_raw() { tm capture-pane -p -J -t t 2>/dev/null; }
+scr_has() { screen_raw | grep -aqE -- "$1"; }
+wait_scr() { local i max=$(( ${2:-8} * 5 )); for ((i = 0; i < max; i++)); do scr_has "$1" && return 0; sleep 0.2; done; return 1; }
+key() { tm send-keys -t t "$@"; sleep "${KDELAY:-0.4}"; }
+leaks() { local out s; out=$(screen_raw); for s in "${SECRETS[@]}"; do grep -aqF -- "$s" <<<"$out" && echo "$s"; done; }
+: >"$T/screen-leaks.log"
+export FZF_MENU_NO_SERVER=1
+NOMENU_PATH=${PATH/"$HERE/bin-menu:"/} NOMENU_TOOLS=${ENVS_TOOL_PATH/"$HERE/bin-menu:"/}
+tm new-session -d -s t -x 150 -y 40 "bash --noprofile --norc -c 'cd $PROJ && PATH=$NOMENU_PATH ENVS_TOOL_PATH=$NOMENU_TOOLS $DB; echo EXIT[\$?]; sleep 60'"
+check "13: the db menu opens with the connections of the project (resolved docker port) and the container without a config" wait_scr 'main +mariadb .*docker:mariadb -> 127.0.0.1:32768' 12
+leaks >>"$T/screen-leaks.log"
+check "13: the docker-only rows are listed: other-mariadb-1 and td-clickhouse" bash -c "s=\$(tmux -L $SOCK capture-pane -p -J -t t); grep -q 'other-mariadb-1' <<<\"\$s\" && grep -q 'td-clickhouse' <<<\"\$s\""
+check "13: the preview names the secret but shows no value" wait_scr 'password +secret DB_PASSWORD' 6
+KDELAY=0.9 key Escape
+KDELAY=0.9 key r
+check "13: r toggles read-only for the row: [ro] appears (the menu restarts after an action)" wait_scr 'main +\[ro\] +mariadb' 6
+KDELAY=0.9 key Escape
+KDELAY=0.9 key r
+check "13: r again turns it off" bash -c "! tmux -L $SOCK capture-pane -p -J -t t | grep -q 'main .*\[ro\]'"
+KDELAY=0.9 key Escape
+tm send-keys -t t -l к; sleep 1.2
+check "13: the Cyrillic twin of r works" wait_scr 'main +\[ro\] +mariadb' 6
+KDELAY=0.9 key Escape
+tm send-keys -t t -l к; sleep 1.2
+KDELAY=0.9 key Escape
+: >"$FAKE_DIR/dev.log"
+KDELAY=0.9 key '?'
+check "13: ? shows the help" wait_scr 'db menu keys' 6
+key Enter
+KDELAY=0.9 key Escape
+KDELAY=1.5 key o
+check "13: o opens the connection: the (fake) lazysql was started from the menu with the placeholder config" bash -c "grep -q '^lazysql -config' '$FAKE_DIR/dev.log' && grep -qF 'URL = \"mysql://app:\${pw}@127.0.0.1:32768/app\"' '$FAKE_DIR/lazysql.config'"
+check "13: ... and the menu is back afterwards" wait_scr 'main +mariadb' 8
+leaks >>"$T/screen-leaks.log"
+check "13: no secret was ever on the screen" bash -c "[ ! -s '$T/screen-leaks.log' ]"
+KDELAY=0.6 key Escape
+KDELAY=0.9 key Escape
+wait_scr 'EXIT\[0\]' 6 || { key q; }
+check "13: Esc quits with status 0" scr_has 'EXIT\[0\]'
+tm kill-server 2>/dev/null
+# 14: the ci job picker
+gh_flow14() { mkdir -p "$PROJ/.github/workflows"; printf 'name: CI\non: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n' >"$PROJ/.github/workflows/ci.yml"; }
+gh_flow14; printf -- '-P ubuntu-latest=catthehacker/ubuntu:act-latest\n' >"$T/actrc"
+python3 - "$FAKE_DIR/docker.json" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p)); d["images"] = ["catthehacker/ubuntu:act-latest"]; json.dump(d, open(p, "w"))
+PY
+: >"$FAKE_DIR/dev.log"
+tm new-session -d -s t -x 150 -y 40 "bash --noprofile --norc -c 'cd $PROJ && PATH=$NOMENU_PATH ENVS_TOOL_PATH=$NOMENU_TOOLS DEVTOOLS_ACTRC=$T/actrc $REPO/.local/bin/ci --system act; echo EXIT[\$?]; sleep 60'"
+check "14: the ci job picker lists the jobs of act -l (build, test) with workflow and events" wait_scr 'build +CI +push,pull_request' 12
+KDELAY=1.5 key Escape
+KDELAY=2 key a
+check "14: a runs everything: act ran with the push event and no -j" bash -c "grep -qE '^act -C .* --pull=false push\$' '$FAKE_DIR/dev.log'"
+check "14: the output waits for Enter, then the picker is back" wait_scr 'Enter' 6
+key Enter
+check "14: back in the picker" wait_scr 'build +CI' 8
+KDELAY=0.9 key Escape
+KDELAY=0.9 key Escape
+wait_scr 'EXIT\[0\]' 6 || key q
+check "14: Esc quits with status 0" scr_has 'EXIT\[0\]'
+tm kill-server 2>/dev/null
+}
+
+timing_section() { # reported; fails only above the bounds
+section "16 timing (db list < 150 ms, db menu first frame < 800 ms with fakes, tmux start included)"
+reset
+if command -v hyperfine >/dev/null; then
+  (cd "$PROJ" && hyperfine -N -w3 -r 20 --export-json "$T/hf.json" "$DB list" >/dev/null 2>&1)
+  med=$(jq -r '.results[0]|(.median // .summary.time_wall_clock.median)*1000' "$T/hf.json")
+  printf 'info  db list: median %.1f ms (reported; the check below fails above 150 ms)\n' "$med"
+  check "16: db list is below 150 ms" bash -c "awk -v r=$med 'BEGIN{exit !(r < 150)}'"
+else
+  echo "info  hyperfine is missing: db list timing skipped"
+fi
+local NOMENU_PATH=${PATH/"$HERE/bin-menu:"/} NOMENU_TOOLS=${ENVS_TOOL_PATH/"$HERE/bin-menu:"/} t0 t1 i ms
+export FZF_MENU_NO_SERVER=1
+t0=$(date +%s%N)
+tmux -L "$SOCK" new-session -d -s t -x 150 -y 40 "bash --noprofile --norc -c 'cd $PROJ && PATH=$NOMENU_PATH ENVS_TOOL_PATH=$NOMENU_TOOLS $DB; sleep 20'"
+for ((i = 0; i < 200; i++)); do
+  tmux -L "$SOCK" capture-pane -p -t t 2>/dev/null | grep -aq 'main  *mariadb' && break
+  sleep 0.02
+done
+t1=$(date +%s%N); ms=$(((t1 - t0) / 1000000))
+tmux -L "$SOCK" kill-server 2>/dev/null
+printf 'info  db menu first frame: %d ms (includes the tmux start and the polling; fails above 800 ms)\n' "$ms"
+check "16: the db menu draws its first frame within 800 ms" test "$ms" -lt 800
+}
+
 run_section() { [[ -z $ONLY || $ONLY == "$1" ]] && "$2"; }
 run_section 1 sections_1
 run_section 2 sections_2_3
@@ -710,6 +802,9 @@ run_section 8 sections_8
 run_section 9 sections_9
 run_section 10 sections_10
 run_section 13u sections_13u
+((QUICK)) || run_section 13 tmux_menu_section
+((QUICK)) || run_section 16 timing_section
+((QUICK)) && { [[ -z $ONLY ]] && printf '\n(--quick: the private-tmux menu sections 13 and 14 are skipped)\n'; }
 run_section 11 sections_11_12
 
 printf '\ndev test: %d passed, %d failed\n' "$PASS" "$FAILS"

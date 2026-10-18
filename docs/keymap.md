@@ -17,12 +17,12 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Desktop | [System, power, bar](#system-power-bar) | 12 |
 | Desktop | [Pointer from the keyboard](#pointer-from-the-keyboard) | 21 |
 | Desktop | [Other Hyprland binds](#other-hyprland-binds) | 16 |
-| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 165 |
-| Terminal | [tmux: this setup](#tmux-this-setup) | 56 |
+| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 170 |
+| Terminal | [tmux: this setup](#tmux-this-setup) | 58 |
 | Terminal | [tmux: stock prefix keys](#tmux-stock-prefix-keys) | 80 |
 | Terminal | [Terminal: ghostty](#terminal-ghostty) | 13 |
 | Terminal | [zsh line editor](#zsh-line-editor) | 36 |
-| Terminal | [zsh helpers](#zsh-helpers) | 15 |
+| Terminal | [zsh helpers](#zsh-helpers) | 16 |
 | Terminal | [zsh aliases](#zsh-aliases) | 42 |
 | Editor | [Neovim: AI agents](#neovim-ai-agents) | 25 |
 | Editor | [Neovim: find](#neovim-find) | 23 |
@@ -37,8 +37,9 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Editor | [Neovim: files and misc](#neovim-files-and-misc) | 17 |
 | Editor | [Neovim: moving and editing](#neovim-moving-and-editing) | 62 |
 | Menus and bar | [Menus: list grammar](#menus-list-grammar) | 19 |
-| Menus and bar | [Menus: keys of each menu](#menus-keys-of-each-menu) | 106 |
+| Menus and bar | [Menus: keys of each menu](#menus-keys-of-each-menu) | 123 |
 | Menus and bar | [TUIs and viewers](#tuis-and-viewers) | 4 |
+| Menus and bar | [Dev tools: lazysql, posting, gh-dash, glab-tui](#dev-tools-lazysql-posting-gh-dash-glab-tui) | 16 |
 | Menus and bar | [Bar (waybar)](#bar-waybar) | 48 |
 | Apps and login | [Telegram](#telegram) | 6 |
 | Apps and login | [Browser (Vimium C)](#browser-vimium-c) | 32 |
@@ -481,12 +482,17 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; x t` | AI and MCP: Telegram setup |
 | `Super+; x u` | AI and MCP: Telegram status |
 | `Super+; x w` | AI and MCP: Ask about the window |
+| `Super+; j a` | Dev: API client |
 | `Super+; j c` | Dev: Check projects |
+| `Super+; j d` | Dev: Databases |
 | `Super+; j e` | Dev: Environments |
+| `Super+; j f` | Dev: Forge dashboard |
 | `Super+; j g` | Dev: Clone a repository |
 | `Super+; j i` | Dev: Import .env |
 | `Super+; j m` | Dev: mise tools |
 | `Super+; j p` | Dev: Projects |
+| `Super+; j r` | Dev: Run CI locally |
+| `Super+; j t` | Dev: API tests |
 | `Super+; j u` | Dev: Use environment |
 | `Super+; j w` | Dev: New workmux task |
 
@@ -517,6 +523,8 @@ tmux, read from a private server that loads tmux.conf (notes are the -N text of 
 | `Prefix U` | TPM: update plugins |  |
 | `Prefix X` / `Prefix Ctrl+X` | Kill-session picker |  |
 | `Prefix `` | Popup shell in the pane's directory |  |
+| `Prefix a` | API client of this project (posting) in the pane's directory |  |
+| `Prefix b` | Databases of this project (db: lazysql, container clients) in the pane's directory |  |
 | `Prefix c` | New window in the current directory |  |
 | `Prefix d` | New window running lazydocker |  |
 | `Prefix e` | File tree sidebar in a pane |  |
@@ -711,6 +719,7 @@ Functions of .zshrc that carry a comment, plus the commands of this setup.
 
 | Keys | Action |
 |---|---|
+| `glab` | Glab with the GitLab token from Bitwarden (Env/global): the token never sits in the shell or in a glab config (`glab auth login` is not used); GITLAB_HOST comes from the same item. An agent is refused by envs, like for every secret. |
 | `er` | Run a command with the project's secrets of the active environment (envs: they live in Bitwarden and reach only the command, never this shell; a function or alias such as grun cannot be wrapped, use the real command: er go run .) |
 | `ere` | Run a command with the project's secrets of environment ENV (ere stage go test ./...) |
 | `ert` | Run a mise task with the project's secrets (ert test) |
@@ -1221,6 +1230,23 @@ Menu-specific keys keep the Alt+ form (works in both modes) and get a NORMAL let
 | `c` / `Alt+C` | Clone a repository from gh or glab and open it | Projects (SUPER+P, prefix F, Ctrl+X p) |
 | `t` / `Alt+T` | Trust the repo's .tmux-session.toml and .workmux.yaml (the commands are shown first) | Projects (SUPER+P, prefix F, Ctrl+X p) |
 | `Alt+Enter` | Create with the default layout, ignoring .tmux-session.toml | Projects (SUPER+P, prefix F, Ctrl+X p) |
+| `Enter` / `o` | Databases: open the connection in lazysql (a docker-only row opens the client inside the container) | db (tmux prefix b, SUPER+; j d, hub Dev) |
+| `r` / `Alt+R` | Databases: toggle read-only for the next open (a protected environment is read-only anyway) | db (tmux prefix b, SUPER+; j d, hub Dev) |
+| `e` / `Alt+E` | Databases: pick the environment of the project's connections | db (tmux prefix b, SUPER+; j d, hub Dev) |
+| `c` / `Alt+C` | Databases: the client inside the container (mysql, psql, clickhouse-client; no vault) | db (tmux prefix b, SUPER+; j d, hub Dev) |
+| `a` / `Alt+A` | Databases: add a connection ([db.NAME] in .envs.toml; prefilled on a docker row) | db (tmux prefix b, SUPER+; j d, hub Dev) |
+| `E` | Databases: edit .envs.toml (global: global.local.toml) in $EDITOR | db (tmux prefix b, SUPER+; j d, hub Dev) |
+| `y` | Databases: copy the URL without the password | db (tmux prefix b, SUPER+; j d, hub Dev) |
+| `s` | Databases: start a stopped container (asks first) | db (tmux prefix b, SUPER+; j d, hub Dev) |
+| `?` | Databases: help | db (tmux prefix b, SUPER+; j d, hub Dev) |
+| `Enter` | CI: run the job | ci (SUPER+; j r, hub Dev) |
+| `a` / `Alt+A` | CI: run everything (act: the push event; gitlab-ci-local: the whole pipeline) | ci (SUPER+; j r, hub Dev) |
+| `w` / `Alt+W` | CI: pick the workflow and the event (act) | ci (SUPER+; j r, hub Dev) |
+| `n` / `Alt+N` | CI: dry run (act -n, gitlab-ci-local --preview) | ci (SUPER+; j r, hub Dev) |
+| `l` / `Alt+L` | CI: the log of the last run in $PAGER | ci (SUPER+; j r, hub Dev) |
+| `x` / `Alt+X` | CI: clean (act containers, the .gitlab-ci-local/ directory) | ci (SUPER+; j r, hub Dev) |
+| `i` | CI: gitlab-ci-local jobs without an image run in a container instead of on this machine (toggle) | ci (SUPER+; j r, hub Dev) |
+| `?` | CI: help | ci (SUPER+; j r, hub Dev) |
 
 ### TUIs and viewers
 
@@ -1232,6 +1258,29 @@ Programs that read characters themselves, so they have no Cyrillic twins.
 | `Ctrl+J` / `Ctrl+K` / `Ctrl+D` / `Ctrl+U` | Move and page | pik |
 | `hjkl w b e 0 $ g G v y /` | vi keys (mode-keys vi) | tmux copy-mode and choose-tree |
 | `\|` | Cycle the diff renderer: delta / difftastic | lazygit |
+
+### Dev tools: lazysql, posting, gh-dash, glab-tui
+
+The terminal dev tools of this setup (SUPER+; j d / j a / j f, tmux prefix b / a). They read characters themselves, so they have no Cyrillic twins: the launchers switch the keyboard to US when they start. Their own help is ? or F1 inside; the keys below are the most used ones.
+
+| Keys | Action | Context |
+|---|---|---|
+| `Enter` / `c` | lazysql: connect (connection list); n new, e edit (shows ${pw} placeholders only), d delete | lazysql (db) |
+| `H` / `L` | lazysql: focus the tree / the table; Backspace = back to the connections | lazysql (db) |
+| `Ctrl+E` | lazysql: SQL editor (Ctrl+R runs the query, Ctrl+Space opens it in $SQL_EDITOR = nvim, H leaves) | lazysql (db) |
+| `/ , y , c , w b $ 0` | lazysql: search, copy the cell, change the cell, move between cells (table) | lazysql (db) |
+| `?` | lazysql: keybindings of the current view; q quits | lazysql (db) |
+| `Ctrl+J` | posting: send the request | posting (api) |
+| `Ctrl+O` | posting: jump overlay (press the shown key to focus a pane) | posting (api) |
+| `Ctrl+P` / `Ctrl+Shift+P` | posting: command palette / search requests; Ctrl+S saves, Ctrl+N new request | posting (api) |
+| `F1` / `Ctrl+C` | posting: help / quit | posting (api) |
+| `j k h l` | gh-dash: move between items (j k) and sections (h l); g G first / last | gh-dash (forge) |
+| `s` / `r` / `R` | gh-dash: switch PRs and issues / refresh the section / refresh all | gh-dash (forge) |
+| `/ , o , d , q` | gh-dash: search, open in the browser, diff (delta), quit | gh-dash (forge) |
+| `?` | gh-dash: help of the current view (also on glab-tui) | gh-dash (forge) |
+| `h l` | glab-tui: previous / next tab (issues, MRs, pipelines, jobs, ...); j k move | glab-tui (forge) |
+| `f or` / `, g , F5` | glab-tui: filter, jump to an ID, refresh; Tab opens the columns popup, Ctrl+S switches repository | glab-tui (forge) |
+| `o , y , e` | glab-tui: open in the browser, copy a reference, edit (Ctrl+E opens $EDITOR); u updates the binary (leave it to sysup) | glab-tui (forge) |
 
 ### Bar (waybar)
 
@@ -1421,7 +1470,7 @@ Every interactive surface that still lacks vim keys or Cyrillic twins, and why. 
 | Telegram Desktop, YouTube Music Desktop, Bitwarden desktop | Custom shortcuts (Telegram), pinned-app binds SUPER+T / S, vault browser (SUPER+CTRL+SHIFT+P) (Qt / Electron apps with fixed shortcut sets; the text field is always an insert field. Telegram's shortcuts-custom.json adds Alt and Ctrl chords only) | no vim motions, no ua/ru |
 | Browser pages Vimium C cannot run on (about: pages, the browser UI and URL bar, the PDF viewer, Web Store, Gmail / Docs / Outlook / Proton, the keymap page) | F7 caret browsing, pdf.js keys (j / k, n / p, Ctrl+F), the site's own shortcuts (browsers do not let extensions run there; the sites have their own key sets, so Vimium C is switched off by exclusion rules) | no Vimium C |
 | Obsidian outside the editor (file explorer, settings, modal dialogs, graph) | Space f f (quick switcher), Space f w (search), Space e (sidebar), command palette (Obsidian's Vim mode (and Vimrc Support) only covers the CodeMirror editor; INSERT-mode typing has no Cyrillic twins by design (typing must stay untouched)) | vim keys only in the editor |
-| TUIs: btop, yazi, lazygit, lazydocker, wiremix, bluetui, pacseek, pik | their own vim keys; switch to the US layout (Caps) for them (they read characters themselves, so a Cyrillic layout sends letters they do not know (see TUIs and viewers)) | vim keys yes, no ua/ru |
+| TUIs: btop, yazi, lazygit, lazydocker, wiremix, bluetui, pacseek, pik, lazysql, posting, gh-dash, glab-tui | their own vim keys; switch to the US layout (Caps) for them (they read characters themselves, so a Cyrillic layout sends letters they do not know (see TUIs and viewers)) | vim keys yes, no ua/ru |
 | Rofi app launcher (SUPER+Space) | Ctrl+J / Ctrl+K, Ctrl+D / Ctrl+U, Esc (ua/ru twins generated) (rofi has no modal editing; every other menu is the modal fzf list) | list keys only, no modes |
 | Waybar modules | every click action also exists as a hub row or leader item (SUPER+M, SUPER+;) (waybar takes no keyboard focus; the keyboard route is the hub and the leader menu) | pointer only |
 | GRUB menu and the text console login (before the greeter) | Arrow keys, Enter; Ctrl+Alt+F1..F6 switch consoles (firmware and boot loader level, no configurable keymap) | no vim keys |
