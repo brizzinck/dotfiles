@@ -1,0 +1,1281 @@
+#!/usr/bin/env -S python3 -I
+"""pj: one key per project = one tmux session. Picker over running tmux sessions, git repos, linked worktrees and
+zoxide directories; Enter attaches to or creates the session. Python 3 stdlib only. Replaces the old sessionizer.sh.
+Keys: SUPER+P (Hyprland), tmux prefix F, zsh Ctrl+X p / NORMAL gp, hub row "Projects", leader j p. Docs: CLAUDE.md "Projects".
+
+  pj [--here] [--client NAME]      picker in this terminal (default when stdin is a tty); inside tmux Enter switches the
+                                   client (--client from the bind, else the current one), outside tmux it attaches
+  pj open [DIR]                    Hyprland entry (SUPER+P): float picker; the target window is HUB_TARGET or the focused
+                                   window, recorded before the menu. With DIR no picker
+  pj DIR | pj NAME                 open the session for DIR (`pj .`) or the running session NAME, no picker
+  pj create DIR [--default]        create the session for DIR without showing it (prints its name; --default ignores
+                                   .tmux-session.toml)
+  pj rows [--json]                 the picker rows
+  pj kill NAME [--force]           kill a session (the `d` key without UI; --force skips the confirmation)
+  pj layout [DIR]                  print the tmux commands a new session for DIR would run (nothing is created)
+  pj trust [DIR]                   show the commands of DIR/.tmux-session.toml and trust this version
+  pj check                         doctor: config, roots, key wiring; one PASS/FAIL/INFO line each, exit 1 on FAIL
+  --dry-run                        print the tmux / hyprd / terminal commands instead of running them
+
+Picker keys (NORMAL letters, ua/ru twins from the shared library; Alt keys work in both modes):
+  Enter       attach or create            o  alt-o   a window of its own (focus the window that shows it, else a new ghostty)
+  d  alt-d    kill the session            t  alt-t   trust the repo's .tmux-session.toml
+  alt-Enter   create with the default layout, ignoring .tmux-session.toml
+
+Layout of a new session: repo = windows code (nvim), sh, ai (`claude` is typed, not run; `ai_autostart = true` in the config
+runs it); other directory = sh. Override: <repo>/.tmux-session.toml, used only after `t` / the trust prompt (sha256 in
+~/.local/state/pj/trusted.tsv). Format:
+
+  name = "sms"                   # optional session name
+  [[window]]
+  name = "code"                  # [A-Za-z0-9_.-]+, unique, never wm-* (workmux owns those)
+  command = "nvim"               # optional, typed into an interactive shell
+  dir = "."                      # optional, relative to the repo root, must stay inside it
+  focus = true                   # optional, the window selected after creation
+  [[window.pane]]                # optional extra panes (each splits the window's first pane)
+  command = "go test ./... -run X"
+  split = "right"                # right | below
+  size = 40                      # percent, optional
+
+Config: ${XDG_CONFIG_HOME:-~/.config}/pj/config.toml (roots, depth, zoxide, clone_dir, ai_autostart); missing = defaults.
+Test hooks (env): PJ_CONFIG PJ_STATE_DIR PJ_CACHE_DIR PJ_TMUX PJ_HYPRCTL PJ_HYPRD PJ_TERMINAL PJ_ZOXIDE PJ_NOTIFY PJ_HYPR=0|1
+PJ_REPO PJ_TIMING=1 FZF_MENU_HERE=1.
+"""
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+
+sys.dont_write_bytecode = True
+T0 = time.monotonic()
+
+HOME = os.path.expanduser("~")
+XDG_CONFIG = os.environ.get("XDG_CONFIG_HOME") or f"{HOME}/.config"
+XDG_STATE = os.environ.get("XDG_STATE_HOME") or f"{HOME}/.local/state"
+XDG_CACHE = os.environ.get("XDG_CACHE_HOME") or f"{HOME}/.cache"
+CONFIG = os.environ.get("PJ_CONFIG") or f"{XDG_CONFIG}/pj/config.toml"
+STATE = os.environ.get("PJ_STATE_DIR") or f"{XDG_STATE}/pj"
+CACHE = os.environ.get("PJ_CACHE_DIR") or f"{XDG_CACHE}/pj"
+TMUX = shlex.split(os.environ.get("PJ_TMUX") or "tmux")
+HYPRCTL = shlex.split(os.environ.get("PJ_HYPRCTL") or "hyprctl")
+HYPRD = shlex.split(os.environ.get("PJ_HYPRD") or "hyprd")
+TERMINAL = shlex.split(os.environ.get("PJ_TERMINAL") or "ghostty")
+ZOXIDE = shlex.split(os.environ.get("PJ_ZOXIDE") or "zoxide")
+NOTIFY = shlex.split(os.environ.get("PJ_NOTIFY") or "notify-send")
+SELF = os.path.realpath(__file__)
+REPO = os.environ.get("PJ_REPO") or os.path.dirname(os.path.dirname(os.path.dirname(SELF)))
+
+IDLE_SHELLS = {"zsh", "bash", "fish", "sh", "dash", "nu", "elvish"}   # as term-procs.py
+SKIP_DIRS = {"node_modules", "vendor", "target", "build", "dist", "venv", ".venv", "__pycache__"}
+DEFAULTS = {"roots": ["~/job", "~/dotfiles"], "depth": 4, "zoxide": 30, "clone_dir": "~/job", "ai_autostart": False}
+PF = "#{window_id}\t#{pane_id}"
+NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+MAX_WINDOWS = 12
+DRY = False
+
+# NORMAL-mode letter -> action, Alt key -> action (Alt works in both modes)
+NORMAL_KEYS = [("o", "window"), ("d", "kill"), ("t", "trust")]
+ALT_KEYS = {"alt-o": "window", "alt-d": "kill", "alt-t": "trust", "alt-enter": "default"}
+
+
+class PjError(Exception):
+    pass
+
+
+# ───────────────────────────── helpers ─────────────────────────────
+
+def which(cmd):
+    if "/" in cmd:
+        return cmd if os.access(cmd, os.X_OK) else None
+    for d in (os.environ.get("PATH") or "").split(":"):
+        p = os.path.join(d or ".", cmd)
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return None
+
+
+def have(cmd):
+    return which(cmd) is not None
+
+
+def is_tty():
+    return (sys.stdin.isatty() and sys.stderr.isatty()) or os.environ.get("FZF_MENU_HERE") == "1"
+
+
+def tilde(p):
+    return "~" + p[len(HOME):] if p == HOME or p.startswith(HOME + "/") else p
+
+
+def clean(s):
+    return str(s or "").replace("\t", " ").replace("\r", " ").replace("\n", " ")
+
+
+def run(argv, timeout=None, **kw):
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, **kw)
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(argv, 127, "", f"{argv[0]}: not installed")
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(argv, 124, "", "timed out")
+
+
+def tm(*args):
+    """A read-only tmux call (also runs in --dry-run)."""
+    return run(TMUX + list(args))
+
+
+def tmx(*args):
+    """A mutating tmux call: printed instead of run with --dry-run."""
+    if DRY:
+        print("DRY: " + shlex.join(TMUX + list(args)))
+        return subprocess.CompletedProcess(args, 0, "", "")
+    return run(TMUX + list(args))
+
+
+def tm_chain(cmds):
+    """Several tmux commands in one invocation (separated by ';'); returns the output lines of the -P commands."""
+    if DRY:
+        out = []
+        for c in cmds:
+            print("DRY: " + shlex.join(TMUX + c))
+            if "-P" in c:
+                out.append(f"@{len(out) + 1}\t%{len(out) + 1}")
+        return out
+    argv = []
+    for i, c in enumerate(cmds):
+        if i:
+            argv.append(";")
+        argv += c
+    r = run(TMUX + argv)
+    if r.returncode != 0:
+        raise PjError((r.stderr.strip().splitlines() or ["tmux failed"])[-1])
+    return r.stdout.splitlines()
+
+
+def timing(label):
+    if os.environ.get("PJ_TIMING") == "1":
+        print(f"pj: {label} after {(time.monotonic() - T0) * 1000:.0f} ms", file=sys.stderr)
+
+
+# ───────────────────────────── config ─────────────────────────────
+
+def load_config():
+    """(config, error). A missing file is the defaults; a broken one is the defaults plus the error text."""
+    cfg = dict(DEFAULTS)
+    err = ""
+    if os.path.exists(CONFIG):
+        try:
+            import tomllib
+            with open(CONFIG, "rb") as f:
+                data = tomllib.load(f)
+            for k, v in data.items():
+                if k not in DEFAULTS:
+                    raise ValueError(f"unknown key {k!r}")
+                want = type(DEFAULTS[k])
+                if not isinstance(v, want) or (want is int and isinstance(v, bool)):
+                    raise ValueError(f"{k} must be {want.__name__}")
+                if k == "roots" and not all(isinstance(x, str) for x in v):
+                    raise ValueError("roots must be a list of strings")
+                cfg[k] = v
+        except Exception as e:   # noqa: BLE001 - tomllib errors, OSError, our ValueError
+            err = f"{CONFIG}: {e}"
+            cfg = dict(DEFAULTS)
+    cfg["roots"] = [os.path.abspath(os.path.expanduser(r)) for r in cfg["roots"]]
+    cfg["clone_dir"] = os.path.abspath(os.path.expanduser(cfg["clone_dir"]))
+    return cfg, err
+
+
+# ───────────────────────────── tmux sessions ─────────────────────────────
+
+def sessions():
+    """Running sessions, newest activity first: name, attached, windows, activity, path (@pj_path else session_path)."""
+    fmt = "\t".join(["#{session_name}", "#{session_attached}", "#{session_windows}", "#{session_activity}",
+                     "#{session_path}", "#{@pj_path}"])
+    r = tm("list-sessions", "-F", fmt)
+    out = []
+    if r.returncode != 0:
+        return out
+    for line in r.stdout.splitlines():
+        f = line.split("\t")
+        if len(f) < 6:
+            continue
+        out.append({"name": f[0], "attached": int(f[1] or 0), "windows": int(f[2] or 0), "activity": int(f[3] or 0),
+                    "path": os.path.normpath(f[5] or f[4] or HOME), "project": bool(f[5])})
+    out.sort(key=lambda s: -s["activity"])
+    return out
+
+
+def busy_by_session():
+    """session -> non-idle foreground commands of its panes (pane_current_command)."""
+    r = tm("list-panes", "-a", "-F", "#{session_name}\t#{pane_current_command}")
+    res = {}
+    for line in r.stdout.splitlines():
+        s, _, cmd = line.partition("\t")
+        cmd = cmd.lstrip("-")
+        if cmd and cmd not in IDLE_SHELLS:
+            res.setdefault(s, []).append(cmd)
+    return res
+
+
+def find_session(path, sess=None):
+    """The session that lives in PATH: @pj_path (or session_path) equal to it, never a term-* terminal."""
+    path = os.path.normpath(path)
+    cands = [s for s in (sess if sess is not None else sessions())
+             if s["path"] == path and not s["name"].startswith("term-")]
+    cands.sort(key=lambda s: not s["project"])
+    return cands[0]["name"] if cands else None
+
+
+def sanitize(s):
+    return re.sub(r"[.: ]", "_", s)
+
+
+def fix_prefix(name):
+    """A name that tmux hooks and cleanup treat as throwaway (digits only, term-*) gets a p- prefix."""
+    if re.fullmatch(r"[0-9]+", name) or name.startswith("term-"):
+        return "p-" + name
+    return name or "root"
+
+
+def pick_name(path, sess, want=None):
+    """Session name for PATH: basename, then parent-base, then parent-base-2..; a layout `name` is tried first."""
+    path = os.path.normpath(path)
+    taken = {s["name"] for s in sess}
+    base = sanitize(os.path.basename(path))
+    parent = sanitize(os.path.basename(os.path.dirname(path)))
+    cands = [fix_prefix(want)] if want else []
+    cands += [fix_prefix(base), fix_prefix(f"{parent}-{base}")]
+    for c in cands:
+        if c not in taken:
+            return c
+    n = 2
+    while fix_prefix(f"{parent}-{base}-{n}") in taken:
+        n += 1
+    return fix_prefix(f"{parent}-{base}-{n}")
+
+
+# ───────────────────────────── repositories ─────────────────────────────
+
+def read_head(gitdir):
+    try:
+        with open(os.path.join(gitdir, "HEAD")) as f:
+            h = f.read().strip()
+    except OSError:
+        return "?"
+    if h.startswith("ref: refs/heads/"):
+        return h[16:]
+    if h.startswith("ref: "):
+        return h[5:]
+    return h[:7] or "?"
+
+
+def worktrees_of(repo):
+    """Linked worktrees of REPO from git's own files (no fork): [(path, branch)], prunable ones skipped."""
+    base = os.path.join(repo, ".git", "worktrees")
+    out = []
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        return out
+    for n in names:
+        try:
+            with open(os.path.join(base, n, "gitdir")) as f:
+                dotgit = f.read().strip()
+        except OSError:
+            continue
+        wt = os.path.dirname(dotgit)
+        if not dotgit or not os.path.exists(dotgit) or "\t" in wt or "\n" in wt:
+            continue
+        out.append((wt, read_head(os.path.join(base, n))))
+    return out
+
+
+def repo_of_worktree(wt):
+    """The main repo of a linked worktree (its .git file says `gitdir: <repo>/.git/worktrees/<n>`), else None."""
+    try:
+        with open(os.path.join(wt, ".git")) as f:
+            line = f.read().strip()
+    except OSError:
+        return None
+    m = re.match(r"gitdir: (.*)/\.git/worktrees/[^/]+$", line)
+    return m.group(1) if m and os.path.isdir(m.group(1)) else None
+
+
+def walk_repos(roots, depth):
+    """Git repositories under ROOTS: stop at the first directory with a .git directory, skip dot dirs and build dirs.
+    A `.git` file (linked worktree, submodule) is not a repo of its own."""
+    repos, seen = [], set()
+
+    def rec(d, lvl):
+        try:
+            with os.scandir(d) as it:
+                entries = list(it)
+        except OSError:
+            return
+        for e in entries:
+            if e.name == ".git":
+                if e.is_dir(follow_symlinks=False) and d not in seen:
+                    seen.add(d)
+                    repos.append(d)
+                return
+        if lvl >= depth:
+            return
+        for e in sorted(entries, key=lambda e: e.name):
+            if e.name.startswith(".") or e.name in SKIP_DIRS:
+                continue
+            try:
+                if e.is_dir(follow_symlinks=False):
+                    rec(e.path, lvl + 1)
+            except OSError:
+                pass
+
+    for r in roots:
+        rec(r, 0)
+    return repos
+
+
+def zoxide_dirs(limit):
+    if limit <= 0 or not have(ZOXIDE[0]):
+        return []
+    r = run(ZOXIDE + ["query", "-l", "-s"])
+    out = []
+    for line in r.stdout.splitlines():
+        m = re.match(r"^\s*[\d.]+\s+(.*)$", line)
+        if m and os.path.isdir(m.group(1)):
+            out.append(os.path.normpath(m.group(1)))
+        if len(out) >= limit:
+            break
+    return out
+
+
+# ───────────────────────────── rows ─────────────────────────────
+
+def collect(cfg):
+    """The picker rows as dicts: id, kind (session|repo|worktree|zoxide), name, path, display."""
+    sess = sessions()
+    busy = busy_by_session()
+    repos = walk_repos(cfg["roots"], cfg["depth"])
+    info = {}
+    for r in repos:
+        if "\t" in r or "\n" in r:
+            continue
+        info[r] = {"branch": read_head(os.path.join(r, ".git")), "wts": worktrees_of(r)}
+    spaths = {s["path"] for s in sess}
+    rows = []
+
+    def worktree_rows(repo):
+        for wt, br in info.get(repo, {}).get("wts", []):
+            if os.path.normpath(wt) in spaths:
+                continue
+            rows.append({"id": f"w:{wt}", "kind": "worktree", "name": f"{os.path.basename(repo)} ⎇ {br}", "path": wt,
+                         "extra": "", "mark": " "})
+
+    def term(s):
+        return s["name"].startswith("term-")
+
+    # busy detached term-* are leftovers that hold work: first; then project sessions, other named ones, other term-*
+    def order(s):
+        if term(s) and not s["attached"] and busy.get(s["name"]):
+            return 0
+        return 1 if s["project"] else (3 if term(s) else 2)
+
+    for s in sorted(sess, key=lambda s: (order(s), -s["activity"])):
+        extra = f"{s['windows']} win  {'attached' if s['attached'] else 'detached'}"
+        if term(s) and busy.get(s["name"]):
+            extra += "  running: " + ", ".join(dict.fromkeys(busy[s["name"]]))
+        rows.append({"id": f"s:{s['name']}", "kind": "session", "name": s["name"], "path": s["path"], "extra": extra,
+                     "mark": "●" if s["attached"] else "○"})
+        if s["path"] in info:
+            worktree_rows(s["path"])
+    for r in repos:
+        if r not in info or r in spaths:
+            continue
+        rows.append({"id": f"r:{r}", "kind": "repo", "name": os.path.basename(r), "path": r,
+                     "extra": info[r]["branch"], "mark": " "})
+        worktree_rows(r)
+    listed = {x["path"] for x in rows} | spaths | {HOME, "/"}
+    for r in info:
+        listed.add(r)
+        listed.update(os.path.normpath(w) for w, _ in info[r]["wts"])
+    for d in zoxide_dirs(cfg["zoxide"]):
+        if d in listed or "\t" in d or "\n" in d:
+            continue
+        listed.add(d)
+        rows.append({"id": f"z:{d}", "kind": "zoxide", "name": os.path.basename(d) or d, "path": d, "extra": "",
+                     "mark": "z"})
+    width = min(max([len(x["name"]) for x in rows] or [8]), 32)
+    for x in rows:
+        extra = f"  {x['extra']}" if x["extra"] else ""
+        x["display"] = clean(f"{x['mark']} {x['name'].ljust(width)}{extra}  {tilde(x['path'])}")
+    return rows
+
+
+def row_lines(rows):
+    return [f"{x['id']}\t{x['display']}" for x in rows]
+
+
+def path_of(ident):
+    """The directory a row id stands for."""
+    kind, _, val = ident.partition(":")
+    if kind == "s":
+        for s in sessions():
+            if s["name"] == val:
+                return s["path"]
+        return None
+    return val if kind in ("r", "w", "z") else None
+
+
+# ───────────────────────────── layouts and trust ─────────────────────────────
+
+def is_repo(path):
+    return os.path.exists(os.path.join(path, ".git"))
+
+
+def default_windows(path, repo, cfg):
+    if not repo:
+        return [{"name": "sh", "command": "", "enter": True, "dir": path, "focus": True, "panes": []}]
+    ai = {"name": "ai", "command": "claude" if have("claude") else "", "enter": bool(cfg["ai_autostart"]), "dir": path,
+          "focus": False, "panes": []}
+    return [{"name": "code", "command": "nvim", "enter": True, "dir": path, "focus": True, "panes": []},
+            {"name": "sh", "command": "", "enter": True, "dir": path, "focus": False, "panes": []}, ai]
+
+
+def parse_layout(root):
+    """Validate DIR/.tmux-session.toml: (name, windows). Raises PjError, fail closed."""
+    import tomllib
+    f = os.path.join(root, ".tmux-session.toml")
+    try:
+        with open(f, "rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        raise PjError(f".tmux-session.toml: {e}")
+    bad = set(data) - {"name", "window"}
+    if bad:
+        raise PjError(f".tmux-session.toml: unknown key {sorted(bad)[0]!r}")
+    name = data.get("name")
+    if name is not None and (not isinstance(name, str) or not NAME_RE.match(name)):
+        raise PjError(".tmux-session.toml: name must match [A-Za-z0-9_.-]+")
+    wins = data.get("window")
+    if not isinstance(wins, list) or not wins or not all(isinstance(w, dict) for w in wins):
+        raise PjError(".tmux-session.toml: at least one [[window]] is required")
+    if len(wins) > MAX_WINDOWS:
+        raise PjError(f".tmux-session.toml: more than {MAX_WINDOWS} windows")
+    real_root = os.path.realpath(root)
+    out, names = [], set()
+
+    def cmd_ok(c, where):
+        if not isinstance(c, str) or re.search(r"[\x00-\x1f\x7f]", c):
+            raise PjError(f".tmux-session.toml: {where}: command must be one line of text")
+        return c
+
+    for w in wins:
+        bad = set(w) - {"name", "command", "dir", "focus", "pane"}
+        if bad:
+            raise PjError(f".tmux-session.toml: unknown window key {sorted(bad)[0]!r}")
+        wn = w.get("name")
+        if not isinstance(wn, str) or not NAME_RE.match(wn):
+            raise PjError(".tmux-session.toml: every window needs a name matching [A-Za-z0-9_.-]+")
+        if wn.startswith("wm-"):
+            raise PjError(f".tmux-session.toml: window name {wn!r}: wm-* belongs to workmux")
+        if wn in names:
+            raise PjError(f".tmux-session.toml: duplicate window name {wn!r}")
+        names.add(wn)
+        d = w.get("dir", ".")
+        if not isinstance(d, str) or os.path.isabs(d):
+            raise PjError(f".tmux-session.toml: window {wn!r}: dir must be relative to the repo root")
+        full = os.path.realpath(os.path.join(root, d))
+        if full != real_root and not full.startswith(real_root + "/"):
+            raise PjError(f".tmux-session.toml: window {wn!r}: dir leaves the repo")
+        if not os.path.isdir(full):
+            raise PjError(f".tmux-session.toml: window {wn!r}: dir {d!r} does not exist")
+        if "focus" in w and not isinstance(w["focus"], bool):
+            raise PjError(f".tmux-session.toml: window {wn!r}: focus must be true or false")
+        cmd = cmd_ok(w["command"], f"window {wn!r}") if "command" in w else ""
+        panes = []
+        pl = w.get("pane", [])
+        if not isinstance(pl, list) or not all(isinstance(p, dict) for p in pl):
+            raise PjError(f".tmux-session.toml: window {wn!r}: pane must be [[window.pane]] tables")
+        for p in pl:
+            bad = set(p) - {"command", "split", "size"}
+            if bad:
+                raise PjError(f".tmux-session.toml: unknown pane key {sorted(bad)[0]!r}")
+            sp = p.get("split", "right")
+            if sp not in ("right", "below"):
+                raise PjError(f".tmux-session.toml: window {wn!r}: split must be right or below")
+            sz = p.get("size")
+            if sz is not None and (not isinstance(sz, int) or isinstance(sz, bool) or not 1 <= sz <= 99):
+                raise PjError(f".tmux-session.toml: window {wn!r}: size must be 1..99 (percent)")
+            panes.append({"command": cmd_ok(p["command"], f"window {wn!r}") if "command" in p else "", "split": sp,
+                          "size": sz})
+        out.append({"name": wn, "command": cmd, "enter": True, "dir": full, "focus": bool(w.get("focus")),
+                    "panes": panes})
+    if sum(1 for w in out if w["focus"]) > 1:
+        raise PjError(".tmux-session.toml: more than one window has focus = true")
+    return name, out
+
+
+def sha256_file(f):
+    import hashlib
+    with open(f, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
+def trusted_map():
+    out = {}
+    try:
+        with open(os.path.join(STATE, "trusted.tsv")) as f:
+            for line in f:
+                p, _, h = line.rstrip("\n").partition("\t")
+                if p and h:
+                    out[p] = h
+    except OSError:
+        pass
+    return out
+
+
+def trust_store(root, sha):
+    os.makedirs(STATE, mode=0o700, exist_ok=True)
+    os.chmod(STATE, 0o700)
+    m = trusted_map()
+    m[os.path.realpath(root)] = sha
+    tmp = os.path.join(STATE, f"trusted.tsv.{os.getpid()}")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        for p in sorted(m):
+            f.write(f"{p}\t{m[p]}\n")
+    os.replace(tmp, os.path.join(STATE, "trusted.tsv"))
+
+
+def resolve_layout(path, cfg, ignore=False):
+    """{state: default|trusted|untrusted|invalid, windows, name, sha, error, commands}. Only a repo has a layout file."""
+    repo = is_repo(path)
+    lay = {"state": "default", "windows": default_windows(path, repo, cfg), "name": None, "sha": None, "error": "",
+           "commands": []}
+    f = os.path.join(path, ".tmux-session.toml")
+    if ignore or not repo or not os.path.isfile(f):
+        return lay
+    try:
+        name, wins = parse_layout(path)
+        sha = sha256_file(f)
+    except (PjError, OSError) as e:
+        lay.update(state="invalid", error=str(e))
+        return lay
+    cmds = [c for w in wins for c in [w["command"]] + [p["command"] for p in w["panes"]] if c]
+    lay.update(name=name, sha=sha, commands=cmds, toml_windows=wins)
+    if trusted_map().get(os.path.realpath(path)) == sha:
+        lay.update(state="trusted", windows=wins)
+    else:
+        lay["state"] = "untrusted"
+    return lay
+
+
+def layout_line(lay):
+    return {"default": "default", "trusted": ".tmux-session.toml trusted",
+            "untrusted": ".tmux-session.toml NOT trusted: t to trust (default layout until then)",
+            "invalid": "invalid: " + lay["error"]}[lay["state"]]
+
+
+# ───────────────────────────── the picker (fzf-menu) ─────────────────────────────
+
+def menu_cmd(here, size=None):
+    cmd = ["fzf-menu"] + (["--here"] if here else [])
+    if size and not here:
+        cmd += ["--size", size]
+    return cmd
+
+
+def pick(rows, prompt, header="", here=None, preview=None):
+    """One row of a small fzf-menu list (tab separated, first column = id), or None."""
+    if not have("fzf-menu"):
+        raise PjError("fzf-menu is not installed")
+    here = is_tty() if here is None else here
+    cmd = menu_cmd(here) + ["-p", prompt, "--delimiter=\t", "--with-nth=2..", "--tabstop=4"]
+    if header:
+        cmd.append(f"--header={header}")
+    if preview:
+        cmd.append(f"--preview={preview}")
+    p = subprocess.run(cmd, input="\n".join(rows) + "\n", stdout=subprocess.PIPE, text=True)
+    out = p.stdout.splitlines()
+    return out[0] if p.returncode == 0 and out else None
+
+
+def confirm(question, lines, here=None):
+    row = pick(["no\tNo, keep it", "yes\tYes, kill it"], "confirm", "\n".join([question] + lines), here)
+    return bool(row) and row.split("\t")[0] == "yes"
+
+
+def header_text(hypr):
+    parts = ["Enter open"]
+    if hypr:
+        parts.append("o window")
+    parts += ["d kill", "t trust"]
+    return " · ".join(parts)
+
+
+def run_menu(rows, hypr, here, query, notice):
+    me = f"python3 -I {shlex.quote(SELF)}"
+    binds = "\n".join(f'{k}:become(printf "%s\\n%s\\n%s\\n" {{q}} {a} {{1}})' for k, a in NORMAL_KEYS
+                      if hypr or a != "window")
+    env = dict(os.environ, FZF_MENU_NORMAL_BINDS=binds)
+    keys = ",".join(k for k, a in ALT_KEYS.items() if hypr or a != "window")
+    args = ["-p", "project", "--delimiter=\t", "--with-nth=2..", "--tabstop=4", "--print-query", f"--expect={keys}",
+            f"--preview={me} _preview {{1}}", "--preview-window=right,50%,wrap,border-left",
+            f"--header={(notice + chr(10)) if notice else ''}{header_text(hypr)}"]
+    if query:
+        args.append(f"--query={query}")
+    cmd = menu_cmd(here, "large") + args
+    timing("fzf-menu request")
+    p = subprocess.run(cmd, input="\n".join(row_lines(rows)) + "\n", stdout=subprocess.PIPE, text=True, env=env)
+    lines = p.stdout.split("\n")
+    q = lines[0] if lines else ""
+    key = lines[1] if len(lines) > 1 else ""
+    ident = (lines[2] if len(lines) > 2 else "").split("\t")[0]
+    return p.returncode, q, key, ident
+
+
+# ───────────────────────────── Hyprland ─────────────────────────────
+
+def hypr_ok():
+    forced = os.environ.get("PJ_HYPR")
+    if forced in ("0", "1"):
+        return forced == "1"
+    sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+    rt = os.environ.get("XDG_RUNTIME_DIR")
+    return bool(sig and rt and os.access(f"{rt}/hypr/{sig}/.socket.sock", os.W_OK) and have(HYPRCTL[0]))
+
+
+def hypr_json(*args):
+    import json
+    r = run(HYPRCTL + ["-j", *args])
+    try:
+        return json.loads(r.stdout)
+    except ValueError:
+        return None
+
+
+def hypr_target():
+    """The window the key was pressed over: HUB_TARGET (address:0x..) wins, else the active window."""
+    t = os.environ.get("HUB_TARGET", "")
+    if t.startswith("address:"):
+        for c in hypr_json("clients") or []:
+            if c.get("address") == t[8:]:
+                return c
+        return {"address": t[8:], "pid": 0}
+    w = hypr_json("activewindow")
+    return w if isinstance(w, dict) and w.get("address") else None
+
+
+def ppid(pid):
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            s = f.read()
+        return int(s[s.rindex(")") + 2:].split()[1])
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def client_windows():
+    """tmux clients of our server mapped to the Hyprland window that shows them (client pid -> ancestor window pid)."""
+    wins = hypr_json("clients") or []
+    bypid = {}
+    for w in wins:
+        bypid.setdefault(w.get("pid"), []).append(w)
+    r = tm("list-clients", "-F", "#{client_pid}\t#{client_name}\t#{client_session}")
+    out = []
+    for line in r.stdout.splitlines():
+        f = line.split("\t")
+        if len(f) < 3 or not f[0].isdigit():
+            continue
+        p, hops = int(f[0]), 0
+        while p > 1 and hops < 64:
+            if p in bypid:
+                cands = bypid[p]
+                best = next((w for w in cands if str(w.get("title", "")).startswith(f[2] + ":")), cands[0])
+                out.append({"client": f[1], "session": f[2], "address": best["address"]})
+                break
+            p, hops = ppid(p), hops + 1
+    return out
+
+
+def notify(title, body=""):
+    if DRY:
+        print("DRY: " + shlex.join(NOTIFY + ["-a", "pj", title, body]))
+        return
+    if have(NOTIFY[0]):
+        run(NOTIFY + ["-a", "pj", "-u", "low", "-t", "6000", "-h", "string:x-dunst-stack-tag:pj", title, body])
+
+
+def focus_window(address):
+    if DRY:
+        print("DRY: " + shlex.join(HYPRD + ["focuswindow", f"address:{address}"]))
+        return
+    run(HYPRD + ["focuswindow", f"address:{address}"])
+
+
+def new_window_for(name):
+    argv = TERMINAL + ["-e"] + TMUX + ["attach-session", "-t", f"={name}"]
+    if DRY:
+        print("DRY: " + shlex.join(argv))
+        return
+    subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+
+
+# ───────────────────────────── attach / switch ─────────────────────────────
+
+class Ctx:
+    """How Enter acts: mode switch (tmux client), attach (plain terminal) or hypr (SUPER+P over a window)."""
+
+    def __init__(self, mode, client=None, target=None):
+        self.mode, self.client, self.target = mode, client, target
+
+
+def say(ctx, msg, title="pj"):
+    if not msg:
+        return
+    if ctx.mode == "hypr":
+        notify(title, msg)
+    elif ctx.mode == "switch" and ctx.client:
+        tmx("display-message", "-c", ctx.client, f"pj: {msg}")
+    else:
+        print(f"pj: {msg}", file=sys.stderr)
+
+
+def leave_term(client, name):
+    """Switching the last client away from a term-* session destroys it (destroy-unattached). Idle: let it go, it is a
+    throwaway terminal. Running something: keep it as a detached leftover. Returns a message or ''."""
+    r = tm("list-clients", "-F", "#{client_name}\t#{client_session}")
+    lines = [l.split("\t") for l in r.stdout.splitlines() if "\t" in l]
+    cur = next((l[1] for l in lines if l[0] == client), "")
+    if not cur.startswith("term-") or cur == name:
+        return ""
+    if sum(1 for l in lines if l[1] == cur) > 1:
+        return ""
+    cmds = busy_by_session().get(cur)
+    if not cmds:
+        return ""
+    tmx("set-option", "-t", f"={cur}:", "destroy-unattached", "off")
+    return (f"{cur} keeps running ({', '.join(dict.fromkeys(cmds))}); it stays at the top of the picker "
+            f"and in \"Clean up detached terminal sessions\"")
+
+
+def switch_client(client, name):
+    msg = leave_term(client, name)
+    r = tmx("switch-client", "-c", client, "-t", f"={name}")
+    if r.returncode != 0:
+        raise PjError((r.stderr.strip().splitlines() or ["switch-client failed"])[-1])
+    return msg
+
+
+def activate(name, ctx, window=None, own_window=False):
+    """Show session NAME (and WINDOW id) the way the context wants. Returns a message or ''."""
+    if window:
+        tmx("select-window", "-t", window)
+    if ctx.mode == "hypr" or own_window:
+        if not hypr_ok() and not DRY:
+            raise PjError("Hyprland is not reachable: use pj --here")
+        cw = client_windows()
+        if not own_window and ctx.target:
+            hit = next((c for c in cw if c["address"] == ctx.target.get("address")), None)
+            if hit:
+                return switch_client(hit["client"], name)
+        hit = next((c for c in cw if c["session"] == name), None)
+        if hit:
+            focus_window(hit["address"])
+        else:
+            new_window_for(name)
+        return ""
+    if ctx.mode == "switch":
+        if not ctx.client:
+            return f"session {name} is ready (no tmux client to switch)"
+        return switch_client(ctx.client, name)
+    if DRY:
+        print("DRY: " + shlex.join(TMUX + ["attach-session", "-t", f"={name}"]))
+        return ""
+    subprocess.run(TMUX + ["attach-session", "-t", f"={name}"])
+    return ""
+
+
+# ───────────────────────────── create and kill ─────────────────────────────
+
+def trust_prompt(path, lay, here=None):
+    """'trust' | 'default' | None (cancelled) for an untrusted .tmux-session.toml."""
+    header = "This repo's .tmux-session.toml runs:\n" + "\n".join(
+        "  " + clean(c) for c in lay["commands"] or ["(no commands)"])
+    f = os.path.join(path, ".tmux-session.toml")
+    prev = f"bat --style=plain --color=always {shlex.quote(f)} 2>/dev/null || cat {shlex.quote(f)}"
+    row = pick(["default\tUse the default layout", "trust\tTrust this version and use it"], "layout", header, here, prev)
+    return row.split("\t")[0] if row else None
+
+
+def create_session(name, root, windows):
+    """Create the detached session with its windows and panes in two tmux calls, then type the commands."""
+    cmds, tags = [], []
+    for wi, w in enumerate(windows):
+        if wi == 0:
+            cmds.append(["new-session", "-d", "-s", name, "-c", w["dir"], "-n", w["name"], "-P", "-F", PF])
+            cmds.append(["set-option", "-t", f"={name}:", "@pj_path", root])
+        else:
+            cmds.append(["new-window", "-d", "-t", f"={name}:", "-n", w["name"], "-c", w["dir"], "-P", "-F", PF])
+        tags.append(("win", wi, 0))
+    for wi, w in enumerate(windows):
+        for pi, p in enumerate(w["panes"]):
+            c = ["split-window", "-d", "-t", f"={name}:={w['name']}", "-h" if p["split"] == "right" else "-v"]
+            if p["size"]:
+                c += ["-l", f"{p['size']}%"]
+            cmds.append(c + ["-c", w["dir"], "-P", "-F", PF])
+            tags.append(("pane", wi, pi))
+    out = tm_chain(cmds)
+    if len(out) != len(tags):
+        raise PjError("tmux returned an unexpected answer while creating the session")
+    ids = {}
+    for tag, line in zip(tags, out):
+        win, _, pane = line.partition("\t")
+        ids[tag] = (win, pane)
+    send = []
+
+    def type_into(pane, cmd, enter):
+        if cmd:
+            send.append(["send-keys", "-t", pane, "-l", "--", cmd])
+            if enter:
+                send.append(["send-keys", "-t", pane, "Enter"])
+
+    for wi, w in enumerate(windows):
+        type_into(ids[("win", wi, 0)][1], w["command"], w["enter"])
+        for pi, p in enumerate(w["panes"]):
+            type_into(ids[("pane", wi, pi)][1], p["command"], True)
+    focus = next((i for i, w in enumerate(windows) if w["focus"]), 0)
+    send.append(["select-window", "-t", ids[("win", focus, 0)][0]])
+    tm_chain(send)
+
+
+def ensure_session(path, cfg, ctx, ignore_layout=False):
+    """The session name for directory PATH, created (with its layout) when none runs. None = cancelled."""
+    path = os.path.normpath(path)
+    sess = sessions()
+    have_name = find_session(path, sess)
+    if have_name:
+        return have_name
+    if not os.path.isdir(path):
+        raise PjError(f"{tilde(path)} is not a directory")
+    lay = resolve_layout(path, cfg, ignore_layout)
+    windows = lay["windows"]
+    if lay["state"] == "invalid":
+        raise PjError(f"{lay['error']}. Fix .tmux-session.toml or open with the default layout: Alt+Enter")
+    if lay["state"] == "untrusted":
+        if DRY:
+            print(f"DRY: layout {layout_line(lay)}")
+        else:
+            choice = trust_prompt(path, lay, False if ctx.mode == "hypr" else None)
+            if choice is None:
+                return None
+            if choice == "trust":
+                trust_store(path, lay["sha"])
+                windows = lay["toml_windows"]
+    # a layout's own session name only goes with its own windows (trusted, or just trusted now)
+    want = lay["name"] if windows is lay.get("toml_windows") else None
+    name = pick_name(path, sess, want)
+    create_session(name, path, windows)
+    return name
+
+
+def kill_session(name, ctx, force=False, here=None):
+    """The `d` logic. Returns a message."""
+    if tm("has-session", "-t", f"={name}").returncode != 0:
+        return f"no session {name}"
+    r = tm("list-panes", "-s", "-t", f"={name}", "-F", "#{window_name}\t#{pane_current_command}")
+    busy, wm = [], []
+    for line in r.stdout.splitlines():
+        wn, _, cmd = line.partition("\t")
+        if cmd and cmd.lstrip("-") not in IDLE_SHELLS:
+            busy.append(cmd.lstrip("-"))
+        if wn.startswith("wm-") and wn not in wm:
+            wm.append(wn)
+    clients = [c for c in tm("list-clients", "-t", f"={name}", "-F", "#{client_name}").stdout.splitlines() if c]
+    others = [s["name"] for s in sessions() if s["name"] != name]
+    if (busy or clients or wm) and not force:
+        lines = []
+        if busy:
+            lines.append("running: " + ", ".join(dict.fromkeys(busy)))
+        if clients:
+            lines.append(f"attached: {len(clients)} client(s)" +
+                         ("" if others else "; it is the last session, so the terminal window closes"))
+        if wm:
+            lines.append("workmux windows: " + ", ".join(wm) + " (the worktrees stay on disk)")
+        if not confirm(f"Kill session {name}?", lines, here):
+            return "kept " + name
+    if others:
+        for c in clients:
+            tmx("switch-client", "-c", c, "-t", f"={others[0]}")
+    tmx("kill-session", "-t", f"={name}")
+    return f"killed {name}"
+
+
+# ───────────────────────────── actions ─────────────────────────────
+
+def enter_worktree(wt, cfg, ctx):
+    """Enter on a worktree row: show the window that already works in it, else give it a window of its own."""
+    handle = os.path.basename(wt)
+    r = tm("list-windows", "-a", "-F", "#{session_name}\t#{window_id}\t#{window_name}\t#{pane_current_path}")
+    cands = []
+    for line in r.stdout.splitlines():
+        f = line.split("\t")
+        if len(f) == 4 and (f[3] == wt or f[3].startswith(wt + "/")):
+            cands.append(f)
+    cands.sort(key=lambda f: not f[2].startswith("wm-"))
+    if cands:
+        return True, activate(cands[0][0], ctx, window=cands[0][1])
+    repo = repo_of_worktree(wt) or wt
+    name = ensure_session(repo, cfg, ctx)
+    if name is None:
+        return False, ""
+    out = tm_chain([["new-window", "-d", "-t", f"={name}:", "-n", f"wt-{sanitize(handle)}", "-c", wt, "-P", "-F", PF]])
+    return True, activate(name, ctx, window=out[0].split("\t")[0] if out else None)
+
+
+def open_row(ident, cfg, ctx, ignore_layout=False, own_window=False):
+    """Attach or create for a row id. Returns (done, message)."""
+    kind, _, val = ident.partition(":")
+    if kind == "s":
+        return True, activate(val, ctx, own_window=own_window)
+    if kind == "w" and not own_window:
+        return enter_worktree(val, cfg, ctx)
+    if kind in ("r", "z", "w"):
+        name = ensure_session(val, cfg, ctx, ignore_layout)
+        if name is None:
+            return False, ""
+        return True, activate(name, ctx, own_window=own_window)
+    return False, ""
+
+
+def trust_flow(path, cfg, here=None):
+    lay = resolve_layout(path, cfg)
+    if lay["state"] == "default":
+        return f"no .tmux-session.toml in {tilde(path)}"
+    if lay["state"] == "invalid":
+        return lay["error"]
+    if lay["state"] == "trusted":
+        return ".tmux-session.toml is already trusted"
+    choice = trust_prompt(path, lay, here)
+    if choice == "trust":
+        trust_store(path, lay["sha"])
+        return f"trusted {tilde(path)}/.tmux-session.toml"
+    return "not trusted"
+
+
+def act(action, ident, cfg, ctx, here):
+    """One picker action. Returns (leave, message)."""
+    if not ident:
+        return False, ""
+    kind, _, val = ident.partition(":")
+    try:
+        if action == "kill":
+            if kind != "s":
+                return False, "only sessions can be killed"
+            return False, kill_session(val, ctx, here=here)
+        if action == "trust":
+            p = path_of(ident)
+            return False, trust_flow(p, cfg, here) if p else ""
+        if action == "window":
+            return open_row(ident, cfg, ctx, own_window=True)
+        if action == "default":
+            return open_row(ident, cfg, ctx, ignore_layout=True)
+        return open_row(ident, cfg, ctx)
+    except PjError as e:
+        return False, str(e)
+
+
+def picker(cfg, ctx, here):
+    hypr = hypr_ok()
+    notice, query = "", ""
+    actions = {a for _, a in NORMAL_KEYS}
+    while True:
+        rows = collect(cfg)
+        rc, q, key, ident = run_menu(rows, hypr, here, query, notice)
+        if rc != 0:
+            return 0
+        action = ALT_KEYS.get(key) or (key if key in actions else "enter")
+        query = q
+        leave, msg = act(action, ident, cfg, ctx, here)
+        if leave:
+            say(ctx, msg)
+            return 0
+        notice = msg
+
+
+# ───────────────────────────── preview ─────────────────────────────
+
+def git(path, *args, timeout=1):
+    return run(["git", "-C", path, *args], timeout=timeout)
+
+
+def git_block(path):
+    out = []
+    r = git(path, "status", "--porcelain=v2", "--branch", "-uno", "--ignore-submodules=all")
+    if r.returncode == 124:
+        return ["git status: timed out (big repo or submodules)"]
+    if r.returncode != 0:
+        return []
+    branch, ab, changed = "?", "", 0
+    for line in r.stdout.splitlines():
+        if line.startswith("# branch.head "):
+            branch = line[14:]
+        elif line.startswith("# branch.ab "):
+            m = re.match(r"# branch.ab \+(\d+) -(\d+)", line)
+            if m and (m.group(1) != "0" or m.group(2) != "0"):
+                ab = f"  ahead {m.group(1)} behind {m.group(2)}"
+        elif not line.startswith("#"):
+            changed += 1
+    out.append(f"branch {branch}{ab}" + (f"  ({changed} changed)" if changed else "  (clean)"))
+    s = git(path, "status", "--short", "--ignore-submodules=all")
+    lines = s.stdout.splitlines()
+    out += lines[:15]
+    if len(lines) > 15:
+        out.append(f"+{len(lines) - 15} more")
+    lg = git(path, "log", "-1", "--format=%h %ar %an%n%s")
+    if lg.returncode == 0 and lg.stdout.strip():
+        out += ["", *lg.stdout.splitlines()]
+    return out
+
+
+def readme_head(path):
+    for n in ("README.md", "README", "readme.md"):
+        f = os.path.join(path, n)
+        if os.path.isfile(f):
+            if have("bat"):
+                r = run(["bat", "--style=plain", "--color=always", "--line-range=:15", f], timeout=1)
+                if r.returncode == 0:
+                    return r.stdout.rstrip("\n").splitlines()
+            try:
+                with open(f, errors="replace") as fh:
+                    return [fh.readline().rstrip("\n") for _ in range(15)]
+            except OSError:
+                return []
+    return []
+
+
+def cmd_preview(ident):
+    cfg, _ = load_config()
+    kind, _, val = ident.partition(":")
+    path = path_of(ident)
+    out = []
+    if kind == "s":
+        r = tm("list-windows", "-t", f"={val}", "-F",
+               "#{window_index}: #{window_name} [#{pane_current_command}] #{pane_current_path}")
+        out += r.stdout.splitlines()
+        busy = sorted(set(busy_by_session().get(val, [])))
+        if busy:
+            out += ["", "running: " + ", ".join(busy)]
+    if kind in ("s", "r", "w") and path and is_repo(path):
+        if out:
+            out.append("")
+        out += git_block(path)
+        out += ["", "layout: " + layout_line(resolve_layout(path, cfg))]
+        rd = readme_head(path)
+        if rd:
+            out += ["", *rd]
+    elif kind in ("z", "s") and path and os.path.isdir(path):
+        if out:
+            out.append("")
+        r = run(["eza", "-1", "--group-directories-first", path]) if have("eza") else run(["ls", "-1", path])
+        out += r.stdout.splitlines()[:40]
+    print("\n".join(out))
+    return 0
+
+
+# ───────────────────────────── commands ─────────────────────────────
+
+def make_ctx(opts):
+    if opts["client"] or os.environ.get("TMUX"):
+        client = opts["client"]
+        if not client:
+            client = tm("display-message", "-p", "#{client_name}").stdout.strip()
+        return Ctx("switch", client=client or None)
+    return Ctx("attach")
+
+
+def resolve_arg(arg):
+    """`pj .` / `pj ~/x` is a directory, `pj name` a running session, else an existing directory."""
+    if arg in (".", "..") or arg.startswith(("/", "./", "../", "~")):
+        return "r:" + os.path.abspath(os.path.expanduser(arg))
+    if any(s["name"] == arg for s in sessions()):
+        return "s:" + arg
+    if os.path.isdir(arg):
+        return "r:" + os.path.abspath(arg)
+    raise PjError(f"no session or directory named {arg!r}")
+
+
+def cmd_open(opts, args):
+    cfg, _ = load_config()
+    if not hypr_ok():
+        if is_tty():
+            return picker(cfg, make_ctx(opts), True)
+        notify("pj", "Hyprland is not reachable; run pj --here in a terminal")
+        return 1
+    ctx = Ctx("hypr", target=hypr_target())
+    if len(args) > 1:
+        leave, msg = open_row(resolve_arg(args[1]), cfg, ctx)
+        say(ctx, msg)
+        return 0
+    return picker(cfg, ctx, False)
+
+
+def cmd_rows(opts):
+    cfg, _ = load_config()
+    rows = collect(cfg)
+    if opts["json"]:
+        import json
+        print(json.dumps([{k: x[k] for k in ("id", "kind", "name", "path", "display")} for x in rows], indent=1))
+    else:
+        print("\n".join(row_lines(rows)))
+    return 0
+
+
+def cmd_layout(args, cfg):
+    global DRY
+    path = os.path.abspath(os.path.expanduser(args[1] if len(args) > 1 else "."))
+    if not os.path.isdir(path):
+        raise PjError(f"{path} is not a directory")
+    lay = resolve_layout(path, cfg)
+    print(f"# {tilde(path)}: {layout_line(lay)}")
+    if lay["state"] == "invalid":
+        return 1
+    DRY = True
+    create_session(pick_name(path, sessions(), lay.get("name")), path, lay["windows"])
+    return 0
+
+
+def cmd_trust(args, cfg):
+    path = os.path.abspath(os.path.expanduser(args[1] if len(args) > 1 else "."))
+    lay = resolve_layout(path, cfg)
+    print(f"{tilde(path)}: {layout_line(lay)}")
+    for c in lay["commands"]:
+        print("  runs: " + c)
+    print(trust_flow(path, cfg))
+    return 0
+
+
+def cmd_check():
+    bad = 0
+
+    def line(level, text):
+        nonlocal bad
+        bad += level == "FAIL"
+        print(f"{level}  pj: {text}")
+
+    cfg, err = load_config()
+    line("PASS" if which("pj") else "FAIL", "pj is on PATH" if which("pj") else "pj is not on PATH (stow .)")
+    if err:
+        line("FAIL", f"config does not parse: {err}")
+    else:
+        line("PASS", "config " + ("parses" if os.path.exists(CONFIG) else "absent (defaults)"))
+    for r in cfg["roots"]:
+        if not os.path.isdir(r):
+            line("INFO", f"root {tilde(r)} does not exist")
+    hl, tc = f"{REPO}/.config/hypr/hyprland.lua", f"{REPO}/.config/tmux/tmux.conf"
+    if os.path.exists(hl):
+        with open(hl) as f:
+            ok = re.search(r'" \+ P".*pj open', f.read()) is not None
+        line("PASS" if ok else "FAIL", "hyprland.lua SUPER+P runs pj open" if ok else "hyprland.lua SUPER+P does not run pj open")
+        txt = ""
+        if os.path.exists(tc):
+            with open(tc) as f:
+                txt = f.read()
+        ok = re.search(r"^bind .* F display-popup .*pj ", txt, re.M) is not None
+        line("PASS" if ok else "FAIL", "tmux.conf prefix F opens pj" if ok else "tmux.conf prefix F does not open pj")
+        gone = not os.path.exists(f"{REPO}/.config/tmux/scripts/sessionizer.sh")
+        line("PASS" if gone else "FAIL", "sessionizer.sh is gone" if gone else "sessionizer.sh still exists")
+        prof = f"{REPO}/infrastructure/users/profiles/cli.txt"
+        ok = False
+        if os.path.exists(prof):
+            with open(prof) as f:
+                ok = ".local/bin/pj" in f.read().split()
+        line("PASS" if ok else "FAIL", "cli profile lists .local/bin/pj" if ok else "cli profile does not list .local/bin/pj")
+    else:
+        line("INFO", "repo files not found here, key wiring not checked")
+    return 1 if bad else 0
+
+
+def parse(argv):
+    opts = {"here": False, "client": None, "dry": False, "force": False, "json": False}
+    args, i = [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--here":
+            opts["here"] = True
+        elif a == "--client" and i + 1 < len(argv):
+            opts["client"] = argv[i + 1]
+            i += 1
+        elif a.startswith("--client="):
+            opts["client"] = a[9:]
+        elif a == "--dry-run":
+            opts["dry"] = True
+        elif a == "--force":
+            opts["force"] = True
+        elif a == "--json":
+            opts["json"] = True
+        elif a in ("-h", "--help"):
+            return opts, ["help"]
+        else:
+            args.append(a)
+        i += 1
+    return opts, args
+
+
+def main(argv):
+    global DRY
+    opts, args = parse(argv)
+    DRY = opts["dry"]
+    cmd = args[0] if args else ""
+    try:
+        if cmd == "help":
+            print(__doc__.strip())
+            return 0
+        if cmd == "rows":
+            return cmd_rows(opts)
+        if cmd == "_preview" and len(args) > 1:
+            return cmd_preview(args[1])
+        if cmd == "check":
+            return cmd_check()
+        cfg, err = load_config()
+        if err:
+            print(f"pj: {err} (defaults used)", file=sys.stderr)
+        if cmd == "layout":
+            return cmd_layout(args, cfg)
+        if cmd == "trust":
+            return cmd_trust(args, cfg)
+        if cmd == "open":
+            return cmd_open(opts, args)
+        if cmd == "create":
+            if len(args) < 2:
+                raise PjError("usage: pj create DIR [--default]")
+            name = ensure_session(os.path.abspath(os.path.expanduser(args[1])), cfg, Ctx("attach"),
+                                  "--default" in args[2:])
+            if name is None:
+                return 1
+            print(name)
+            return 0
+        if cmd == "kill":
+            if len(args) < 2:
+                raise PjError("usage: pj kill NAME [--force]")
+            print(kill_session(args[1], Ctx("attach"), opts["force"]))
+            return 0
+        ctx = make_ctx(opts)
+        if cmd:
+            leave, msg = open_row(resolve_arg(cmd), cfg, ctx)
+            say(ctx, msg)
+            return 0
+        if opts["here"] or is_tty():
+            return picker(cfg, ctx, True)
+        return cmd_open(opts, ["open"])
+    except PjError as e:
+        print(f"pj: {e}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

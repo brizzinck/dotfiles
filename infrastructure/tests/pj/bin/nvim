@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# fake nvim: records that the layout typed it into a shell
+echo "nvim $PWD" >>"$FAKE_DIR/log"

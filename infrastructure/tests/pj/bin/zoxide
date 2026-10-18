@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# fake zoxide: `query -l -s` prints $FAKE_DIR/zoxide.txt (score path lines)
+[[ ${1:-} == query ]] && { cat "$FAKE_DIR/zoxide.txt" 2>/dev/null; exit 0; }
+exit 0

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# fake claude: records that it really ran
+echo "claude $PWD" >>"$FAKE_DIR/log"

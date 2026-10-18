@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# fake fzf-menu: logs the arguments and the rows, answers with the first row that matches $FAKE_PICK (empty = cancel)
+rows=$(cat)
+{ echo "fzf-menu $*"; printf '%s\n' "$rows" | sed 's/^/  row: /'; } >>"$FAKE_DIR/log"
+[[ -n ${FAKE_PICK:-} ]] || exit 1
+printf '%s\n' "$rows" | grep -m1 -i -- "$FAKE_PICK" || exit 1

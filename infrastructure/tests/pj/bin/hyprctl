@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# fake hyprctl: `-j activewindow|clients` print $FAKE_DIR/hypr/NAME.json
+[[ ${1:-} == -j ]] && { cat "$FAKE_DIR/hypr/${2:-x}.json" 2>/dev/null || echo '[]'; exit 0; }
+echo "hyprctl $*" >>"$FAKE_DIR/log"
