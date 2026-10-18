@@ -60,6 +60,49 @@ t = twins("keybind = ctrl+shift+n=goto_tab:2\n")
 check("owner's rebind of the character trigger moves the twin's action", "ctrl+shift+key_n=goto_tab:2" in t and "ctrl+shift+key_n=new_window" not in t)
 t = twins("keybind = ctrl+slash=text:\\x00\n")
 check("owner's ctrl+slash wins over the generated one", "ctrl+slash=text:\\x1f" not in t)
+# C1: convert_text, the pure physical-key retyping that `llm fix-layout` and the later layout-fix key use
+conv = lay.convert_text
+check("convert: ghbdtn us->ru", conv("ghbdtn", "us", "ru", L) == "привет")
+check("convert: руддщ ru->us", conv("руддщ", "ru", "us", L) == "hello")
+check("convert: ghbdsn us->ua (i key)", conv("ghbdsn", "us", "ua", L) == "привіт")
+check("convert: shift level kept (Ghbdtn -> Привет)", conv("Ghbdtn", "us", "ru", L) == "Привет")
+check("convert: punctuation positions (us ; ' [ ] -> ru ж э х ъ)", conv(";'[]", "us", "ru", L) == "жэхъ")
+check("convert: ua ї is the us ] key", conv("ї", "ua", "us", L) == "]" and conv("]", "us", "ua", L) == "ї")
+check("convert: ASCII positions of ru (ru . = us /)", conv(".", "ru", "us", L) == "/" and conv("/", "us", "ru", L) == ".")
+check("convert: unknown characters stay (digits, emoji, spaces, newline)", conv("a 1\n😀", "us", "ru", L) == "ф 1\n😀")
+check("convert: same layout is the identity", conv("Ghbdtn, мир!", "ru", "ru", L) == "Ghbdtn, мир!")
+check("convert: ru -> ua keeps the key (ы is the ua і)", conv("ы", "ru", "ua", L) == "і")
+try:
+    conv("a", "us", "de", L)
+    check("convert: unknown layout is an error", False)
+except ValueError:
+    check("convert: unknown layout is an error", True)
+bad = []
+for a in lay.LAYOUTS:
+    seen = set()
+    for r in L.rows:
+        for suf in ("", "_shift"):
+            ca = r[a + suf]
+            if not ca or ca in seen:
+                continue  # a character on two keys of one layout maps through the first key only
+            seen.add(ca)
+            for b in lay.LAYOUTS:
+                if r[b + suf] and conv(ca, a, b, L) != r[b + suf]:
+                    bad.append((r["xkb"], suf, a, b))
+check("convert: every physical key maps to its character on every layout pair (%d mismatches)" % len(bad), not bad)
+bad = []
+for a in lay.LAYOUTS:
+    for b in lay.LAYOUTS:
+        for r in L.rows:
+            for suf in ("", "_shift"):
+                ca, cb = r[a + suf], r[b + suf]
+                if not ca or not cb:
+                    continue
+                n_a = sum(1 for x in L.rows for sf in ("", "_shift") if x[a + sf] == ca)
+                n_b = sum(1 for x in L.rows for sf in ("", "_shift") if x[b + sf] == cb)
+                if n_a == 1 and n_b == 1 and conv(conv(ca, a, b, L), b, a, L) != ca:
+                    bad.append((r["xkb"], suf, a, b))
+check("convert: round trip a->b->a for every key whose characters are unique in both layouts (%d failures)" % len(bad), not bad)
 print("\n".join(res))
 PY
 )"

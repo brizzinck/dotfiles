@@ -22,6 +22,8 @@ Usage (stdlib only; run with PYTHONPYCACHEPREFIX=/tmp/pycache):
                                                 ghostty and rofi need their binaries (default keybinds / default config)
   layout.py check                               exit 1 when a generated file differs from a fresh render
   layout.py dump-map                            rebuild keymap.tsv from the system xkb data (libxkbcommon via ctypes)
+  layout.py convert --from us|ua|ru --to us|ua|ru [TEXT...]   retype TEXT (arguments or stdin) as if the other layout had been
+                                                active: the same physical key and shift level; unknown characters stay
 
 Rules: only NON-ASCII characters get twins. A layout character that is ASCII (ru has "." where us has "/", ua has
 an apostrophe where us has "`") would collide with a real us key, so those positions are left alone.
@@ -172,6 +174,25 @@ class Layout:
     def pairs(self):
         """(cyrillic char, us char) sorted: letters first."""
         return sorted(self.to_us.items(), key=lambda kv: (not kv[1].isalpha(), kv[1].lower(), kv[1], kv[0]))
+
+
+LAYOUTS = ("us", "ua", "ru")
+
+
+def convert_text(text, src, dst, L):
+    """Retype `text` typed on layout `src` as the characters the same physical keys give on `dst` (shift level kept).
+    Unlike the twins above this includes the ASCII positions (ru "." sits where us has "/"). A character that is not on
+    a src key (or whose key has no dst character) is left unchanged; a character that sits on two keys of the src layout
+    uses the first one in keymap.tsv order."""
+    if src not in LAYOUTS or dst not in LAYOUTS:
+        raise ValueError(f"layout must be one of {', '.join(LAYOUTS)}")
+    table = {}
+    for r in L.rows:
+        for suf in ("", "_shift"):
+            a, b = r[src + suf], r[dst + suf]
+            if a and b and a not in table:
+                table[a] = b
+    return "".join(table.get(c, c) for c in text)
 
 
 def header(comment):
@@ -655,6 +676,15 @@ def main(argv):
             OUT[name].parent.mkdir(parents=True, exist_ok=True)
             OUT[name].write_text(text)
             print("wrote", OUT[name])
+    elif cmd == "convert":
+        import argparse
+        ap = argparse.ArgumentParser(prog="layout.py convert")
+        ap.add_argument("--from", dest="src", required=True, choices=LAYOUTS)
+        ap.add_argument("--to", dest="dst", required=True, choices=LAYOUTS)
+        ap.add_argument("text", nargs="*")
+        a = ap.parse_args(argv[2:])
+        text = " ".join(a.text) if a.text else sys.stdin.read()
+        sys.stdout.write(convert_text(text, a.src, a.dst, L))
     elif cmd == "check":
         bad = 0
         for name in want:
