@@ -5,6 +5,10 @@ ConditionPathExists=/usr/bin/voxtype
 After=graphical-session.target pipewire.service
 
 [Service]
+# linger starts default.target at boot, before Hyprland exists: a daemon started then has no WAYLAND_DISPLAY, records and
+# transcribes but cannot type ("wtype failed: Wayland connection failed"); skip that start, the Hyprland autostart starts
+# the unit once the session environment is in the user manager
+ExecCondition=/bin/sh -c 'test -n "$WAYLAND_DISPLAY" && test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"'
 ExecStart=%h/.config/hypr/scripts/dictation.sh run
 Restart=on-failure
 RestartSec=5

@@ -69,6 +69,9 @@ hl.on("hyprland.start", function()
     -- manual microphone choice, starts the easyeffects.service unit (RNNoise in front of every microphone) and checks the chain
     -- (journalctl -t audio-ensure)
     hl.exec_cmd("~/.local/bin/audio-ensure --boot")
+    -- dictation: voxtype.service skips its boot start (no Wayland yet, it could not type); (re)start it with this session's
+    -- WAYLAND_DISPLAY, also after a compositor restart
+    hl.exec_cmd("systemctl --user import-environment WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE; systemctl --user is-enabled -q voxtype.service && systemctl --user restart voxtype.service")
     hl.exec_cmd("udiskie --automount --notify --no-tray")
     hl.exec_cmd("Telegram -startintray")
     hl.exec_cmd(wallpaper)
