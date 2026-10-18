@@ -170,6 +170,27 @@ expect "bw-setup with a Wayland socket that is not writable falls back to the te
 expect "bw-setup for the owner: lock_timeout one year" "31536000" "$(tail -1 "$T/pin.log.lock")"
 (BW_SETUP_FAKE_OWNER=someone-else FAKE_PIN_LOG="$T/pin.log" PATH="$T/fakebin:$PATH" WAYLAND_DISPLAY="" XDG_RUNTIME_DIR="$T/run" "$REPO/.local/bin/bw-setup" --url https://v.example.invalid --email t@example.invalid </dev/null >/dev/null 2>&1)
 expect "bw-setup for a managed user: lock_timeout one hour" "3600" "$(tail -1 "$T/pin.log.lock")"
+# FIX5 (review 15): the first `bw` sync of bw-setup reports a failure (it used to vanish silently: output to /dev/null, no else)
+BT="$T/bwtree"; mkdir -p "$BT/.local/bin" "$BT/.config/hypr/scripts" "$BT/fb"
+cp "$REPO/.local/bin/bw-setup" "$BT/.local/bin/bw-setup"
+printf '#!/usr/bin/env python3\nimport os, sys\nsys.exit(int(os.environ.get("FAKE_SYNC_RC", "0")) if sys.argv[1] == "sync" else 0)\n' >"$BT/.config/hypr/scripts/vault-bw.py"
+printf '#!/bin/sh\nexit 0\n' >"$BT/fb/rbw"; printf '#!/bin/sh\nexit 0\n' >"$BT/fb/pinentry-curses"
+cat >"$BT/fb/bw" <<'BW'
+#!/bin/sh
+case "$1" in
+  status) echo '{"status":"unauthenticated"}' ;;
+  login) echo FAKESESSIONKEY ;;
+esac
+exit 0
+BW
+chmod +x "$BT/fb"/* "$BT/.local/bin/bw-setup"
+bwset() { printf 'y\n' | FAKE_SYNC_RC=$1 PATH="$BT/fb:$PATH" WAYLAND_DISPLAY="" XDG_RUNTIME_DIR="$T/bwrun" "$BT/.local/bin/bw-setup" --url https://v.example.invalid --email t@example.invalid 2>&1; }
+mkdir -p "$T/bwrun"; chmod 700 "$T/bwrun"
+out="$(bwset 0)"
+case "$out" in *"bw synced."*) ok ;; *) bad "bw-setup: a working sync says 'bw synced.' ($out)" ;; esac
+out="$(bwset 1)"
+case "$out" in *"bw sync failed"*"vault-bw.py sync"*) ok ;; *) bad "bw-setup: a failed first sync is reported (old code: silence) ($(printf '%s' "$out" | tail -3 | paste -sd'|'))" ;; esac
+case "$out" in *"bw synced."*) bad "bw-setup: a failed sync must not say 'bw synced.'" ;; *) ok ;; esac
 run_link --restore >/dev/null
 expect "restore gitconfig" "old" "$(cat "$T/h/td/.gitconfig" 2>/dev/null)"
 expect "restore tmux link" "../dotfiles/.config/tmux" "$(readlink "$T/h/td/.config/tmux")"

@@ -102,7 +102,7 @@ setup_bw() {
   # a per-session bw server of an earlier login holds the old key: stop it, the next bw action starts one with the new key
   python3 -I "$vbw_py" serve-stop >/dev/null 2>&1 || true
   # the sync goes through vault-bw.py like every other bw call: the process that holds the session key runs non-dumpable
-  python3 -I "$vbw_py" sync >/dev/null 2>&1 && echo "bw synced."
+  if python3 -I -B "$vbw_py" sync >/dev/null 2>&1; then echo "bw synced."; else echo "bw sync failed (python3 ~/dotfiles/.config/hypr/scripts/vault-bw.py sync); run it again later, the hub actions need a synced vault."; fi
 }
 echo
 setup_bw || true
