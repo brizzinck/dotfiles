@@ -11,8 +11,10 @@ Run through `vault-audit` (.local/bin/vault-audit); `vault-audit --help` is this
   vault-audit plan [--rules FILE] [--force]
                       proposal file ~/.local/state/vault/org-plan.tsv from the last audit and the rules file
   vault-audit review  fzf-menu reviewer of the plan (vim keys, every change saved at once)
-  vault-audit apply [--dry-run] [--resume] [--yes]
+  vault-audit apply [--dry-run] [--resume] [--new-journal] [--yes]
                       encrypted backup first, then folders, moves, soft-trash of confirmed duplicates (journalled)
+  vault-audit apply --backup-only [--dry-run]
+                      verify and retain an encrypted backup bundle, without confirmation, journal or vault mutations
 
 Secrets: the audit compares secrets only as HMAC-SHA256 under a key that exists for this process alone (so "same password"
 is known, the password and its hash are not kept anywhere); usernames are compared the same way. Nothing secret reaches
@@ -1329,14 +1331,49 @@ def backup_refused(reason):
     raise Fail("backup failed: nothing was changed (" + reason + ")", 1)
 
 
-def backup_cli(m, *args):
+BACKUP_STAGES = frozenset({"initial-sync", "initial-folders", "initial-items", "personal-export",
+                           "organization-export", "verify-sync", "verify-folders", "verify-items",
+                           "service-sync", "service-folders", "service-items"})
+BACKUP_ERRORS = {
+    "You are not logged in.": "not-logged-in",
+    "Vault is locked.": "locked",
+    "One or more organization policies prevents you from exporting your personal vault.": "personal-export-policy",
+    "No encryption key found for organization": "organization-key-unavailable",
+    "Error: No encryption key found for organization": "organization-key-unavailable",
+}
+
+
+def backup_error_category(p):
+    # Whole, exact public CLI messages only. Never print backend output or guess from substrings.
+    stdout, stderr = p.stdout, p.stderr
+    if not isinstance(stdout, str) or not isinstance(stderr, str):
+        return "unknown"
+    if stdout and stderr:
+        return "unknown"
+    text = (stderr or stdout).removesuffix("\n")
+    return BACKUP_ERRORS.get(text, "unknown")
+
+
+def backup_cli(m, *args, stage, cli=True):
+    if stage not in BACKUP_STAGES:
+        backup_refused("invalid backup stage")
+    rc, category = -1, "exception"
     try:
-        p = m.bw_cli(*args)
+        p = (m.bw_cli if cli else m.bw)(*args)
+        if type(p.returncode) is int and -2147483648 <= p.returncode <= 2147483647:
+            rc = p.returncode
+            if rc == 0:
+                return p.stdout
+            category = "signal" if rc < 0 else backup_error_category(p)
+        else:
+            category = "invalid-response"
+    except FileNotFoundError:
+        category = "unavailable"
+    except subprocess.TimeoutExpired:
+        category = "timeout"
     except Exception:
-        backup_refused("CLI request failed")
-    if p.returncode != 0:
-        backup_refused("CLI request failed; check export permissions and session")
-    return p.stdout
+        pass
+    backup_refused(f"stage={stage} rc={rc} category={category}")
 
 
 def backup_id(value):
@@ -1363,20 +1400,11 @@ def real_folder_inventory(records):
     return folders
 
 
-def backup_snapshot(m, cli=True):
+def backup_snapshot(m, cli=True, phase="initial"):
     """Metadata only in the returned snapshot; full CLI records never reach disk or diagnostics."""
     def listing(kind):
         try:
-            if cli:
-                raw = backup_cli(m, "list", kind)
-            else:
-                try:
-                    p = m.bw("list", kind)
-                except Exception:
-                    backup_refused("service inventory failed")
-                if p.returncode != 0:
-                    backup_refused("service inventory failed")
-                raw = p.stdout
+            raw = backup_cli(m, "list", kind, stage=f"{phase if cli else 'service'}-{kind}", cli=cli)
             records = json.loads(raw)
         except (ValueError, TypeError):
             backup_refused("invalid inventory")
@@ -1431,7 +1459,7 @@ def backup_artifact(m, bundle, filename, org, expected, folder_ids, inventory):
         args = ["export", "--format", "encrypted_json", "--output", str(path)]
         if org is not None:
             args.extend(("--organizationid", org))
-        backup_cli(m, *args)
+        backup_cli(m, *args, stage="personal-export" if org is None else "organization-export")
         after = path.lstat()
         if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino) or not stat.S_ISREG(after.st_mode):
             backup_refused("export replaced its output file")
@@ -1483,7 +1511,7 @@ def backup_export(m, plan_sha):
     Account-bound exports preserve supported export data, not attachments or a full restore guarantee."""
     bundle = None
     try:
-        backup_cli(m, "sync")
+        backup_cli(m, "sync", stage="initial-sync")
         initial = backup_snapshot(m)
         root = backup_directory()
         bundle = Path(tempfile.mkdtemp(prefix=".pending-", dir=root))
@@ -1495,15 +1523,10 @@ def backup_export(m, plan_sha):
         for n, org in enumerate(sorted(partitions, key=lambda o: o or "")):
             filename = "personal.json" if org is None else f"organization-{n}.json"
             exports.append(backup_artifact(m, bundle, filename, org, partitions[org], set(initial["folders"]), initial["items"]))
-        backup_cli(m, "sync")
-        if backup_snapshot(m) != initial:
+        backup_cli(m, "sync", stage="verify-sync")
+        if backup_snapshot(m, phase="verify") != initial:
             backup_refused("CLI inventory changed during backup")
-        try:
-            p = m.bw("sync")
-            if p.returncode != 0:
-                backup_refused("service sync failed")
-        except Exception:
-            backup_refused("service sync failed")
+        backup_cli(m, "sync", stage="service-sync", cli=False)
         if backup_snapshot(m, cli=False) != initial:
             backup_refused("CLI and service inventories differ")
         manifest = {"version": 1, "complete": True, "planSha256": plan_sha, "created": now_iso(),
@@ -1579,7 +1602,7 @@ def confirm(summary):
 
 
 def apply_plan(argv):
-    dry = resume = new_journal = yes = False
+    dry = resume = new_journal = yes = backup_only = False
     for a in argv:
         if a == "--dry-run":
             dry = True
@@ -1589,8 +1612,12 @@ def apply_plan(argv):
             new_journal = True
         elif a == "--yes":
             yes = True
+        elif a == "--backup-only":
+            backup_only = True
         else:
-            raise Fail("usage: vault-audit apply [--dry-run] [--resume] [--new-journal] [--yes]", 2)
+            raise Fail("usage: vault-audit apply [--dry-run] [--resume] [--new-journal] [--yes] | --backup-only [--dry-run]", 2)
+    if backup_only and (resume or new_journal or yes):
+        raise Fail("--backup-only cannot be combined with --resume, --new-journal or --yes", 2)
     if yes and not envs_lib().test_mode():
         raise Fail("--yes is only honoured in the tests", 4)
     m = vbw()
@@ -1603,28 +1630,38 @@ def apply_plan(argv):
     if problems:
         raise Fail("the plan is invalid:\n  " + "\n  ".join(problems), 4)
     if dry:
-        print("\n".join(would(rows, audit)))
+        if backup_only:
+            print("would verify and retain an encrypted backup bundle; no journal, folders or items would be changed")
+        else:
+            print("\n".join(would(rows, audit)))
         return 0
     a = agent()
     if a:
         raise Fail(f"apply is refused under an agent ({a}): the owner runs vault-audit apply himself", 4)
     plan_sha = sha(PLAN.read_text())
     changes = [r for r in rows if r.target != "keep"]
-    if not changes:
+    if not changes and not backup_only:
         print("nothing to do: the plan changes nothing")
         return 0
     import fcntl
     org_dir(m)
     lock = os.open(m.RUN / "org" / "apply.lock", os.O_WRONLY | os.O_CREAT, 0o600)
     try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        raise Fail("another vault-audit apply is running", 4)
-    opened_bw(m)
-    if not (yes or confirm(["About to change the vault:"] + ["  " + x for x in summary_lines(rows, audit or {"groups": [], "items": []})])):
-        print("cancelled")
-        return 130
-    return Applier(m, rows, Journal(plan_sha, resume, new_journal), audit).run()
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise Fail("another vault-audit apply is running", 4)
+        opened_bw(m)
+        if backup_only:
+            path = backup_export(m, plan_sha)
+            print(f"backup verified and retained: {path}; no journal, folders or items were changed")
+            return 0
+        if not (yes or confirm(["About to change the vault:"] + ["  " + x for x in summary_lines(rows, audit or {"groups": [], "items": []})])):
+            print("cancelled")
+            return 130
+        return Applier(m, rows, Journal(plan_sha, resume, new_journal), audit).run()
+    finally:
+        os.close(lock)
 
 
 class Applier:

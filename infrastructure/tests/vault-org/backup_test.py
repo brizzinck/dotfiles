@@ -11,6 +11,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest import mock
 
 SOURCE = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else Path(__file__).resolve().parents[3] / '.config/hypr/scripts/vault-org.py'
 spec = importlib.util.spec_from_file_location('backup_under_test', SOURCE)
@@ -253,6 +254,124 @@ class Backups(unittest.TestCase):
         b = Backend(); b.fail = 'org-a'
         self.refused(b)
         self.assertEqual([], list(v.BACKUPS.glob('vault-*')))
+
+    def test_each_failed_request_identifies_fixed_stage_and_rc_without_backend_output(self):
+        stages = [('cli', ('sync',)), ('cli', ('list', 'folders')), ('cli', ('list', 'items')),
+                  ('cli', ('export', 'personal')), ('cli', ('export', 'organization')),
+                  ('cli', ('sync',)), ('cli', ('list', 'folders')), ('cli', ('list', 'items')),
+                  ('service', ('sync',)), ('service', ('list', 'folders')), ('service', ('list', 'items'))]
+        expected = ['initial-sync', 'initial-folders', 'initial-items', 'personal-export', 'organization-export',
+                    'verify-sync', 'verify-folders', 'verify-items', 'service-sync', 'service-folders', 'service-items']
+        for n, stage in enumerate(expected):
+            b = Backend(); requests = []
+            cli, service = b.bw_cli, b.bw
+            def request(transport, original, args):
+                logical = args if args[0] != 'export' else ('export', 'organization' if '--organizationid' in args else 'personal')
+                requests.append((transport, logical))
+                if len(requests) == n + 1:
+                    return types.SimpleNamespace(returncode=23, stdout='invented-password-sentinel\x1b]52;poison\x07',
+                                                 stderr='Invented private name\n/org-a/private/path\x1b[31m')
+                return original(*args)
+            b.bw_cli = lambda *args: request('cli', cli, args)
+            b.bw = lambda *args: request('service', service, args)
+            with self.subTest(stage=stage):
+                message = self.refused(b)
+                self.assertEqual(f'backup failed: nothing was changed (stage={stage} rc=23 category=unknown)', message)
+                self.assertEqual(stages[:n + 1], requests)
+                self.assertFalse(list(v.BACKUPS.glob('vault-*')))
+
+    def test_failure_categories_require_exact_public_messages(self):
+        messages = {
+            'You are not logged in.': 'not-logged-in', 'Vault is locked.': 'locked',
+            'One or more organization policies prevents you from exporting your personal vault.': 'personal-export-policy',
+            'No encryption key found for organization': 'organization-key-unavailable',
+            'Error: No encryption key found for organization': 'organization-key-unavailable',
+        }
+        for message, category in messages.items():
+            for transport in ('stdout', 'stderr'):
+                for suffix in ('', '\n', '\nsecret\x1b[31m', '\r', '\n\n'):
+                    p = types.SimpleNamespace(returncode=1, stdout='', stderr='')
+                    setattr(p, transport, message + suffix)
+                    b = types.SimpleNamespace(bw_cli=lambda *args: p)
+                    with self.subTest(message=message, transport=transport, suffix=suffix):
+                        with self.assertRaises(v.Fail) as caught: v.backup_cli(b, 'sync', stage='initial-sync')
+                        wanted = category if suffix in ('', '\n') else 'unknown'
+                        self.assertEqual(f'backup failed: nothing was changed (stage=initial-sync rc=1 category={wanted})', str(caught.exception))
+        p = types.SimpleNamespace(returncode=1, stdout='invented-password-sentinel', stderr='Vault is locked.')
+        self.assertEqual('unknown', v.backup_error_category(p))
+
+    def test_backend_exception_and_invalid_results_have_safe_numeric_rc(self):
+        failures = [(FileNotFoundError('invented-password-sentinel'), 'unavailable'),
+                    (v.subprocess.TimeoutExpired('invented-password-sentinel', 1), 'timeout'),
+                    (v.Fail('invented-password-sentinel'), 'exception')]
+        for error, category in failures:
+            def fail(*args): raise error
+            with self.subTest(category=category), self.assertRaises(v.Fail) as caught:
+                v.backup_cli(types.SimpleNamespace(bw_cli=fail), 'sync', stage='initial-sync')
+            self.assertEqual(f'backup failed: nothing was changed (stage=initial-sync rc=-1 category={category})', str(caught.exception))
+        for rc, category in ((True, 'invalid-response'), ('secret', 'invalid-response'), (10**100, 'invalid-response'), (-15, 'signal')):
+            p = types.SimpleNamespace(returncode=rc, stdout='secret', stderr='secret')
+            with self.subTest(rc=rc), self.assertRaises(v.Fail) as caught:
+                v.backup_cli(types.SimpleNamespace(bw_cli=lambda *args: p), 'sync', stage='initial-sync')
+            self.assertEqual(f'backup failed: nothing was changed (stage=initial-sync rc={-15 if rc == -15 else -1} category={category})', str(caught.exception))
+
+    @contextlib.contextmanager
+    def backup_only_fixture(self):
+        b = Backend(); b.RUN = self.root / 'runtime'
+        b.status = mock.Mock(return_value='unlocked')
+        b.ensure = mock.Mock(side_effect=AssertionError('unexpected unlock'))
+        plan, journal, rules = (self.root / name for name in ('plan', 'journal', 'rules'))
+        for path in (plan, journal, rules): path.write_text('invented existing ' + path.name)
+        rows = [v.Row('item', 'personal-one', 'Invented private name', 'Invented folder', 'folder:Destination')]
+        forbidden = mock.Mock(side_effect=AssertionError('backup-only reached journal, confirmation or vault mutations'))
+        with contextlib.ExitStack() as stack:
+            for name, value in {'vbw': lambda: b, 'load_plan': lambda: ({}, rows), 'validate_plan': lambda *args: [],
+                                'agent': lambda: None, 'PLAN': plan, 'JOURNAL': journal, 'Journal': forbidden,
+                                'Applier': forbidden, 'confirm': forbidden}.items():
+                stack.enter_context(mock.patch.object(v, name, value))
+            yield b, rows, forbidden
+        for path in (plan, journal, rules): self.assertEqual('invented existing ' + path.name, path.read_text())
+
+    def test_backup_only_verifies_bundle_without_confirmation_journal_or_any_mutator(self):
+        with self.backup_only_fixture() as (b, rows, forbidden):
+            for no_changes in (False, True):
+                if no_changes: rows[0].target = 'keep'
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output): self.assertEqual(0, v.apply_plan(['--backup-only']))
+                self.assertIn('backup verified and retained:', output.getvalue())
+                self.assertIn('no journal, folders or items were changed', output.getvalue())
+            self.assertEqual(2, len(list(v.BACKUPS.glob('vault-*'))))
+            self.assertEqual(2, b.status.call_count)
+            forbidden.assert_not_called(); b.ensure.assert_not_called()
+            self.assertTrue(all(args[0] in ('list', 'sync', 'export') for _, args in b.calls))
+
+    def test_backup_only_failure_and_agent_gate_never_reach_mutators_or_journal(self):
+        with self.backup_only_fixture() as (b, rows, forbidden):
+            b.fail = 'org-a'
+            with self.assertRaises(v.Fail) as caught: v.apply_plan(['--backup-only'])
+            self.assertIn('stage=organization-export rc=1 category=unknown', str(caught.exception))
+            forbidden.assert_not_called()
+            b.calls.clear(); b.status.reset_mock()
+            with mock.patch.object(v, 'agent', return_value='invented-agent'):
+                with self.assertRaises(v.Fail) as caught: v.apply_plan(['--backup-only'])
+            self.assertEqual(4, caught.exception.code)
+            b.status.assert_not_called(); forbidden.assert_not_called()
+            self.assertEqual([], b.calls)
+
+    def test_backup_only_dry_run_invalid_plan_and_incompatible_flags_do_not_open_backend(self):
+        with self.backup_only_fixture() as (b, rows, forbidden):
+            for flag in ('--resume', '--new-journal', '--yes'):
+                with self.assertRaises(v.Fail) as caught: v.apply_plan(['--backup-only', flag])
+                self.assertEqual(2, caught.exception.code)
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(0, v.apply_plan(['--backup-only', '--dry-run']))
+            self.assertIn('would verify and retain', output.getvalue())
+            with mock.patch.object(v, 'validate_plan', return_value=['invented invalid plan']):
+                with self.assertRaises(v.Fail) as caught: v.apply_plan(['--backup-only'])
+                self.assertEqual(4, caught.exception.code)
+            b.status.assert_not_called(); forbidden.assert_not_called()
+            self.assertEqual([], b.calls)
+            self.assertFalse(v.BACKUPS.exists())
 
     def test_invalid_encryption_modes_and_folder_ids_refused(self):
         for change in ('plain', 'validation', 'password', 'folder-missing', 'folder-duplicate', 'synthetic-folder'):
