@@ -30,6 +30,13 @@
                                 .env* files, tracked .env, mise trust and tools, and with an unlocked vault: items, duplicates,
                                 missing and undeclared fields
 
+Managed users (td, yc: a non-service row of infrastructure/users/managed.tsv): no rbw, no bw. `run`, `status`, `check`, `diff`, `copy-value`
+and the TUI read Users/<me>/Env/<project> and Shared/Env/<project> (the global scope: .../Env/global) through the vault-share broker that
+runs in the owner's session; both items are merged, the user's own value wins (`check`/`status` name the shadowed names). A locked vault
+is exit 3. Every write command (set unset rename copy env project import convert) is refused (exit 4): the owner writes with
+`envs set NAME --for td` (folder Users/td/Env/<project>) or `--shared` (Shared/Env/<project>); --for/--shared exist on set, unset, import,
+env, copy, diff, status and check, need no binding and are the owner's only.
+
 Files. `.envs.toml` (committed, names only): project, environments, default, protected, [secrets] NAME = "description".
 Values: Bitwarden folder `Env/<project>`, one Secure Note per environment named exactly like it, one hidden custom field per
 secret. Non-secret variables: mise [env] (`.mise.toml`, `.mise.ENV.toml`). State: ~/.local/state/envs/{active,bindings}.tsv.
@@ -39,7 +46,7 @@ codex, gemini, ... as an ancestor process, or $CLAUDECODE) get names-only comman
 Exit codes: 0 ok, 1 error, 2 usage, 3 vault locked and no tty, 4 refused (agent, protected without --prod, unbound), 130 cancel.
 Test hooks (only when ENVS_TOOL_PATH resolves below <repo>/infrastructure/tests/ AND XDG_STATE_HOME / XDG_RUNTIME_DIR point
 away from the real ones; otherwise every hook is dropped and rbw, bw, pinentry, wl-copy come from /usr/bin only): ENVS_TOOL_PATH
-(fake tools), ENVS_TEST_ROOT_PID, ENVS_TEST_YES, ENVS_NO_JOURNAL, RBW_BIN, BW_BIN, PINENTRY_BIN (inside that directory).
+(fake tools), ENVS_TEST_ROOT_PID, ENVS_TEST_YES, ENVS_NO_JOURNAL, ENVS_TEST_MANAGED_USER, RBW_BIN, BW_BIN, PINENTRY_BIN (inside that directory).
 """
 import contextlib
 import fcntl
@@ -95,7 +102,8 @@ SECRET_TOOLS = {"rbw", "bw", "pinentry", "wl-copy"}    # these never resolve out
 HOOK_ENV = ("ENVS_GLOBAL_DIR", "ENVS_TOOL_PATH", "ENVS_TEST_ROOT_PID", "ENVS_TEST_YES", "ENVS_NO_JOURNAL", "RBW_BIN", "BW_BIN", "PINENTRY_BIN",
             "BW_DOWNLOAD_DIR", "VAULT_RBW_CONF", "VAULT_BW_IDLE", "VAULT_BW_SERVE_POLL", "VAULT_BW_RBW_POLL", "VAULT_BW_NODUMP",
             "VAULT_BW_NODUMP_SRC", "VAULT_BW_UNIT", "VAULT_BW_SYSTEMD_RUNTIME", "VAULT_BW_SERVE", "VAULT_BW_LAUNCH",
-            "VAULT_TERMINAL", "VAULT_CLEAR_AFTER")
+            "VAULT_TERMINAL", "VAULT_CLEAR_AFTER", "ENVS_TEST_MANAGED_USER", "VAULT_SHARE_TEST_DIR", "VAULT_SHARE_SCRATCH",
+            "VAULT_SHARE_SOCK", "VAULT_SHARE_SCOPES", "VAULT_SHARE_RUNTIME", "VAULT_SHARE_TEST_PEER_FILE", "VAULT_SHARE_TEST_AS")
 PINNED = {}                                            # name -> the value the shell had (None = unset)
 
 
@@ -643,7 +651,8 @@ class Cfg:
 
     @property
     def folder(self):
-        return f"Env/{self.project}"
+        """The Bitwarden folder this command WRITES: Env/<project>, or Users/<u>/Env/<project> / Shared/Env/<project> with --for / --shared."""
+        return env_folder(self.project)
 
 
 def validate(data, root=None):
@@ -1022,8 +1031,107 @@ def edit_mise(path, fn):
 
 
 # ───────────────────────────── rbw (read) and bw (write) ─────────────────────────────
+# The owner reads through rbw and writes through bw (vault-bw.py). A managed user (td, yc: a non-service row of managed.tsv) has no
+# rbw and no bw of its own: it reads Users/<me>/Env/<project> and Shared/Env/<project> through the vault-share broker that runs in
+# the owner's session (scripts/vault-share.py), and every write command is refused (the owner writes: `envs set NAME --for td`).
+
+FOLDER_PREFIX = ""            # "Users/td/" or "Shared/" while the owner runs a command with --for td / --shared
+_MANAGED = None
+_SHARE = None
+SHADOWED = {}                 # (project, env) -> names set in both folders of a managed user (the user's own value wins)
+WRITE_CMDS = {"set", "unset", "rename", "copy", "env", "project", "import", "convert"}
+
+
+def interactive_managed():
+    """Names of the interactive managed users (registry of this checkout), for --for."""
+    out = []
+    try:
+        for line in (REPO / "infrastructure/users/managed.tsv").read_text().splitlines():
+            c = line.split("\t")
+            if line.strip() and not line.startswith("#") and len(c) >= 3 and "service" not in c[2].split(","):
+                out.append(c[0])
+    except OSError:
+        pass
+    return out
+
+
+def managed_user():
+    """The managed account this process runs as, or None (the owner). ENVS_TEST_MANAGED_USER counts in verified test mode only."""
+    global _MANAGED
+    if _MANAGED is None:
+        who = ""
+        if TEST_DIRS and os.environ.get("ENVS_TEST_MANAGED_USER"):
+            who = os.environ["ENVS_TEST_MANAGED_USER"]
+        else:
+            try:
+                me = pwd.getpwuid(os.getuid()).pw_name
+                if me in interactive_managed():
+                    who = me
+            except KeyError:
+                pass
+        _MANAGED = who
+    return _MANAGED or None
+
+
+def env_folder(project):
+    return f"{FOLDER_PREFIX}Env/{project}"
+
+
+def env_folders(project):
+    """The folders READ for a project: the owner's one (or the --for / --shared one); for a managed user its own, then the shared one."""
+    me = managed_user()
+    if me:
+        return [f"Users/{me}/Env/{project}", f"Shared/Env/{project}"]
+    return [env_folder(project)]
+
+
+def share_lib():
+    global _SHARE
+    if _SHARE is None:
+        import importlib.machinery
+        import importlib.util
+        path = REPO / ".config/hypr/scripts/vault-share.py"
+        loader = importlib.machinery.SourceFileLoader("vault_share", str(path))
+        spec = importlib.util.spec_from_loader("vault_share", loader)
+        _SHARE = importlib.util.module_from_spec(spec)
+        loader.exec_module(_SHARE)
+    return _SHARE
+
+
+def share(msg):
+    """One request to the broker; its errors become Fail (locked = 3, policy = 4, anything else 1)."""
+    sl = share_lib()
+    try:
+        return sl.Client(allow_self=bool(TEST_DIRS)).request(msg)
+    except sl.Locked as e:
+        fail(str(e), 3)
+    except sl.Policy as e:
+        fail(str(e), 4)
+    except sl.ShareError as e:
+        fail(str(e), 1)
+
+
+def share_fields(item_id, names=None):
+    """{field name: value} of one item through the broker. names = the declared names to ask for (one `get`), else every custom
+    field (describe, then get)."""
+    if names is None:
+        d = share({"v": 1, "op": "describe", "id": item_id})["item"]
+        seen = [f["name"][6:] for f in d["fields"] if f["name"].startswith("field:")]
+        for n in seen:
+            if seen.count(n) > 1:
+                fail(f"two fields called {n} in one item: fix it in the vault browser (SUPER+CTRL+SHIFT+P)")
+        names = list(dict.fromkeys(seen))
+    out = {n: "" for n in names}
+    for i in range(0, len(names), 64):
+        r = share({"v": 1, "op": "get", "id": item_id, "fields": ["field:" + n for n in names[i:i + 64]]})
+        for k, v in r["values"].items():
+            out[k[6:]] = v
+    return out
+
 
 def rbw_run(*args, timeout=15):
+    if managed_user():
+        fail("internal error: a managed user has no rbw (the vault-share broker is its only way to the vault)")
     try:
         return subprocess.run([tool("rbw", "RBW_BIN"), *args], capture_output=True, text=True, timeout=timeout,
                               stdin=subprocess.DEVNULL)
@@ -1034,10 +1142,16 @@ def rbw_run(*args, timeout=15):
 
 
 def rbw_unlocked():
+    if managed_user():
+        return share({"v": 1, "op": "whoami"}).get("vault") == "unlocked"
     return rbw_run("unlocked", timeout=10).returncode == 0
 
 
 def ensure_rbw(sync=False):
+    if managed_user():
+        if not rbw_unlocked():
+            fail("the owner's vault is locked: nothing can be read until he unlocks it (any vault action on his desktop)", 3)
+        return
     if not rbw_unlocked():
         if not tty():
             fail("vault is locked: unlock it (any vault action, e.g. SUPER+CTRL+P) and run again", 3)
@@ -1054,6 +1168,8 @@ def ensure_rbw(sync=False):
 
 
 def rbw_list():
+    if managed_user():
+        return share({"v": 1, "op": "list"})["items"]
     p = rbw_run("list", "--raw", timeout=15)
     if p.returncode != 0:
         fail("rbw list failed: " + (p.stderr.strip().splitlines() or ["no details"])[0][:200])
@@ -1063,13 +1179,16 @@ def rbw_list():
         fail("rbw list --raw did not return JSON")
 
 
-def rbw_env_items(items, project, env):
-    return [i for i in items if i.get("folder") == f"Env/{project}" and i.get("name") == env
+def rbw_env_items(items, project, env, folder=None):
+    folder = folder or env_folder(project)
+    return [i for i in items if i.get("folder") == folder and i.get("name") == env
             and str(i.get("type", "")).lower() in ("securenote", "secure note", "note", "2")]
 
 
-def rbw_fields(item_id):
-    """{field name: value} of one item (rbw get --raw); duplicate names are an error."""
+def rbw_fields(item_id, names=None):
+    """{field name: value} of one item (rbw get --raw, or the broker for a managed user); duplicate names are an error."""
+    if managed_user():
+        return share_fields(item_id, names)
     p = rbw_run("get", "--raw", item_id, timeout=15)
     if p.returncode != 0:
         fail("rbw get failed: " + (p.stderr.strip().splitlines() or ["no details"])[0][:200])
@@ -1086,15 +1205,34 @@ def rbw_fields(item_id):
     return out
 
 
-def env_fields(project, env, items=None):
-    """None when the env has no item, else {name: value}. Two items = error."""
+def env_fields(project, env, items=None, names=None, values=True):
+    """None when the env has no item, else {name: value}. Two items in one folder = error. A managed user reads its own folder
+    and the shared one and merges them (its own value wins; the names set in both are kept in SHADOWED). names = the declared
+    names to fetch (managed `run`), values=False = names only (status, check, preview: the broker's describe, no value moves)."""
     items = items if items is not None else rbw_list()
-    m = rbw_env_items(items, project, env)
-    if len(m) > 1:
-        fail(f"{len(m)} items called {env} in Env/{project}: fix it in the vault browser (SUPER+CTRL+SHIFT+P)")
-    if not m:
-        return None
-    return rbw_fields(m[0]["id"])
+    merged, found, shadow = {}, False, []
+    for folder in env_folders(project):
+        m = rbw_env_items(items, project, env, folder)
+        if len(m) > 1:
+            fail(f"{len(m)} items called {env} in {folder}: fix it in the vault browser (SUPER+CTRL+SHIFT+P)")
+        if not m:
+            continue
+        found = True
+        if managed_user() and not values:
+            d = share({"v": 1, "op": "describe", "id": m[0]["id"]})["item"]
+            got = {f["name"][6:]: ("set" if f.get("set") else "") for f in d["fields"] if f["name"].startswith("field:")}
+        else:
+            got = rbw_fields(m[0]["id"], names)
+        for n, v in got.items():
+            if n in merged:
+                if merged[n] != "" and v != "":
+                    shadow.append(n)
+                if merged[n] == "":
+                    merged[n] = v
+            else:
+                merged[n] = v
+    SHADOWED[(project, env)] = sorted(set(shadow))
+    return merged if found else None
 
 
 _vbw = None
@@ -1158,17 +1296,20 @@ def new_item(folder_id, env, project):
 
 def bw_env_item(m, project, env, create=False):
     """The (full, current) bw item of an environment: None when missing and not created."""
-    fid = m.folder_id(f"Env/{project}", create=False)
+    folder = env_folder(project)
+    fid = m.folder_id(folder, create=False)
     items = m.bw_json("list", "items", "--folderid", fid) if fid else []
     hits = [i for i in items if i.get("name") == env and i.get("type") == 2]
     if len(hits) > 1:
-        fail(f"{len(hits)} items called {env} in Env/{project}: fix it in the vault browser (SUPER+CTRL+SHIFT+P)")
+        fail(f"{len(hits)} items called {env} in {folder}: fix it in the vault browser (SUPER+CTRL+SHIFT+P)")
     if hits:
         return m.bw_json("get", "item", hits[0]["id"])
     if not create:
         return None
-    m.folder_id("Env", create=True)
-    fid = m.folder_id(f"Env/{project}", create=True)
+    parts = folder.split("/")
+    for i in range(1, len(parts)):                       # every parent exists too (the web vault shows a tree only then)
+        m.folder_id("/".join(parts[:i]), create=True)
+    fid = m.folder_id(folder, create=True)
     return m.bw_json("create", "item", stdin=m.b64(new_item(fid, env, project)))
 
 
@@ -1305,6 +1446,8 @@ def other_binding_note(cfg):
 
 
 def require_bound(cfg):
+    if FOLDER_PREFIX:               # the owner writes into a managed user's folder (--for / --shared): nothing is read, no binding
+        return
     st, key, old = binding_state(cfg.root, cfg.project)
     if st == "bound":
         upgrade_identity(cfg.root, cfg.project)
@@ -1466,7 +1609,7 @@ def cmd_trust(a):
 
 
 def vault_matrix(cfg):
-    """{env: (fields dict or None)} when rbw is unlocked, else None. Values stay in memory."""
+    """{env: (fields dict or None)} when rbw is unlocked, else None. A managed user gets names only (placeholders, no value moves)."""
     try:
         if not rbw_unlocked():
             return None
@@ -1476,7 +1619,7 @@ def vault_matrix(cfg):
     out = {}
     for e in cfg.envs:
         try:
-            out[e] = env_fields(cfg.project, e, items)
+            out[e] = env_fields(cfg.project, e, items, values=False)
         except Fail as ex:
             out[e] = ex
     return out
@@ -1509,6 +1652,8 @@ def cmd_status(a):
             else:
                 s, m, x = classify(cfg, f)
                 doc["env"][e] = {"item": True, "set": s, "missing": m, "extra": x}
+                if managed_user():
+                    doc["env"][e]["shadowed"] = SHADOWED.get((cfg.project, e), [])
     if a.json:
         say(json.dumps(doc, indent=1))
         return
@@ -1529,7 +1674,8 @@ def cmd_status(a):
         elif not d["item"]:
             say(f"  {e}: no item")
         else:
-            say(f"  {e}: {len(d['set'])} set, missing: {', '.join(d['missing']) or '-'}, extra: {', '.join(d['extra']) or '-'}")
+            say(f"  {e}: {len(d['set'])} set, missing: {', '.join(d['missing']) or '-'}, extra: {', '.join(d['extra']) or '-'}"
+                + (f", shadowed (in both folders, yours wins): {', '.join(d['shadowed'])}" if d.get("shadowed") else ""))
 
 
 def cmd_use(a):
@@ -1588,9 +1734,9 @@ def cmd_run(a, cmd):
     values = {}
     if cfg.secrets:
         ensure_rbw(a.sync)
-        fields = env_fields(cfg.project, env)
-        fields = fields or {}
         wanted = [n for n in cfg.secrets if not only or n in only]
+        fields = env_fields(cfg.project, env, names=wanted)
+        fields = fields or {}
         missing = [n for n in wanted if fields.get(n, "") == ""]
         if missing and not a.allow_missing:
             fail(f"{env}: missing {', '.join(missing)}: set them with `envs set NAME {'-g' if cfg.is_global else '-e ' + env}` "
@@ -1913,10 +2059,10 @@ def cmd_project(a):
         with write_lock():
             m = bw_open()
             fid = m.folder_id(cfg.folder, create=False)
-            if m.folder_id(f"Env/{new}", create=False):
-                fail(f"the folder Env/{new} exists already")
+            if m.folder_id(env_folder(new), create=False):
+                fail(f"the folder {env_folder(new)} exists already")
             if fid:
-                p = m.bw("edit", "folder", fid, stdin=m.b64({"name": f"Env/{new}"}))
+                p = m.bw("edit", "folder", fid, stdin=m.b64({"name": env_folder(new)}))
                 if p.returncode != 0:
                     fail("bw edit folder failed: " + m.first_line(p.stderr or p.stdout))
             edit_cfg(cfg, lambda ed: ed.set(None, "project", toml_str(new)))
@@ -2220,7 +2366,7 @@ def cmd_copy_value(a):
     env = choose_env(cfg, a.env)
     guard_protected(cfg, env, a.prod, "copy from")
     ensure_rbw()
-    fields = env_fields(cfg.project, env) or {}
+    fields = env_fields(cfg.project, env, names=[a.name]) or {}
     if fields.get(a.name, "") == "":
         fail(f"{a.name} is not set in {env}", 1)
     vbw().copy(fields[a.name], True)
@@ -2280,8 +2426,10 @@ def check_root(cfg, out):
             add("ok" if not m else "warn", f"{e}: {len(s)} set" + (f", missing: {', '.join(m)}" if m else ""))
             if x:
                 add("warn", f"{e}: undeclared fields (never injected): {', '.join(x)}")
+            if SHADOWED.get((cfg.project, e)):
+                add("warn", f"{e}: set in both Users/{managed_user()}/Env and Shared/Env, your own wins: {', '.join(SHADOWED[(cfg.project, e)])}")
             for n, v in f.items():
-                if len(v) > FIELD_LIMIT:
+                if not managed_user() and len(v) > FIELD_LIMIT:
                     add("warn", f"{e}: {n} is {len(v)} characters (Bitwarden fields fail above about 5000)")
 
 
@@ -2436,12 +2584,16 @@ def vault_projects():
     except Fail:
         return None
     out = {}
+    me = managed_user()
+    bases = [f"Users/{me}/Env/", "Shared/Env/"] if me else [f"{FOLDER_PREFIX}Env/"]
     for i in items:
         f = i.get("folder") or ""
-        if f.startswith("Env/") and "/" not in f[4:]:
-            out.setdefault(f[4:], [])
-            if str(i.get("type", "")).lower() in ("securenote", "secure note", "note", "2"):
-                out[f[4:]].append(i.get("name"))
+        for base in bases:
+            if f.startswith(base) and "/" not in f[len(base):]:
+                name = f[len(base):]
+                out.setdefault(name, [])
+                if str(i.get("type", "")).lower() in ("securenote", "secure note", "note", "2") and i.get("name") not in out[name]:
+                    out[name].append(i.get("name"))
     return out
 
 
@@ -2452,10 +2604,16 @@ def short_path(p):
 
 
 def tui_header(project=None, env=None, cfg=None):
+    left = " · ".join(x for x in (project, env) if x) or "projects"
+    if managed_user():
+        try:
+            up = rbw_unlocked()
+        except Fail:
+            up = False
+        return f"{left} · vault-share {'unlocked' if up else 'locked'} · read-only"
     rb = "rbw unlocked" if rbw_run("unlocked", timeout=10).returncode == 0 else "rbw locked"
     sess = run_dir().parent / "vault" / "bw-session"
     bw = "bw ready" if sess.exists() else ("bw locked" if tool("bw", "BW_BIN", required=False) else "bw not set up")
-    left = " · ".join(x for x in (project, env) if x) or "projects"
     return f"{left} · {rb} · {bw}"
 
 
@@ -2627,7 +2785,7 @@ def cmd_preview(a):
     if level == "envs":
         say(f"environment {ident}" + ("   [protected]" if cfg and cfg.is_protected(ident) else ""))
         try:
-            fields = env_fields(project, ident) if rbw_unlocked() else None
+            fields = env_fields(project, ident, values=False) if rbw_unlocked() else None
         except Fail as e:
             say(f"error: {e.msg}")
             return
@@ -2655,7 +2813,7 @@ def cmd_preview(a):
                     say(f"plain value in {pth.name}: {v}")
         return
     try:
-        fields = env_fields(project, env) if rbw_unlocked() else None
+        fields = env_fields(project, env, names=[ident], values=bool(r and r == (project, env, ident))) if rbw_unlocked() else None
     except Fail as e:
         say(f"error: {e.msg}")
         return
@@ -2786,7 +2944,7 @@ def tui_loop():
             header = tui_header(project, None, cfg)
         else:
             try:
-                fields = env_fields(project, env) if rbw_unlocked() else None
+                fields = env_fields(project, env, values=False) if rbw_unlocked() else None
             except Fail as e:
                 warn(e.msg)
                 fields = None
@@ -2833,8 +2991,11 @@ def tui_action(level, action, ident, project, env, cfg, root, cwd_project):
         if action == "init":
             run_self("init", cwd=here, pause=True)
         elif action == "sync":
-            rbw_run("sync", timeout=60)
-            warn("synced")
+            if managed_user():
+                warn("nothing to sync: the broker reads the owner's vault")
+            else:
+                rbw_run("sync", timeout=60)
+                warn("synced")
         elif not proot:
             raise Fail(f"{ident}: no checkout of this project is bound here: cd into it and run `envs bind` first")
         elif action == "import":
@@ -2926,6 +3087,24 @@ def tui_action(level, action, ident, project, env, cfg, root, cwd_project):
 
 # ───────────────────────────── main ─────────────────────────────
 
+def apply_scope(a):
+    """--for USER / --shared (the owner only): every folder this command reads or writes is below Users/USER/ or Shared/."""
+    global FOLDER_PREFIX
+    user, shared = getattr(a, "for_user", None), getattr(a, "shared", False)
+    if not user and not shared:
+        return
+    if managed_user():
+        fail("--for and --shared are for the owner: a managed user cannot write", 4)
+    if user and shared:
+        fail("--for and --shared exclude each other", 2)
+    if user:
+        if user not in interactive_managed():
+            fail(f"{user} is not an interactive managed user (infrastructure/users/managed.tsv: {', '.join(interactive_managed()) or 'none'})", 2)
+        FOLDER_PREFIX = f"Users/{user}/"
+    else:
+        FOLDER_PREFIX = "Shared/"
+
+
 def build_parser():
     import argparse
     ap = argparse.ArgumentParser(prog="envs", add_help=True, description="project environments and secrets (see the header of this file)")
@@ -2935,9 +3114,13 @@ def build_parser():
     p.add_argument("--envs", default="dev,stage,prod")
     p.add_argument("--default")
     sub.add_parser("bind").add_argument("--yes", action="store_true")
+    def scope_opts(pp):
+        pp.add_argument("--for", dest="for_user", metavar="USER", help="the owner: act on Users/USER/Env/<project> (a managed user's folder)")
+        pp.add_argument("--shared", action="store_true", help="the owner: act on Shared/Env/<project>")
     p = sub.add_parser("status")
     p.add_argument("-g", "--global", dest="global_", action="store_true")
     p.add_argument("--json", action="store_true")
+    scope_opts(p)
     p = sub.add_parser("use")
     p.add_argument("env", nargs="?")
     p.add_argument("--prod", action="store_true")
@@ -2958,12 +3141,14 @@ def build_parser():
     p.add_argument("--plain", action="store_true")
     p.add_argument("--stdin", action="store_true")
     p.add_argument("--description")
+    scope_opts(p)
     p = sub.add_parser("unset")
     p.add_argument("-g", "--global", dest="global_", action="store_true")
     p.add_argument("name")
     p.add_argument("-e", "--env")
     p.add_argument("--all", action="store_true")
     p.add_argument("--undeclare", action="store_true")
+    scope_opts(p)
     p = sub.add_parser("rename")
     p.add_argument("old")
     p.add_argument("new")
@@ -2972,12 +3157,15 @@ def build_parser():
     p.add_argument("dst")
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--prod", action="store_true")
+    scope_opts(p)
     p = sub.add_parser("diff")
     p.add_argument("a", nargs="?")
     p.add_argument("b", nargs="?")
+    scope_opts(p)
     p = sub.add_parser("env")
     p.add_argument("action", choices=["new", "rename", "delete"])
     p.add_argument("names", nargs="+")
+    scope_opts(p)
     p = sub.add_parser("project")
     p.add_argument("action", choices=["rename", "delete"])
     p.add_argument("new", nargs="?")
@@ -2989,6 +3177,7 @@ def build_parser():
     p.add_argument("--keep", action="store_true")
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--prod", action="store_true")
+    scope_opts(p)
     p = sub.add_parser("export-example")
     p.add_argument("-o", "--output")
     p.add_argument("--force", action="store_true")
@@ -3005,6 +3194,7 @@ def build_parser():
     p = sub.add_parser("check")
     p.add_argument("-g", "--global", dest="global_", action="store_true")
     p.add_argument("--all", action="store_true")
+    scope_opts(p)
     sub.add_parser("trust")
     p = sub.add_parser("convert")
     p.add_argument("name")
@@ -3076,6 +3266,10 @@ def main(argv):
         if not a.cmd:
             tui()
             return 0
+        apply_scope(a)
+        if managed_user() and a.cmd in WRITE_CMDS:
+            me = managed_user()
+            fail(f"values in Users/{me}/Env are written by the owner: `envs set NAME --for {me}` on his terminal", 4)
         HANDLERS[a.cmd](a)
     except Fail as e:
         warn(e.msg)

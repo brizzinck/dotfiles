@@ -25,6 +25,8 @@ SECRETS=(SECRET-billing-dev-db SECRET-billing-dev-stripe SECRET-billing-dev-extr
   SECRET-billing-prod-stripe SECRET-other-dev-db SECRET-other-dev-stripe SECRET-work-login master-pw)
 # values the tests write themselves (they must never show up either)
 SECRETS+=(SECRET-global-gitlab SECRET-global-extra NEWVAL-set-1 NEWVAL-set-2 NEWVAL-all-3 NEWVAL-import-4 NEWVAL-import-5 NEWVAL-copy-6)
+# BW-ORG C6: the managed-user section (values of the owner, of td, of yc and of the shared folder)
+SECRETS+=(SECRET-td-db SECRET-td-token SECRET-shared-db SECRET-shared-only SECRET-yc-db SECRET-owner-demo SECRET-td-gitlab NEWVAL-for-td NEWVAL-shared)
 SOCK="envstest-$$"
 
 stop_bw() {
@@ -1037,9 +1039,114 @@ fi
 
 }
 
-if [[ -z $ONLY ]]; then sections_1_14; sections_17; sections_18; sections_19; sections_20; fi
+
+sections_21() {
+# ───────────── 21 BW-ORG C6: a managed user reads Users/<u>/Env and Shared/Env through the vault-share broker
+section "21 BW-ORG: managed backend (td) through the broker, owner --for / --shared"
+reset
+VS="$REPO/infrastructure/tests/vault-share"
+VSCR="$T/vs"; rm -rf "$VSCR"; mkdir -p "$VSCR/run" "$VSCR/etc" "$VSCR/rt"; chmod 755 "$VSCR/run" "$VSCR/etc"; chmod 700 "$VSCR/rt"
+printf 'td\tShared/**\ntd\tUsers/td/**\nyc\tShared/**\nyc\tUsers/yc/**\n' >"$VSCR/etc/scopes.tsv"; chmod 644 "$VSCR/etc/scopes.tsv"
+echo td >"$VSCR/peer"
+# the vault: the owner's Env/demo, td's own, the shared one and a yc decoy (invented values)
+jq '.folders += [{"id":"f-users","name":"Users"},{"id":"f-utd","name":"Users/td"},{"id":"f-utde","name":"Users/td/Env"},{"id":"f-utdd","name":"Users/td/Env/demo"},
+    {"id":"f-uyc","name":"Users/yc"},{"id":"f-uyce","name":"Users/yc/Env"},{"id":"f-uycd","name":"Users/yc/Env/demo"},
+    {"id":"f-sh","name":"Shared"},{"id":"f-she","name":"Shared/Env"},{"id":"f-shd","name":"Shared/Env/demo"},{"id":"f-utdg","name":"Users/td/Env/global"},
+    {"id":"f-od","name":"Env/demo"}]
+  | .items += [
+    {"id":"td-dev","type":2,"name":"dev","folderId":"f-utdd","notes":null,"secureNote":{"type":0},"login":null,"fields":[{"name":"DATABASE_URL","value":"SECRET-td-db","type":1},{"name":"TOKEN","value":"SECRET-td-token","type":1}],"attachments":[],"passwordHistory":[],"deletedDate":null},
+    {"id":"sh-dev","type":2,"name":"dev","folderId":"f-shd","notes":null,"secureNote":{"type":0},"login":null,"fields":[{"name":"DATABASE_URL","value":"SECRET-shared-db","type":1},{"name":"SHARED_ONLY","value":"SECRET-shared-only","type":1}],"attachments":[],"passwordHistory":[],"deletedDate":null},
+    {"id":"yc-dev","type":2,"name":"dev","folderId":"f-uycd","notes":null,"secureNote":{"type":0},"login":null,"fields":[{"name":"DATABASE_URL","value":"SECRET-yc-db","type":1}],"attachments":[],"passwordHistory":[],"deletedDate":null},
+    {"id":"ow-dev","type":2,"name":"dev","folderId":"f-od","notes":null,"secureNote":{"type":0},"login":null,"fields":[{"name":"DATABASE_URL","value":"SECRET-owner-demo","type":1}],"attachments":[],"passwordHistory":[],"deletedDate":null},
+    {"id":"td-glob","type":2,"name":"default","folderId":"f-utdg","notes":null,"secureNote":{"type":0},"login":null,"fields":[{"name":"GITLAB_TOKEN","value":"SECRET-td-gitlab","type":1}],"attachments":[],"passwordHistory":[],"deletedDate":null}]' \
+  "$FAKE_DIR/vault.json" >"$FAKE_DIR/v.tmp" && mv "$FAKE_DIR/v.tmp" "$FAKE_DIR/vault.json"
+DEMO="$T/demo"; rm -rf "$DEMO"; mkdir -p "$DEMO"
+(cd "$DEMO" && git init -q . && cat >.envs.toml <<'TOML'
+project = "demo"
+environments = ["dev", "stage", "prod"]
+default = "dev"
+protected = ["prod"]
+
+[secrets]
+DATABASE_URL = ""
+TOKEN = ""
+SHARED_ONLY = ""
+TOML
+)
+GD2="$T/gdir2"; rm -rf "$GD2"; mkdir -p "$GD2"; chmod 700 "$GD2"; cp "$REPO/.config/envs/global.toml" "$GD2/global.toml"; chmod 644 "$GD2/global.toml"
+# the broker: a child process in verified test mode, its rbw is the fake one, td's envs gets a poison rbw
+BENV=(env VAULT_SHARE_TEST_DIR="$VS" VAULT_SHARE_SCRATCH="$VSCR" VAULT_SHARE_SOCK="$VSCR/run/sock" VAULT_SHARE_SCOPES="$VSCR/etc/scopes.tsv"
+  VAULT_SHARE_RUNTIME="$VSCR/rt" VAULT_SHARE_TEST_PEER_FILE="$VSCR/peer" RBW_BIN="$REPO/infrastructure/tests/vault-browse/bin/rbw")
+"${BENV[@]}" python3 -I -B "$REPO/.config/hypr/scripts/vault-share.py" serve 2>"$T/broker.err" &
+BROKER=$!
+for _ in $(seq 50); do [[ -S $VSCR/run/sock ]] && break; sleep 0.1; done
+check "21.0 the broker is up (test mode, fake rbw)" test -S "$VSCR/run/sock"
+export VAULT_SHARE_TEST_DIR="$VS" VAULT_SHARE_SCRATCH="$VSCR" VAULT_SHARE_SOCK="$VSCR/run/sock" VAULT_SHARE_SCOPES="$VSCR/etc/scopes.tsv" \
+  VAULT_SHARE_RUNTIME="$VSCR/rt-client" VAULT_SHARE_TEST_PEER_FILE="$VSCR/peer"
+rm -f "$FAKE_DIR/poison.log"
+asTD() { ENVS_TEST_MANAGED_USER=td RBW_BIN="$HERE/bin/rbw-poison" BW_BIN=/nonexistent-bw ENVS_GLOBAL_DIR="$GD2" "$@"; }
+EDIR="$DEMO"
+(cd "$DEMO" && asTD "$ENVS" bind --yes >/dev/null 2>&1)
+N=$((N + 1)); (cd "$DEMO" && asTD "$ENVS" run -- sh -c 'for v in DATABASE_URL TOKEN SHARED_ONLY; do printf "%s=%s\n" "$v" "$(printf %s "${!v}" | sha256sum | cut -c1-64)"; done; echo "names=$ENVS_SECRETS"' >"$CAP/$N.out" 2>"$CAP/$N.err" </dev/null); RC=$?; OUT="$CAP/$N.out"; ERR="$CAP/$N.err"
+check "21.1 envs run as td injects its own value (DATABASE_URL, TOKEN) and the shared one (SHARED_ONLY)" bash -c "[ $RC = 0 ] && grep -qx 'DATABASE_URL=$(sha SECRET-td-db)' '$OUT' && grep -qx 'TOKEN=$(sha SECRET-td-token)' '$OUT' && grep -qx 'SHARED_ONLY=$(sha SECRET-shared-only)' '$OUT'" 
+check "21.1 ...td's own value wins over the shared one, and nothing of the owner's Env/demo or yc's folder arrives" bash -c "! grep -q '$(sha SECRET-shared-db)\|$(sha SECRET-owner-demo)\|$(sha SECRET-yc-db)' '$OUT'"
+check "21.1 ...td's envs never called rbw (the poison rbw was never run)" test ! -e "$FAKE_DIR/poison.log"
+check "21.1 ...and the broker's journal has the lines (list, get) without a value or a name" bash -c "grep -q 'op=list user=td' '$T/broker.err' && grep -q 'op=get user=td' '$T/broker.err' && ! grep -q 'SECRET-' '$T/broker.err'"
+# 21.2 locked
+touch "$FAKE_DIR/rbw-locked"
+N=$((N + 1)); (cd "$DEMO" && asTD "$ENVS" run -- true >"$CAP/$N.out" 2>"$CAP/$N.err" </dev/null); RC=$?; OUT="$CAP/$N.out"; ERR="$CAP/$N.err"
+check "21.2 a locked vault: exit 3 with the broker's message, no prompt" bash -c "[ $RC = 3 ] && grep -q \"owner's vault is locked\" '$ERR'"
+rm -f "$FAKE_DIR/rbw-locked"
+# 21.3 writes are refused
+for c in "set X --stdin" "unset TOKEN -e dev" "rename TOKEN TOKEN2" "copy dev stage" "env new qa" "project rename other" "import" "convert TOKEN"; do
+  N=$((N + 1)); (cd "$DEMO" && asTD "$ENVS" $c >"$CAP/$N.out" 2>"$CAP/$N.err" </dev/null); RC=$?
+  check "21.3 '$c' as td: exit 4 and the owner's command is named" bash -c "[ $RC = 4 ] && grep -q 'envs set NAME --for td' '$CAP/$N.err'"
+done
+# 21.4 the owner writes into td's and the shared folder
+EDIR="$DEMO"
+epipe 'NEWVAL-for-td' set NEW_FOR_TD -e dev --for td --stdin
+check "21.4 owner: set NAME --for td writes into Users/td/Env/demo (no binding needed)" bash -c "[ $RC = 0 ] && [ \"\$(jq -r '.items[]|select(.id==\"td-dev\")|.fields[]|select(.name==\"NEW_FOR_TD\")|.value' '$FAKE_DIR/vault.json')\" = NEWVAL-for-td ]"
+check "21.4 ...and the owner's own Env/demo item is untouched" bash -c "[ \"\$(jq -r '.items[]|select(.id==\"ow-dev\")|.fields|length' '$FAKE_DIR/vault.json')\" = 1 ]"
+epipe 'NEWVAL-shared' set NEW_SHARED -e stage --shared --stdin
+check "21.4 owner: --shared creates the item in Shared/Env/demo" bash -c "[ $RC = 0 ] && jq -e '.folders[]|select(.name==\"Shared/Env/demo\")' '$FAKE_DIR/vault.json' >/dev/null && [ \"\$(jq -r '[.items[]|select(.name==\"stage\" and .folderId==\"f-shd\")|.fields[]|select(.name==\"NEW_SHARED\")|.value]|first' '$FAKE_DIR/vault.json')\" = NEWVAL-shared ]"
+(cd "$DEMO" && printf 'x' | "$ENVS" set Y -e dev --for nobody --stdin >/dev/null 2>"$CAP/for.err"); rc=$?
+check "21.4 --for with a user that is not an interactive managed user: exit 2" bash -c "[ $rc = 2 ] && grep -q 'not an interactive managed user' '$CAP/for.err'"
+(cd "$DEMO" && printf 'x' | "$ENVS" set Y -e dev --for td --shared --stdin >/dev/null 2>&1); rc=$?
+check "21.4 --for and --shared together: exit 2" test $rc = 2
+e status --for td --json
+check "21.4 owner: status --for td reads Users/td/Env/demo (dev has the item, stage has none there)" bash -c "jq -e '.env.dev.item == true and .env.stage.item == false' '$OUT'"
+(cd "$DEMO" && asTD "$ENVS" set X --for td --stdin </dev/null >/dev/null 2>&1); rc=$?
+check "21.4 a managed user cannot use --for either (exit 4)" test $rc = 4
+# 21.5 shadowed names
+N=$((N + 1)); (cd "$DEMO" && asTD "$ENVS" check >"$CAP/$N.out" 2>"$CAP/$N.err" </dev/null); RC=$?; OUT="$CAP/$N.out"
+check "21.5 check as td reports the name set in both folders (names only)" bash -c "grep -q 'set in both Users/td/Env and Shared/Env' '$OUT' && grep -q 'DATABASE_URL' '$OUT'"
+N=$((N + 1)); (cd "$DEMO" && asTD "$ENVS" status --json >"$CAP/$N.out" 2>"$CAP/$N.err" </dev/null); RC=$?; OUT="$CAP/$N.out"
+check "21.5 status --json: the shadowed list, vault unlocked, nothing else leaks" bash -c "jq -e '.vault==\"unlocked\" and (.env.dev.shadowed|index(\"DATABASE_URL\")) and (.env.dev.set|index(\"TOKEN\")) and (.env.dev.set|index(\"SHARED_ONLY\"))' '$OUT' >/dev/null"
+# 21.6 global scope
+N=$((N + 1)); (cd "$T/nowhere" 2>/dev/null || mkdir -p "$T/nowhere"; cd "$T/nowhere" && asTD "$ENVS" run -g --allow-missing -- sh -c 'printf "%s" "$GITLAB_TOKEN" | sha256sum | cut -c1-64' >"$CAP/$N.out" 2>"$CAP/$N.err" </dev/null); RC=$?; OUT="$CAP/$N.out"
+check "21.6 run -g as td reads Users/td/Env/global" bash -c "[ $RC = 0 ] && grep -qx $(sha SECRET-td-gitlab) '$OUT'"
+check "21.6 ...and still no rbw call by td" test ! -e "$FAKE_DIR/poison.log"
+# an agent as td is still refused
+N=$((N + 1)); (cd "$DEMO" && CLAUDECODE=1 asTD "$ENVS" run -- true >"$CAP/$N.out" 2>"$CAP/$N.err" </dev/null); RC=$?
+check "21.7 envs run is refused for an agent (exit 4) even as a managed user" test $RC = 4
+# 21.8 timing
+if command -v python3 >/dev/null; then
+  t0=$(date +%s%N)
+  for _ in 1 2 3 4 5 6 7 8; do (cd "$DEMO" && asTD "$ENVS" run -- true >/dev/null 2>&1 </dev/null); done
+  ms=$(( ($(date +%s%N) - t0) / 8000000 ))
+  printf 'info  envs run -- true as td through the broker: mean %d ms (reported; fails above 300 ms; fake rbw is bash+jq)\n' "$ms"
+  check "21.8 envs run as td is below 300 ms" test "$ms" -lt 300
+fi
+kill "$BROKER" 2>/dev/null; wait "$BROKER" 2>/dev/null
+unset VAULT_SHARE_TEST_DIR VAULT_SHARE_SCRATCH VAULT_SHARE_SOCK VAULT_SHARE_SCOPES VAULT_SHARE_RUNTIME VAULT_SHARE_TEST_PEER_FILE
+EDIR=""
+scan "21"
+}
+
+if [[ -z $ONLY ]]; then sections_1_14; sections_17; sections_18; sections_19; sections_20; sections_21; fi
 [[ $ONLY == 19 ]] && sections_19
 [[ $ONLY == 20 ]] && sections_20
+[[ $ONLY == 21 ]] && sections_21
 sections_15_16
 
 printf '\nenvs test: %d passed, %d failed\n' "$PASS" "$FAILS"

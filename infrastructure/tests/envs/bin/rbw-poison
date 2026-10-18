@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# poison rbw for a managed user: envs must never call rbw there (the broker is its only way to the vault)
+echo "rbw called: $*" >>"${FAKE_DIR:-/tmp}/poison.log"
+exit 1
