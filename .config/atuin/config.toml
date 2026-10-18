@@ -4,6 +4,11 @@ auto_sync = false
 sync_address = "http://127.0.0.1:9"   # unroutable on purpose: nothing ever reaches api.atuin.sh
 update_check = false
 secrets_filter = true
+# the same literal-secret test as DF_SECRET_CMD_RE in ~/.config/zsh/cmd-hooks.zsh (kept in sync by infrastructure/tests/dev-a): atuin
+# applies it to every command it records AND `atuin history prune` deletes what matches after `atuin import` (import is unfiltered)
+history_filter = [
+'''(?i)(pass(word|wd)?|token|secret|api[_-]?key|credential|private[_-]?key)[a-z0-9_]*([[:space:]]*=[[:space:]]*|:)["']?[^$[:space:]"']{4,}|["'][a-z0-9_-]*(pass(word|wd)?|token|secret|api[_-]?key|credential)[a-z0-9_-]*[[:space:]]*:[[:space:]]*[^$[:space:]"']{8,}|auth[a-z0-9_]*=["']?[^$[:space:]"']{4,}|sshpass[[:space:]]+-p|authorization:[[:space:]]*(bearer|basic)[[:space:]]+[^$[:space:]]|(ghp|gho|ghs|github_pat|glpat|xox[abps]|sk)[-_][a-z0-9]{12,}|sk-[a-z]+-[a-z0-9_-]{16,}|--(pass(word|wd)?|token|secret|api[_-]?key)[= ][^$[:space:]-][^[:space:]]{3,}|://[^/[:space:]:@]+:[^@/[:space:]$]+@|(^|[^a-z0-9])(mysql[a-z]*|mariadb[a-z-]*)[[:space:]].*[[:space:]]-p[^[:space:]$-]+|login[[:space:]].*[[:space:]]-p[[:space:]]+[^$[:space:]-]|(^|[^a-z0-9])bw[[:space:]]+(unlock|login)([[:space:]]+[^-$[:space:]][^[:space:]]*){1,2}''',
+]
 workspaces = true                    # the "workspace" filter = the git repository of the current directory
 search_mode = "fuzzy"
 filter_mode = "global"

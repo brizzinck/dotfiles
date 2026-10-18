@@ -20,7 +20,8 @@ _df_atuin_sh=${XDG_CONFIG_HOME:-$HOME/.config}/fzf/atuin-history.sh
 if [[ ! -e $_df_atuin_db ]] && (( $+commands[flock] )); then
   {
     mkdir -p ${XDG_STATE_HOME:-$HOME/.local/state}
-    flock -n 9 && [[ ! -e $_df_atuin_db ]] && HISTFILE=${HISTFILE:-$HOME/.zsh_history} atuin import zsh
+    flock -n 9 && [[ ! -e $_df_atuin_db ]] &&
+      HISTFILE=${HISTFILE:-$HOME/.zsh_history} atuin import zsh && atuin history prune   # import is unfiltered: prune drops what history_filter matches
   } 9>${XDG_STATE_HOME:-$HOME/.local/state}/atuin-import.lock &>/dev/null &!
 fi
 
@@ -35,7 +36,7 @@ _df_atuin_history_widget() {
   sel=$(DF_ATUIN_STATE=$state VF_ACT_NORMAL=$_df_vf_act[atuin] SHELL=/bin/bash \
     $_df_atuin_sh rows 2>/dev/null | DF_ATUIN_STATE=$state VF_ACT_NORMAL=$_df_vf_act[atuin] SHELL=/bin/bash \
     fzf --read0 --print0 --scheme=history --delimiter='\t' --with-nth=5.. --no-multi-line --height=40% \
-      --query="$LBUFFER" --header "$($_df_atuin_sh header)" \
+      --query="$LBUFFER" --header "$(DF_ATUIN_STATE=$state $_df_atuin_sh header)" \
       --bind "tab:transform($_df_atuin_sh cycle +1)" --bind "btab:transform($_df_atuin_sh cycle -1)" \
       --preview "$_df_atuin_sh preview {f}" --preview-window=down,4,wrap "${vf[@]}")
   local ret=$?

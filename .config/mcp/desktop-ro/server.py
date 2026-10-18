@@ -35,10 +35,11 @@ CMD_TIMEOUT = 6.0
 MAX_OUTPUT_BYTES = 24_000
 CLIP_MAX_CHARS = 8_000
 SENSITIVE_MIMES = ("x-kde-passwordmanagerhint", "x-kde-passwordmanager")
-# content of these apps is never returned by notifications_history (only that a notification came from them)
+# content of these apps is never returned by notifications_history (only that a notification came from them); `terminal` is the
+# long-command toast of ~/.config/hypr/scripts/cmd-notify.sh, whose body is a typed command line (it can hold a secret no filter knows)
 NOTIF_HIDE_APPS = os.environ.get(
     "DESKTOP_RO_NOTIF_HIDE_APPS",
-    r"telegram|signal|whatsapp|discord|slack|element|matrix|thunderbird|mail|bitwarden|rbw|vault|keepass|2fa|otp|sms|kdeconnect",
+    r"telegram|signal|whatsapp|discord|slack|element|matrix|thunderbird|mail|bitwarden|rbw|vault|keepass|2fa|otp|sms|kdeconnect|terminal",
 )
 
 mcp = FastMCP("desktop-ro")

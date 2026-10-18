@@ -248,7 +248,8 @@ git -C "$DOTFILES" config core.hooksPath .githooks
 [ -e "$DOTFILES/.config/nvim/.git" ] && git -C "$DOTFILES/.config/nvim" config core.hooksPath "$DOTFILES/.githooks"
 # atuin (local history, DEV-a): import ~/.zsh_history once when there is no database yet (a new shell does it by itself too)
 if command -v atuin >/dev/null 2>&1 && [ ! -e "${XDG_DATA_HOME:-$HOME/.local/share}/atuin/history.db" ]; then
-  ATUIN_SESSION=$(atuin uuid) atuin import zsh >/dev/null 2>&1 || true
+  ATUIN_SESSION=$(atuin uuid) atuin import zsh >/dev/null 2>&1 &&
+    ATUIN_SESSION=$(atuin uuid) atuin history prune >/dev/null 2>&1 || true   # import is unfiltered; history_filter (config.toml) decides what goes
 fi
 # private submodule (secrets, machine-local configs) — stowed separately, skipped if not cloned
 if [ -d "$DOTFILES/private" ] && [ -n "$(ls -A "$DOTFILES/private" 2>/dev/null)" ]; then

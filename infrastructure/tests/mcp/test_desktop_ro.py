@@ -93,6 +93,8 @@ async def main_default(s):
     check("notifications: telegram text hidden", "private chat text" not in text and "hidden" in text)
     check("notifications: bitwarden text hidden", "TOTP" not in text and "123456" not in text)
     check("notifications: one-time code masked", "482913" not in text and "[code]" in text)
+    check("notifications: the long-command toast (terminal) is hidden, a typed URL password never reaches an agent",
+          "Zx9PlainPw" not in text and "pg_dump" not in text and "Finished in 2m" not in text)
     check("notifications: password/token masked", "hunter2" not in text and "abcdef0123456789" not in text)
 
     err, text = await call(s, "journal_user", {"unit": "mcp-gateway.service", "lines": 500})

@@ -5,6 +5,7 @@ cat <<'J'
 {"type":"aa{sv}","data":[[
  {"appname":{"type":"s","data":"org.telegram.desktop"},"summary":{"type":"s","data":"Ann"},"body":{"type":"s","data":"private chat text"},"urgency":{"type":"s","data":"NORMAL"},"timestamp":{"type":"x","data":1},"desktop_entry":{"type":"s","data":"org.telegram.desktop"}},
  {"appname":{"type":"s","data":"Firefox"},"summary":{"type":"s","data":"Build finished"},"body":{"type":"s","data":"Your code is 482913, password: hunter2 token=abcdef0123456789"},"urgency":{"type":"s","data":"NORMAL"},"timestamp":{"type":"x","data":2},"desktop_entry":{"type":"s","data":""}},
+ {"appname":{"type":"s","data":"terminal"},"summary":{"type":"s","data":"Finished in 2m 03s"},"body":{"type":"s","data":"pg_dump postgres://admin:Zx9PlainPw@db/prod in ~/job"},"urgency":{"type":"s","data":"NORMAL"},"timestamp":{"type":"x","data":4},"desktop_entry":{"type":"s","data":""}},
  {"appname":{"type":"s","data":"Bitwarden"},"summary":{"type":"s","data":"Vault"},"body":{"type":"s","data":"TOTP 123456"},"urgency":{"type":"s","data":"LOW"},"timestamp":{"type":"x","data":3},"desktop_entry":{"type":"s","data":""}}
 ]]}
 J

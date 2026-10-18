@@ -211,6 +211,11 @@ s2() {
     _df_cmd_preexec " echo hidden"; _df_cmd_precmd
     _df_cmd_preexec "export API_TOKEN=$FAKE_SECRET"; _df_cmd_precmd
     _df_cmd_preexec "export TOKEN=\$(rbw get x)"; _df_cmd_precmd
+    _df_cmd_preexec "export PLAINVAR=literalvalue"; _df_cmd_precmd
+    _df_cmd_preexec "typeset -x OTHERVAR=literalvalue"; _df_cmd_precmd
+    _df_cmd_preexec "BARELINE=literalvalue"; _df_cmd_precmd
+    _df_cmd_preexec "GOOS=linux go build ./..."; _df_cmd_precmd
+    _df_cmd_preexec "export PATH=\$PATH:/x"; _df_cmd_precmd
     sleep 0.25' >/dev/null 2>&1
   expect "a plain command is recorded (history start)" grep -q '^/tmp|history start --hook -- echo a$' "$log"
   expect "the start runs in the command's directory" grep -q '^/tmp|history start' "$log"
@@ -219,6 +224,10 @@ s2() {
   expect "a command with a leading space is not recorded" bash -c "! grep -q 'echo hidden' '$log'"
   expect "a literal secret is not recorded" bash -c "! grep -q 'abcdef123456' '$log'"
   expect "a variable reference is recorded" grep -q 'rbw get x' "$log"
+  expect "L1: an assignment with a literal value (export, typeset, bare) never reaches the argv of atuin" bash -c "! grep -q -e PLAINVAR -e OTHERVAR -e BARELINE '$log'"
+  expect "L1: a command with an environment prefix is still recorded" grep -q 'GOOS=linux go build' "$log"
+  expect "L1: an assignment that only uses a variable is still recorded" grep -q 'export PATH=\$PATH:/x' "$log"
+  s2_secrets
 
   # the recording job is in the background: precmd returns long before a slow atuin finishes
   : >"$log"
@@ -271,6 +280,95 @@ s2() {
   fi
 
   if ((!QUICK)) && have tmux && have fzf; then s2_tmux; fi
+}
+
+# secret-looking command lines: "hide" must match DF_SECRET_CMD_RE, "show" (ordinary dev commands) must not
+secret_rows() {
+  local gh="ghp_""abcdefghijklmnop1234" gl="glpat-""abcdefghijklmnopqrst" ant="sk-ant-""api03-abcdefghijklmnopqrstu" oai="sk-proj-""AbCdEfGhIjKlMnOpQrStUv"
+  printf '%s\n' \
+    "hide@@export API_TOKEN=$FAKE_SECRET" \
+    "hide@@pg_dump postgres://admin:Zx9PlainPw@db/prod" \
+    "hide@@psql postgres://u:pw1234@h/db" \
+    "hide@@mysql -uroot -pSecretPw db < dump.sql" \
+    "hide@@mysqldump -u root -phunter22 db" \
+    "hide@@docker login -u me -p s3cretpw registry.io" \
+    "hide@@bw unlock hunter22pw" \
+    "hide@@bw login me@x.com hunter22pw" \
+    "hide@@export OPENAI_API_KEY=$oai" \
+    "hide@@echo $oai" \
+    "hide@@echo $ant" \
+    "hide@@echo $gh" \
+    "hide@@echo $gl" \
+    "hide@@curl -H \"X-Api-Key: $FAKE_SECRET\" https://x" \
+    "hide@@curl -H 'x-auth-token: ${FAKE_SECRET}x' https://x" \
+    'hide@@curl -H "Authorization: Bearer abc" https://x' \
+    "hide@@foo --password hunter22" \
+    "hide@@sshpass -p x ssh h" \
+    'show@@git clone https://github.com/a/b' \
+    'show@@git clone https://user:$TOKEN@github.com/a/b' \
+    'show@@curl https://host:8080/pkg@1.0' \
+    'show@@git clone ssh://git@host:22/x.git' \
+    'show@@mysql -u root -p db' \
+    'show@@find . -path x -print0' \
+    'show@@ls -plah' \
+    'show@@docker login -u me --password-stdin' \
+    'show@@bw unlock --check' \
+    'show@@bw unlock $BW_PW' \
+    'show@@rbw unlock' \
+    'show@@grep -rn password: src/' \
+    'show@@git commit -m "password: reset flow"' \
+    'show@@rg token: .' \
+    'show@@foo --password $PW' \
+    'show@@export TOKEN=$(rbw get x)' \
+    'show@@ls -la'
+}
+s2_secrets() {
+  local out rows aenv
+  secret_rows >"$T/secret.rows"
+  out=$(zsh -f -c '
+    source '"$T"'/hooks.zsh
+    local row want line got; integer n=0
+    while IFS= read -r row; do
+      want=${row%%@@*} line=${row#*@@} got=show
+      [[ ${(L)line} =~ $DF_SECRET_CMD_RE ]] && got=hide
+      [[ $got == $want ]] || print -r -- "BAD want=$want: $line"
+      n+=1
+    done <'"$T"'/secret.rows
+    print -r -- "rows=$n"' 2>&1)
+  rows=$(wc -l <"$T/secret.rows")
+  [[ $out == "rows=$rows" ]] && pass "M2/L3: $rows secret and false-positive command lines classified as expected" || fail "M2/L3 secret table: $out"
+  # atuin's history_filter is the same expression (live second layer, and what `atuin history prune` applies after the import)
+  expect "L2: config.toml history_filter is (?i) + DF_SECRET_CMD_RE" python3 -I -c '
+import subprocess, sys, tomllib
+cfg = tomllib.load(open(sys.argv[1], "rb"))
+rx = subprocess.run(["zsh", "-f", "-c", "source %s; print -rn -- $DF_SECRET_CMD_RE" % sys.argv[2]], capture_output=True, text=True).stdout
+sys.exit(0 if rx and cfg.get("history_filter") == ["(?i)" + rx] else 1)' "$REPO/.config/atuin/config.toml" "$T/hooks.zsh"
+  if have atuin; then
+    # the real atuin: the Rust regex accepts the expression, import is unfiltered, prune drops what it matches
+    local cfg="$T/l2cfg" data="$T/l2data" cmds imp
+    aenv=(XDG_CONFIG_HOME="$cfg" XDG_DATA_HOME="$data" ATUIN_SESSION=00112233445566778899aabbccddeeff)
+    mkdir -p "$cfg/atuin" "$data"; cp "$REPO/.config/atuin/config.toml" "$cfg/atuin/"
+    sed 's/^[a-z]*@@//' "$T/secret.rows" | awk '{ printf ": %d:0;%s\n", 1700000000 + NR, $0 }' >"$T/l2.zsh_history"
+    imp=$(env "${aenv[@]}" HISTFILE="$T/l2.zsh_history" atuin import zsh 2>&1 | tail -1)
+    cmds=$(env "${aenv[@]}" atuin history list --format '{command}' 2>/dev/null)
+    [[ $cmds == *"Zx9PlainPw"* ]] && pass "L2: (control) atuin import copies a secret line unfiltered" || fail "L2 import control: $imp"
+    env "${aenv[@]}" atuin history prune >/dev/null 2>&1
+    cmds=$(env "${aenv[@]}" atuin history list --format '{command}' 2>/dev/null)
+    [[ $cmds != *"Zx9PlainPw"* && $cmds != *"hunter22"* && $cmds != *"SecretPw"* && $cmds != *"s3cretpw"* && $cmds == *"find . -path x -print0"* && $cmds == *"password: reset flow"* ]] &&
+      pass "L2: atuin history prune after the import removes the secret lines and keeps the ordinary ones" || fail "L2 prune: $cmds"
+    env "${aenv[@]}" atuin history start --hook -- "mysql -uroot -pLivePw db" >/dev/null 2>&1
+    cmds=$(env "${aenv[@]}" atuin history list --format '{command}' 2>/dev/null)
+    [[ $cmds != *"LivePw"* ]] && pass "L2: atuin's history_filter also drops a secret at record time" || fail "L2 live filter"
+  fi
+  # the one-time import in history.zsh prunes after it (import first, prune second)
+  local il="$T/import.log" fk="$T/impbin"; mkdir -p "$fk"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"$FAKE_IMPORT_LOG"\nexit 0\n' >"$fk/atuin"; chmod +x "$fk/atuin"
+  unguard "$REPO/.config/zsh/history.zsh" "$T/history.zsh"
+  : >"$il"
+  PATH="$fk:$real_path" FAKE_IMPORT_LOG=$il XDG_DATA_HOME="$T/imp-data" zsh -f -c 'source '"$T"'/history.zsh; sleep 0.6' >/dev/null 2>&1
+  eq "L2: history.zsh runs import and then prune on the first shell" "$(tr '\n' ',' <"$il")" "import zsh,history prune,"
+  expect "L2: install.sh prunes after its import too" grep -q 'atuin history prune' "$REPO/install.sh"
+  expect "L7: the Ctrl+R header is computed with the widget's state file" grep -q 'header "$(DF_ATUIN_STATE=$state ' "$REPO/.config/zsh/history.zsh"
 }
 
 # the Ctrl+R list in a private tmux with a fake atuin (full run only)

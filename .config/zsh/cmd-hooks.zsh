@@ -5,7 +5,8 @@
 #   atuin recording   every finished command goes into the local atuin database (Ctrl+R list: history.zsh). The job runs in
 #                     the background: `history start` then `history end` with the exact exit status and duration. atuin has no
 #                     timestamp option, so the stored time is the FINISH time of the command. Not recorded: a command with a
-#                     leading space and a command that holds a literal secret (DF_SECRET_CMD_RE). zsh's own ~/.zsh_history
+#                     leading space, a command that holds a literal secret (DF_SECRET_CMD_RE) and a plain assignment (`export X=value`,
+#                     a bare `X=value`; the command is an argv of the atuin job, see below). zsh's own ~/.zsh_history
 #                     keeps being written (fallback, autosuggestions).
 #   long-command toast  a command that ran at least DF_CMD_NOTIFY_MIN seconds (30; 0 = off in this shell) and finished while its
 #                     terminal is not in front starts ~/.config/hypr/scripts/cmd-notify.sh (it decides "in front", shows the
@@ -18,8 +19,9 @@
 : ${DF_CMD_NOTIFY_MIN:=30}          # seconds; 0 = off
 (( ${+DF_CMD_NOTIFY_IGNORE} )) || DF_CMD_NOTIFY_IGNORE=(nvim vim vi less man ssh tmux lazygit lazydocker htop btop yazi claude codex gemini top watch fzf hub)
 # literal secret values in a command line, matched lower-cased; variable references ($TOKEN, $(rbw get x)) do not count
-: ${DF_SECRET_CMD_RE:='(pass(word|wd)?|token|secret|api[_-]?key|credential|private[_-]?key)[a-z0-9_]*[[:space:]]*[=:][[:space:]]*["'\'']?[^$[:space:]"'\'']{4,}|auth[a-z0-9_]*=["'\'']?[^$[:space:]"'\'']{4,}|sshpass[[:space:]]+-p|authorization:[[:space:]]*(bearer|basic)[[:space:]]+[^$[:space:]]|(ghp|gho|ghs|github_pat|glpat|xox[abps]|sk)[-_][a-z0-9]{12,}|--(pass(word|wd)?|token|secret|api[_-]?key)[= ][^$[:space:]-][^[:space:]]{3,}'}
+: ${DF_SECRET_CMD_RE:='(pass(word|wd)?|token|secret|api[_-]?key|credential|private[_-]?key)[a-z0-9_]*([[:space:]]*=[[:space:]]*|:)["'\'']?[^$[:space:]"'\'']{4,}|["'\''][a-z0-9_-]*(pass(word|wd)?|token|secret|api[_-]?key|credential)[a-z0-9_-]*[[:space:]]*:[[:space:]]*[^$[:space:]"'\'']{8,}|auth[a-z0-9_]*=["'\'']?[^$[:space:]"'\'']{4,}|sshpass[[:space:]]+-p|authorization:[[:space:]]*(bearer|basic)[[:space:]]+[^$[:space:]]|(ghp|gho|ghs|github_pat|glpat|xox[abps]|sk)[-_][a-z0-9]{12,}|sk-[a-z]+-[a-z0-9_-]{16,}|--(pass(word|wd)?|token|secret|api[_-]?key)[= ][^$[:space:]-][^[:space:]]{3,}|://[^/[:space:]:@]+:[^@/[:space:]$]+@|(^|[^a-z0-9])(mysql[a-z]*|mariadb[a-z-]*)[[:space:]].*[[:space:]]-p[^[:space:]$-]+|login[[:space:]].*[[:space:]]-p[[:space:]]+[^$[:space:]-]|(^|[^a-z0-9])bw[[:space:]]+(unlock|login)([[:space:]]+[^-$[:space:]][^[:space:]]*){1,2}'}
 
+_df_cmd_assign_re='^[[:space:]]*((export|typeset|declare|local|readonly)([[:space:]]+-[a-zA-Z]+)*[[:space:]]+[A-Za-z_][A-Za-z0-9_]*=[^$]*|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]$]*)$'
 _df_cmd_notify=${XDG_CONFIG_HOME:-$HOME/.config}/hypr/scripts/cmd-notify.sh
 zmodload zsh/datetime 2>/dev/null
 _df_cmd_preexec() { _df_cmd_line=$1 _df_cmd_dir=$PWD _df_cmd_t0=$EPOCHREALTIME }
@@ -29,7 +31,12 @@ _df_cmd_precmd() {
   [[ -n $line && -n $t0 && $line != [[:space:]]* ]] || return 0
   local -i ms=$(( (EPOCHREALTIME - t0) * 1000 )) secret=0
   [[ ${(L)line} =~ $DF_SECRET_CMD_RE ]] && secret=1
-  if (( ! secret && $+commands[atuin] )); then
+  # atuin takes the command as an ARGUMENT (no stdin or env form exists), so it sits in the world-readable /proc/PID/cmdline of
+  # the background job for a few ms. A plain assignment (`export X=literal`, `typeset`, a bare `X=literal`) never had an argv
+  # before and is the likeliest place for an unrecognised secret, so it is not recorded at all (a value with `$` is).
+  local -i norec=0
+  [[ $line =~ $_df_cmd_assign_re ]] && norec=1
+  if (( ! secret && ! norec && $+commands[atuin] )); then
     ( trap '' HUP; cd -q -- $dir 2>/dev/null; local id
       id=$(ATUIN_SHELL=zsh atuin history start --hook -- "$line" 2>/dev/null) && [[ -n $id ]] &&
         atuin history end --hook --exit $ec --duration=$(( ms * 1000000 )) -- $id ) &>/dev/null &!
