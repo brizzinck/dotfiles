@@ -133,7 +133,39 @@ expect "tmux link replaced" "$T/srv/.config/tmux" "$(readlink "$T/h/td/.config/t
 expect "old gitconfig backed up" "old" "$(cat "$T"/h/td/.local/state/usr/backup-*/.gitconfig 2>/dev/null)"
 case "$(cat "$T/h/td/.zshrc.local" 2>/dev/null)" in *'PROMPT="%F{#ea9e77}td%f ${PROMPT}"'*) ok ;; *) bad "zshrc.local accent block missing" ;; esac
 case "$(cat "$T/h/td/.tmux.local.conf" 2>/dev/null)" in *'#ea9e77'*) ok ;; *) bad "tmux.local.conf accent block missing" ;; esac
-case "$(run_link)" in *"0 linked, 18 already linked"*) ok ;; *) bad "second link run is not a no-op" ;; esac
+n_prof="$(grep -cvE '^[[:space:]]*(#|$)' "$REPO/infrastructure/users/profiles/cli.txt")"
+case "$(run_link)" in *"0 linked, $n_prof already linked"*) ok ;; *) bad "second link run is not a no-op (profile has $n_prof entries)" ;; esac
+# USERS-SYNC C4: the dev launchers and the tool configs are in the profile; tool directories stay real, only their files are links
+for want in .local/bin/db .local/bin/api .local/bin/ci .local/bin/forge .config/devtools .config/posting/config.yaml .config/act/actrc .config/gh-dash/base.yml .config/envs/global.toml .config/lazydocker/config.yml; do
+  grep -qx "$want" "$REPO/infrastructure/users/profiles/cli.txt" && ok || bad "cli profile does not list $want"
+  [ -e "$T/srv/$want" ] && ok || bad "sync: $want is not published"
+done
+for f in .local/bin/db .local/bin/forge .config/devtools .config/posting/config.yaml .config/act/actrc .config/gh-dash/base.yml .config/envs/global.toml; do
+  expect "td: ~/$f links into the published tree" "$T/srv/$f" "$(readlink "$T/h/td/$f")"
+done
+for d in .config/posting .config/act .config/gh-dash .config/envs .config/lazydocker; do
+  [ -d "$T/h/td/$d" ] && [ ! -L "$T/h/td/$d" ] && ok || bad "td: ~/$d must stay a real directory (the tool writes next to the linked file)"
+done
+# the relative theme links of the repo break from /srv/dotfiles: usr link makes absolute ones into the user's own state; starting configs are copied once
+expect "td: posting theme link" "$T/h/td/.local/state/theme/current/posting.yaml" "$(readlink "$T/h/td/.local/share/posting/themes/everforest.yaml")"
+expect "td: glab-tui theme link" "$T/h/td/.local/state/theme/current/glab-tui.toml" "$(readlink "$T/h/td/.config/glab-tui/themes/everforest.toml")"
+expect "td: btop theme link" "$T/h/td/.local/state/theme/current/btop.theme" "$(readlink "$T/h/td/.config/btop/themes/everforest-v2.theme")"
+[ -f "$T/h/td/.config/glab-tui/config.toml" ] && [ ! -L "$T/h/td/.config/glab-tui/config.toml" ] && cmp -s "$T/h/td/.config/glab-tui/config.toml" "$REPO/infrastructure/dev/glab-tui-config.toml" && ok || bad "td: glab-tui config is not a copy of infrastructure/dev/glab-tui-config.toml"
+[ -f "$T/h/td/.config/btop/btop.conf" ] && [ ! -L "$T/h/td/.config/btop/btop.conf" ] && ok || bad "td: btop.conf is not a copy"
+echo "my own" >"$T/h/td/.config/glab-tui/config.toml"; echo "mine" >"$T/h/td/.config/btop/btop.conf"
+rm -f "$T/h/td/.config/btop/themes/everforest-v2.theme"; echo "own theme" >"$T/h/td/.config/btop/themes/everforest-v2.theme"
+run_link >/dev/null
+expect "td: an existing glab-tui config is never overwritten" "my own" "$(cat "$T/h/td/.config/glab-tui/config.toml")"
+expect "td: an existing btop.conf is never overwritten" "mine" "$(cat "$T/h/td/.config/btop/btop.conf")"
+expect "td: a real file where a theme link would go is left alone" "own theme" "$(cat "$T/h/td/.config/btop/themes/everforest-v2.theme")"
+rm -f "$T/h/td/.config/btop/themes/everforest-v2.theme"
+mkdir -p "$T/h/yc"
+dry_yc="$(USR_TARGET_USER=yc USR_TARGET_HOME="$T/h/yc" "$USR" _link --dry-run 2>&1)"
+case "$dry_yc" in *"link   $T/h/yc/.local/share/posting/themes/everforest.yaml -> $T/h/yc/.local/state/theme/current/posting.yaml"*"copy   "*"glab-tui-config.toml -> $T/h/yc/.config/glab-tui/config.toml"*) ok ;; *) bad "link --dry-run does not preview the seeded theme links and copies: $dry_yc" ;; esac
+[ -e "$T/h/yc/.config" ] && bad "link --dry-run wrote into yc's home" || ok
+# tmux: prefix+m (the owner-only hub) degrades to a message, the other dev binds call tools that are in the profile
+grep -q "bind -N \"Utility hub popup (same list as SUPER+M)\" m if-shell 'test -x ~/.config/hub/hub' {" "$REPO/.config/tmux/tmux.conf" && ok || bad "tmux prefix+m has no fallback for a user without the hub"
+grep -q 'ь if-shell "test -x ~/.config/hub/hub"' "$REPO/.config/tmux/tmux-layout.conf" && ok || bad "tmux-layout.conf twin of prefix+m is stale (layout.py gen tmux)"
 # DEV-b: envs, fzf-menu, bw-setup and the mise config are in the cli profile; envs finds vault-bw.py inside the published tree
 for want in .config/mise .local/bin/envs .local/bin/fzf-menu .local/bin/bw-setup; do
   grep -qx "$want" "$REPO/infrastructure/users/profiles/cli.txt" && ok || bad "cli profile does not list $want"

@@ -21,3 +21,17 @@
 .local/bin/fzf-menu
 .local/bin/bw-setup
 .local/bin/pj
+# dev tools (USERS-SYNC): the launchers and their library, the tool configs that are read-only files. The tool directories stay REAL
+# directories of the user (the tools write state next to the links), hence FILE entries below .config/*. The binaries come
+# from /srv/devtools (user-tools.sh --shared; PATH rule in .config/zsh/devtools.zsh). Theme links and the glab-tui / btop
+# starting configs are created by `usr link` itself (absolute targets into the user's own ~/.local/state/theme/current).
+.local/bin/db
+.local/bin/api
+.local/bin/ci
+.local/bin/forge
+.config/devtools
+.config/posting/config.yaml
+.config/act/actrc
+.config/gh-dash/base.yml
+.config/envs/global.toml
+.config/lazydocker/config.yml

@@ -275,6 +275,40 @@ block_set() {
   rm -f "$tmp"
 }
 
+# seed_link TARGET LINK DRY: a per-user symlink with an ABSOLUTE target into the user's own state (the repo's theme links are
+# relative to ~/dotfiles and break from /srv/dotfiles). Created when absent, replaced when it is another link, never over a real file.
+seed_link() {
+  local target="$1" link="$2" dry="$3" cur
+  if [ -L "$link" ]; then
+    cur=$(readlink "$link")
+    [ "$cur" = "$target" ] && return 0
+  elif [ -e "$link" ]; then
+    echo "skip   $link (a real file is there; left alone)"
+    return 0
+  fi
+  echo "link   $link -> $target"
+  [ "$dry" = 1 ] && return 0
+  mkdir -p "$(dirname "$link")" && ln -sfn -- "$target" "$link"
+}
+# seed_copy SRC DST DRY: a starting file the tool rewrites itself (so it cannot be a link into the read-only tree); only when absent
+seed_copy() {
+  local src="$1" dst="$2" dry="$3"
+  [ -e "$dst" ] || [ -L "$dst" ] && return 0
+  [ -r "$src" ] || return 0
+  echo "copy   $src -> $dst"
+  [ "$dry" = 1 ] && return 0
+  mkdir -p "$(dirname "$dst")" && install -m 644 -- "$src" "$dst"
+}
+# the per-user files of the dev tools that cannot come from the profile list (see profiles/cli.txt)
+seed_user_files() {
+  local user="$1" home="$2" root="$3" dry="$4" cur="$2/.local/state/theme/current"
+  seed_link "$cur/posting.yaml" "$home/.local/share/posting/themes/everforest.yaml" "$dry"
+  seed_link "$cur/glab-tui.toml" "$home/.config/glab-tui/themes/everforest.toml" "$dry"
+  seed_link "$cur/btop.theme" "$home/.config/btop/themes/everforest-v2.theme" "$dry"
+  seed_copy "$root/infrastructure/dev/glab-tui-config.toml" "$home/.config/glab-tui/config.toml" "$dry"
+  seed_copy "$root/.config/btop/btop.conf" "$home/.config/btop/btop.conf" "$dry"
+}
+
 # runs as the managed user (or, with USR_TARGET_USER/USR_TARGET_HOME and --dry-run, as the owner reading that home)
 cmd__link() {
   local dry=0 restore=0 a user home profile list path src dst bdir ts kind target hex check_root n_ok=0 n_link=0 n_skip=0 n_move=0
@@ -358,6 +392,7 @@ cmd__link() {
     ln -s -- "$src" "$dst"
   done <"$list"
   echo "profile $profile for $user: $n_link linked, $n_ok already linked, $n_skip skipped, $n_move replaced (backup: $bdir)"
+  seed_user_files "$user" "$home" "$check_root" "$dry"
   [ "$dry" = 1 ] && return 0
 
   # per-user overlays (never shared): the accent marker in the prompt and the tmux status, the private config places
