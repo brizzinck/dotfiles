@@ -11,7 +11,7 @@
 # --shared installs the same pins for the managed users td and yc into one read-only tree, /srv/devtools by default (created by
 # `sudo ./apply-system.sh --only users`, owned by the owner, run THIS as the owner, no sudo): bin/ holds links to go/bin (lazysql,
 # gh-dash), venv/posting (hash-locked), npm/ (gitlab-ci-local) and cargo/bin (glab-tui, workmux); the managed users never install
-# or update there. Names: lazysql gh-dash posting gitlab-ci-local glab-tui workmux. Every tool must be EXACTLY the pin (not
+# or update there. Names: lazysql gh-dash posting gitlab-ci-local glab-tui workmux fzf-tab (the zsh plugin, a pinned git checkout in share/). Every tool must be EXACTLY the pin (not
 # "at least": nothing else writes there). `.ready` holds the stamp of the pins that were installed; --check (read-only, exit 1 when
 # a tool is missing or not the pin) and --stamp (prints the stamp the pins want) serve `usr`, sysup and doctor.
 #
@@ -28,6 +28,7 @@ POSTING_VERSION=2.11.1                 # PyPI posting (pipx, hash-locked: postin
 GCL_VERSION=4.76.1                     # npm gitlab-ci-local
 GLABTUI_VERSION=0.9.3                  # crates.io glab-tui-crate (binary glab-tui)
 WORKMUX_VERSION=0.1.276                # crates.io workmux (shared tree only: the owner's copy comes from install.sh / sysup)
+FZFTAB_COMMIT=24105b15714bfec37989ed5c5b6e60f572253019   # github.com/Aloxaf/fzf-tab (shared tree only: the zsh plugin of the managed users)
 
 DRY=0 ONLY="" SHARED=0 PREFIX=/srv/devtools MODE=install
 while (($#)); do
@@ -144,13 +145,13 @@ step_glabtui_config() { # glab-tui writes its config itself (Save View): copied 
 
 # ───────────────────────────── --shared: /srv/devtools for td and yc ─────────────────────────────
 
-SHARED_TOOLS="lazysql gh-dash posting gitlab-ci-local glab-tui workmux"
+SHARED_TOOLS="lazysql gh-dash posting gitlab-ci-local glab-tui workmux fzf-tab"
 
 # the stamp of what the pins want: changes with a pin, the posting lock or the python minor version (the venv is tied to it)
 shared_stamp() {
   {
-    printf 'lazysql=%s\ngh-dash=%s\nposting=%s\ngitlab-ci-local=%s\nglab-tui=%s\nworkmux=%s\n' \
-      "$LAZYSQL_VERSION" "$GHDASH_VERSION" "$POSTING_VERSION" "$GCL_VERSION" "$GLABTUI_VERSION" "$WORKMUX_VERSION"
+    printf 'lazysql=%s\ngh-dash=%s\nposting=%s\ngitlab-ci-local=%s\nglab-tui=%s\nworkmux=%s\nfzf-tab=%s\n' \
+      "$LAZYSQL_VERSION" "$GHDASH_VERSION" "$POSTING_VERSION" "$GCL_VERSION" "$GLABTUI_VERSION" "$WORKMUX_VERSION" "$FZFTAB_COMMIT"
     sha256sum "$HERE/posting-requirements.txt" 2>/dev/null | cut -d' ' -f1
     /usr/bin/python3 -c 'import sys; print(sys.version_info[:2])' 2>/dev/null
   } | sha256sum | cut -d' ' -f1
@@ -170,6 +171,8 @@ sh_have() {
     gitlab-ci-local)
       f=$PREFIX/npm/node_modules/gitlab-ci-local/package.json
       [[ -r $f && -e $PREFIX/npm/node_modules/.bin/gitlab-ci-local ]] && python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$f" 2>/dev/null ;;
+    fzf-tab)
+      [[ -r $PREFIX/share/fzf-tab/fzf-tab.plugin.zsh ]] && git -C "$PREFIX/share/fzf-tab" rev-parse HEAD 2>/dev/null ;;
     glab-tui|workmux)
       [[ -x $PREFIX/cargo/bin/$name ]] || return 0
       have cargo && cargo install --root "$PREFIX/cargo" --list 2>/dev/null |
@@ -185,6 +188,7 @@ sh_pin() {
     gitlab-ci-local) echo "$GCL_VERSION" ;;
     glab-tui) echo "$GLABTUI_VERSION" ;;
     workmux) echo "$WORKMUX_VERSION" ;;
+    fzf-tab) echo "$FZFTAB_COMMIT" ;;
   esac
 }
 
@@ -210,6 +214,14 @@ sh_install() { # one tool; failure only warns (the others still go on)
         sh_link gitlab-ci-local ../npm/node_modules/.bin/gitlab-ci-local ;;
     glab-tui) run cargo install --locked --version "$GLABTUI_VERSION" --root "$PREFIX/cargo" glab-tui-crate && sh_link glab-tui ../cargo/bin/glab-tui ;;
     workmux) run cargo install --locked --version "$WORKMUX_VERSION" --root "$PREFIX/cargo" workmux && sh_link workmux ../cargo/bin/workmux ;;
+    fzf-tab)
+      # the zsh completion plugin the managed users' .zshrc lists (oh-my-zsh finds it through the link `usr link` makes); the pinned commit only
+      if [[ -d $PREFIX/share/fzf-tab/.git ]]; then
+        run git -C "$PREFIX/share/fzf-tab" fetch --quiet origin && run git -C "$PREFIX/share/fzf-tab" checkout --quiet --detach "$FZFTAB_COMMIT"
+      else
+        run mkdir -p "$PREFIX/share" && run git clone --quiet https://github.com/Aloxaf/fzf-tab "$PREFIX/share/fzf-tab" &&
+          run git -C "$PREFIX/share/fzf-tab" checkout --quiet --detach "$FZFTAB_COMMIT"
+      fi ;;
   esac
 }
 
@@ -219,6 +231,7 @@ sh_need() { # the program a tool is built with
     posting) echo python3 ;;
     gitlab-ci-local) echo npm ;;
     glab-tui|workmux) echo cargo ;;
+    fzf-tab) echo git ;;
   esac
 }
 

@@ -305,6 +305,10 @@ seed_user_files() {
   seed_link "$cur/posting.yaml" "$home/.local/share/posting/themes/everforest.yaml" "$dry"
   seed_link "$cur/glab-tui.toml" "$home/.config/glab-tui/themes/everforest.toml" "$dry"
   seed_link "$cur/btop.theme" "$home/.config/btop/themes/everforest-v2.theme" "$dry"
+  # oh-my-zsh's fzf-tab (the .zshrc plugin list) comes from the shared tree at a pinned commit, never from a clone made by the user
+  if [ -d "$DEVTOOLS_SHARED/share/fzf-tab" ] && [ -d "$home/.oh-my-zsh" ]; then
+    seed_link "$DEVTOOLS_SHARED/share/fzf-tab" "$home/.oh-my-zsh/custom/plugins/fzf-tab" "$dry"
+  fi
   seed_copy "$root/infrastructure/dev/glab-tui-config.toml" "$home/.config/glab-tui/config.toml" "$dry"
   seed_copy "$root/.config/btop/btop.conf" "$home/.config/btop/btop.conf" "$dry"
 }
@@ -582,7 +586,16 @@ cmd_devtools_sync() {
   echo "$(date -Is) devtools-sync start ($script)"
   "$script" --shared --prefix "$DEVTOOLS_SHARED"
   rc=$?
-  if [ "$rc" = 0 ]; then echo "$(date -Is) devtools-sync done"; else echo "$(date -Is) devtools-sync FAILED (rc $rc); $DEVTOOLS_SHARED/.ready not updated"; fi
+  if [ "$rc" = 0 ]; then
+    echo "$(date -Is) devtools-sync done"
+    # the managed users link what the tree now offers (the fzf-tab plugin); not for a test tree, links name the real /srv/devtools
+    if [ -z "${USR_DEVTOOLS_SHARED:-}" ] && [ -x "$SRV/.local/bin/usr" ]; then
+      for a in $(managed_users profile); do
+        getent passwd "$a" >/dev/null || continue
+        sudo -n -u "$a" -H "$SRV/.local/bin/usr" _link >/dev/null 2>&1 || echo "devtools-sync: could not relink $a (usr link $a)"
+      done
+    fi
+  else echo "$(date -Is) devtools-sync FAILED (rc $rc); $DEVTOOLS_SHARED/.ready not updated"; fi
   return "$rc"
 }
 

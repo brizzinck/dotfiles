@@ -159,6 +159,13 @@ expect "td: an existing glab-tui config is never overwritten" "my own" "$(cat "$
 expect "td: an existing btop.conf is never overwritten" "mine" "$(cat "$T/h/td/.config/btop/btop.conf")"
 expect "td: a real file where a theme link would go is left alone" "own theme" "$(cat "$T/h/td/.config/btop/themes/everforest-v2.theme")"
 rm -f "$T/h/td/.config/btop/themes/everforest-v2.theme"
+# fzf-tab: linked from the shared tree into oh-my-zsh's custom plugins when both exist; an existing directory of the user wins
+mkdir -p "$T/dtfz/share/fzf-tab" "$T/h/td/.oh-my-zsh/custom/plugins"
+USR_DEVTOOLS_SHARED="$T/dtfz" run_link >/dev/null
+expect "td: fzf-tab links to the shared tree" "$T/dtfz/share/fzf-tab" "$(readlink "$T/h/td/.oh-my-zsh/custom/plugins/fzf-tab")"
+rm -f "$T/h/td/.oh-my-zsh/custom/plugins/fzf-tab"; mkdir "$T/h/td/.oh-my-zsh/custom/plugins/fzf-tab"
+USR_DEVTOOLS_SHARED="$T/dtfz" run_link >/dev/null
+[ -d "$T/h/td/.oh-my-zsh/custom/plugins/fzf-tab" ] && [ ! -L "$T/h/td/.oh-my-zsh/custom/plugins/fzf-tab" ] && ok || bad "td: an own fzf-tab directory was replaced"
 mkdir -p "$T/h/yc"
 dry_yc="$(USR_TARGET_USER=yc USR_TARGET_HOME="$T/h/yc" "$USR" _link --dry-run 2>&1)"
 case "$dry_yc" in *"link   $T/h/yc/.local/share/posting/themes/everforest.yaml -> $T/h/yc/.local/state/theme/current/posting.yaml"*"copy   "*"glab-tui-config.toml -> $T/h/yc/.config/glab-tui/config.toml"*) ok ;; *) bad "link --dry-run does not preview the seeded theme links and copies: $dry_yc" ;; esac
@@ -368,7 +375,7 @@ for want in "env GOBIN=$DT/go/bin go install github.com/jorgerojas26/lazysql@v0.
   "python3 -m venv --clear $DT/venv/posting" "-m pip install --disable-pip-version-check --no-cache-dir --require-hashes --no-deps -r $REPO/infrastructure/dev/posting-requirements.txt" \
   "npm install --prefix $DT/npm --ignore-scripts --no-audit --no-fund --no-save gitlab-ci-local@4.76.1" \
   "cargo install --locked --version 0.9.3 --root $DT/cargo glab-tui-crate" "cargo install --locked --version 0.1.276 --root $DT/cargo workmux" \
-  "would link: $DT/bin/lazysql -> ../go/bin/lazysql" "would link: $DT/bin/posting -> ../venv/posting/bin/posting" "would link: $DT/bin/workmux -> ../cargo/bin/workmux"; do
+  "git clone --quiet https://github.com/Aloxaf/fzf-tab $DT/share/fzf-tab" "would link: $DT/bin/lazysql -> ../go/bin/lazysql" "would link: $DT/bin/posting -> ../venv/posting/bin/posting" "would link: $DT/bin/workmux -> ../cargo/bin/workmux"; do
   case "$dtd" in *"$want"*) ok ;; *) bad "user-tools.sh --shared --dry-run does not show: $want" ;; esac
 done
 [ -e "$DT" ] && bad "--shared --dry-run created $DT" || ok
