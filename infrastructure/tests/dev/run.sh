@@ -23,6 +23,7 @@ export DEVTOOLS_NO_LAYOUT=1
 export ENVS_TOOL_PATH="$HERE/bin:$HERE/bin-menu:$ENVS_TOOL_PATH"
 export PATH="$HERE/bin:$HERE/bin-menu:$PATH"
 T=${ENVS_TEST_ROOT:?}
+printf '%s' "$FAKE_DIR" >"$XDG_RUNTIME_DIR/devtools-fake-dir"   # for fakes whose launcher scrubs the environment (posting)
 CAP="$T/cap"; mkdir -p "$CAP"
 PROJ="$T/proj"
 PASS=0 FAILS=0 N=0
@@ -392,6 +393,88 @@ check "7: an agent cannot add a connection" test $RC = 4
 scan "7"
 }
 
+sections_8() {
+section "8 api: posting with a scrubbed environment, hurl with HURL_SECRET"
+reset
+mkdir -p "$PROJ/api/env" "$PROJ/api/tests"
+printf 'BASE_URL=http://localhost:8080\nPLAIN_ONE="two words"\n' >"$PROJ/api/env/base.env"
+printf '# dev vars\nBASE_URL=http://localhost:9090\nAPI_TOKEN=${API_TOKEN}\nEXTRA=${SOMETHING}\n' >"$PROJ/api/env/dev.env"
+printf 'GET {{BASE_URL}}/h\nHTTP 200\n' >"$PROJ/api/tests/health.hurl"; mkdir -p "$PROJ/api/tests/sub"; : >"$PROJ/api/tests/sub/b.hurl"
+cat >>"$PROJ/.envs.toml" <<'TOML'
+
+[api]
+collection = "api"
+env_dir = "api/env"
+tests = "api/tests"
+TOML
+mkdir -p "$PROJ/api"
+a() { # args: run `api` in the project (EDIR overrides)
+  N=$((N + 1))
+  (cd "${EDIR:-$PROJ}" && "$API" "$@" >"$CAP/$N.out" 2>"$CAP/$N.err" </dev/null); RC=$?
+  OUT="$CAP/$N.out" ERR="$CAP/$N.err"
+}
+API="$REPO/.local/bin/api"
+a
+L=$(devlog)
+check "8: api starts posting: --collection <abs api dir> and --env for base.env, dev.env and the tmpfs secrets.env" bash -c "[ $RC = 0 ] && grep -qF -- 'posting --collection $PROJ/api --env $PROJ/api/env/base.env --env $PROJ/api/env/dev.env --env $XDG_RUNTIME_DIR/devtools/api-' '$FAKE_DIR/dev.log'"
+check "8: the env files that do not exist are not passed (no stage.env)" bash -c "! grep -q 'stage.env' '$FAKE_DIR/dev.log'"
+check "8: secrets.env holds NAME=\${NAME} lines for the declared secrets that were injected, no value" bash -c "grep -qxF 'API_TOKEN=\${API_TOKEN}' '$FAKE_DIR/posting.env.3' && ! grep -q SECRET '$FAKE_DIR/posting.env.3'"
+check "8: posting's environment is scrubbed: no OPENAI_API_KEY (exported by the parent shell), none of the test harness variables, but the declared secret" bash -c "n=\$(grep '^posting env-names' '$FAKE_DIR/dev.log'); ! grep -qw OPENAI_API_KEY <<<\"\$n\" && ! grep -qw FAKE_DIR <<<\"\$n\" && grep -qw API_TOKEN <<<\"\$n\" && grep -qw HOME <<<\"\$n\" && grep -qw TERM <<<\"\$n\""
+check "8: the secret value reaches posting (hash), PATH is the fixed safe one, EDITOR=nvim" bash -c "grep -q 'API_TOKEN=$(sha SECRET-api-token) ' '$FAKE_DIR/dev.log' && grep -q 'editor=nvim path=/usr/bin:/usr/local/bin:' '$FAKE_DIR/dev.log'"
+check "8: posting runs in the tmpfs run directory (no repo .env is ever its cwd)" grep -q "^posting cwd=$XDG_RUNTIME_DIR/devtools/api-" "$FAKE_DIR/dev.log"
+scan "8 posting"
+: >"$FAKE_DIR/dev.log"
+a -e stage
+check "8: -e stage picks stage.env if it exists (it does not): base.env only" bash -c "[ $RC = 0 ] && grep -qF -- '--env $PROJ/api/env/base.env' '$FAKE_DIR/dev.log' && ! grep -qF 'dev.env' '$FAKE_DIR/dev.log'"
+: >"$FAKE_DIR/dev.log"
+a -e prod
+check "8: a protected environment without --prod and without a terminal is refused by envs (exit 4)" test $RC = 4
+# outside a project: the scratch collection, no vault
+: >"$FAKE_DIR/dev.log"; : >"$FAKE_DIR/argv.log"
+EDIR="$T" a
+check "8: outside a project: posting on ~/.local/share/posting/default, no secret, no rbw call" bash -c "[ $RC = 0 ] && grep -qE '^posting --collection .*/.local/share/posting/default\$' '$FAKE_DIR/dev.log' && ! grep -q '^rbw' '$FAKE_DIR/argv.log'"
+EDIR="$PROJ"
+# api test
+: >"$FAKE_DIR/dev.log"
+a test
+check "8: api test: hurl --test --color --variables-file <run dir> --glob <tests>/**/*.hurl" bash -c "[ $RC = 0 ] && grep -qE '^hurl --test --color --variables-file $XDG_RUNTIME_DIR/devtools/api-[0-9]+/vars.env --file-root $PROJ --glob $PROJ/api/tests/\\*\\*/\\*.hurl\$' '$FAKE_DIR/dev.log'"
+check "8: HURL_SECRET_API_TOKEN carries the value (hash), the plain API_TOKEN is gone, the parent's OPENAI key is not a hurl secret" bash -c "grep -q 'HURL_SECRET_API_TOKEN=$(sha SECRET-api-token) ' '$FAKE_DIR/dev.log' && grep -q 'plain-API_TOKEN= ' '$FAKE_DIR/dev.log'"
+check "8: the variables file has the plain lines only: no comment, no \${...} reference, no secret name" bash -c "grep -qx 'BASE_URL=http://localhost:8080' '$FAKE_DIR/hurl.vars' && grep -qx 'PLAIN_ONE=\"two words\"' '$FAKE_DIR/hurl.vars' && grep -qx 'BASE_URL=http://localhost:9090' '$FAKE_DIR/hurl.vars' && ! grep -qE 'API_TOKEN|EXTRA|^#' '$FAKE_DIR/hurl.vars'"
+check "8: hurl's cwd is the run dir (no repo .hurlrc)" grep -q "^hurl cwd=$XDG_RUNTIME_DIR/devtools/api-" "$FAKE_DIR/dev.log"
+: >"$FAKE_DIR/dev.log"
+a test --report api/tests/health.hurl
+check "8: api test FILES --report: the file, --report-html <tests>/report, no --glob" bash -c "grep -qF -- '--report-html $PROJ/api/tests/report' '$FAKE_DIR/dev.log' && grep -qF '$PROJ/api/tests/health.hurl' '$FAKE_DIR/dev.log' && ! grep -qF -- '--glob' '$FAKE_DIR/dev.log'"
+a test nothere.hurl
+check "8: a file that does not exist is a usage error" test $RC = 2
+FAKE_HURL_RC=3 a test
+check "8: hurl's exit status is api test's (exec)" test $RC = 3
+scan "8 hurl"
+# agents
+CLAUDECODE=1 a
+CLAUDECODE=1 a test
+check "8: api and api test are refused for an agent (exit 4)" test $RC = 4
+# init / check
+rm -rf "$PROJ/api"; printf 'node_modules\n' >"$PROJ/.gitignore"
+a init
+check "8: api init creates the skeleton: base.env, <env>.env for each environment, health.hurl, health.posting.yaml" bash -c "[ $RC = 0 ] && grep -qx 'BASE_URL=http://localhost:8080' '$PROJ/api/env/base.env' && [ -f '$PROJ/api/env/dev.env' ] && [ -f '$PROJ/api/env/prod.env' ] && grep -q 'HTTP 200' '$PROJ/api/tests/health.hurl' && grep -q 'url: \${BASE_URL}/health' '$PROJ/api/health.posting.yaml'"
+check "8: ... env files hold a comment per declared secret, never a value" bash -c "grep -q '# secret API_TOKEN' '$PROJ/api/env/dev.env' && ! grep -q SECRET '$PROJ/api/env/dev.env'"
+check "8: ... and .gitignore gets api/tests/report/" grep -qx 'api/tests/report/' "$PROJ/.gitignore"
+a init
+check "8: api init refuses to overwrite (exit 1, nothing changed)" test $RC = 1
+a check
+check "8: api check passes on the skeleton" test $RC = 0
+printf 'API_TOKEN=SECRET-api-token\nOTHER=1\n' >>"$PROJ/api/env/stage.env"
+a check
+check "8: api check flags a committed literal for a declared secret name" bash -c "[ $RC = 1 ] && grep -q 'secret value committed' '$OUT'"
+printf 'API_TOKEN=${API_TOKEN}\n' >"$PROJ/api/env/stage.env"; : >"$PROJ/api/.env"
+a check
+check "8: api check flags a .env file inside api/" bash -c "[ $RC = 1 ] && grep -q 'a .env file inside' '$OUT'"
+sed -i '/^\[api\]/,$d' "$PROJ/.envs.toml"; printf '[api]\ncollection = "../out"\n' >>"$PROJ/.envs.toml"
+a check
+check "8: an [api] path that leaves the project is refused" bash -c "[ $RC = 1 ] && grep -q 'leaves the project root' '$ERR'"
+scan "8"
+}
+
 run_section() { [[ -z $ONLY || $ONLY == "$1" ]] && "$2"; }
 run_section 1 sections_1
 run_section 2 sections_2_3
@@ -399,6 +482,7 @@ run_section 4 sections_4
 run_section 5 sections_5
 run_section 6 sections_6
 run_section 7 sections_7
+run_section 8 sections_8
 run_section 11 sections_11_12
 
 printf '\ndev test: %d passed, %d failed\n' "$PASS" "$FAILS"

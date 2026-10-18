@@ -141,6 +141,30 @@ def tty():
     return sys.stdin.isatty() and sys.stderr.isatty()
 
 
+def project_root(extra_label=None, want=None):
+    """The project root for a launcher: the one the cwd is in, else a picker over the bound checkouts (envs bindings), else None.
+    EXTRA_LABEL adds one row that means "no project" (returns None). WANT(root) filters the picker rows (e.g. has a workflow file)."""
+    e = envs()
+    try:
+        return e.find_root()
+    except e.Fail:
+        pass
+    roots = []
+    for key in e.bindings():
+        r = Path(e.key_root(key))
+        if (r / e.TOML).is_file() and r not in roots and (want is None or want(r)):
+            roots.append(r)
+    if not tty() or (not roots and not extra_label):
+        return None
+    rows = [f"{r.name:<24} {e.short_path(r)}" for r in roots] + ([extra_label] if extra_label else [])
+    got = e.pick(rows, "project") if rows else None
+    if not got:
+        fail("no project chosen", 130)
+    if extra_label and got == extra_label:
+        return None
+    return roots[rows.index(got)]
+
+
 # escapes ------------------------------------------------------------------------------------------------------------------
 
 def toml_str(s):

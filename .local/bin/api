@@ -1,0 +1,307 @@
+#!/usr/bin/python3 -I
+"""api: HTTP client launcher (DEV-d): posting (TUI) and hurl (tests) on the project's collection, with the project's secrets from
+Bitwarden through `envs run`. Python 3 stdlib only; absolute shebang (this process receives secrets). Docs: CLAUDE.md "Dev tools".
+
+  api                          posting on the collection (api/), env files base.env + <env>.env of the active environment
+  api test [FILES...] [-e ENV] [--prod] [--report]
+                               hurl --test over api/tests/**/*.hurl (or FILES); --report writes api/tests/report/ (HTML)
+  api init                     skeleton: api/env/base.env + <env>.env, api/tests/health.hurl, api/health.posting.yaml, .gitignore line
+  api check                    directories exist, env files hold no secret value, no .env file inside api/
+  api _posting | _hurl         internal: the `envs run` children
+
+`[api]` in .envs.toml (all optional): collection = "api", env_dir = "api/env", tests = "api/tests" (relative, inside the project).
+Env files hold names and PLAIN values only (committed). Declared secrets are never written: posting gets `NAME=${NAME}` lines in a
+tmpfs env file (so `${API_TOKEN}` works in a request), hurl gets HURL_SECRET_<NAME> (its verbose output and reports print `***`).
+Outside a project, posting opens the scratch collection ~/.local/share/posting/default, with no secrets.
+
+posting runs with a SCRUBBED environment (home, PATH, TERM, locale, XDG_*, display, POSTING_*, the declared secrets): shell exports
+such as those of env.secret.sh never reach a collection template or script, and its cwd is the run directory (posting reads a
+.env of its cwd). Posting's response history is switched off in its stowed config: it would keep resolved URLs and response
+bodies on disk. A collection can hold Python scripts that posting runs: open trusted repos only.
+Exit codes: 0 ok, 1 error, 2 usage, 4 refused (agent, unbound, protected without --prod), 127 tool missing; hurl's own for `test`.
+"""
+import os
+import re
+import sys
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+SELF = Path(__file__).resolve()
+_spec = __import__("importlib.util").util.spec_from_file_location("devtools", SELF.parents[2] / ".config/devtools/devtools.py")
+D = __import__("importlib.util").util.module_from_spec(_spec)
+_spec.loader.exec_module(D)
+E = D.envs()
+PY = "/usr/bin/python3" if os.access("/usr/bin/python3", os.X_OK) else sys.executable
+
+DEFAULTS = {"collection": "api", "env_dir": "api/env", "tests": "api/tests"}
+KEEP_ENV = ("HOME", "TERM", "COLORTERM", "LANG", "WAYLAND_DISPLAY", "DISPLAY", "TMUX", "TMUX_PANE", "SSH_CONNECTION")
+
+
+def api_cfg(cfg):
+    """{collection, env_dir, tests} as absolute paths inside the project root (problems raise)."""
+    raw = cfg.data.get("api") if isinstance(cfg.data.get("api"), dict) else {}
+    out, base = {}, os.path.realpath(cfg.root)
+    for k, default in DEFAULTS.items():
+        v = raw.get(k, default)
+        if not isinstance(v, str) or not v or os.path.isabs(v):
+            D.fail(f"[api] {k} must be a relative path inside the project", 1)
+        full = os.path.realpath(os.path.join(base, v))
+        if full != base and not full.startswith(base + os.sep):
+            D.fail(f"[api] {k} leaves the project root", 1)
+        out[k] = Path(full)
+    for k in raw:
+        if k not in DEFAULTS:
+            D.fail(f"[api] unknown key {k!r} (allowed: {', '.join(DEFAULTS)})", 1)
+    return out
+
+
+def env_files(paths, env):
+    """base.env and <env>.env of the env dir that exist."""
+    return [f for f in (paths["env_dir"] / "base.env", paths["env_dir"] / f"{env}.env") if f.is_file()]
+
+
+def entry_env(a, cfg):
+    env = a.env or E.choose_env(cfg)
+    if env not in cfg.envs:
+        D.fail(f"unknown environment {env!r} (have: {', '.join(cfg.envs)})", 2)
+    return env
+
+
+def exec_envs(cfg, env, inner, prod):
+    """Replace this process by `envs run -e ENV [--prod] --allow-missing -- python api <inner>` (or by <inner> when the project
+    declares no secret: nothing to fetch, no vault)."""
+    sys.stdout.flush()
+    base = [PY, "-I", str(SELF)] + inner
+    if not cfg.secrets:
+        os.execv(PY, base)
+    argv = [str(E.SELF), "run", "-e", env] + (["--prod"] if prod else []) + ["--allow-missing", "--"] + base
+    os.execv(argv[0], argv)
+
+
+# ───────────────────────────── api (posting) ─────────────────────────────
+
+def cmd_posting(a):
+    E.refuse_agent("api")
+    root = D.project_root("(scratch collection, no project)")
+    if root is None:
+        (E.HOME / ".local/share/posting/default").mkdir(parents=True, exist_ok=True)
+        sys.stdout.flush()
+        os.execv(PY, [PY, "-I", str(SELF), "_posting", "--scratch"])
+    cfg = E.load_cfg(root)
+    api_cfg(cfg)                                               # [api] problems stop here, before any vault access
+    env = entry_env(a, cfg)
+    exec_envs(cfg, env, ["_posting", "--root", str(cfg.root), "--env", env], a.prod)
+
+
+def scrubbed_env(extra_secret_names):
+    """Only what posting needs; every declared secret that was injected, by name; no shell export of the parent."""
+    src = os.environ
+    out = {k: src[k] for k in KEEP_ENV if k in src}
+    out.update({k: v for k, v in src.items() if k.startswith(("XDG_", "LC_", "POSTING_"))})
+    out["PATH"] = ":".join(E.SAFE_DIRS)
+    out["EDITOR"] = out["VISUAL"] = "nvim"
+    for k in ("ENVS_PROJECT", "ENVS_ENV", "ENVS_SECRETS"):
+        if k in src:
+            out[k] = src[k]
+    for n in extra_secret_names:
+        if n in src:
+            out[n] = src[n]
+    return out
+
+
+def cmd__posting(a):
+    E.harden_environment()
+    posting = D.tool("posting", hint=D.USER_TOOLS_HINT)
+    run = D.run_dir("api")
+    if a.scratch:
+        env = scrubbed_env([])
+        argv = ["posting", "--collection", str(E.HOME / ".local/share/posting/default")]
+    else:
+        cfg = E.load_cfg(a.root)
+        paths = api_cfg(cfg)
+        if not paths["collection"].is_dir():
+            D.fail(f"no collection at {paths['collection']}: `api init` creates the skeleton", 1)
+        names = [n for n in os.environ.get("ENVS_SECRETS", "").split() if n in cfg.secrets]
+        env = scrubbed_env(names)
+        files = env_files(paths, a.env)
+        if names:                                              # `${NAME}` in a request resolves through the scrubbed environment
+            files.append(D.write_private(run / "secrets.env", "".join(f"{n}=${{{n}}}\n" for n in names)))
+        argv = ["posting", "--collection", str(paths["collection"])]
+        for f in files:
+            argv += ["--env", str(f)]
+    os.chdir(run)                                              # posting reads a .env of its cwd: ours has none
+    D.switch_layout()
+    sys.stdout.flush()
+    try:
+        os.execve(posting, argv, env)
+    except OSError as e:
+        D.fail(f"cannot run posting: {e.strerror}", 127)
+
+
+# ───────────────────────────── api test (hurl) ─────────────────────────────
+
+def plain_vars(files, run, secret_names):
+    """A hurl variables file of the plain `NAME=value` lines: comments, blank lines, `${...}` references and every declared
+    secret name are dropped (a line that would define a secret as a literal must never reach hurl)."""
+    lines = []
+    for f in files:
+        for raw in f.read_text().splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "${" in line or "=" not in line:
+                continue
+            name = line.split("=", 1)[0].strip().removeprefix("export ").strip()
+            if name in secret_names:
+                continue
+            lines.append(line.removeprefix("export ").strip())
+    return D.write_private(run / "vars.env", "\n".join(lines) + ("\n" if lines else ""))
+
+
+def cmd_test(a):
+    E.refuse_agent("api test")
+    root = D.project_root()
+    if root is None:
+        D.fail("api test needs a project (.envs.toml): run it inside one", 2)
+    cfg = E.load_cfg(root)
+    paths = api_cfg(cfg)
+    env = entry_env(a, cfg)
+    files = []
+    for f in a.files:
+        p = Path(f).expanduser().resolve()
+        if not p.is_file() or p.suffix != ".hurl":
+            D.fail(f"{f}: not a .hurl file", 2)
+        files.append(str(p))
+    if not files and not paths["tests"].is_dir():
+        D.fail(f"no tests directory {paths['tests']}: `api init` creates one", 1)
+    inner = ["_hurl", "--root", str(cfg.root), "--env", env] + (["--report"] if a.report else []) + ["--", *files]
+    exec_envs(cfg, env, inner, a.prod)
+
+
+def cmd__hurl(a):
+    E.harden_environment()
+    hurl = D.tool("hurl", hint=D.REPO_PKG_HINT)
+    cfg = E.load_cfg(a.root)
+    paths = api_cfg(cfg)
+    run = D.run_dir("api")
+    names = [n for n in os.environ.get("ENVS_SECRETS", "").split() if n in cfg.secrets]
+    env = dict(os.environ)
+    for n in names:                                            # the secret reaches hurl as HURL_SECRET_<NAME>: redacted in logs and reports
+        env[f"HURL_SECRET_{n}"] = env.pop(n)
+    vars_file = plain_vars(env_files(paths, a.env), run, set(cfg.secrets))
+    argv = ["hurl", "--test", "--color", "--variables-file", str(vars_file), "--file-root", str(cfg.root)]
+    if a.report:
+        argv += ["--report-html", str(paths["tests"] / "report")]
+    if a.files:
+        argv += a.files
+    else:
+        argv += ["--glob", str(paths["tests"] / "**/*.hurl")]
+    os.chdir(run)                                              # no .hurlrc of the repository
+    sys.stdout.flush()
+    try:
+        os.execve(hurl, argv, env)
+    except OSError as e:
+        D.fail(f"cannot run hurl: {e.strerror}", 127)
+
+
+# ───────────────────────────── init, check ─────────────────────────────
+
+def cmd_init(a):
+    E.refuse_agent("api init")
+    cfg = E.load_cfg()
+    paths = api_cfg(cfg)
+    root = cfg.root
+    targets = {paths["env_dir"] / "base.env": "# Plain variables for every environment (names and plain values; committed).\nBASE_URL=http://localhost:8080\n"}
+    secret_hint = "".join(f"# secret {n}: ${{{n}}} in posting, {{{{{n}}}}} in hurl (from Bitwarden, never written here)\n" for n in cfg.secrets)
+    for e in cfg.envs:
+        targets[paths["env_dir"] / f"{e}.env"] = (f"# Plain variables of the {e} environment (names and plain values; committed).\n"
+                                                  f"# BASE_URL=http://localhost:8080\n{secret_hint}")
+    targets[paths["tests"] / "health.hurl"] = "GET {{BASE_URL}}/health\nHTTP 200\n"
+    targets[paths["collection"] / "health.posting.yaml"] = ("name: health\nmethod: GET\nurl: ${BASE_URL}/health\n")
+    exist = [str(p.relative_to(root)) for p in targets if p.exists()]
+    if exist:
+        D.fail(f"refusing to overwrite: {', '.join(exist)} (nothing written)", 1)
+    for p, text in targets.items():
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+    gi = root / ".gitignore"
+    line = f"{os.path.relpath(paths['tests'] / 'report', root)}/"
+    have = gi.read_text().splitlines() if gi.exists() else []
+    if line not in have:
+        body = gi.read_text() if gi.exists() else ""
+        gi.write_text(body + ("" if not body or body.endswith("\n") else "\n") + line + "\n")
+    print("created: " + ", ".join(str(p.relative_to(root)) for p in targets) + f"; .gitignore: {line}")
+
+
+def cmd_check(a):
+    cfg = E.load_cfg()
+    paths = api_cfg(cfg)
+    bad = []
+    for k, label in (("collection", "collection"), ("env_dir", "env_dir"), ("tests", "tests")):
+        if not paths[k].is_dir():
+            bad.append(f"{label} directory {paths[k]} does not exist (`api init`)")
+    secret = set(cfg.secrets)
+    for f in sorted(paths["env_dir"].glob("*.env")) if paths["env_dir"].is_dir() else []:
+        for n, raw in enumerate(f.read_text().splitlines(), 1):
+            line = raw.strip().removeprefix("export ").strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            name, _, value = line.partition("=")
+            value = value.strip().strip("\"'")
+            if name.strip() in secret and value and not value.startswith("${"):
+                bad.append(f"{f.name}:{n}: {name.strip()} is a declared secret and has a literal value (secret value committed?)")
+    for d in {paths["collection"], paths["env_dir"], paths["tests"]}:
+        if d.is_dir():
+            for f in d.rglob(".env*"):
+                if f.is_file() and not f.name.endswith(".example") and f.name != ".env.example":
+                    bad.append(f"{f.relative_to(cfg.root)}: a .env file inside the api directories (values belong in Bitwarden)")
+    for b in sorted(set(bad)):
+        print(f"error {b}")
+    if not bad:
+        print("ok")
+    if bad:
+        D.fail(f"{len(set(bad))} problem(s)", 1)
+
+
+# ───────────────────────────── entry ─────────────────────────────
+
+def build_parser():
+    import argparse
+    ap = argparse.ArgumentParser(prog="api", description="HTTP client launcher (see the header of this file)")
+    ap.add_argument("-e", "--env")
+    ap.add_argument("--prod", action="store_true")
+    sub = ap.add_subparsers(dest="cmd")
+    p = sub.add_parser("test")
+    p.add_argument("files", nargs="*")
+    p.add_argument("-e", "--env")
+    p.add_argument("--prod", action="store_true")
+    p.add_argument("--report", action="store_true")
+    sub.add_parser("init")
+    sub.add_parser("check")
+    p = sub.add_parser("_posting")
+    p.add_argument("--root")
+    p.add_argument("--env")
+    p.add_argument("--scratch", action="store_true")
+    p = sub.add_parser("_hurl")
+    p.add_argument("--root", required=True)
+    p.add_argument("--env", required=True)
+    p.add_argument("--report", action="store_true")
+    p.add_argument("files", nargs="*")
+    return ap
+
+
+HANDLERS = {None: cmd_posting, "test": cmd_test, "init": cmd_init, "check": cmd_check, "_posting": cmd__posting, "_hurl": cmd__hurl}
+
+
+def run(argv):
+    E.harden_environment()
+    if "--" in argv:                                           # `_hurl ... -- FILES`: files may start with a dash
+        i = argv.index("--")
+        argv = argv[:i] + argv[i + 1:]
+    a = build_parser().parse_args(argv)
+    for k, v in (("env", None), ("prod", False)):
+        if not hasattr(a, k):
+            setattr(a, k, v)
+    return HANDLERS[a.cmd](a) or 0
+
+
+if __name__ == "__main__":
+    sys.exit(D.main_wrap("api", run, sys.argv[1:]))

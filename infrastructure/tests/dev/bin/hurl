@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# fake hurl: logs argv, cwd, HURL_SECRET_* hashes, whether the plain secret names are still in the environment, keeps its variables file
+. "$(dirname "$0")/_dev.sh"
+dev_log "hurl $*"
+dev_log "hurl cwd=$PWD"
+dev_log "hurl hashes $(hashes HURL_SECRET_API_TOKEN HURL_SECRET_NPM_TOKEN HURL_SECRET_DB_PASSWORD) plain-API_TOKEN=${API_TOKEN+set} plain-OPENAI=${OPENAI_API_KEY+set}"
+while (($#)); do
+  case $1 in --variables-file) cp "$2" "$FAKE_DIR/hurl.vars" 2>/dev/null ;; esac
+  shift
+done
+maybe_sleep
+exit "${FAKE_HURL_RC:-0}"

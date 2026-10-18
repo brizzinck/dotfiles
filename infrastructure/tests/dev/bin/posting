@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# fake posting: logs argv, cwd, the NAMES of the environment variables it sees, hashes of the secrets, and keeps copies of its --env files
+. "$(dirname "$0")/_dev.sh"
+dev_log "posting $*"
+dev_log "posting cwd=$PWD"
+dev_log "posting env-names $(env | cut -d= -f1 | sort | tr '\n' ' ')"
+dev_log "posting hashes $(hashes API_TOKEN DB_PASSWORD NPM_TOKEN) editor=${EDITOR:-} path=$PATH"
+n=0
+while (($#)); do
+  case $1 in --env|-e) n=$((n + 1)); cp "$2" "$FAKE_DIR/posting.env.$n" 2>/dev/null; dev_log "posting env-file $n=$2"; shift ;; esac
+  shift
+done
+maybe_sleep

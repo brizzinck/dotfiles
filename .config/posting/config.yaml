@@ -1,0 +1,11 @@
+# posting (DEV-d: `api`). Keys checked against posting 2.11.1 (posting reports an unknown value at start).
+theme: everforest              # ~/.local/share/posting/themes/everforest.yaml -> the active palette variant
+layout: horizontal
+use_host_environment: false    # `${NAME}` comes from the --env files the `api` launcher passes, never from the whole shell environment
+editor: nvim
+history:
+  enabled: false               # the history keeps resolved URLs and response bodies on disk
+heading:
+  show_host: true
+response:
+  prettify_json: true
