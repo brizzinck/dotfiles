@@ -135,7 +135,43 @@ s1_lint() {
   git -C "$r" checkout -q -- .gitleaks.toml
   git -C "$r" rm -q --cached leak.txt; git -C "$r" commit -q --no-verify -m rm
   out=$(bash -c ". '$REPO/.githooks/gitleaks-lib'; gl_history_scan '$r'"); rc=$?; eq "L6: the history still holds the leak after a delete commit" "$rc" 3
+  printf '%s\n' 'title = "x"' '[extend]' 'useDefault = true' 'disabledRules = [ "github-pat" ]' >"$c"
+  [[ $(lint "$c") == *"disabledRules"* ]] && pass "FIX-DEVb2-6: [extend] disabledRules is flagged" || fail "FIX-DEVb2-6 disabledRules"
+  printf '%s\n' 'title = "x"' '[extend]' 'useDefault = true' '[[rules]]' 'id = "github-pat"' 'regex = "never-matches-xyz"' >"$c"
+  [[ $(lint "$c") == *"[[rules]]"* ]] && pass "FIX-DEVb2-6: a [[rules]] table (id of a default rule) is flagged" || fail "FIX-DEVb2-6 rules"
+  printf '%s\n' 'title = "x"' '[extend]' 'useDefault = true' '[[ rules ]]' 'id = "x"' >"$c"
+  [[ $(lint "$c") == *"[[rules]]"* ]] && pass "FIX-DEVb2-6: ... also spelled [[ rules ]]" || fail "FIX-DEVb2-6 rules spaced"
+  printf '%s\n' 'title = "x"' '[extend]' 'useDefault = true' 'rules = [ { id = "github-pat", regex = "zzz" } ]' >"$c"
+  [[ $(lint "$c") == *"[[rules]]"* ]] && pass "FIX-DEVb2-6: ... or as an inline array" || fail "FIX-DEVb2-6 rules inline"
   s1_emptycfg
+  s1_weakened
+}
+
+# FIX-DEVb2 #6: a committed config that disables or replaces a default rule must not weaken the gates: the hooks and the
+# history scan fall back to the default rules (and the lint reports the file)
+s1_weakened() {
+  local r="$T/wk" tok out rc lib="$REPO/.githooks/gitleaks-lib" kind
+  tok="ghp_$(printf '%s' 'Wq8wE5gH7jK9mN1pQ3sT5vW7yZ9bC1dE3fG5')"
+  for kind in disabledRules rules; do
+    rm -rf "$r"; mkdir -p "$r/.githooks" && git init -q -b main "$r" && git -C "$r" config user.email t@t && git -C "$r" config user.name t
+    git -C "$r" config commit.gpgsign false; git -C "$r" config core.hooksPath .githooks
+    cp "$REPO/.githooks/pre-commit" "$REPO/.githooks/pre-push" "$lib" "$r/.githooks/"
+    if [[ $kind == disabledRules ]]; then
+      printf '%s\n' 'title = "x"' '[extend]' 'useDefault = true' 'disabledRules = ["github-pat", "generic-api-key"]' >"$r/.gitleaks.toml"
+    else
+      printf '%s\n' 'title = "x"' '[extend]' 'useDefault = true' '[[rules]]' 'id = "github-pat"' 'description = "replaced"' \
+        'regex = "never-matches-anything-zzz"' >"$r/.gitleaks.toml"
+    fi
+    git -C "$r" add .githooks .gitleaks.toml; git -C "$r" commit -q --no-verify -m base
+    printf 'token = "%s"\n' "$tok" >"$r/leak.txt"; git -C "$r" add leak.txt
+    out=$(git -C "$r" commit -q -m leak 2>&1); rc=$?
+    eq "FIX-DEVb2-6: pre-commit blocks a leak although the committed config uses $kind" "$rc" 1
+    git -C "$r" commit -q --no-verify -m leak
+    out=$(bash -c ". '$lib'; gl_history_scan '$r'"); rc=$?
+    eq "FIX-DEVb2-6: ... and the history scan finds it ($kind)" "$rc" 3
+    out=$(bash -c ". '$lib'; gl_committed_cfg_problems '$r'")
+    [[ $out == *"disabledRules"* || $out == *"[[rules]]"* ]] && pass "FIX-DEVb2-6: ... and the lint reports the file ($kind)" || fail "FIX-DEVb2-6 lint ($kind)"
+  done
 }
 
 # FIX5-1: an empty / rule-less committed .gitleaks.toml (or one in the environment) must not turn the gates off: -c is always passed
