@@ -5,4 +5,5 @@ log_argv wl-copy "$@"
 if [[ ${1:-} == --clear ]]; then : >"$FAKE_DIR/clip.txt"; echo cleared >>"$FAKE_DIR/clip.events"; exit 0; fi
 printf '%s' "$*" >"$FAKE_DIR/clip.args"
 cat >"$FAKE_DIR/clip.txt"
+cp "$FAKE_DIR/clip.txt" "$FAKE_DIR/clip.last"   # the last copy, kept when a delayed --clear of an earlier copy empties clip.txt
 echo "copy $*" >>"$FAKE_DIR/clip.events"

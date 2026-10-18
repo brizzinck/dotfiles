@@ -226,6 +226,8 @@ cd "$DOTFILES"
 # systemd ignores a symlinked drop-in directory, and `systemctl --user enable` would write its *.wants links into the repo.
 # GTK dirs stay real (apps keep bookmarks etc. there); only settings.ini / gtk.css are linked
 mkdir -p "$HOME/.config/gtk-3.0" "$HOME/.config/gtk-4.0"
+# envs global scope: global.toml is linked, global.local.toml (machine-local secret names and connections) must never land in the repo
+mkdir -p -m 700 "$HOME/.config/envs"
 git submodule update --init --recursive
 # Move real files/dirs out of the way; leave symlinks (stow manages them)
 while IFS= read -r rel; do

@@ -1,0 +1,10 @@
+# Global secrets for `envs run -g` (DEV-d): the ones that belong to no repository. Names only; the values are hidden fields of
+# the Bitwarden Secure Note `default` in the folder "Env/global" (`envs set GITLAB_TOKEN -g`). More names and the connections
+# of this machine that belong to no repo go into ~/.config/envs/global.local.toml (not in this repository).
+project = "global"
+environments = ["default"]
+default = "default"
+
+[secrets]
+GITLAB_TOKEN = "GitLab personal access token (api, read_repository)"
+GITLAB_HOST = "GitLab host, e.g. gitlab.example.com"

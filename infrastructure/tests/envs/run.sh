@@ -22,7 +22,7 @@ PASS=0 FAILS=0 N=0
 SECRETS=(SECRET-billing-dev-db SECRET-billing-dev-stripe SECRET-billing-dev-extra SECRET-billing-stage-db SECRET-billing-prod-db
   SECRET-billing-prod-stripe SECRET-other-dev-db SECRET-other-dev-stripe SECRET-work-login master-pw)
 # values the tests write themselves (they must never show up either)
-SECRETS+=(NEWVAL-set-1 NEWVAL-set-2 NEWVAL-all-3 NEWVAL-import-4 NEWVAL-import-5 NEWVAL-copy-6)
+SECRETS+=(SECRET-global-gitlab SECRET-global-extra NEWVAL-set-1 NEWVAL-set-2 NEWVAL-all-3 NEWVAL-import-4 NEWVAL-import-5 NEWVAL-copy-6)
 SOCK="envstest-$$"
 
 stop_bw() {
@@ -589,8 +589,10 @@ got=$(HOME=/nonexistent-evil _ENVS_BIN=/evil/envs zsh -f -c "$blk; $blk; print -
 check "17.7: _ENVS_BIN is the passwd home's envs (not \$HOME, not an imported value) and readonly, also when sourced twice" bash -c "[ \"\$(head -1 <<<'$got')\" = '$pwhome/.local/bin/envs' ] && grep -q 'read-only variable' <<<'$got'"
 printf '#!/bin/sh\necho evil >>"%s/wlcopy-evil"\ncat >/dev/null\n' "$T" >"$T/evilbin/wl-copy"; chmod +x "$T/evilbin/wl-copy"
 rm -f "$T/wlcopy-evil"
+rm -f "$FAKE_DIR/clip.last"
 (cd "$PROJ" && PATH="$T/evilbin:$PATH" "$ENVS" copy-value DATABASE_URL >"$CAP/wl.out" 2>"$CAP/wl.err"); rc=$?
-check "4: copy-value hands the secret to the real wl-copy path, not to a wl-copy first in PATH" bash -c "[ $rc = 0 ] && [ ! -e '$T/wlcopy-evil' ] && [ \"\$(cat '$FAKE_DIR/clip.txt')\" = SECRET-billing-dev-db ]"
+for _ in $(seq 30); do [[ -s $FAKE_DIR/clip.last ]] && break; sleep 0.1; done   # the fake wl-copy runs on its own, like the real one
+check "4: copy-value hands the secret to the real wl-copy path, not to a wl-copy first in PATH" bash -c "[ $rc = 0 ] && [ ! -e '$T/wlcopy-evil' ] && [ \"\$(cat '$FAKE_DIR/clip.last')\" = SECRET-billing-dev-db ]"
 scan "17.4"
 
 # finding 5: the fzf API key (TUI section), and the documented limits
@@ -841,6 +843,61 @@ EDIR=""
 scan "19.9"
 }
 
+sections_20() {
+# ───────────── 20 DEV-d C1: global scope (envs run -g), ENVS_SECRETS, [db]/[api]/[ci] tables
+section "20 DEV-d: global scope, ENVS_SECRETS, extra tables"
+reset; bind_proj
+GD="$T/gdir"; GD_DEFAULT=$ENVS_GLOBAL_DIR; rm -rf "$GD" "$T/nowhere"; mkdir -p "$GD" "$T/nowhere"; chmod 700 "$GD"
+cp "$REPO/.config/envs/global.toml" "$GD/global.toml"; chmod 644 "$GD/global.toml"
+export ENVS_GLOBAL_DIR="$GD"
+EDIR="$T/nowhere"
+epipe 'SECRET-global-gitlab' set GITLAB_TOKEN -g --stdin
+check "20.1: set NAME -g --stdin writes the Secure Note default in Env/global (no project, no binding)" bash -c "[ $RC = 0 ] && [ \"\$(jq -r '.items[]|select(.name==\"default\")|.fields[]|select(.name==\"GITLAB_TOKEN\")|.value' '$FAKE_DIR/vault.json')\" = SECRET-global-gitlab ]"
+check "20.1: ... and the folder is Env/global" bash -c "jq -e '.folders[]|select(.name==\"Env/global\")' '$FAKE_DIR/vault.json'"
+e run -g --allow-missing -- sh -c 'printf "%s" "$GITLAB_TOKEN" | sha256sum | cut -c1-64; echo "names=$ENVS_SECRETS project=$ENVS_PROJECT env=$ENVS_ENV host=${GITLAB_HOST:-unset}"'
+check "20.2: run -g (outside any project, no bind prompt) injects the global secret; ENVS_SECRETS lists names only" bash -c "[ $RC = 0 ] && head -1 '$OUT' | grep -qx $(sha SECRET-global-gitlab) && grep -q 'names=GITLAB_TOKEN project=global env=default host=unset' '$OUT'"
+e run -g -- true
+check "20.2: a declared global name that is missing stops the run (exit 1) unless --allow-missing" bash -c "[ $RC = 1 ] && grep -q GITLAB_HOST '$ERR'"
+CLAUDECODE=1 e run -g --allow-missing -- true
+check "20.3: run -g is refused for an agent (exit 4)" test $RC = 4
+EDIR="$PROJ" e run -- sh -c 'echo "names=$ENVS_SECRETS"'
+check "20.4: a project run exports ENVS_SECRETS too (declared names that were injected, in order)" grep -q 'names=DATABASE_URL STRIPE_SECRET_KEY' "$OUT"
+EDIR="$T/nowhere"
+printf '[secrets]\nEXTRA_ONE = "second token"\n\n[db.td]\ndriver = "clickhouse"\nhost = "127.0.0.1"\n' >"$GD/global.local.toml"; chmod 600 "$GD/global.local.toml"
+e status -g --json
+check "20.5: global.local.toml is merged over global.toml (secrets of both, binding n/a)" bash -c "jq -e '.project==\"global\" and (.names|index(\"GITLAB_TOKEN\")) and (.names|index(\"EXTRA_ONE\")) and (.problems|length)==0' '$OUT'"
+printf '[secrets]\nGITLAB_TOKEN = "again"\n' >"$GD/global.local.toml"
+e status -g
+check "20.5: a name declared in both files is an error" grep -q 'declared in global.toml and in global.local.toml' "$OUT"
+printf '[secrets]\nEXTRA_ONE = ""\n' >"$GD/global.local.toml"; chmod 666 "$GD/global.local.toml"
+e run -g --allow-missing -- true
+check "20.6: a group/other-writable global.local.toml is refused (exit 4)" bash -c "[ $RC = 4 ] && grep -q 'writable by group or others' '$ERR'"
+chmod 600 "$GD/global.local.toml"
+chmod 666 "$GD/global.toml"; e run -g --allow-missing -- true; rc1=$RC; chmod 644 "$GD/global.toml"
+check "20.6: ... and so is a writable global.toml" test $rc1 = 4
+epipe 'SECRET-global-extra' set NEWGLOBAL -g --stdin --description "added by test"
+check "20.7: set of an undeclared name declares it in global.local.toml, never in global.toml" bash -c "[ $RC = 0 ] && grep -q '^NEWGLOBAL = \"added by test\"' '$GD/global.local.toml' && ! grep -q NEWGLOBAL '$GD/global.toml'"
+rm -f "$GD/global.local.toml"
+epipe 'x' set ANOTHER -g --stdin
+check "20.7: global.local.toml is created 0600" bash -c "[ $RC = 0 ] && [ \"\$(stat -c %a '$GD/global.local.toml')\" = 600 ]"
+e set X -g --plain --stdin
+check "20.7: --plain does not exist for the global scope" test $RC = 2
+rm -f "$GD/global.local.toml"
+cp "$PROJ/.envs.toml" "$T/envs.toml.bak"
+printf '\n[db.main]\ndriver = "mariadb"\ndocker = "mariadb"\npassword = "DATABASE_URL"\n\n[api]\ncollection = "api"\n\n[ci]\nsecrets = []\n' >>"$PROJ/.envs.toml"
+EDIR="$PROJ" e check
+check "20.8: [db.NAME], [api] and [ci] tables in .envs.toml are accepted (their fields are the launchers' business)" bash -c "[ $RC = 0 ] && ! grep -q 'unknown key' '$OUT' '$ERR'"
+EDIR="$PROJ" epipe 'NEWVAL-set-1' set DATABASE_URL -e dev --stdin
+check "20.8: the line editor still edits [secrets] with tables after it" bash -c "[ $RC = 0 ] && grep -q '^\[db.main\]' '$PROJ/.envs.toml' && grep -c '^DATABASE_URL' '$PROJ/.envs.toml' | grep -qx 1"
+printf '\n[bogus]\nx = 1\n' >>"$PROJ/.envs.toml"
+EDIR="$PROJ" e check
+check "20.8: an unknown table is still an error" grep -q "unknown key 'bogus'" "$OUT"
+cp "$T/envs.toml.bak" "$PROJ/.envs.toml"
+EDIR=""
+export ENVS_GLOBAL_DIR=$GD_DEFAULT
+scan "20"
+}
+
 sections_15_16() {
 if ((QUICK)); then
   printf '\n(--quick: the tmux TUI section and the timing section are skipped)\n'
@@ -949,8 +1006,9 @@ fi
 
 }
 
-if [[ -z $ONLY ]]; then sections_1_14; sections_17; sections_18; sections_19; fi
+if [[ -z $ONLY ]]; then sections_1_14; sections_17; sections_18; sections_19; sections_20; fi
 [[ $ONLY == 19 ]] && sections_19
+[[ $ONLY == 20 ]] && sections_20
 sections_15_16
 
 printf '\nenvs test: %d passed, %d failed\n' "$PASS" "$FAILS"

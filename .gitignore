@@ -8,3 +8,5 @@ package*.json
 .local/share/rbw/
 .cache/rofi-rbw*
 __pycache__/
+# envs global scope: machine-local names and connections, never committed
+.config/envs/global.local.toml

@@ -92,7 +92,7 @@ TEST_DIRS = _verified_test_dirs()
 SECRET_TOOLS = {"rbw", "bw", "pinentry", "wl-copy"}    # these never resolve outside the test directory in test mode
 # names a test (or a project's [env]) could use to redirect the vault tools; dropped from our environment outside test mode
 # and put back for the command we run (envs must not change what a command sees)
-HOOK_ENV = ("ENVS_TOOL_PATH", "ENVS_TEST_ROOT_PID", "ENVS_TEST_YES", "ENVS_NO_JOURNAL", "RBW_BIN", "BW_BIN", "PINENTRY_BIN",
+HOOK_ENV = ("ENVS_GLOBAL_DIR", "ENVS_TOOL_PATH", "ENVS_TEST_ROOT_PID", "ENVS_TEST_YES", "ENVS_NO_JOURNAL", "RBW_BIN", "BW_BIN", "PINENTRY_BIN",
             "BW_DOWNLOAD_DIR", "VAULT_RBW_CONF", "VAULT_BW_IDLE", "VAULT_BW_SERVE_POLL", "VAULT_BW_RBW_POLL", "VAULT_BW_NODUMP",
             "VAULT_BW_NODUMP_SRC", "VAULT_BW_UNIT", "VAULT_BW_SYSTEMD_RUNTIME", "VAULT_BW_SERVE", "VAULT_BW_LAUNCH",
             "VAULT_TERMINAL", "VAULT_CLEAR_AFTER")
@@ -445,6 +445,8 @@ def stored_identity(row):
 def binding_state(root, project):
     """('bound'|'unbound'|'changed'|'moved', key, old project): `changed` = the project name differs from the bound one,
     `moved` = same name, but the repository here is not the one that was bound (root commit differs)."""
+    if is_global_root(root):                      # the global scope has no checkout to bind (see load_global)
+        return "bound", str(root), project
     key = binding_key(root)
     b = bindings().get(key)
     if not b:
@@ -592,6 +594,7 @@ class Cfg:
         self.default = data.get("default", "")
         self.protected = set(data.get("protected", [])) | ALWAYS_PROTECTED
         self.secrets = dict(data.get("secrets", {}))
+        self.is_global = False
 
     def is_protected(self, env):
         return env in self.protected
@@ -603,10 +606,16 @@ class Cfg:
 
 def validate(data, root=None):
     p = []
-    known = {"project", "environments", "default", "protected", "secrets"}
+    known = {"project", "environments", "default", "protected", "secrets", "db", "api", "ci"}
     for k in data:
         if k not in known:
-            p.append(f"unknown key {k!r} (allowed: project, environments, default, protected, [secrets])")
+            p.append(f"unknown key {k!r} (allowed: project, environments, default, protected, [secrets], and the tables [db.NAME], "
+                     "[api], [ci] that the db / api / ci launchers read)")
+    for k in ("db", "api", "ci"):             # the launchers validate their own fields (`db check`); here only the shape
+        if k in data and not isinstance(data[k], dict):
+            p.append(f"[{k}] must be a table")
+    if isinstance(data.get("db"), dict) and not all(isinstance(v, dict) for v in data["db"].values()):
+        p.append("[db] holds one table per connection: [db.NAME]")
     proj = data.get("project")
     if not isinstance(proj, str) or not PROJECT_RE.match(proj):
         p.append("project must match ^[a-z0-9][a-z0-9._-]{0,62}$")
@@ -653,6 +662,8 @@ def validate(data, root=None):
 
 def load_cfg(root=None, strict=True):
     root = Path(root) if root else find_root()
+    if is_global_root(root):
+        return load_global(strict)
     path = root / TOML
     try:
         text = path.read_text()
@@ -668,6 +679,106 @@ def load_cfg(root=None, strict=True):
     if problems and strict:
         fail(f"{path}:\n  " + "\n  ".join(problems))
     return Cfg(root, data, text, problems)
+
+
+# the global scope (`envs run -g`): secrets that belong to no repository (GitLab token ...). Folder Env/global, one Secure Note
+# `default`. Declared in ~/.config/envs/global.toml (stowed, public: names only) plus the optional, non-repo
+# ~/.config/envs/global.local.toml (more [secrets] and [db.*]); no binding (both files are the owner's own, checked below),
+# no mise, no active selection.
+
+GLOBAL_TOML, GLOBAL_LOCAL = "global.toml", "global.local.toml"
+GLOBAL_LOCAL_HEADER = ("# Extra global secrets and connections of this machine (not in the dotfiles repo): names only, the values are in\n"
+                       "# Bitwarden Env/global (item `default`). `envs set NAME -g` declares a new name here.\n")
+
+
+def global_dir():
+    v = os.environ.get("ENVS_GLOBAL_DIR") if TEST_DIRS else None      # test hook, verified test mode only
+    return Path(v) if v else HOME / ".config/envs"
+
+
+def is_global_root(root):
+    try:
+        return os.path.realpath(root) == os.path.realpath(global_dir())
+    except OSError:
+        return False
+
+
+def _own_file_problem(path):
+    """The file must belong to this user and not be writable by group or others (a symlink is judged by its target): it names
+    the secrets a launcher passes on and the connections it opens."""
+    try:
+        st = os.stat(path)
+    except OSError as e:
+        return f"cannot read {path}: {e.strerror}"
+    if st.st_uid != os.getuid():
+        return f"{path} is not owned by you"
+    if st.st_mode & 0o022:
+        return f"{path} is writable by group or others (chmod go-w)"
+    return None
+
+
+def merge_global(gtext, ltext):
+    """(merged data, problems) of global.toml + global.local.toml text."""
+    problems = []
+    try:
+        g = tomllib.loads(gtext)
+    except ValueError as e:
+        return {}, [f"{GLOBAL_TOML}: {e}"]
+    try:
+        loc = tomllib.loads(ltext) if ltext else {}
+    except ValueError as e:
+        return {}, [f"{GLOBAL_LOCAL}: {e}"]
+    if g.get("project", "global") != "global":
+        problems.append(f"{GLOBAL_TOML}: project must be \"global\"")
+    for k in loc:
+        if k not in ("secrets", "db"):
+            problems.append(f"{GLOBAL_LOCAL}: only [secrets] and [db.NAME] are allowed here, not {k!r}")
+    sec, db = dict(g.get("secrets") or {}), dict(g.get("db") or {})
+    for n, d in (loc.get("secrets") or {}).items() if isinstance(loc.get("secrets"), dict) else []:
+        if n in sec:
+            problems.append(f"{n} is declared in {GLOBAL_TOML} and in {GLOBAL_LOCAL}")
+        sec[n] = d
+    for n, d in (loc.get("db") or {}).items() if isinstance(loc.get("db"), dict) else []:
+        if n in db:
+            problems.append(f"[db.{n}] is declared in {GLOBAL_TOML} and in {GLOBAL_LOCAL}")
+        db[n] = d
+    data = {"project": "global", "environments": ["default"], "default": "default", "protected": [], "secrets": sec}
+    if db:
+        data["db"] = db
+    return data, problems + validate(data)
+
+
+def load_global(strict=True):
+    d = global_dir()
+    gp, lp = d / GLOBAL_TOML, d / GLOBAL_LOCAL
+    if not gp.is_file():
+        fail(f"no {gp}: run `stow .` in ~/dotfiles (it links .config/envs/global.toml)", 1)
+    for f in (gp, lp):
+        if f.exists() or f.is_symlink():
+            bad = _own_file_problem(f)
+            if bad:
+                fail(f"global scope refused: {bad}", 4)
+    gtext = gp.read_text()
+    ltext = lp.read_text() if lp.is_file() else ""
+    data, problems = merge_global(gtext, ltext)
+    if problems and strict:
+        fail("global scope:\n  " + "\n  ".join(problems))
+    cfg = Cfg(d, data, gtext, problems)
+    cfg.is_global = True
+    return cfg
+
+
+def edit_global_local(cfg, fn):
+    """Apply fn(TomlText) to global.local.toml (created 0600), validate the merged result, write it."""
+    lp = cfg.root / GLOBAL_LOCAL
+    ed = TomlText(lp.read_text() if lp.is_file() else GLOBAL_LOCAL_HEADER)
+    fn(ed)
+    new = ed.text()
+    data, problems = merge_global(cfg.text, new)
+    if problems:
+        fail("the edit would make the global scope invalid:\n  " + "\n  ".join(problems))
+    write_text(lp, new, 0o600)
+    return load_global()
 
 
 # the line editor: top-level keys and keys inside one table, comments and order kept ------------------------------------
@@ -813,9 +924,9 @@ class TomlText:
         return True
 
 
-def write_text(path, text):
+def write_text(path, text, new_mode=0o644):
     path = Path(path)
-    mode = (path.stat().st_mode & 0o777) if path.exists() else 0o644
+    mode = (path.stat().st_mode & 0o777) if path.exists() else new_mode
     tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as f:
@@ -825,7 +936,10 @@ def write_text(path, text):
 
 
 def edit_cfg(cfg, fn):
-    """Apply fn(TomlText) to .envs.toml, validate the result and write it (atomically)."""
+    """Apply fn(TomlText) to .envs.toml, validate the result and write it (atomically). The global scope edits its
+    global.local.toml (global.toml is a stowed repo file)."""
+    if cfg.is_global:
+        return edit_global_local(cfg, fn)
     ed = TomlText(cfg.path.read_text())
     fn(ed)
     new = ed.text()
@@ -1317,7 +1431,7 @@ def classify(cfg, fields):
 
 
 def cmd_status(a):
-    cfg = load_cfg(strict=False)
+    cfg = cfg_for(a, strict=False)
     st, key, old = binding_state(cfg.root, cfg.project)
     act = active_get(cfg.root)
     env = choose_env(cfg) if not cfg.problems else None
@@ -1395,9 +1509,16 @@ def mise_cmd(cfg, cmd, env):
     return list(cmd), False
 
 
+def cfg_for(a, strict=True):
+    """The project of the cwd, or the global scope with -g."""
+    if getattr(a, "global_", False):
+        return load_global(strict)
+    return load_cfg(strict=strict)
+
+
 def cmd_run(a, cmd):
     refuse_agent("run")
-    cfg = load_cfg()
+    cfg = cfg_for(a)
     require_bound(cfg)
     env = choose_env(cfg, a.env)
     guard_protected(cfg, env, a.prod)
@@ -1412,11 +1533,12 @@ def cmd_run(a, cmd):
                  "(or run with --allow-missing)", 1)
         values = {n: fields[n] for n in cfg.secrets if fields.get(n, "") != ""}
         fields = None
-    use_mise = not a.no_mise
+    use_mise = not a.no_mise and not cfg.is_global
     argv, mised = mise_cmd(cfg, cmd, env) if use_mise else (list(cmd), False)
     child = command_env(os.environ)
     child.update(values)
     child["ENVS_PROJECT"], child["ENVS_ENV"] = cfg.project, env
+    child["ENVS_SECRETS"] = " ".join(values)       # the names that were injected (names only): a launcher knows what is secret
     if mised:
         child["MISE_ENV"] = env
         # a legacy file (.tool-versions, .nvmrc ...) needs no `mise trust`, so mise would install what it names (npm:/cargo:/
@@ -1446,7 +1568,7 @@ def targets(cfg, a):
 
 def cmd_set(a):
     refuse_agent("set")
-    cfg = load_cfg()
+    cfg = cfg_for(a)
     if "=" in a.name or a.extra:
         fail("values never go on the command line: history and ps would see them. Use the hidden prompt or --stdin. "
              "If you just typed a real value: rotate it and delete the line from the shell history (atuin: `atuin history "
@@ -1455,6 +1577,8 @@ def cmd_set(a):
     if why:
         fail(f"{a.name} {why}", 2)
     if a.plain:
+        if cfg.is_global:
+            fail("--plain does not exist for the global scope (no mise file)", 2)
         return set_plain(cfg, a)
     require_bound(cfg)
     envs = targets(cfg, a)
@@ -1498,7 +1622,7 @@ def set_plain(cfg, a):
 
 def cmd_unset(a):
     refuse_agent("unset")
-    cfg = load_cfg()
+    cfg = cfg_for(a)
     require_bound(cfg)
     removed = []
     if a.name in cfg.secrets:
@@ -2110,11 +2234,15 @@ def cmd_check(a):
                 roots.insert(0, here)
         except Fail:
             pass
-        if not roots:
+        if not roots and not (global_dir() / GLOBAL_TOML).is_file():
             say("no bound projects yet")
             return
+    elif getattr(a, "global_", False):
+        roots = [global_dir()]
     else:
         roots = [find_root()]
+    if a.all and (global_dir() / GLOBAL_TOML).is_file() and global_dir() not in roots:
+        roots.append(global_dir())
     bad = 0
     for r in roots:
         out = []
@@ -2223,6 +2351,8 @@ def project_roots():
         r = Path(key_root(key))
         if (r / TOML).is_file():
             out.setdefault(row[1], r)
+    if (global_dir() / GLOBAL_TOML).is_file():
+        out["global"] = global_dir()
     try:
         here = find_root()
         c = load_cfg(here, strict=False)
@@ -2742,6 +2872,7 @@ def build_parser():
     p.add_argument("--default")
     sub.add_parser("bind").add_argument("--yes", action="store_true")
     p = sub.add_parser("status")
+    p.add_argument("-g", "--global", dest="global_", action="store_true")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("use")
     p.add_argument("env", nargs="?")
@@ -2754,6 +2885,7 @@ def build_parser():
     p.add_argument("--no-mise", action="store_true")
     p.add_argument("--allow-missing", action="store_true")
     p = sub.add_parser("set")
+    p.add_argument("-g", "--global", dest="global_", action="store_true")
     p.add_argument("name")
     p.add_argument("extra", nargs="*")
     p.add_argument("-e", "--env")
@@ -2762,6 +2894,7 @@ def build_parser():
     p.add_argument("--stdin", action="store_true")
     p.add_argument("--description")
     p = sub.add_parser("unset")
+    p.add_argument("-g", "--global", dest="global_", action="store_true")
     p.add_argument("name")
     p.add_argument("-e", "--env")
     p.add_argument("--all", action="store_true")
@@ -2805,6 +2938,7 @@ def build_parser():
     p.add_argument("env")
     p.add_argument("ident")
     p = sub.add_parser("check")
+    p.add_argument("-g", "--global", dest="global_", action="store_true")
     p.add_argument("--all", action="store_true")
     sub.add_parser("trust")
     p = sub.add_parser("convert")
@@ -2820,11 +2954,11 @@ HANDLERS = {"init": cmd_init, "bind": cmd_bind, "status": cmd_status, "use": cmd
 
 
 class RunArgs:
-    env, prod, sync, no_mise, allow_missing = None, False, False, False, False
+    env, prod, sync, no_mise, allow_missing, global_ = None, False, False, False, False, False
 
 
 def usage_error(msg):
-    print(f"envs: {msg}\nusage: envs run [-e ENV] [--prod] [--sync] [--no-mise] [--allow-missing] -- CMD [ARGS...]", file=sys.stderr)
+    print(f"envs: {msg}\nusage: envs run [-g] [-e ENV] [--prod] [--sync] [--no-mise] [--allow-missing] -- CMD [ARGS...]", file=sys.stderr)
     return 2
 
 
@@ -2852,6 +2986,8 @@ def run_main(argv):
             a.no_mise = True
         elif o == "--allow-missing":
             a.allow_missing = True
+        elif o in ("-g", "--global"):
+            a.global_ = True
         else:
             return usage_error(f"unknown option {o}")
         k += 1

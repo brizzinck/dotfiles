@@ -22,6 +22,7 @@ export ENVS_TOOL_PATH="$_E_BIN:$_E_VB" RBW_BIN=rbw BW_BIN=bw PINENTRY_BIN="$_E_V
   VAULT_BW_LAUNCH=popen VAULT_BW_SERVE_POLL=0.3 VAULT_BW_RBW_POLL=0.3 VAULT_BW_NODUMP=0 VAULT_CLEAR_AFTER=6 BW_DOWNLOAD_DIR="$ENVS_TEST_ROOT/dl" \
   WAYLAND_DISPLAY=wayland-test ENVS_TEST_ROOT_PID=$$ FAKE_MISE_LOG="$FAKE_DIR/mise.log"
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
+export ENVS_GLOBAL_DIR="$ENVS_TEST_ROOT/global"   # the global scope (envs run -g) of the sandbox: empty = no global project
 export FZF_MENU_NO_SERVER=1
 unset CLAUDECODE TMUX TMUX_PANE
 echo "envs test sandbox: $ENVS_TEST_ROOT"
