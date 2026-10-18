@@ -14,6 +14,7 @@ Session	Lock, power menu, screensaver, wallpaper
 Reminders	Timers with a message
 Setup	First-time setup: logins, models, links, apply settings
 Update	Install updates, firmware, rollback, pacnew, logs
+Dev	Projects: tool versions (mise), environments and secrets (envs)
 Packages	Install and remove packages
 Fix	Restart a broken service, self-tests, health, config errors
 Learn	Shortcuts, key search, documentation

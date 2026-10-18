@@ -17,12 +17,12 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Desktop | [System, power, bar](#system-power-bar) | 12 |
 | Desktop | [Pointer from the keyboard](#pointer-from-the-keyboard) | 21 |
 | Desktop | [Other Hyprland binds](#other-hyprland-binds) | 16 |
-| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 157 |
-| Terminal | [tmux: this setup](#tmux-this-setup) | 55 |
+| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 162 |
+| Terminal | [tmux: this setup](#tmux-this-setup) | 56 |
 | Terminal | [tmux: stock prefix keys](#tmux-stock-prefix-keys) | 80 |
 | Terminal | [Terminal: ghostty](#terminal-ghostty) | 13 |
 | Terminal | [zsh line editor](#zsh-line-editor) | 34 |
-| Terminal | [zsh helpers](#zsh-helpers) | 12 |
+| Terminal | [zsh helpers](#zsh-helpers) | 15 |
 | Terminal | [zsh aliases](#zsh-aliases) | 42 |
 | Editor | [Neovim: AI agents](#neovim-ai-agents) | 25 |
 | Editor | [Neovim: find](#neovim-find) | 23 |
@@ -37,7 +37,7 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Editor | [Neovim: files and misc](#neovim-files-and-misc) | 17 |
 | Editor | [Neovim: moving and editing](#neovim-moving-and-editing) | 62 |
 | Menus and bar | [Menus: list grammar](#menus-list-grammar) | 19 |
-| Menus and bar | [Menus: keys of each menu](#menus-keys-of-each-menu) | 74 |
+| Menus and bar | [Menus: keys of each menu](#menus-keys-of-each-menu) | 98 |
 | Menus and bar | [TUIs and viewers](#tuis-and-viewers) | 4 |
 | Menus and bar | [Bar (waybar)](#bar-waybar) | 48 |
 | Apps and login | [Telegram](#telegram) | 6 |
@@ -481,6 +481,11 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; x t` | AI and MCP: Telegram setup |
 | `Super+; x u` | AI and MCP: Telegram status |
 | `Super+; x w` | AI and MCP: Ask about the window |
+| `Super+; j c` | Dev: Check projects |
+| `Super+; j e` | Dev: Environments |
+| `Super+; j i` | Dev: Import .env |
+| `Super+; j m` | Dev: mise tools |
+| `Super+; j u` | Dev: Use environment |
 
 ## Terminal
 
@@ -518,6 +523,7 @@ tmux, read from a private server that loads tmux.conf (notes are the -N text of 
 | `Prefix m` | Utility hub popup (same list as SUPER+M) |  |
 | `Prefix r` | Reload tmux.conf |  |
 | `Prefix u` | URL picker from the pane scrollback (Enter opens, Ctrl-y copies) |  |
+| `Prefix v` | Project environments and secrets (envs) in the pane's directory |  |
 | `Prefix y` | New window running yazi |  |
 | `Prefix \|` | Split right in the current directory |  |
 | `Prefix Alt+U` | TPM: remove plugins that are no longer listed |  |
@@ -700,6 +706,9 @@ Functions of .zshrc that carry a comment, plus the commands of this setup.
 
 | Keys | Action |
 |---|---|
+| `er` | Run a command with the project's secrets of the active environment (envs: they live in Bitwarden and reach only the command, never this shell; a function or alias such as grun cannot be wrapped, use the real command: er go run .) |
+| `ere` | Run a command with the project's secrets of environment ENV (ere stage go test ./...) |
+| `ert` | Run a mise task with the project's secrets (ert test) |
 | `grun` | Go run for ./main.go, ./cmd/main.go or ./cmd/api/main.go |
 | `codex` | Codex CLI without approval prompts or sandboxing |
 | `ta` | Tmux: attach to the "main" session or create it |
@@ -1135,6 +1144,30 @@ Menu-specific keys keep the Alt+ form (works in both modes) and get a NORMAL let
 | `b` / `Alt+B` | Unlock the bw CLI session (Trash, attachments, edit need it) | Vault browser (SUPER+CTRL+SHIFT+P) |
 | `O` / `Alt+V` | Open the Bitwarden desktop app (account, emergency access, organisations) | Vault browser (SUPER+CTRL+SHIFT+P) |
 | `Tab` / `Shift+Tab` | Next / previous folder (All, each folder, no folder, Trash) | Vault browser (SUPER+CTRL+SHIFT+P) |
+| `Enter` / `l` | Projects: open the project (its environments) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `n` | Projects: write .envs.toml here (envs init) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `i` | Projects: import the project's .env file into Bitwarden and mise | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `x` | Projects: write .env.example (names only) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `c` | Projects: check the project (names, binding, vault) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `s` | Projects: sync rbw (Alt+S is grabbed by Hyprland) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `r` / `Alt+R` | Projects: rename the project (folder Env/<project>) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `d` / `Alt+D` | Projects: delete the project (typed confirmation, items go to the trash) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `b` | Projects: bind this checkout to Env/<project> (+ mise trust) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `Enter` / `l` | Environments: open the variables | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `u` / `Alt+U` | Environments: use it in this project (prod asks for its name, expires after an hour) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `c` / `Alt+C` | Environments: copy values to another environment (picker) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `D` | Environments: diff with another environment (names only, never values) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `n` / `Alt+N` | Environments: new environment | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `r` / `Alt+R` | Environments: rename | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `d` / `Alt+D` | Environments: delete (typed confirmation, the item goes to the trash) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `h` / `Esc` | Environments / variables: back one level (Esc in NORMAL at the top quits) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `Enter` / `y` / `Alt+Y` | Variables: copy the value (wl-copy --sensitive, cleared after 30 s) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `v` / `Alt+V` | Variables: show the value in the preview for 15 s (or until the cursor moves) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `e` / `Alt+E` | Variables: edit the value (hidden prompt, asked twice) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `a` / `n` / `Alt+A` / `Alt+N` | Variables: add one (name, secret or plain, value) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `r` / `Alt+R` | Variables: rename in every environment | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `d` / `Alt+D` | Variables: delete from this environment, from all, or with the declaration (picker) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
+| `p` | Variables: turn a secret into a plain mise variable or back (asks: plain values are committed) | envs (tmux prefix v, SUPER+; j e, hub Dev) |
 | `Enter` | Type into the previous window | Emoji and snippets (SUPER+. and SUPER+SHIFT+.) |
 | `Alt+Enter` / `y` | Copy only | Emoji and snippets (SUPER+. and SUPER+SHIFT+.) |
 | `Enter` | Focus the window (and its workspace) | Window switcher (SUPER+SHIFT+Space) |

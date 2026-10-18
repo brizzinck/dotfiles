@@ -1825,6 +1825,524 @@ def cmd_check(a):
         raise Fail(f"{bad} error(s)", 1)
 
 
+# ───────────────────────────── TUI ─────────────────────────────
+# Same pattern as vault-browse.py: a Python loop around `fzf-menu --here`; rows are `ID<TAB>text` (the id column is hidden),
+# NORMAL letters come through FZF_MENU_NORMAL_BINDS as become(printf query, ACTION, id), Alt keys through --expect (both
+# work in both modes), Esc in NORMAL (fzf exit 1) goes one level up and quits at the top. Actions run in this terminal
+# (prompts, then the list reopens at the same row). Values are masked everywhere; `v` shows one for 15 s.
+# static.tsv rows mirror these tables (doctor keymap-doc checks that docs/keymap.md is generated from them).
+
+NORMAL_KEYS = {
+    "projects": [("l", "open"), ("n", "init"), ("i", "import"), ("x", "export"), ("c", "check"), ("s", "sync"),
+                 ("r", "rename"), ("d", "delete"), ("b", "bind")],
+    "envs": [("l", "open"), ("h", "back"), ("u", "use"), ("c", "copyto"), ("D", "diff"), ("n", "new"), ("r", "rename"),
+             ("d", "delete")],
+    "vars": [("h", "back"), ("y", "copy"), ("v", "reveal"), ("e", "edit"), ("a", "add"), ("r", "rename"), ("d", "delete"),
+             ("p", "convert")],
+}
+ALT_KEYS = {
+    "projects": {"alt-r": "rename", "alt-d": "delete"},   # no alt-s: Hyprland grabs Alt+S
+    "envs": {"alt-u": "use", "alt-c": "copyto", "alt-n": "new", "alt-r": "rename", "alt-d": "delete"},
+    "vars": {"alt-y": "copy", "alt-e": "edit", "alt-n": "add", "alt-a": "add", "alt-r": "rename", "alt-d": "delete",
+             "alt-v": "reveal"},
+}
+HINTS = {
+    "projects": "Enter/l open  n init  i import  x example  c check  s sync  r rename  d delete  b bind  Esc quit",
+    "envs": "Enter/l variables  u use  c copy to  D diff  n new  r rename  d delete  h/Esc back",
+    "vars": "Enter/y copy  v reveal  e edit  a add  r rename  d delete  p secret<->plain  h/Esc back",
+}
+RED, DIM, RST = "\033[31m", "\033[2m", "\033[0m"
+REVEAL_SECONDS = 15
+
+
+def reveal_file():
+    return run_dir() / "reveal"
+
+
+def read_reveal():
+    """(project, env, name) while a reveal is active, else None; an expired or foreign flag is removed."""
+    try:
+        parts = reveal_file().read_text().split("\t")
+        if len(parts) == 4 and float(parts[3]) > time.time():
+            return parts[0], parts[1], parts[2]
+    except (OSError, ValueError):
+        pass
+    reveal_file().unlink(missing_ok=True)
+    return None
+
+
+def project_roots():
+    """{project: root} from the bound checkouts (and the one we stand in)."""
+    out = {}
+    for key, row in bindings().items():
+        r = Path(key_root(key))
+        if (r / TOML).is_file():
+            out.setdefault(row[1], r)
+    try:
+        here = find_root()
+        c = load_cfg(here, strict=False)
+        if c.project:
+            out[c.project] = here
+    except Fail:
+        pass
+    return out
+
+
+def vault_projects():
+    """{project: [env names]} from the Env/* folders rbw knows; None when the vault is locked."""
+    try:
+        if not rbw_unlocked():
+            return None
+        items = rbw_list()
+    except Fail:
+        return None
+    out = {}
+    for i in items:
+        f = i.get("folder") or ""
+        if f.startswith("Env/") and "/" not in f[4:]:
+            out.setdefault(f[4:], [])
+            if str(i.get("type", "")).lower() in ("securenote", "secure note", "note", "2"):
+                out[f[4:]].append(i.get("name"))
+    return out
+
+
+def short_path(p):
+    p = str(p)
+    h = str(HOME)
+    return "~" + p[len(h):] if p.startswith(h) else p
+
+
+def tui_header(project=None, env=None, cfg=None):
+    rb = "rbw unlocked" if rbw_run("unlocked", timeout=10).returncode == 0 else "rbw locked"
+    sess = run_dir().parent / "vault" / "bw-session"
+    bw = "bw ready" if sess.exists() else ("bw locked" if tool("bw", "BW_BIN", required=False) else "bw not set up")
+    left = " · ".join(x for x in (project, env) if x) or "projects"
+    return f"{left} · {rb} · {bw}"
+
+
+def reveal_ticker(sock):
+    """Refresh the preview once when a reveal expires (the cursor moving refreshes it by itself)."""
+    import threading
+    stop = threading.Event()
+
+    def loop():
+        while not stop.wait(1.0):
+            try:
+                text = reveal_file().read_text().split("\t")
+                expired = float(text[3]) <= time.time()
+            except (OSError, ValueError, IndexError):
+                continue
+            if expired and os.path.exists(sock) and tool("curl", required=False):
+                subprocess.run([tool("curl"), "-s", "--max-time", "1", "--unix-socket", sock, "-X", "POST", "http://localhost",
+                                "-d", "refresh-preview"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+
+    threading.Thread(target=loop, daemon=True).start()
+    return stop
+
+
+def fzf_menu(rows, level, header, preview, here_row=None):
+    """Run the list; returns (exit code, key/action, id). Actions are NORMAL letters (become) or Alt keys (--expect)."""
+    me = f"python3 -I {SELF}"
+    binds = "\n".join(f'{k}:become(printf "%s\\n%s\\n%s\\n" {{q}} {a} {{1}})' for k, a in NORMAL_KEYS[level])
+    args = ["--here", "-p", "envs", "--delimiter=\t", "--with-nth=2..", "--tabstop=4", "--ansi", "--print-query",
+            "--expect=" + ",".join(ALT_KEYS[level]), f"--header={header}\n{HINTS[level]}"]
+    if preview:
+        args += [f"--preview={me} _preview {preview} {{1}}", "--preview-window=right,50%,wrap,border-left"]
+    if here_row is not None:
+        args.append(f"--bind=load:pos({here_row + 1})")
+    env = dict(os.environ, FZF_MENU_NORMAL_BINDS=binds)
+    stop = None
+    if level == "vars":
+        sock = str(run_dir() / f"fzf-{os.getpid()}.sock")
+        args.append(f"--listen={sock}")
+        stop = reveal_ticker(sock)
+    try:
+        p = subprocess.run([tool("fzf-menu")] + args, input="\n".join(rows) + "\n", stdout=subprocess.PIPE, text=True, env=env)
+    finally:
+        if stop:
+            stop.set()
+    lines = p.stdout.split("\n")
+    key = lines[1] if len(lines) > 1 else ""
+    ident = (lines[2] if len(lines) > 2 else "").split("\t")[0]
+    return p.returncode, key, ident
+
+
+def run_self(*args, cwd=None, pause=False):
+    """Run one of our own subcommands in this terminal (prompts work), optionally waiting for Enter afterwards."""
+    p = subprocess.run([sys.executable, "-I", str(SELF), *args], cwd=str(cwd) if cwd else None)
+    if pause or p.returncode not in (0, 130):
+        try:
+            input("\n[Enter]")
+        except (EOFError, KeyboardInterrupt):
+            pass
+    return p.returncode
+
+
+def ask_line(label):
+    try:
+        return input(f"{label}: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return ""
+
+
+def project_rows(cwd_project, roots):
+    vp = vault_projects()
+    names = sorted(set(roots) | set(vp or {}))
+    rows = []
+    for n in names:
+        envs = (vp or {}).get(n)
+        root = roots.get(n)
+        sel = ""
+        if root:
+            a = active_get(root)
+            sel = f"  [{a[0]}]" if a else ""
+        text = f"{n:<22} {(str(len(envs)) + ' envs') if envs is not None else '? envs':<9} {short_path(root) if root else '(no checkout bound)'}{sel}"
+        if n == cwd_project:
+            text += "  <- here"
+        rows.append(f"{n}\t{text}")
+    return rows
+
+
+def env_rows(cfg, vp_envs):
+    rows = []
+    act = active_get(cfg.root) if cfg else None
+    cur = choose_env(cfg) if cfg else None
+    names = list(cfg.envs) if cfg else sorted(vp_envs or [])
+    for e in names:
+        mark = "*" if e == cur else " "
+        prot = cfg is not None and cfg.is_protected(e)
+        tag = "protected" if prot else ""
+        text = f"{mark} {e:<12} {tag:<10}" + (" (default)" if cfg and e == cfg.default else "")
+        rows.append(f"{e}\t{RED + text + RST if prot else text}")
+    return rows
+
+
+def var_rows(cfg, fields, env):
+    rows = []
+    declared = list(cfg.secrets) if cfg else []
+    for n in declared:
+        state = "set" if isinstance(fields, dict) and fields.get(n, "") != "" else "missing"
+        rows.append(f"{n}\t{n:<28} secret {state:<8} {cfg.secrets[n]}")
+    for n in (fields or {}):
+        if n not in declared:
+            rows.append(f"{n}\t{n:<28} secret extra    {DIM}(not declared: never injected){RST}")
+    if cfg:
+        seen = set()
+        for pth, fenv in mise_files(cfg.root):
+            if fenv not in (None, env):
+                continue
+            try:
+                for n in (tomllib.loads(pth.read_text()).get("env") or {}):
+                    if n != "_" and n not in seen and n not in declared:
+                        seen.add(n)
+                        rows.append(f"{n}\t{n:<28} plain  {pth.name}")
+            except (OSError, ValueError):
+                pass
+    return rows
+
+
+def cmd_preview(a):
+    """Internal: the preview pane. Masked values only, except the one a recent `v` revealed."""
+    level, project, ident = a.level, a.project, a.ident
+    root = Path(a.root) if a.root and a.root != "-" else None
+    if level == "projects":
+        root = project_roots().get(ident)
+    cfg = load_cfg(root, strict=False) if root else None
+    if cfg and cfg.problems:
+        cfg = None
+    if level == "projects":
+        say(f"project  {ident}")
+        if root:
+            c = load_cfg(root, strict=False)
+            st = binding_state(root, c.project)[0] if c.project else "?"
+            say(f"checkout {short_path(root)}   binding: {st}")
+            say("")
+            say(f"{'':<22} " + "  ".join(f"{e:<7}" for e in c.envs))
+            mat = vault_matrix(c) if not c.problems else None
+            for n in c.secrets:
+                cells = []
+                for e in c.envs:
+                    f = (mat or {}).get(e)
+                    cells.append("?" if mat is None else ("-" if not isinstance(f, dict) or f.get(n, "") == "" else "set"))
+                say(f"{n:<22} " + "  ".join(f"{x:<7}" for x in cells))
+        else:
+            say("no checkout of this project is bound here: cd into it and run `envs bind`")
+        return
+    env = a.env
+    if level == "envs":
+        say(f"environment {ident}" + ("   [protected]" if cfg and cfg.is_protected(ident) else ""))
+        try:
+            fields = env_fields(project, ident) if rbw_unlocked() else None
+        except Fail as e:
+            say(f"error: {e.msg}")
+            return
+        if fields is None:
+            say("no item yet" if rbw_unlocked() else "vault locked")
+            return
+        s, m, x = classify(cfg, fields) if cfg else ([], [], list(fields))
+        for n in s:
+            say(f"  {n:<26} {MASK}")
+        for n in m:
+            say(f"  {n:<26} missing")
+        for n in x:
+            say(f"  {n:<26} extra (not declared)")
+        return
+    # variables
+    say(f"{ident}   ({project} / {env})")
+    r = read_reveal()
+    plain = cfg and any(ident in (tomllib.loads(pth.read_text()).get("env") or {}) for pth, fe in mise_files(cfg.root)
+                        if fe in (None, env))
+    if plain:
+        for pth, fe in mise_files(cfg.root):
+            if fe in (None, env):
+                v = (tomllib.loads(pth.read_text()).get("env") or {}).get(ident)
+                if v is not None:
+                    say(f"plain value in {pth.name}: {v}")
+        return
+    try:
+        fields = env_fields(project, env) if rbw_unlocked() else None
+    except Fail as e:
+        say(f"error: {e.msg}")
+        return
+    if fields is None or ident not in fields:
+        say("not set" if fields is not None else "vault locked")
+        if cfg and ident in cfg.secrets and cfg.secrets[ident]:
+            say(cfg.secrets[ident])
+        return
+    if r and r == (project, env, ident):
+        say(fields[ident])
+        say("")
+        say(f"(shown for {REVEAL_SECONDS} s or until the cursor moves)")
+    else:
+        reveal_file().unlink(missing_ok=True) if r and r != (project, env, ident) else None
+        say(MASK)
+        if cfg and cfg.secrets.get(ident):
+            say("")
+            say(cfg.secrets[ident])
+    fields = None
+
+
+def convert_var(cfg, name):
+    """p: secret -> plain (commits the value) or plain -> secret, for every environment."""
+    root = cfg.root
+    if name in cfg.secrets:
+        if not confirm(f"{name}: the value(s) will be written to .mise*.toml and COMMITTED in plain text. Continue?"):
+            return
+        ensure_rbw()
+        with write_lock():
+            m = bw_open()
+            for e in cfg.envs:
+                item = bw_env_item(m, cfg.project, e)
+                if item is None:
+                    continue
+                val = next((f.get("value") for f in item.get("fields") or [] if f.get("name") == name), None)
+                if val is None:
+                    continue
+                edit_mise(mise_target(root, e, cfg.default), lambda ed, v=val: ed.set("env", name, toml_str(v)))
+                item_drop_field(item, name)
+                bw_save(m, item)
+            m.refresh_rbw()
+        edit_cfg(cfg, lambda ed: ed.remove("secrets", name))
+        say(f"{name} is now a plain variable (mise [env])")
+    else:
+        found = []
+        for pth, fenv in mise_files(root):
+            v = (tomllib.loads(pth.read_text()).get("env") or {}).get(name)
+            if v is not None:
+                found.append((pth, fenv, v))
+        if not found:
+            fail(f"{name} is not a mise [env] variable", 1)
+        require_bound(cfg)
+        with write_lock():
+            m = bw_open()
+            per_env = {fenv: v for _p, fenv, v in found if fenv}
+            base = next((v for _p, fenv, v in found if fenv is None), None)
+            for e in cfg.envs:
+                v = per_env.get(e, base)
+                if v is None:
+                    continue
+                item = bw_env_item(m, cfg.project, e, create=True)
+                item_set_field(item, name, v)
+                bw_save(m, item)
+            m.refresh_rbw()
+        for pth, _fenv, _v in found:
+            edit_mise(pth, lambda ed: ed.remove("env", name))
+        cfg = load_cfg(root)
+        edit_cfg(cfg, lambda ed: ed.set("secrets", name, '""'))
+        say(f"{name} is now a secret (Bitwarden), removed from the mise files")
+
+
+def tui():
+    refuse_agent("the TUI")
+    if not tty():
+        fail("the TUI needs a terminal: run `envs` in one (tmux prefix v, hub row, SUPER+; j e)", 2)
+    tool("fzf-menu")
+    cwd_cfg, cwd_project = None, None
+    try:
+        cwd_cfg = load_cfg(find_root(), strict=False)
+        cwd_project = cwd_cfg.project
+    except Fail:
+        pass
+    level = "envs" if cwd_cfg and not cwd_cfg.problems else "projects"
+    project = cwd_cfg.project if level == "envs" else None
+    env = None
+    last = {"projects": None, "envs": None, "vars": None}
+    try:
+        ensure_rbw()
+    except Fail as e:
+        warn(e.msg)
+    while True:
+        roots = project_roots()
+        root = roots.get(project) if project else None
+        cfg = load_cfg(root, strict=False) if root else None
+        if cfg and cfg.problems:
+            warn("; ".join(cfg.problems))
+            cfg = None
+        if level == "projects":
+            rows, header = project_rows(cwd_project, roots), tui_header()
+        elif level == "envs":
+            vp = vault_projects()
+            rows = env_rows(cfg, (vp or {}).get(project))
+            header = tui_header(project, None, cfg)
+        else:
+            try:
+                fields = env_fields(project, env) if rbw_unlocked() else None
+            except Fail as e:
+                warn(e.msg)
+                fields = None
+            rows = var_rows(cfg, fields, env)
+            header = tui_header(project, env, cfg)
+        here = next((i for i, r in enumerate(rows) if r.split("\t")[0] == last[level]), None)
+        if not rows:
+            rows = ["-\t(nothing here yet: n adds one)"]
+        code, key, ident = fzf_menu(rows, level, header, preview_arg(level, project, root, env), here)
+        if code != 0:
+            if level == "projects" or code == 130:
+                return
+            level = "envs" if level == "vars" else "projects"
+            continue
+        action = ALT_KEYS[level].get(key) or key or "enter"
+        if ident in ("", "-") and action not in ("init", "sync", "new", "add", "check", "import", "bind", "back"):
+            continue
+        last[level] = ident
+        try:
+            level, project, env = tui_action(level, action, ident, project, env, cfg, root, cwd_project)
+        except Fail as e:
+            warn(e.msg)
+            try:
+                input("\n[Enter]")
+            except (EOFError, KeyboardInterrupt):
+                pass
+        except (KeyboardInterrupt, EOFError):
+            pass
+
+
+def preview_arg(level, project, root, env):
+    return f"{level} {project or '-'} {root or '-'} {env or '-'}"
+
+
+def tui_action(level, action, ident, project, env, cfg, root, cwd_project):
+    """One key. Returns the new (level, project, env)."""
+    here = Path.cwd()
+    if action == "back":
+        return ("envs" if level == "vars" else "projects"), project, env
+    if level == "projects":
+        proot = project_roots().get(ident)
+        if action in ("enter", "open"):
+            return "envs", ident, None
+        if action == "init":
+            run_self("init", cwd=here, pause=True)
+        elif action == "sync":
+            rbw_run("sync", timeout=60)
+            warn("synced")
+        elif not proot:
+            raise Fail(f"{ident}: no checkout of this project is bound here: cd into it and run `envs bind` first")
+        elif action == "import":
+            run_self("import", cwd=proot, pause=True)
+        elif action == "export":
+            run_self("export-example", cwd=proot, pause=True)
+        elif action == "check":
+            run_self("check", cwd=proot, pause=True)
+        elif action == "bind":
+            run_self("bind", cwd=proot, pause=True)
+        elif action == "rename":
+            new = ask_line(f"New name for {ident}")
+            if new:
+                run_self("project", "rename", new, cwd=proot, pause=True)
+        elif action == "delete":
+            run_self("project", "delete", cwd=proot, pause=True)
+        return level, project, env
+    if level == "envs":
+        if action in ("enter", "open"):
+            return "vars", project, ident
+        if not cfg:
+            raise Fail("no checkout of this project is bound here: cd into it and run `envs bind` first")
+        if action == "use":
+            run_self("use", ident, cwd=cfg.root, pause=cfg.is_protected(ident))
+        elif action == "copyto":
+            dst = pick([e for e in cfg.envs if e != ident], f"copy {ident} to")
+            if dst:
+                run_self("copy", ident, dst.split()[0], cwd=cfg.root, pause=True)
+        elif action == "diff":
+            other = pick([e for e in cfg.envs if e != ident], f"diff {ident} with")
+            if other:
+                run_self("diff", ident, other.split()[0], cwd=cfg.root, pause=True)
+        elif action == "new":
+            name = ask_line("New environment name")
+            if name:
+                run_self("env", "new", name, cwd=cfg.root, pause=True)
+        elif action == "rename":
+            new = ask_line(f"New name for {ident}")
+            if new:
+                run_self("env", "rename", ident, new, cwd=cfg.root, pause=True)
+        elif action == "delete":
+            run_self("env", "delete", ident, cwd=cfg.root, pause=True)
+        return level, project, env
+    # variables
+    if not cfg:
+        raise Fail("no checkout of this project is bound here: cd into it and run `envs bind` first")
+    plain = any(ident in (tomllib.loads(pth.read_text()).get("env") or {}) for pth, fe in mise_files(cfg.root) if fe in (None, env))
+    if action in ("enter", "copy"):
+        if plain:
+            raise Fail(f"{ident} is a plain variable: its value is in the mise file (visible in the preview)")
+        rc = run_self("copy-value", ident, "-e", env, cwd=cfg.root)
+        if rc == 0:
+            warn("copied; cleared from the clipboard after 30 s")
+    elif action == "reveal":
+        if plain:
+            raise Fail(f"{ident} is a plain variable: it is not hidden")
+        atomic_write(reveal_file(), f"{project}\t{env}\t{ident}\t{time.time() + REVEAL_SECONDS}")
+    elif action == "edit":
+        run_self("set", ident, "-e", env, *(["--plain"] if plain else []), cwd=cfg.root)
+    elif action == "add":
+        name = ask_line("New variable name")
+        if not name:
+            return level, project, env
+        kind = pick(["secret  (Bitwarden, hidden)", "plain   (mise [env], committed)"], "kind")
+        if kind:
+            run_self("set", name, "-e", env, *(["--plain"] if kind.startswith("plain") else []), cwd=cfg.root)
+    elif action == "rename":
+        new = ask_line(f"New name for {ident}")
+        if new:
+            run_self("rename", ident, new, cwd=cfg.root, pause=True)
+    elif action == "delete":
+        opts = [f"this environment ({env})", "all environments", "all environments and the declaration"]
+        got = pick(opts, f"delete {ident}")
+        if got == opts[0]:
+            run_self("unset", ident, "-e", env, cwd=cfg.root, pause=True)
+        elif got == opts[1]:
+            run_self("unset", ident, "--all", cwd=cfg.root, pause=True)
+        elif got:
+            run_self("unset", ident, "--all", "--undeclare", cwd=cfg.root, pause=True)
+    elif action == "convert":
+        convert_var(cfg, ident)
+        try:
+            input("\n[Enter]")
+        except (EOFError, KeyboardInterrupt):
+            pass
+    return level, project, env
+
+
 # ───────────────────────────── main ─────────────────────────────
 
 def build_parser():
@@ -1893,6 +2411,12 @@ def build_parser():
     p.add_argument("name")
     p.add_argument("-e", "--env")
     p.add_argument("--prod", action="store_true")
+    p = sub.add_parser("_preview")
+    p.add_argument("level")
+    p.add_argument("project")
+    p.add_argument("root")
+    p.add_argument("env")
+    p.add_argument("ident")
     p = sub.add_parser("check")
     p.add_argument("--all", action="store_true")
     return ap
@@ -1901,7 +2425,7 @@ def build_parser():
 HANDLERS = {"init": cmd_init, "bind": cmd_bind, "status": cmd_status, "use": cmd_use, "set": cmd_set, "unset": cmd_unset,
             "rename": cmd_rename, "check": cmd_check, "copy": cmd_copy, "diff": cmd_diff, "env": cmd_env,
             "project": cmd_project, "import": cmd_import, "export-example": cmd_export_example,
-            "copy-value": cmd_copy_value}
+            "copy-value": cmd_copy_value, "_preview": cmd_preview}
 
 
 class RunArgs:
@@ -1952,10 +2476,10 @@ def main(argv):
         return run_main(argv[1:])
     ap = build_parser()
     a = ap.parse_args(argv)
-    if not a.cmd:
-        ap.print_help()
-        return 2
     try:
+        if not a.cmd:
+            tui()
+            return 0
         HANDLERS[a.cmd](a)
     except Fail as e:
         warn(e.msg)

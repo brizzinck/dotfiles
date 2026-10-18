@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Test of `envs` (DEV-b) against the FAKE vault of tests/vault-browse/bin (rbw, bw, bw-serve.py, pinentry, wl-copy, notify-send)
 # plus fake mise and logger in tests/envs/bin. Never touches the real vault, the real state or the owner's session.
-#   infrastructure/tests/envs/run.sh [--quick] [--keep]     --quick skips the tmux TUI and the timing section (doctor runs it)
+#   infrastructure/tests/envs/run.sh [--quick] [--keep] [--only=15]   --quick skips the tmux TUI and the timing section (doctor runs it);
+#                                                                     --only=15 runs just the TUI section (development)
 # After every section: no secret sentinel in any argv log, captured output, notification, state file, journald line or `ps`.
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 ENVS="$REPO/.local/bin/envs"
 QUICK=0 KEEP=0
-for a in "$@"; do case $a in --quick) QUICK=1 ;; --keep) KEEP=1 ;; *) echo "usage: run.sh [--quick] [--keep]" >&2; exit 2 ;; esac; done
+ONLY=""
+for a in "$@"; do case $a in --quick) QUICK=1 ;; --keep) KEEP=1 ;; --only=*) ONLY=${a#--only=} ;; *) echo "usage: run.sh [--quick] [--keep] [--only=15]" >&2; exit 2 ;; esac; done
 
 ENVS_TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/envs-test.XXXXXX")
 # shellcheck source=env.sh
@@ -101,6 +103,7 @@ scan() { # label: no sentinel in any place a leak could go
 
 section() { printf '\n== %s\n' "$1"; }
 
+sections_1_14() {
 # ───────────── 1 parse / validate .envs.toml and the line editor
 section "1 .envs.toml: validation and the line editor"
 reset
@@ -455,6 +458,110 @@ check "project delete: items in the trash, folder gone (DELETE /object/folder), 
 e project delete
 check "project delete without a terminal is refused" test $RC != 0
 scan "section 14"
+
+}
+
+sections_15_16() {
+if ((QUICK)); then
+  printf '\n(--quick: the tmux TUI section and the timing section are skipped)\n'
+else
+# ───────────── 15 TUI in a private tmux server
+section "15 TUI (private tmux server)"
+reset; bind_proj
+tm() { tmux -L "$SOCK" "$@"; }
+screen_raw() { tm capture-pane -p -J -t t 2>/dev/null; }
+screen_masked() { # the screen with every secret checked: a sentinel on it is a leak (except while a reveal is expected)
+  local out s
+  out=$(screen_raw)
+  for s in "${SECRETS[@]}"; do grep -aqF -- "$s" <<<"$out" && echo "$s" >>"$T/leaks.log"; done
+  printf '%s\n' "$out"
+}
+scr_has() { screen_raw | grep -aqE -- "$1"; }
+wait_scr() { local i max=$(( ${2:-8} * 5 )); for ((i = 0; i < max; i++)); do scr_has "$1" && return 0; sleep 0.2; done; return 1; }
+key() { tm send-keys -t t "$@"; sleep "${KDELAY:-0.35}"; }
+: >"$T/leaks.log"
+tm new-session -d -s t -x 150 -y 40 "bash --noprofile --norc -c '. $HERE/env.sh >/dev/null; cd $PROJ; $ENVS; echo EXIT[\$?]; sleep 60'"
+check "starts inside a project on its environments" wait_scr 'billing.*rbw unlocked' 12
+screen_masked >/dev/null
+check "the environment rows: dev, stage, prod (protected marked)" bash -c "s=\$(tmux -L $SOCK capture-pane -p -J -t t); grep -q 'dev' <<<\"\$s\" && grep -q 'stage' <<<\"\$s\" && grep -q 'prod .*protected' <<<\"\$s\""
+check "preview of an environment shows names masked (no value)" wait_scr 'DATABASE_URL +••••••••' 6
+key Enter
+check "Enter opens the variables of dev: secrets set, the undeclared field flagged" wait_scr 'DATABASE_URL +secret set' 8
+check "variables: the undeclared EXTRA_FIELD is listed as extra" scr_has 'EXTRA_FIELD +secret extra'
+screen_masked >/dev/null
+key Escape
+KDELAY=0.9 key v
+check "v reveals the value of the current row in the preview" wait_scr 'SECRET-billing-dev-db' 8
+key C-j
+sleep 0.8
+check "moving the cursor hides it again (the screen shows no sentinel)" bash -c "! tmux -L $SOCK capture-pane -p -J -t t | grep -aq SECRET-billing-dev-db"
+: >"$FAKE_DIR/clip.txt"; : >"$FAKE_DIR/clip.events"
+key Escape
+KDELAY=1.2 key y
+check "y copies the value through wl-copy --sensitive" bash -c "grep -q 'copy --sensitive' '$FAKE_DIR/clip.events' && [ \"\$(cat '$FAKE_DIR/clip.txt')\" = SECRET-billing-dev-stripe ]"
+: >"$FAKE_DIR/clip.txt"; : >"$FAKE_DIR/clip.events"
+key Escape
+tm send-keys -t t -l н; sleep 1.4
+check "the Cyrillic twin of y works too" bash -c "grep -q 'copy --sensitive' '$FAKE_DIR/clip.events' && [ \"\$(cat '$FAKE_DIR/clip.txt')\" = SECRET-billing-dev-stripe ]"
+wait_scr 'DATABASE_URL +secret set' 5
+key Escape; key Escape
+check "Esc in NORMAL goes up one level (back to the environments)" wait_scr 'prod .*protected' 8
+key C-j; key C-j
+key Escape
+KDELAY=0.9 key u
+check "u on prod asks for the typed name" wait_scr 'Type prod to confirm' 8
+tm send-keys -t t "no" Enter; sleep 0.8
+key Enter
+check "a wrong confirmation does not select prod" bash -c "[ ! -s '$XDG_STATE_HOME/envs/active.tsv' ]"
+wait_scr 'prod .*protected' 8
+key Escape
+KDELAY=0.9 key u
+wait_scr 'Type prod to confirm' 8
+tm send-keys -t t "prod" Enter; sleep 1
+key Enter
+check "typing prod selects it (kind p, expires)" bash -c "awk -F'\t' '\$2==\"prod\" && \$4==\"p\" {f=1} END{exit !f}' '$XDG_STATE_HOME/envs/active.tsv'"
+(cd "$PROJ" && "$ENVS" use dev >/dev/null 2>&1)
+wait_scr 'prod .*protected' 8
+key C-k; key C-k
+key Enter
+wait_scr 'DATABASE_URL +secret set' 8
+key Escape
+KDELAY=0.9 key a
+check "a asks for a name" wait_scr 'New variable name' 8
+tm send-keys -t t "NEW_VAR" Enter; sleep 1.2
+tm send-keys -t t "Enter"; sleep 1.5
+check "the add flow reaches the hidden value prompt" wait_scr 'Value of NEW_VAR \(hidden\)' 12
+tm send-keys -t t "NEWVAL-copy-6" Enter; sleep 0.7
+tm send-keys -t t "NEWVAL-copy-6" Enter; sleep 3
+check "the new secret is in the dev item and declared" bash -c "[ \"\$(jq -r '.items[]|select(.id==\"e-dev\")|.fields[]|select(.name==\"NEW_VAR\")|.value' '$FAKE_DIR/vault.json')\" = NEWVAL-copy-6 ] && grep -q '^NEW_VAR' '$PROJ/.envs.toml'"
+screen_masked >/dev/null
+check "no secret was ever on the screen while the list was masked" bash -c "[ ! -s '$T/leaks.log' ]"
+tm send-keys -t t Escape; sleep 0.4; tm send-keys -t t Escape; sleep 0.5; tm send-keys -t t Escape; sleep 0.4; tm send-keys -t t Escape; sleep 0.4
+tm send-keys -t t Escape; sleep 0.4
+wait_scr 'EXIT\[0\]' 8 || { tm send-keys -t t Escape; sleep 0.5; tm send-keys -t t q; wait_scr 'EXIT\[0\]' 6; }
+check "Esc at the top level quits with status 0" scr_has 'EXIT\[0\]'
+tm kill-server 2>/dev/null
+check "the TUI refuses to start under an agent" bash -c "cd '$PROJ' && CLAUDECODE=1 '$ENVS' </dev/null >/dev/null 2>&1; [ \$? = 4 ]"
+check "the TUI without a terminal says so" bash -c "cd '$PROJ' && '$ENVS' </dev/null >/dev/null 2>&1; [ \$? = 2 ]"
+scan "section 15"
+
+# ───────────── 16 timing (report; fails only above 150 ms)
+section "16 timing"
+if command -v hyperfine >/dev/null; then
+  reset; bind_proj
+  (cd "$PROJ" && hyperfine -N -w3 -r 25 --export-json "$T/hf.json" "true" "$ENVS run -- true" >/dev/null 2>&1)
+  base=$(jq -r '.results[0]|(.median // .summary.time_wall_clock.median)*1000' "$T/hf.json"); runm=$(jq -r '.results[1]|(.median // .summary.time_wall_clock.median)*1000' "$T/hf.json")
+  printf 'info  envs run -- true: median %.1f ms, true alone %.2f ms (gate: overhead <= 60 ms; fake rbw is bash+jq)\n' "$runm" "$base"
+  check "envs run overhead is below 150 ms" bash -c "awk -v r=$runm 'BEGIN{exit !(r < 150)}'"
+else
+  echo "info  hyperfine is missing: timing skipped"
+fi
+fi
+
+}
+
+if [[ -z $ONLY ]]; then sections_1_14; fi
+sections_15_16
 
 printf '\nenvs test: %d passed, %d failed\n' "$PASS" "$FAILS"
 exit $((FAILS > 0))

@@ -201,11 +201,13 @@ of() {
   done
 }
 
-# Project secrets (envs, DEV-b): they live in Bitwarden and reach ONLY the command, never this shell. Aliases/functions such as
-# `grun` cannot be wrapped (envs execs a real program): use the real command, or `er go run .`.
-er() { envs run -- "$@" }                                  # run a command with the project's secrets of the active environment
-ere() { local e=$1; shift; envs run -e "$e" -- "$@" }       # run a command with the project's secrets of environment ENV
-ert() { envs run -- mise run "$@" }                        # run a mise task with the project's secrets
+# Run a command with the project's secrets of the active environment (envs: they live in Bitwarden and reach only the command,
+# never this shell; a function or alias such as grun cannot be wrapped, use the real command: er go run .)
+er() { envs run -- "$@" }
+# Run a command with the project's secrets of environment ENV (ere stage go test ./...)
+ere() { local e=$1; shift; envs run -e "$e" -- "$@" }
+# Run a mise task with the project's secrets (ert test)
+ert() { envs run -- mise run "$@" }
 
 # was rg(): shadowed ripgrep (false "no matches" for agents via the shell snapshot)
 grun() {
