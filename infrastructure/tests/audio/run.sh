@@ -516,6 +516,19 @@ X
     logged "pw-metadata -n default -d 0 default.configured.audio.source" "$F/log" && [ $rc -eq 0 ] && pass "13 A2 $mode: the pin is cleared with ee-ctl auto, run ends ok (rc $rc)" || fail "13 A2 $mode clear (rc $rc: $(cat "$F/err"))"
   done
   rm -f "$F/on-metadata"
+  # FIX5 (review 16): easyeffects_source is the default WITHOUT a pin (priority rule missing): fix mode runs ee-ctl auto for the A line,
+  # a restart of EasyEffects is not tried (it cannot help), and the boot notification names the real problem
+  for mode in --boot fix; do
+    [ "$QUICK" = 1 ] && [ "$mode" = fix ] && continue
+    ae_fixture; echo easyeffects_source >"$F/default-source"; echo '[]' >"$F/pw-dump.json"
+    ee_stop; ee_start --preset mic-clean; ee_wait
+    if [ "$mode" = fix ]; then ae 2>"$F/err"; rc=$?; else ae --boot 2>"$F/err"; rc=$?; fi
+    logged "default source is easyeffects_source, forgetting a manual choice" "$F/log" && pass "13 FIX5 $mode: an A line with no pin still runs ee-ctl auto" || fail "13 FIX5 $mode auto ($(cat "$F/log"))"
+    ! logged "restart easyeffects" "$F/log" && pass "13 FIX5 $mode: no useless restart of EasyEffects for an A line" || fail "13 FIX5 $mode restart"
+    if [ "$mode" = --boot ]; then
+      grep -q "^notify.*default microphone is EasyEffects' own output" "$F/log" && ! grep -q 'noise suppression is not running' "$F/log" && [ $rc -eq 1 ] && pass "13 FIX5: the boot notification names the A problem, not 'noise suppression is not running'" || fail "13 FIX5 boot wording (rc $rc: $(grep ^notify "$F/log"))"
+    fi
+  done
   if [ "$QUICK" = 0 ]; then
   # A3: every wireplumber restart is followed by a restart of a running EasyEffects (the metadata target of its streams is lost)
   ae_fixture; ee_stop; ee_start --preset mic-clean; ee_wait
@@ -550,12 +563,23 @@ X
   EE_QUIT_WAIT=3 "$EE" quit-stray 2>/dev/null; rc=$?
   sleep 0.2
   [ $rc -eq 0 ] && logged quit_app "$F/ee-log" && ! kill -0 "$STRAY" 2>/dev/null && pass "13 A5: quit-stray sends quit_app to an EasyEffects outside the unit and it exits" || fail "13 A5 quit-stray (rc $rc)"
+  [ "$(grep -c '^notify .*EasyEffects started outside' "$F/log")" = 1 ] && logged "logger -t ee-ctl closed an EasyEffects" "$F/log" && pass "13 FIX5: closing a stray EasyEffects is logged and notified once" || fail "13 FIX5 stray notice ($(grep -c notify "$F/log"))"
   rm -f "$EE_SOCKET"
   ( exec -a "$EE_PROC_NAME" python3 -I "$HERE/fake-ee.py" "$EE_SOCKET" "$F/ee-log" ) &
   STRAY=$!; FAKEPIDS+=("$STRAY"); ee_wait
   unitname=$(sed -n '$s|.*/||p' /proc/self/cgroup)
   EE_UNIT_NAME="$unitname" EE_QUIT_WAIT=1 "$EE" quit-stray 2>/dev/null
   kill -0 "$STRAY" 2>/dev/null && pass "13 A5: an EasyEffects inside the unit's cgroup is left alone" || fail "13 A5 in-unit"
+  : >"$F/log"
+  # FIX5: a unit whose name merely CONTAINS the name (the test's scope with its first character cut: a substring of the cgroup text) is not "inside"
+  EE_UNIT_NAME="${unitname:1}" EE_QUIT_WAIT=1 "$EE" quit-stray 2>/dev/null
+  sleep 0.2
+  ! kill -0 "$STRAY" 2>/dev/null && pass "13 FIX5: only the exact last cgroup component counts as the unit (a substring match left it running)" || fail "13 FIX5 exact cgroup match"
+  ( exec -a "$EE_PROC_NAME" python3 -I "$HERE/fake-ee.py" "$EE_SOCKET" "$F/ee-log" ) &
+  STRAY=$!; FAKEPIDS+=("$STRAY"); ee_wait
+  : >"$F/log"
+  EE_UNIT_NAME="$unitname" EE_QUIT_WAIT=1 "$EE" quit-stray 2>/dev/null
+  [ "$(grep -c '^notify ' "$F/log")" = 0 ] && pass "13 FIX5: an EasyEffects inside the unit is left alone without a notification" || fail "13 FIX5 in-unit notice"
   kill "$STRAY" 2>/dev/null; wait "$STRAY" 2>/dev/null; rm -f "$EE_SOCKET"
   ( exec -a "$EE_PROC_NAME" sleep 30 ) &   # does not listen at all: quit_app is not heard, SIGTERM ends it
   STRAY=$!; FAKEPIDS+=("$STRAY"); sleep 0.3
@@ -567,6 +591,16 @@ X
   U="$REPO/.config/systemd/user/easyeffects.service"
   q=$(grep -n '^ExecStartPre=.*ee-ctl quit-stray' "$U" | head -1 | cut -d: -f1); pr=$(grep -n '^ExecStartPre=.*ee-ctl prepare' "$U" | head -1 | cut -d: -f1)
   [ -n "$q" ] && [ -n "$pr" ] && [ "$q" -lt "$pr" ] && pass "13 A5: the unit runs quit-stray before prepare" || fail "13 A5 unit order"
+
+  # FIX5 (review 4): doctor measures the microphone only with --live (audio-mic and audio-ee-signal), and the help does not claim an HFP switch
+  python3 -B -I -c '
+import sys
+t = open(sys.argv[1]).read()
+i = t.index("# audio-mic:")
+j = t.index("audio-ensure\" --mic 2>&1)", i)
+head = t[:2500]
+ok = "$LIVE\" != 1" in t[i:j] and "forces a Bluetooth headset into HFP" not in head and "--live" in head
+sys.exit(0 if ok else 1)' "$REPO/doctor.sh" && pass "13 FIX5: doctor audio-mic is opt-in (--live) and the --live help has no HFP claim" || fail "13 FIX5 doctor audio-mic gate"
 
   # A7: one reply is read without waiting for a newline (get_global_bypass sends a bare digit)
   ee_start --preset mic-clean; ee_wait

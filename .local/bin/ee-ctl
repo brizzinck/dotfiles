@@ -12,7 +12,7 @@
 #                              WirePlumber priorities (52-mic-priority.conf: USB > Bluetooth > built-in) decide again
 #   ee-ctl start|restart       systemctl --user reset-failed + start|restart easyeffects
 #   ee-ctl quit-stray          an EasyEffects that runs outside easyeffects.service (started from the launcher after a tray Quit)
-#                              is asked to quit (quit_app, then SIGTERM after 5 s); the unit runs this before `prepare`
+#                              is asked to quit (quit_app, then SIGTERM after 5 s; logged and ONE notification); the unit runs this before `prepare`
 # 
 # Why a socket client and no D-Bus/CLI: EasyEffects 8 listens on a QLocalServer ("EasyEffectsServer", newline-terminated text
 # commands, one reply line for getters). Qt wants a runtime dir that is 0700, and /run/user/1000 is 0710 here (the usr
@@ -446,12 +446,18 @@ def cmd_status(args):
 
 
 def in_unit(pid):
-    """True when the process belongs to the cgroup of easyeffects.service."""
+    """True when the process runs in the cgroup of easyeffects.service: the LAST path component of its cgroup is the unit name
+    (exact match; a substring test also accepted app2unit / uwsm style `app-...-easyeffects.service` scopes of a hand-started one)."""
+    unit = env("EE_UNIT_NAME", "easyeffects.service")
     try:
         with open("/proc/%d/cgroup" % pid) as f:
-            return env("EE_UNIT_NAME", "easyeffects.service") in f.read()
+            for line in f.read().splitlines():
+                path = line.split(":", 2)[-1].rstrip("/")
+                if path.rsplit("/", 1)[-1] == unit:
+                    return True
     except OSError:
-        return False
+        pass
+    return False
 
 
 def cmd_quit_stray(args):
@@ -477,6 +483,11 @@ def cmd_quit_stray(args):
     if any(p in ee_pids() for p in stray):
         print("ee-ctl: the stray EasyEffects did not quit", file=sys.stderr)
         return 1
+    # not silent: the owner may have opened it on purpose and `prepare` is about to rewrite the managed keys of its settings
+    run(["logger", "-t", "ee-ctl", "closed an EasyEffects started outside easyeffects.service (pid %s); the unit runs it now" % " ".join(map(str, stray))])
+    if not os.environ.get("EE_NO_NOTIFY"):
+        run(["notify-send", "-a", "audio", "-h", "string:x-dunst-stack-tag:ee-stray",
+             "EasyEffects started outside the service was closed; it runs as the service now (settings changed in its window were not kept)"])
     return 0
 
 

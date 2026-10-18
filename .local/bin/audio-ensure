@@ -318,15 +318,29 @@ ee_chain_steps() {
   systemctl --user is-active --quiet easyeffects || "$EE_CTL" start
   ee_wait_ready
   out="$(ee_problems | grep '^[AC]')"
-  if [ -n "$out" ]; then
-    log "EasyEffects chain broken, restarting the unit once: $(cut -f2 <<<"$out" | paste -sd';' | sed 's/;/; /g')"
+  # an A line (the default source is easyeffects_source although a microphone exists) is not fixed by restarting the unit: forget a
+  # manual choice (ee-ctl auto) so the WirePlumber priorities decide again, and look again
+  if grep -q '^A' <<<"$out"; then
+    log "default source is easyeffects_source, forgetting a manual choice: $("$EE_CTL" auto 2>&1)"
+    nap 1
+    out="$(ee_problems | grep '^[AC]')"
+  fi
+  if grep -q '^C' <<<"$out"; then
+    log "EasyEffects chain broken, restarting the unit once: $(grep '^C' <<<"$out" | cut -f2 | paste -sd';' | sed 's/;/; /g')"
     "$EE_CTL" restart
     ee_wait_ready
     out="$(ee_problems | grep '^[AC]')"
   fi
   if [ -n "$out" ]; then
-    log "still broken after the restart: $(cut -f2 <<<"$out" | paste -sd';' | sed 's/;/; /g')"
-    [ "$MODE" = boot ] && notify-send -a audio -u normal "Audio" "noise suppression is not running, apps get the raw mic (journalctl -t audio-ensure)" 2>/dev/null
+    log "still broken: $(cut -f2 <<<"$out" | paste -sd';' | sed 's/;/; /g')"
+    if [ "$MODE" = boot ]; then
+      # worded by problem class: a broken chain = raw mic; only the A line = the default source is EasyEffects' own output
+      if grep -q '^C' <<<"$out"; then
+        notify-send -a audio -u normal "Audio" "noise suppression is not running, apps get the raw mic (journalctl -t audio-ensure)" 2>/dev/null
+      else
+        notify-send -a audio -u normal "Audio" "the default microphone is EasyEffects' own output (priority rule 52-mic-priority.conf missing?): ee-ctl auto, journalctl -t audio-ensure" 2>/dev/null
+      fi
+    fi
     return 1
   fi
   log "mic chain ok: $(pactl get-default-source 2>/dev/null) -> easyeffects (RNNoise) -> apps"
