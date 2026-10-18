@@ -17,3 +17,6 @@ tmux	tmux
 magick	imagemagick
 notify-send	libnotify
 speedtest-cli	speedtest-cli
+hurl	hurl
+act	act
+glab	glab

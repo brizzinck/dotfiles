@@ -667,6 +667,38 @@ check "10: .zshrc exports the lazysql privacy switches for hand runs" bash -c "g
 scan "10"
 }
 
+sections_13u() {
+section "13u user-tools.sh (pinned user-level installs), packages"
+UT="$REPO/infrastructure/dev/user-tools.sh"
+mkdir -p "$T/ut/bin" "$T/ut/gobin" "$T/ut/home"
+cat >"$T/ut/bin/go" <<'EOS'
+#!/bin/sh
+case "$1 $2" in
+  "env GOBIN") echo "$UT_GOBIN" ;;
+  "version -m") [ -n "$UT_GO_VERSION" ] && printf '\tpath\tx/y\n\tmod\tgithub.com/x/y\t%s\n' "$UT_GO_VERSION" ;;
+esac
+EOS
+printf '#!/bin/sh\n[ "$1" = list ] && { [ -n "$UT_PIPX_JSON" ] && echo "$UT_PIPX_JSON" || echo "{}"; }\n' >"$T/ut/bin/pipx"
+printf '#!/bin/sh\n[ "$1" = ls ] && { [ -n "$UT_NPM_JSON" ] && echo "$UT_NPM_JSON" || echo "{}"; }\n' >"$T/ut/bin/npm"
+printf '#!/bin/sh\n[ "$1 $2" = "install --list" ] && printf "%%b" "${UT_CARGO_LIST:-}"\n' >"$T/ut/bin/cargo"
+chmod +x "$T/ut/bin"/*
+run_ut() { PATH="$T/ut/bin:/usr/bin:/bin" HOME="$T/ut/home" UT_GOBIN="$T/ut/gobin" "$@"; }
+out=$(run_ut "$UT" --dry-run 2>&1)
+check "13u: nothing installed: every pinned tool is planned with its exact version (go: module@tag, pipx ==, npm @, cargo --locked --version)" bash -c "grep -qF 'would run: go install github.com/jorgerojas26/lazysql@v0.7.0' <<<'$out' && grep -qF 'would run: go install github.com/dlvhdr/gh-dash/v4@v4.26.2' <<<'$out' && grep -qF 'would run: pipx install posting==2.11.1' <<<'$out' && grep -qF 'would run: npm install -g --ignore-scripts gitlab-ci-local@4.76.1' <<<'$out' && grep -qF 'would run: cargo install --locked --version 0.9.3 glab-tui-crate' <<<'$out'"
+check "13u: --dry-run changes nothing (no gobin file, no config copy)" bash -c "[ -z \"\$(ls -A '$T/ut/gobin')\" ] && [ ! -e '$T/ut/home/.config' ]"
+touch "$T/ut/gobin/lazysql" "$T/ut/gobin/gh-dash"; chmod +x "$T/ut/gobin"/*
+out=$(UT_GO_VERSION=v9.0.0 UT_PIPX_JSON='{"venvs":{"posting":{"metadata":{"main_package":{"package_version":"2.12.0"}}}}}' UT_NPM_JSON='{"dependencies":{"gitlab-ci-local":{"version":"4.76.1"}}}' UT_CARGO_LIST='glab-tui-crate v0.9.3:\n    glab-tui\n' run_ut "$UT" --dry-run 2>&1)
+check "13u: installed versions at or above the pin are skipped (sysup may be ahead of the pins)" bash -c "! grep -q 'would run' <<<'$out' && grep -q 'posting 2.12.0 present' <<<'$out' && grep -q 'glab-tui 0.9.3 present' <<<'$out'"
+out=$(UT_GO_VERSION=v0.6.0 run_ut "$UT" --dry-run --only lazysql 2>&1)
+check "13u: an older version is upgraded to the pin; --only limits the steps" bash -c "grep -qF 'would run: go install github.com/jorgerojas26/lazysql@v0.7.0' <<<'$out' && ! grep -q posting <<<'$out'"
+out=$(run_ut "$UT" --dry-run --only glab-tui 2>&1)
+check "13u: the glab-tui config is copied once when missing (planned in dry run)" grep -q 'would copy' <<<"$out"
+check "13u: the pins are the documented floor (CLAUDE.md names them)" bash -c "grep -q 'v0.7.0' '$UT' && grep -q 'v4.26.2' '$UT' && grep -q '2.11.1' '$UT'"
+check "13u: bash -n clean for the install scripts" bash -c "bash -n '$UT' && bash -n '$REPO/install.sh' && bash -n '$REPO/apply-system.sh'"
+check "13u: apply-system.sh and install.sh list hurl act glab python-pipx (in sync)" bash -c "grep -q 'hurl act glab python-pipx' '$REPO/apply-system.sh' && grep -q 'hurl act glab python-pipx' '$REPO/install.sh'"
+check "13u: install-hints.tsv offers hurl, act and glab" bash -c "grep -q '^hurl	hurl' '$REPO/.config/hub/install-hints.tsv' && grep -q '^act	act' '$REPO/.config/hub/install-hints.tsv' && grep -q '^glab	glab' '$REPO/.config/hub/install-hints.tsv'"
+}
+
 run_section() { [[ -z $ONLY || $ONLY == "$1" ]] && "$2"; }
 run_section 1 sections_1
 run_section 2 sections_2_3
@@ -677,6 +709,7 @@ run_section 7 sections_7
 run_section 8 sections_8
 run_section 9 sections_9
 run_section 10 sections_10
+run_section 13u sections_13u
 run_section 11 sections_11_12
 
 printf '\ndev test: %d passed, %d failed\n' "$PASS" "$FAILS"

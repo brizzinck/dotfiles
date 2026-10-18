@@ -60,6 +60,7 @@ packages=(
   xorg-xcursorgen librsvg                                                           # build deps of the local everforest-cursor-theme package (infrastructure/cursor)
   rofimoji wtype udiskie                                                            # polkit agent, clipboard, OSD, screenshots, picker, emoji (rofimoji = the emoji data of emoji.sh), automount
   bat eza git-delta github-cli trash-cli dust duf watchexec just go-yq xh shfmt dive hyperfine
+  hurl act glab python-pipx                                                         # DEV-d: HTTP tests (api test), GitHub Actions locally (ci), GitLab CLI (token through envs run -g), pipx (posting)
   mise usage                                                                        # tool versions per project (replaces direnv: .config/zsh/mise.zsh), usage = its zsh completion generator
   difftastic                                                                        # structural diff (difft): git dft / dlog / dshow, second lazygit diff renderer
   atuin                                                                             # local shell history (no sync), Ctrl+R list in the modal fzf (~/.config/zsh/history.zsh)
@@ -165,6 +166,9 @@ log "npm (user-local prefix, no sudo)"
 npm config set prefix "$HOME/.npm-global"
 export PATH="$HOME/.npm-global/bin:$PATH"
 npm install -g sql-formatter
+
+log "Dev tools (user level, pinned): lazysql, gh-dash, posting, gitlab-ci-local, glab-tui"
+"$DOTFILES/infrastructure/dev/user-tools.sh" || warn "user-tools.sh failed — run it again later: ~/dotfiles/infrastructure/dev/user-tools.sh"
 
 # ───────────────────────────── 4. AI agents ───────────────────────────────────
 log "AI CLIs: Claude Code, Codex, Gemini"

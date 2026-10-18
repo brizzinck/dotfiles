@@ -267,6 +267,9 @@ REPO_PACKAGES=(
   # cli tools (shellcheck comes from the AUR as shellcheck-bin, see AUR_PACKAGES)
   bat eza git-delta github-cli trash-cli dust duf watchexec just go-yq xh shfmt
   dive hyperfine
+  # DEV-d: hurl = HTTP tests (`api test`), act = GitHub Actions locally (`ci`), glab = GitLab CLI (token through envs run -g, see .zshrc);
+  # the user-level tools (lazysql, gh-dash, posting, gitlab-ci-local, glab-tui) are pinned in infrastructure/dev/user-tools.sh
+  hurl act glab python-pipx
   # DEV-b: mise = tool versions per project (replaces direnv; .config/zsh/mise.zsh), usage = its zsh completion generator
   mise usage
   # DEV-a: gitleaks = secret scan of the pre-commit hook of the public dotfiles repo (.githooks/pre-commit); atuin = local
