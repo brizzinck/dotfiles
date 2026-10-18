@@ -20,3 +20,4 @@ speedtest-cli	speedtest-cli
 hurl	hurl
 act	act
 glab	glab
+llama-server	llama-cpp ggml-vulkan

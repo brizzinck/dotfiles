@@ -17,7 +17,7 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Desktop | [System, power, bar](#system-power-bar) | 12 |
 | Desktop | [Pointer from the keyboard](#pointer-from-the-keyboard) | 21 |
 | Desktop | [Other Hyprland binds](#other-hyprland-binds) | 16 |
-| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 170 |
+| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 175 |
 | Terminal | [tmux: this setup](#tmux-this-setup) | 58 |
 | Terminal | [tmux: stock prefix keys](#tmux-stock-prefix-keys) | 80 |
 | Terminal | [Terminal: ghostty](#terminal-ghostty) | 13 |
@@ -471,17 +471,22 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; x c` | AI and MCP: Chrome: my profile |
 | `Super+; x d` | AI and MCP: Telegram digest |
 | `Super+; x g` | AI and MCP: Telegram chats |
+| `Super+; x h` | AI and MCP: Local LLM chat |
 | `Super+; x i` | AI and MCP: Install pinned servers |
+| `Super+; x k` | AI and MCP: Local LLM model |
 | `Super+; x l` | AI and MCP: Gateway logs |
 | `Super+; x m` | AI and MCP: Telegram: allow sending |
 | `Super+; x n` | AI and MCP: Window, text only |
+| `Super+; x o` | AI and MCP: Local LLM status |
 | `Super+; x p` | AI and MCP: Telegram send chats |
 | `Super+; x q` | AI and MCP: Question about the selection |
 | `Super+; x r` | AI and MCP: Restart gateway |
 | `Super+; x s` | AI and MCP: Gateway status |
 | `Super+; x t` | AI and MCP: Telegram setup |
 | `Super+; x u` | AI and MCP: Telegram status |
+| `Super+; x v` | AI and MCP: Download LLM model |
 | `Super+; x w` | AI and MCP: Ask about the window |
+| `Super+; x z` | AI and MCP: Unload local LLM |
 | `Super+; j a` | Dev: API client |
 | `Super+; j c` | Dev: Check projects |
 | `Super+; j d` | Dev: Databases |
