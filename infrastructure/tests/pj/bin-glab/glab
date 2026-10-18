@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
-# fake glab: auth status, repo list --mine -F json (FAKE_DIR/glab.json), repo clone PATH DEST
+# fake glab: auth status, repo list --mine -F json [-P PER -p PAGE] (FAKE_DIR/glab.json, paged like glab), repo clone PATH DEST
 echo "glab $*" >>"$FAKE_DIR/log"
 case "$1 $2" in
   "auth status") exit 0 ;;
-  "repo list") cat "$FAKE_DIR/glab.json"; exit 0 ;;
+  "repo list")
+    per=30 page=1; args=("$@")
+    for ((i = 0; i < ${#args[@]}; i++)); do
+      [[ ${args[i]} == -P ]] && per=${args[i + 1]}
+      [[ ${args[i]} == -p ]] && page=${args[i + 1]}
+    done
+    python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); n, p = int(sys.argv[2]), int(sys.argv[3]); print(json.dumps(d[(p - 1) * n:p * n]))' "$FAKE_DIR/glab.json" "$per" "$page"
+    exit 0 ;;
   "repo clone") mkdir -p "$4" && git init -q -b main "$4" && git -C "$4" remote add origin "https://gitlab.com/$3.git"; exit 0 ;;
 esac
 exit 1

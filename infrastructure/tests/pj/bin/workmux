@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
-# fake workmux: logs argv, cwd and $TMUX; `add BRANCH` / `open NAME` create the window wm-<name> in the parent session of
-# the server named by $TMUX (like the real one); FAKE_DIR/workmux.fail makes it fail
+# fake workmux: logs argv, cwd and $TMUX; `add BRANCH` / `open NAME` create the window wm-<handle> in the parent session of
+# the server named by $TMUX (like the real one, 0.1.276: the handle is the last path part of the branch, `feat/x` -> wm-x); FAKE_DIR/workmux.fail makes it
+# fail. Like the real one it reads <cwd>/.workmux.yaml and runs its `post_create: CMD` line (logged as "workmux-hook CMD").
 echo "workmux $* | cwd=$PWD | TMUX=${TMUX:-}" >>"$FAKE_DIR/log"
 cmd=$1; shift
 name=${1:-}; sess=""
 while (($#)); do [[ $1 == --parent-session ]] && sess=$2; shift; done
-if [[ -e $FAKE_DIR/workmux.fail ]]; then echo "workmux: boom, cannot create" >&2; exit 1; fi
-tmux new-window -d -t "=$sess:" -n "wm-$(basename "$name")" -c "$PWD" 2>/dev/null
+if [[ -e $FAKE_DIR/workmux.fail ]]; then echo "${WORKMUX_FAIL_TEXT:-workmux: boom, cannot create}" >&2; exit 1; fi
+if [[ -f .workmux.yaml ]]; then
+  hook=$(sed -n 's/^post_create: *//p' .workmux.yaml | head -1)
+  if [[ -n $hook ]]; then echo "workmux-hook $hook" >>"$FAKE_DIR/log"; sh -c "$hook"; fi
+fi
+handle=$(basename "$name")
+tmux new-window -d -t "=$sess:" -n "wm-$handle" -c "$PWD" 2>/dev/null

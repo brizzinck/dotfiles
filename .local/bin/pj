@@ -15,14 +15,16 @@ Keys: SUPER+P (Hyprland), tmux prefix F, zsh Ctrl+X p / NORMAL gp, hub row "Proj
   pj open --task | --clone         the Hyprland entry, straight to the new workmux task (repo list) or the clone picker
   pj kill NAME [--force]           kill a session (the `d` key without UI; --force skips the confirmation)
   pj layout [DIR]                  print the tmux commands a new session for DIR would run (nothing is created)
-  pj trust [DIR]                   show the commands of DIR/.tmux-session.toml and trust this version
+  pj trust [DIR]                   show the commands of DIR/.tmux-session.toml (and ask about its .workmux.yaml) and trust
+                                   this version; with --dry-run only says what it would ask
   pj check                         doctor: config, roots, key wiring; one PASS/FAIL/INFO line each, exit 1 on FAIL
   --dry-run                        print the tmux / hyprd / terminal commands instead of running them
 
 Picker keys (NORMAL letters, ua/ru twins from the shared library; Alt keys work in both modes):
   Enter       attach or create            o  alt-o   a window of its own (focus the window that shows it, else a new ghostty)
-  d  alt-d    kill the session            t  alt-t   trust the repo's .tmux-session.toml
-  w  alt-w    new workmux task in the row's repo (branch picker, a window wm-* in the project session)
+  d  alt-d    kill the session            t  alt-t   trust the repo's .tmux-session.toml and .workmux.yaml
+  w  alt-w    new workmux task in the row's repo (needs a trusted .workmux.yaml; branch picker, Alt+Enter = use the typed
+              name as it is; a window wm-* in the project session)
   c  alt-c    clone a repository from gh / glab (cached list, destination prompt) and open it
   alt-Enter   create with the default layout, ignoring .tmux-session.toml
 
@@ -32,7 +34,7 @@ runs it); other directory = sh. Override: <repo>/.tmux-session.toml, used only a
 
   name = "sms"                   # optional session name
   [[window]]
-  name = "code"                  # [A-Za-z0-9_.-]+, unique, never wm-* (workmux owns those)
+  name = "code"                  # [A-Za-z0-9_-]+, unique, never wm-* (workmux owns those)
   command = "nvim"               # optional, typed into an interactive shell
   dir = "."                      # optional, relative to the repo root, must stay inside it
   focus = true                   # optional, the window selected after creation
@@ -43,11 +45,12 @@ runs it); other directory = sh. Override: <repo>/.tmux-session.toml, used only a
 
 Config: ${XDG_CONFIG_HOME:-~/.config}/pj/config.toml (roots, depth, zoxide, clone_dir, ai_autostart); missing = defaults.
 Test hooks (env): PJ_CONFIG PJ_STATE_DIR PJ_CACHE_DIR PJ_TMUX PJ_HYPRCTL PJ_HYPRD PJ_TERMINAL PJ_ZOXIDE PJ_NOTIFY PJ_GH PJ_GLAB
-PJ_WORKMUX PJ_HYPR=0|1 PJ_REPO PJ_TIMING=1 FZF_MENU_HERE=1.
+PJ_WORKMUX PJ_HYPR=0|1 PJ_REPO PJ_WALK_ENTRIES PJ_WALK_MS PJ_TIMING=1 FZF_MENU_HERE=1.
 """
 import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
 import time
@@ -78,8 +81,14 @@ IDLE_SHELLS = {"zsh", "bash", "fish", "sh", "dash", "nu", "elvish"}   # as term-
 SKIP_DIRS = {"node_modules", "vendor", "target", "build", "dist", "venv", ".venv", "__pycache__"}
 DEFAULTS = {"roots": ["~/job", "~/dotfiles"], "depth": 4, "zoxide": 30, "clone_dir": "~/job", "ai_autostart": False}
 PF = "#{window_id}\t#{pane_id}"
-NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")                # window names: no '.' (tmux parses `win.1` as window + pane)
+SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")       # a layout's session name: '.' is turned into '_' like a directory name
 MAX_WINDOWS = 12
+MAX_WORKTREES = 3                                         # worktree rows shown per repo, the rest sit behind a "+N worktrees" row
+MAX_CMD = 200                                             # longest command of a layout file
+WALK_ENTRIES = int(os.environ.get("PJ_WALK_ENTRIES") or 20000)   # budgets of the repo walk (then repos.txt fills the rest)
+WALK_SECONDS = float(os.environ.get("PJ_WALK_MS") or 40) / 1000
+TMP_ROOT = os.path.realpath(os.environ.get("TMPDIR") or "/tmp")
 DRY = False
 
 # NORMAL-mode letter -> action, Alt key -> action (Alt works in both modes)
@@ -129,9 +138,20 @@ def run(argv, timeout=None, **kw):
         return subprocess.CompletedProcess(argv, 124, "", "timed out")
 
 
+def targs(args):
+    """tmux ends a command at an argument that ends with ';'. A backslash in front of that ';' makes it literal."""
+    return [a[:-1] + "\\;" if a.endswith(";") else a for a in args]
+
+
+def lit(s):
+    """A string for a tmux argument that tmux format-expands (-s, -c, -n, display-message): `#` starts `#(shell)` and
+    `#{...}`, `##` is a literal one."""
+    return s.replace("#", "##")
+
+
 def tm(*args):
     """A read-only tmux call (also runs in --dry-run)."""
-    return run(TMUX + list(args))
+    return run(TMUX + targs(args))
 
 
 def tmx(*args):
@@ -139,7 +159,19 @@ def tmx(*args):
     if DRY:
         print("DRY: " + shlex.join(TMUX + list(args)))
         return subprocess.CompletedProcess(args, 0, "", "")
-    return run(TMUX + list(args))
+    return run(TMUX + targs(args))
+
+
+def tgt(name):
+    """The `-t` target of the session NAME. `=NAME` is the exact-name form, but tmux reads `=$1` as the session id $1:
+    a name that does not start with [A-Za-z0-9_] is looked up and addressed by its id."""
+    if re.match(r"[A-Za-z0-9_]", name):
+        return "=" + name
+    for line in tm("list-sessions", "-F", "#{session_name}\t#{session_id}").stdout.splitlines():
+        n, _, i = line.partition("\t")
+        if n == name and i:
+            return i
+    return "=\x01" + name        # no such session; never `=$1`, which would hit the session with the id $1
 
 
 def tm_chain(cmds):
@@ -155,7 +187,7 @@ def tm_chain(cmds):
     for i, c in enumerate(cmds):
         if i:
             argv.append(";")
-        argv += c
+        argv += targs(c)
     r = run(TMUX + argv)
     if r.returncode != 0:
         raise PjError((r.stderr.strip().splitlines() or ["tmux failed"])[-1])
@@ -215,16 +247,117 @@ def sessions():
     return out
 
 
-def busy_by_session():
-    """session -> non-idle foreground commands of its panes (pane_current_command)."""
-    r = tm("list-panes", "-a", "-F", "#{session_name}\t#{pane_current_command}")
+RUNTIMES = {"node", "nodejs", "bun", "deno", "python", "python3", "ruby", "perl"}
+WITH_SUBCOMMAND = {"go", "cargo", "npm", "pnpm", "yarn", "make", "docker", "git", "uv", "pip", "pipx", "kubectl", "ssh"}
+
+
+def proc_label(argv):
+    """Short name of a command line (as term-procs.py): nvim, claude, go test, a script's name; '' = an idle shell."""
+    if not argv:
+        return ""
+    base = os.path.basename(argv[0]).lstrip("-")
+    if base in IDLE_SHELLS:
+        return ""
+    joined = " ".join(argv)
+    for agent in ("claude", "codex", "gemini"):
+        if re.search(r"(^|[/\s_-])" + agent + r"($|[\s/._-])", joined):
+            return agent
+    args = [a for a in argv[1:] if not a.startswith("-")]
+    if base in RUNTIMES and args:
+        script = re.sub(r"\.(m?js|cjs|py|rb|pl)$", "", os.path.basename(args[0]))
+        return script or base
+    if base in WITH_SUBCOMMAND and args:
+        return base + " " + args[0]
+    return base
+
+
+def proc_snapshot():
+    """pid -> (ppid, pgrp, tty device number) of every readable process."""
+    out = {}
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return out
+    for n in names:
+        if not n.isdigit():
+            continue
+        try:
+            with open(f"/proc/{n}/stat") as f:
+                raw = f.read()
+            tail = raw[raw.rindex(")") + 2:].split()
+            out[int(n)] = (int(tail[1]), int(tail[2]), int(tail[4]))
+        except (OSError, ValueError, IndexError):
+            continue
+    return out
+
+
+def proc_argv(pid):
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return [a.decode(errors="replace") for a in f.read().split(b"\0") if a]
+    except OSError:
+        return []
+
+
+def pane_busy(scope):
+    """Panes of SCOPE (tmux list-panes arguments) with the non-idle commands that run on their terminal: the foreground
+    job, background jobs (`cmd &`) and stopped ones (Ctrl+Z), all of them descendants of the pane's shell (a daemon that
+    forked away, like wl-copy keeping the clipboard, is not work). pj's own process group is not counted: when pj runs in
+    a pane (Ctrl+X p, `pj`), that pane is only as busy as the rest of its terminal says. [{session, window, busy}]"""
+    r = tm("list-panes", *scope, "-F", "#{session_name}\t#{window_name}\t#{pane_pid}\t#{pane_tty}\t#{pane_current_command}")
+    lines = [l.split("\t") for l in r.stdout.splitlines() if l.count("\t") >= 4]
+    snap = proc_snapshot()
+    mypg = os.getpgrp()
+    ttys, own_ttys = {}, set()
+    for pid, (_, pg, tty) in snap.items():
+        if tty and pg != mypg:
+            ttys.setdefault(tty, []).append(pid)
+        elif tty:
+            own_ttys.add(tty)
+
+    def under(pid, root):
+        for _ in range(64):
+            if pid == root:
+                return True
+            pid = snap.get(pid, (0, 0, 0))[0]
+            if pid <= 1:
+                return False
+        return False
+
+    out = []
+    for sess, win, root, tty, cur in lines:
+        try:
+            nr = os.stat(tty).st_rdev
+        except OSError:
+            nr = None
+        labels = []
+        pids = [p for p in sorted(ttys.get(nr, [])) if root.isdigit() and under(p, int(root))] if nr else []
+        for pid in pids:
+            lab = proc_label(proc_argv(pid))
+            if lab:
+                labels.append(lab)
+        if not pids and nr not in own_ttys:
+            cur = cur.lstrip("-")                       # no process found on the terminal: what tmux says
+            labels = [cur] if cur and cur not in IDLE_SHELLS else []
+        out.append({"session": sess, "window": win, "busy": list(dict.fromkeys(labels))})
+    return out
+
+
+def busy_by_session(deep=True):
+    """session -> non-idle commands of its panes (see pane_busy). Not DEEP: only the foreground command tmux reports, one
+    tmux call (the picker rows use that for sessions with a client; the leftovers are scanned)."""
     res = {}
-    for line in r.stdout.splitlines():
-        s, _, cmd = line.partition("\t")
-        cmd = cmd.lstrip("-")
-        if cmd and cmd not in IDLE_SHELLS:
-            res.setdefault(s, []).append(cmd)
-    return res
+    if not deep:
+        for line in tm("list-panes", "-a", "-F", "#{session_name}\t#{pane_current_command}").stdout.splitlines():
+            sess, _, cmd = line.partition("\t")
+            cmd = cmd.lstrip("-")
+            if cmd and cmd not in IDLE_SHELLS:
+                res.setdefault(sess, []).append(cmd)
+        return {k: list(dict.fromkeys(v)) for k, v in res.items()}
+    for p in pane_busy(["-a"]):
+        if p["busy"]:
+            res.setdefault(p["session"], []).extend(p["busy"])
+    return {k: list(dict.fromkeys(v)) for k, v in res.items()}
 
 
 def find_session(path, sess=None):
@@ -237,12 +370,14 @@ def find_session(path, sess=None):
 
 
 def sanitize(s):
-    return re.sub(r"[.: ]", "_", s)
+    """A session or window name from a path part: '.', ':', ' ' and '#' (tmux format escape) become '_'."""
+    return re.sub(r"[.: #]", "_", s)
 
 
 def fix_prefix(name):
-    """A name that tmux hooks and cleanup treat as throwaway (digits only, term-*) gets a p- prefix."""
-    if re.fullmatch(r"[0-9]+", name) or name.startswith("term-"):
+    """A name that tmux hooks and cleanup treat as throwaway (digits only, term-*) gets a p- prefix, and so does one that
+    does not start with [A-Za-z0-9_] (`=$1` would address the session id $1, `-x` looks like a flag)."""
+    if re.fullmatch(r"[0-9]+", name) or name.startswith("term-") or (name and not re.match(r"[A-Za-z0-9_]", name)):
         return "p-" + name
     return name or "root"
 
@@ -253,7 +388,7 @@ def pick_name(path, sess, want=None):
     taken = {s["name"] for s in sess}
     base = sanitize(os.path.basename(path))
     parent = sanitize(os.path.basename(os.path.dirname(path)))
-    cands = [fix_prefix(want)] if want else []
+    cands = [fix_prefix(sanitize(want))] if want else []
     cands += [fix_prefix(base), fix_prefix(f"{parent}-{base}")]
     for c in cands:
         if c not in taken:
@@ -279,14 +414,22 @@ def read_head(gitdir):
     return h[:7] or "?"
 
 
-def worktrees_of(repo):
-    """Linked worktrees of REPO from git's own files (no fork): [(path, branch)], prunable ones skipped."""
+def in_tmp(p):
+    p = os.path.realpath(p)
+    return p == TMP_ROOT or p.startswith(TMP_ROOT + "/")
+
+
+def worktrees_of(repo, every=False):
+    """Linked worktrees of REPO from git's own files (no fork): [(path, branch, mtime)] newest first, prunable ones
+    skipped. Unless EVERY, a worktree in the temp dir of a repo that is not itself there (an agent's scratch checkout) is
+    skipped too."""
     base = os.path.join(repo, ".git", "worktrees")
     out = []
     try:
         names = sorted(os.listdir(base))
     except OSError:
         return out
+    scratch_ok = every or in_tmp(repo)
     for n in names:
         try:
             with open(os.path.join(base, n, "gitdir")) as f:
@@ -296,7 +439,14 @@ def worktrees_of(repo):
         wt = os.path.dirname(dotgit)
         if not dotgit or not os.path.exists(dotgit) or "\t" in wt or "\n" in wt:
             continue
-        out.append((wt, read_head(os.path.join(base, n))))
+        if not scratch_ok and in_tmp(wt):
+            continue
+        try:
+            mt = os.stat(os.path.join(base, n, "HEAD")).st_mtime
+        except OSError:
+            mt = 0
+        out.append((wt, read_head(os.path.join(base, n)), mt))
+    out.sort(key=lambda w: -w[2])
     return out
 
 
@@ -311,16 +461,53 @@ def repo_of_worktree(wt):
     return m.group(1) if m and os.path.isdir(m.group(1)) else None
 
 
+def walk_cache(key, store=None):
+    """The repos the last complete walk found for KEY (roots + depth), from ~/.cache/pj/repos.txt (lines `KEY<TAB>repo`,
+    plain text: a json import costs more than the walk's budget slack); STORE saves a list."""
+    f = os.path.join(CACHE, "repos.txt")
+    lines = []
+    try:
+        with open(f) as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        pass
+    mine = [l[len(key) + 1:] for l in lines if l.startswith(key + "\t")]
+    if store is None:
+        return mine
+    if mine == store:
+        return store
+    keep = [l for l in lines if not l.startswith(key + "\t")]
+    try:
+        os.makedirs(CACHE, mode=0o700, exist_ok=True)
+        tmp = f"{f}.{os.getpid()}"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write("".join(l + "\n" for l in keep + [f"{key}\t{r}" for r in store if "\n" not in r]))
+        os.replace(tmp, f)
+    except OSError:
+        pass
+    return store
+
+
 def walk_repos(roots, depth):
     """Git repositories under ROOTS: stop at the first directory with a .git directory, skip dot dirs and build dirs.
-    A `.git` file (linked worktree, submodule) is not a repo of its own."""
+    A `.git` file (linked worktree, submodule) is not a repo of its own. The walk has a budget (WALK_ENTRIES directory
+    entries, WALK_SECONDS); when it runs out, the repos of the last complete walk (still there) fill the list."""
     repos, seen = [], set()
+    left, stop = [WALK_ENTRIES], time.monotonic() + WALK_SECONDS
+    cut = []
 
     def rec(d, lvl):
+        if cut:
+            return
         try:
             with os.scandir(d) as it:
                 entries = list(it)
         except OSError:
+            return
+        left[0] -= len(entries) + 1
+        if left[0] < 0 or time.monotonic() > stop:
+            cut.append(d)
             return
         for e in entries:
             if e.name == ".git":
@@ -341,7 +528,12 @@ def walk_repos(roots, depth):
 
     for r in roots:
         rec(r, 0)
-    return repos
+    key = "|".join(roots) + f"|{depth}"
+    if not cut:
+        walk_cache(key, repos)
+        return repos
+    extra = [r for r in walk_cache(key) if r not in seen and os.path.isdir(os.path.join(r, ".git"))]
+    return sorted(seen | set(extra))
 
 
 def zoxide_dirs(limit):
@@ -360,10 +552,16 @@ def zoxide_dirs(limit):
 
 # ───────────────────────────── rows ─────────────────────────────
 
-def collect(cfg):
-    """The picker rows as dicts: id, kind (session|repo|worktree|zoxide), name, path, display."""
+def collect(cfg, expanded=()):
+    """The picker rows as dicts: id, kind (session|repo|worktree|more|zoxide), name, path, display. Per repo the newest
+    MAX_WORKTREES worktrees are listed and the rest sit behind one `+N worktrees` row (Enter expands the repos in
+    EXPANDED)."""
     sess = sessions()
-    busy = busy_by_session()
+    # what runs in a term-*: tmux's foreground command, and for a detached one (a leftover that may hold work) the full
+    # scan: background and stopped jobs too
+    busy = busy_by_session(deep=False)
+    if any(s["name"].startswith("term-") and not s["attached"] for s in sess):
+        busy.update(busy_by_session())
     repos = walk_repos(cfg["roots"], cfg["depth"])
     info = {}
     for r in repos:
@@ -374,11 +572,14 @@ def collect(cfg):
     rows = []
 
     def worktree_rows(repo):
-        for wt, br in info.get(repo, {}).get("wts", []):
-            if os.path.normpath(wt) in spaths:
-                continue
+        wts = [w for w in info.get(repo, {}).get("wts", []) if os.path.normpath(w[0]) not in spaths]
+        shown = wts if repo in expanded else wts[:MAX_WORKTREES]
+        for wt, br, _ in shown:
             rows.append({"id": f"w:{wt}", "kind": "worktree", "name": f"{os.path.basename(repo)} ⎇ {br}", "path": wt,
                          "extra": "", "mark": " "})
+        if len(wts) > len(shown):
+            rows.append({"id": f"m:{repo}", "kind": "more", "name": f"{os.path.basename(repo)} ⎇ +{len(wts) - len(shown)} worktrees",
+                         "path": repo, "extra": "Enter shows them", "mark": " "})
 
     def term(s):
         return s["name"].startswith("term-")
@@ -406,7 +607,7 @@ def collect(cfg):
     listed = {x["path"] for x in rows} | spaths | {HOME, "/"}
     for r in info:
         listed.add(r)
-        listed.update(os.path.normpath(w) for w, _ in info[r]["wts"])
+        listed.update(os.path.normpath(w[0]) for w in info[r]["wts"])
     for d in zoxide_dirs(cfg["zoxide"]):
         if d in listed or "\t" in d or "\n" in d:
             continue
@@ -450,20 +651,35 @@ def default_windows(path, repo, cfg):
             {"name": "sh", "command": "", "enter": True, "dir": path, "focus": False, "panes": []}, ai]
 
 
-def parse_layout(root):
-    """Validate DIR/.tmux-session.toml: (name, windows). Raises PjError, fail closed."""
-    import tomllib
-    f = os.path.join(root, ".tmux-session.toml")
+def read_small(f, limit=64 * 1024):
+    """The bytes of the regular file F, read once: a symlink is not followed, anything over LIMIT is refused. The same
+    bytes are hashed and parsed, so a writer racing us cannot get content A run under the hash of content B."""
+    base = os.path.basename(f)
     try:
-        with open(f, "rb") as fh:
-            data = tomllib.load(fh)
-    except (OSError, tomllib.TOMLDecodeError) as e:
+        fd = os.open(f, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError as e:
+        raise PjError(f"{base}: " + ("is a symlink (not followed)" if os.path.islink(f) else e.strerror))
+    with os.fdopen(fd, "rb") as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            raise PjError(f"{base}: not a regular file")
+        data = fh.read(limit + 1)
+    if len(data) > limit:
+        raise PjError(f"{base}: larger than {limit // 1024} KiB")
+    return data
+
+
+def parse_layout(root, raw):
+    """Validate the bytes RAW of DIR/.tmux-session.toml: (name, windows). Raises PjError, fail closed."""
+    import tomllib
+    try:
+        data = tomllib.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
         raise PjError(f".tmux-session.toml: {e}")
     bad = set(data) - {"name", "window"}
     if bad:
         raise PjError(f".tmux-session.toml: unknown key {sorted(bad)[0]!r}")
     name = data.get("name")
-    if name is not None and (not isinstance(name, str) or not NAME_RE.match(name)):
+    if name is not None and (not isinstance(name, str) or not SESSION_NAME_RE.match(name)):
         raise PjError(".tmux-session.toml: name must match [A-Za-z0-9_.-]+")
     wins = data.get("window")
     if not isinstance(wins, list) or not wins or not all(isinstance(w, dict) for w in wins):
@@ -474,8 +690,10 @@ def parse_layout(root):
     out, names = [], set()
 
     def cmd_ok(c, where):
-        if not isinstance(c, str) or re.search(r"[\x00-\x1f\x7f]", c):
+        if not isinstance(c, str) or re.search(r"[\x00-\x1f\x7f-\x9f]", c):
             raise PjError(f".tmux-session.toml: {where}: command must be one line of text")
+        if len(c) > MAX_CMD or re.search(r" {10,}", c):   # the trust prompt must show all of it
+            raise PjError(f".tmux-session.toml: {where}: command is longer than {MAX_CMD} characters or hides text behind spaces")
         return c
 
     for w in wins:
@@ -484,7 +702,7 @@ def parse_layout(root):
             raise PjError(f".tmux-session.toml: unknown window key {sorted(bad)[0]!r}")
         wn = w.get("name")
         if not isinstance(wn, str) or not NAME_RE.match(wn):
-            raise PjError(".tmux-session.toml: every window needs a name matching [A-Za-z0-9_.-]+")
+            raise PjError(".tmux-session.toml: every window needs a name matching [A-Za-z0-9_-]+")
         if wn.startswith("wm-"):
             raise PjError(f".tmux-session.toml: window name {wn!r}: wm-* belongs to workmux")
         if wn in names:
@@ -524,10 +742,9 @@ def parse_layout(root):
     return name, out
 
 
-def sha256_file(f):
+def sha256_bytes(raw):
     import hashlib
-    with open(f, "rb") as fh:
-        return hashlib.sha256(fh.read()).hexdigest()
+    return hashlib.sha256(raw).hexdigest()
 
 
 def trusted_map():
@@ -562,11 +779,12 @@ def resolve_layout(path, cfg, ignore=False):
     lay = {"state": "default", "windows": default_windows(path, repo, cfg), "name": None, "sha": None, "error": "",
            "commands": []}
     f = os.path.join(path, ".tmux-session.toml")
-    if ignore or not repo or not os.path.isfile(f):
+    if ignore or not repo or not os.path.lexists(f):
         return lay
     try:
-        name, wins = parse_layout(path)
-        sha = sha256_file(f)
+        raw = read_small(f)
+        name, wins = parse_layout(path, raw)
+        sha = sha256_bytes(raw)
     except (PjError, OSError) as e:
         lay.update(state="invalid", error=str(e))
         return lay
@@ -603,7 +821,7 @@ def pick(rows, prompt, header="", here=None, preview=None):
     if header:
         cmd.append(f"--header={header}")
     if preview:
-        cmd.append(f"--preview={preview}")
+        cmd += [f"--preview={preview}", "--preview-window=right,50%,wrap"]
     p = subprocess.run(cmd, input="\n".join(rows) + "\n", stdout=subprocess.PIPE, text=True)
     out = p.stdout.splitlines()
     return out[0] if p.returncode == 0 and out else None
@@ -614,9 +832,9 @@ def confirm(question, lines, here=None):
     return bool(row) and row.split("\t")[0] == "yes"
 
 
-def pick_query(rows, prompt, header="", here=None, query="", extra=()):
+def pick_query(rows, prompt, header="", here=None, query="", extra=(), expect=""):
     """fzf-menu with --print-query: (row, query). A query that matches no row comes back as (None, query) (Enter on
-    nothing); a cancel is (None, None)."""
+    nothing); a cancel is (None, None). With EXPECT (fzf --expect keys) the answer is (row, query, key)."""
     if not have("fzf-menu"):
         raise PjError("fzf-menu is not installed")
     here = is_tty() if here is None else here
@@ -625,14 +843,22 @@ def pick_query(rows, prompt, header="", here=None, query="", extra=()):
         cmd.append(f"--header={header}")
     if query:
         cmd.append(f"--query={query}")
+    if expect:
+        cmd.append(f"--expect={expect}")
     cmd += list(extra)
     p = subprocess.run(cmd, input="\n".join(rows) + "\n", stdout=subprocess.PIPE, text=True)
-    out = p.stdout.splitlines()
-    if p.returncode == 0 and len(out) >= 2:
-        return out[1], out[0]
-    if p.returncode != 0 and out:
-        return None, out[0]
-    return None, None
+    out = p.stdout.split("\n")
+    if out and out[-1] == "":
+        out.pop()
+    off = 1 if expect else 0
+    key = out[1] if expect and len(out) > 1 else ""
+    if p.returncode == 0 and len(out) >= 2 + off:
+        res = (out[1 + off], out[0])
+    elif p.returncode != 0 and out:
+        res = (None, out[0])
+    else:
+        res = (None, None)
+    return res + (key,) if expect else res
 
 
 def available():
@@ -752,7 +978,7 @@ def focus_window(address):
 
 
 def new_window_for(name):
-    argv = TERMINAL + ["-e"] + TMUX + ["attach-session", "-t", f"={name}"]
+    argv = TERMINAL + ["-e"] + TMUX + ["attach-session", "-t", tgt(name)]
     if DRY:
         print("DRY: " + shlex.join(argv))
         return
@@ -775,7 +1001,7 @@ def say(ctx, msg, title="pj"):
     if ctx.mode == "hypr":
         notify(title, msg)
     elif ctx.mode == "switch" and ctx.client:
-        tmx("display-message", "-c", ctx.client, f"pj: {msg}")
+        tmx("display-message", "-c", ctx.client, lit(f"pj: {msg}"))   # messages carry names and tool output: no #() jobs
     else:
         print(f"pj: {msg}", file=sys.stderr)
 
@@ -793,14 +1019,14 @@ def leave_term(client, name):
     cmds = busy_by_session().get(cur)
     if not cmds:
         return ""
-    tmx("set-option", "-t", f"={cur}:", "destroy-unattached", "off")
+    tmx("set-option", "-t", tgt(cur) + ":", "destroy-unattached", "off")
     return (f"{cur} keeps running ({', '.join(dict.fromkeys(cmds))}); it stays at the top of the picker "
             f"and in \"Clean up detached terminal sessions\"")
 
 
 def switch_client(client, name):
     msg = leave_term(client, name)
-    r = tmx("switch-client", "-c", client, "-t", f"={name}")
+    r = tmx("switch-client", "-c", client, "-t", tgt(name))
     if r.returncode != 0:
         raise PjError((r.stderr.strip().splitlines() or ["switch-client failed"])[-1])
     return msg
@@ -829,40 +1055,96 @@ def activate(name, ctx, window=None, own_window=False):
             return f"session {name} is ready (no tmux client to switch)"
         return switch_client(ctx.client, name)
     if DRY:
-        print("DRY: " + shlex.join(TMUX + ["attach-session", "-t", f"={name}"]))
+        print("DRY: " + shlex.join(TMUX + ["attach-session", "-t", tgt(name)]))
         return ""
-    subprocess.run(TMUX + ["attach-session", "-t", f"={name}"])
+    subprocess.run(TMUX + ["attach-session", "-t", tgt(name)])
     return ""
 
 
 # ───────────────────────────── create and kill ─────────────────────────────
 
+def show(text):
+    """TEXT for a prompt: invisible and direction-changing characters (Unicode Cf, Zl, Zp: bidi marks, zero-width, line
+    separators) are shown as <U+XXXX>, so what is read is what runs."""
+    import unicodedata
+    return "".join(f"<U+{ord(c):04X}>" if unicodedata.category(c) in ("Cf", "Zl", "Zp") else c for c in clean(text))
+
+
+def wrapped(lines, width=100):
+    import textwrap
+    out = []
+    for l in lines:
+        out += textwrap.wrap(show(l), width, initial_indent="  ", subsequent_indent="      ",
+                             break_long_words=True, break_on_hyphens=False) or ["  "]
+    return out
+
+
+def bat_cmd(f):
+    return f"bat --style=plain --color=always {shlex.quote(f)} 2>/dev/null || cat {shlex.quote(f)}"
+
+
 def trust_prompt(path, lay, here=None):
     """'trust' | 'default' | None (cancelled) for an untrusted .tmux-session.toml."""
-    header = "This repo's .tmux-session.toml runs:\n" + "\n".join(
-        "  " + clean(c) for c in lay["commands"] or ["(no commands)"])
+    header = "This repo's .tmux-session.toml runs:\n" + "\n".join(wrapped(lay["commands"] or ["(no commands)"]))
     f = os.path.join(path, ".tmux-session.toml")
-    prev = f"bat --style=plain --color=always {shlex.quote(f)} 2>/dev/null || cat {shlex.quote(f)}"
-    row = pick(["default\tUse the default layout", "trust\tTrust this version and use it"], "layout", header, here, prev)
+    row = pick(["default\tUse the default layout", "trust\tTrust this version and use it"], "layout", header, here,
+               bat_cmd(f))
     return row.split("\t")[0] if row else None
 
 
+def workmux_gate(repo, here=None):
+    """workmux reads the repo's own .workmux.yaml (post_create hooks, pane commands), so it only runs after the same
+    sha256 trust as .tmux-session.toml, under the key <repo>/.workmux.yaml. Returns '' when it may run, else why not."""
+    f = os.path.join(repo, ".workmux.yaml")
+    if not os.path.lexists(f):
+        return ""
+    try:
+        raw = read_small(f)
+    except PjError as e:
+        return f"workmux was not run: {e}"
+    sha = sha256_bytes(raw)
+    if trusted_map().get(os.path.realpath(f)) == sha:
+        return ""
+    if DRY:
+        print(f"DRY: .workmux.yaml of {tilde(repo)} is NOT trusted (the picker would ask)")
+        return ""
+    lines = [l.strip() for l in raw.decode("utf-8", "replace").splitlines() if l.strip() and not l.strip().startswith("#")]
+    header = ("This repo's .workmux.yaml can run commands (hooks, pane commands) in every new worktree:\n" +
+              "\n".join(wrapped(lines[:12] + (["..."] if len(lines) > 12 else []))))
+    row = pick(["no\tDo not run workmux here", "yes\tTrust this version and run workmux"], "workmux", header, here,
+               bat_cmd(f))
+    if row and row.split("\t")[0] == "yes":
+        trust_store(f, sha)
+        return ""
+    return f".workmux.yaml of {os.path.basename(repo)} is not trusted, workmux was not run (t trusts it)"
+
+
 def create_session(name, root, windows):
-    """Create the detached session with its windows and panes in two tmux calls, then type the commands."""
+    """Create the detached session with its windows and panes in two tmux calls, then type the commands. A chain that
+    fails half way takes the half-built session with it (it would be reused by the next Enter)."""
+    try:
+        _create_session(name, root, windows)
+    except PjError:
+        if not DRY and tm("show-options", "-v", "-t", tgt(name) + ":", "@pj_path").stdout.strip() == root:
+            tmx("kill-session", "-t", tgt(name))
+        raise
+
+
+def _create_session(name, root, windows):
     cmds, tags = [], []
     for wi, w in enumerate(windows):
         if wi == 0:
-            cmds.append(["new-session", "-d", "-s", name, "-c", w["dir"], "-n", w["name"], "-P", "-F", PF])
-            cmds.append(["set-option", "-t", f"={name}:", "@pj_path", root])
+            cmds.append(["new-session", "-d", "-s", name, "-c", lit(w["dir"]), "-n", w["name"], "-P", "-F", PF])
+            cmds.append(["set-option", "-t", tgt(name) + ":", "@pj_path", root])
         else:
-            cmds.append(["new-window", "-d", "-t", f"={name}:", "-n", w["name"], "-c", w["dir"], "-P", "-F", PF])
+            cmds.append(["new-window", "-d", "-t", tgt(name) + ":", "-n", w["name"], "-c", lit(w["dir"]), "-P", "-F", PF])
         tags.append(("win", wi, 0))
     for wi, w in enumerate(windows):
         for pi, p in enumerate(w["panes"]):
-            c = ["split-window", "-d", "-t", f"={name}:={w['name']}", "-h" if p["split"] == "right" else "-v"]
+            c = ["split-window", "-d", "-t", tgt(name) + ":=" + w["name"], "-h" if p["split"] == "right" else "-v"]
             if p["size"]:
                 c += ["-l", f"{p['size']}%"]
-            cmds.append(c + ["-c", w["dir"], "-P", "-F", PF])
+            cmds.append(c + ["-c", lit(w["dir"]), "-P", "-F", PF])
             tags.append(("pane", wi, pi))
     out = tm_chain(cmds)
     if len(out) != len(tags):
@@ -920,17 +1202,15 @@ def ensure_session(path, cfg, ctx, ignore_layout=False):
 
 def kill_session(name, ctx, force=False, here=None):
     """The `d` logic. Returns a message."""
-    if tm("has-session", "-t", f"={name}").returncode != 0:
+    t = tgt(name)
+    if tm("has-session", "-t", t).returncode != 0:
         return f"no session {name}"
-    r = tm("list-panes", "-s", "-t", f"={name}", "-F", "#{window_name}\t#{pane_current_command}")
     busy, wm = [], []
-    for line in r.stdout.splitlines():
-        wn, _, cmd = line.partition("\t")
-        if cmd and cmd.lstrip("-") not in IDLE_SHELLS:
-            busy.append(cmd.lstrip("-"))
-        if wn.startswith("wm-") and wn not in wm:
-            wm.append(wn)
-    clients = [c for c in tm("list-clients", "-t", f"={name}", "-F", "#{client_name}").stdout.splitlines() if c]
+    for p in pane_busy(["-s", "-t", t]):
+        busy += p["busy"]
+        if p["window"].startswith("wm-") and p["window"] not in wm:
+            wm.append(p["window"])
+    clients = [c for c in tm("list-clients", "-t", t, "-F", "#{client_name}").stdout.splitlines() if c]
     others = [s["name"] for s in sessions() if s["name"] != name]
     if (busy or clients or wm) and not force:
         lines = []
@@ -945,8 +1225,8 @@ def kill_session(name, ctx, force=False, here=None):
             return "kept " + name
     if others:
         for c in clients:
-            tmx("switch-client", "-c", c, "-t", f"={others[0]}")
-    tmx("kill-session", "-t", f"={name}")
+            tmx("switch-client", "-c", c, "-t", tgt(others[0]))
+    tmx("kill-session", "-t", t)
     return f"killed {name}"
 
 
@@ -972,7 +1252,7 @@ def log_line(text):
 
 
 def wm_windows(session):
-    r = tm("list-windows", "-t", f"={session}:", "-F", "#{window_id}\t#{window_name}")
+    r = tm("list-windows", "-t", tgt(session) + ":", "-F", "#{window_id}\t#{window_name}")
     return [tuple(l.split("\t", 1)) for l in r.stdout.splitlines() if "\t" in l and l.split("\t", 1)[1].startswith("wm-")]
 
 
@@ -1001,27 +1281,35 @@ def task_repo(ident):
 
 def free_branches(repo):
     r = git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads", timeout=3)
-    used = {read_head(os.path.join(repo, ".git"))} | {b for _, b in worktrees_of(repo)}
+    used = {read_head(os.path.join(repo, ".git"))} | {b for _, b, _ in worktrees_of(repo, every=True)}
     return [b for b in r.stdout.splitlines() if b and b not in used]
 
 
 def new_task(ident, cfg, ctx, here):
-    """`w`: a new workmux task (worktree + wm-* window) in the project session of the row's repo."""
+    """`w`: a new workmux task (worktree + wm-* window) in the project session of the row's repo. The branch is picked
+    first (a cancel leaves nothing behind), then the session is made."""
     repo = task_repo(ident)
     if not repo:
         return False, "w needs a repo (or a session or worktree of one)"
     if not have(WORKMUX[0]):
         return False, "workmux is not installed"
-    name = ensure_session(repo, cfg, ctx)
-    if name is None:
-        return False, ""
+    why = workmux_gate(repo, here)
+    if why:
+        return False, why
     rows = [f"{b}\t{b}" for b in free_branches(repo)]
-    row, query = pick_query(rows, "branch", "type a new branch name or pick one, Enter", here)
-    branch = (row.split("\t")[0] if row else (query or "")).strip()
+    row, query, key = pick_query(rows, "branch", "Enter: pick the branch or use a typed name that matches nothing · "
+                                 "Alt+Enter: use the typed name as it is", here, expect="alt-enter")
+    if key == "alt-enter" or not row:
+        branch = (query or "").strip()
+    else:
+        branch = row.split("\t")[0].strip()
     if not branch:
         return False, ""
     if not BRANCH_RE.match(branch) or branch.startswith("-"):
         return False, f"not a usable branch name: {branch!r}"
+    name = ensure_session(repo, cfg, ctx)
+    if name is None:
+        return False, ""
     win, err = run_workmux(["add", branch, "--parent-session", name, "-b"], repo, name)
     if err:
         return False, f"workmux add failed: {err}"
@@ -1062,13 +1350,17 @@ def fetch_remote():
                 except (ValueError, KeyError, TypeError):
                     pass
     if have(GLAB[0]) and run(GLAB + ["auth", "status"], timeout=20).returncode == 0:
-        r = run(GLAB + ["repo", "list", "--mine", "-F", "json"], timeout=60)
-        try:
-            for x in json.loads(r.stdout or "[]"):
-                items.append({"src": "glab", "name": x["path_with_namespace"], "desc": x.get("description") or "",
-                              "archived": bool(x.get("archived")), "pushed": x.get("last_activity_at") or ""})
-        except (ValueError, KeyError, TypeError):
-            pass
+        for page in range(1, 41):       # glab pages its list (a page of 100 at most); stop at the first short page
+            r = run(GLAB + ["repo", "list", "--mine", "-F", "json", "-P", "100", "-p", str(page)], timeout=60)
+            try:
+                got = json.loads(r.stdout or "[]")
+                for x in got:
+                    items.append({"src": "glab", "name": x["path_with_namespace"], "desc": x.get("description") or "",
+                                  "archived": bool(x.get("archived")), "pushed": x.get("last_activity_at") or ""})
+            except (ValueError, KeyError, TypeError):
+                break
+            if len(got) < 100:
+                break
     seen, out = set(), []
     for it in sorted(items, key=lambda i: i["pushed"], reverse=True):
         if (it["src"], it["name"]) not in seen:
@@ -1089,7 +1381,8 @@ def save_remote(items):
 
 
 def origin_slug(repo):
-    """owner/name (lower case) of the origin remote, read from .git/config without git; '' when there is none."""
+    """The path after the host of the origin remote (owner/name, grp/sub/name), lower case, read from .git/config
+    without git; '' when there is none."""
     try:
         with open(os.path.join(repo, ".git", "config")) as f:
             txt = f.read()
@@ -1098,11 +1391,28 @@ def origin_slug(repo):
     m = re.search(r'\[remote "origin"\][^\[]*?url\s*=\s*(\S+)', txt)
     if not m:
         return ""
-    u = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?/?$", m.group(1))
-    return u.group(1).lower() if u else ""
+    u = m.group(1)
+    if "://" in u:                                   # https://host/p/q.git, ssh://git@host:2222/p/q.git
+        path = u.split("://", 1)[1].partition("/")[2]
+    elif ":" in u and not u.startswith("/"):         # git@host:p/q.git
+        path = u.split(":", 1)[1]
+    else:
+        path = u
+    path = re.sub(r"(\.git)?/*$", "", path.lstrip("/"))
+    return path.lower()
+
+
+_CLONED = {}
 
 
 def cloned_map(cfg):
+    key = (tuple(cfg["roots"]), cfg["clone_dir"], cfg["depth"])
+    if key not in _CLONED:                           # one walk per run (the clone flow asks twice)
+        _CLONED[key] = _cloned_map(cfg)
+    return _CLONED[key]
+
+
+def _cloned_map(cfg):
     out = {}
     for r in walk_repos(list(dict.fromkeys(cfg["roots"] + [cfg["clone_dir"]])), cfg["depth"]):
         slug = origin_slug(r)
@@ -1203,11 +1513,12 @@ def enter_worktree(wt, cfg, ctx):
     if name is None:
         return False, ""
     if have(WORKMUX[0]) and repo != wt:
-        win, err = run_workmux(["open", handle, "--parent-session", name], repo, name)
-        if win or DRY:
+        why = workmux_gate(repo, False if ctx.mode == "hypr" else None)
+        win, err = (None, why) if why else run_workmux(["open", handle, "--parent-session", name], repo, name)
+        if win or (DRY and not why):
             return True, activate(name, ctx, window=win)
-        say(ctx, f"workmux open failed ({err or 'no window appeared'}); using a plain window")
-    out = tm_chain([["new-window", "-d", "-t", f"={name}:", "-n", f"wt-{sanitize(handle)}", "-c", wt, "-P", "-F", PF]])
+        say(ctx, (why or f"workmux open failed ({err or 'no window appeared'})") + "; using a plain window")
+    out = tm_chain([["new-window", "-d", "-t", tgt(name) + ":", "-n", f"wt-{sanitize(handle)}", "-c", lit(wt), "-P", "-F", PF]])
     return True, activate(name, ctx, window=out[0].split("\t")[0] if out else None)
 
 
@@ -1227,18 +1538,33 @@ def open_row(ident, cfg, ctx, ignore_layout=False, own_window=False):
 
 
 def trust_flow(path, cfg, here=None):
+    """`t` / `pj trust`: trust the repo's .tmux-session.toml and, when it has one, its .workmux.yaml (workmux runs the
+    commands of that file). With --dry-run it only says what it would ask."""
+    repo = repo_of_worktree(path) or path
+    wm_file = os.path.join(repo, ".workmux.yaml")
     lay = resolve_layout(path, cfg)
-    if lay["state"] == "default":
-        return f"no .tmux-session.toml in {tilde(path)}"
+    msgs = []
     if lay["state"] == "invalid":
-        return lay["error"]
-    if lay["state"] == "trusted":
-        return ".tmux-session.toml is already trusted"
-    choice = trust_prompt(path, lay, here)
-    if choice == "trust":
-        trust_store(path, lay["sha"])
-        return f"trusted {tilde(path)}/.tmux-session.toml"
-    return "not trusted"
+        msgs.append(lay["error"])
+    elif lay["state"] == "trusted":
+        msgs.append(".tmux-session.toml is already trusted")
+    elif lay["state"] == "untrusted":
+        if DRY:
+            msgs.append(f"would ask to trust {tilde(path)}/.tmux-session.toml")
+        else:
+            choice = trust_prompt(path, lay, here)
+            if choice == "trust":
+                trust_store(path, lay["sha"])
+                msgs.append(f"trusted {tilde(path)}/.tmux-session.toml")
+            else:
+                msgs.append("not trusted")
+    if os.path.lexists(wm_file):
+        if DRY:
+            msgs.append(f"would check the trust of {tilde(repo)}/.workmux.yaml")
+        else:
+            why = workmux_gate(repo, here)
+            msgs.append(why or f"{tilde(repo)}/.workmux.yaml is trusted")
+    return "; ".join(msgs) or f"no .tmux-session.toml in {tilde(path)}"
 
 
 def act(action, ident, cfg, ctx, here):
@@ -1271,8 +1597,9 @@ def picker(cfg, ctx, here, mode=""):
     av = available()
     notice, query = "", ""
     actions = {a for _, a in NORMAL_KEYS}
+    expanded = set()      # repos whose `+N worktrees` row was opened
     while True:
-        rows = collect(cfg)
+        rows = collect(cfg, expanded)
         if mode == "task":
             rows = [x for x in rows if x["kind"] != "zoxide" and task_repo(x["id"])]
         rc, q, key, ident = run_menu(rows, av, here, query, notice, mode)
@@ -1285,6 +1612,13 @@ def picker(cfg, ctx, here, mode=""):
             notice = "not available here"
             continue
         query = q
+        if ident.startswith("m:"):
+            if action == "enter":
+                expanded.add(ident[2:])
+                notice = ""
+            else:
+                notice = "that row only lists more worktrees: Enter shows them"
+            continue
         leave, msg = act(action, ident, cfg, ctx, here)
         if leave:
             say(ctx, msg)
@@ -1349,7 +1683,7 @@ def cmd_preview(ident):
     path = path_of(ident)
     out = []
     if kind == "s":
-        r = tm("list-windows", "-t", f"={val}", "-F",
+        r = tm("list-windows", "-t", tgt(val), "-F",
                "#{window_index}: #{window_name} [#{pane_current_command}] #{pane_current_path}")
         out += r.stdout.splitlines()
         busy = sorted(set(busy_by_session().get(val, [])))
@@ -1360,6 +1694,13 @@ def cmd_preview(ident):
             out.append("")
         out += git_block(path)
         out += ["", "layout: " + layout_line(resolve_layout(path, cfg))]
+        wm = os.path.join(repo_of_worktree(path) or path, ".workmux.yaml")
+        if os.path.lexists(wm):
+            try:
+                ok = trusted_map().get(os.path.realpath(wm)) == sha256_bytes(read_small(wm))
+                out.append("workmux: .workmux.yaml " + ("trusted" if ok else "NOT trusted: t to trust (w and Enter on a worktree need it)"))
+            except PjError as e:
+                out.append(f"workmux: {e}")
         rd = readme_head(path)
         if rd:
             out += ["", *rd]
@@ -1448,7 +1789,7 @@ def cmd_trust(args, cfg):
     lay = resolve_layout(path, cfg)
     print(f"{tilde(path)}: {layout_line(lay)}")
     for c in lay["commands"]:
-        print("  runs: " + c)
+        print("  runs: " + show(c))
     print(trust_flow(path, cfg))
     return 0
 

@@ -5,6 +5,8 @@
 #   pick:PATTERN       the same
 #   act:ACTION:PATTERN a NORMAL-mode key (the library's become(printf query ACTION id)) on the first row matching PATTERN
 #   query:TEXT         Enter on a query that matches nothing (--print-query: the query, exit 1)
+#   qt:QUERY:KEY:PAT   the typed QUERY, then the Alt key KEY (empty = Enter) on the first row matching PAT
+#   aquery:TEXT        Alt+Enter on a query that matches nothing (--print-query --expect: the query, the key, exit 1)
 rows=$(cat)
 { echo "fzf-menu $*"; printf '%s\n' "$rows" | sed 's/^/  row: /'; } >>"$FAKE_DIR/log"
 pq=0 exp=0 q=""
@@ -14,7 +16,9 @@ if [[ -s ${FAKE_PICKS:-/nonexistent} ]]; then pick=$(head -1 "$FAKE_PICKS"); sed
 action=""
 case $pick in
   query:*) ((pq)) && echo "${pick#query:}"; exit 1 ;;
+  aquery:*) ((pq)) && echo "${pick#aquery:}"; ((exp)) && echo alt-enter; exit 1 ;;
   act:*) rest=${pick#act:}; action=${rest%%:*}; pick=${rest#*:} ;;
+  qt:*) rest=${pick#qt:}; q=${rest%%:*}; rest=${rest#*:}; action=${rest%%:*}; pick=${rest#*:} ;;
   pick:*) pick=${pick#pick:} ;;
 esac
 [[ -n $pick ]] || exit 1
