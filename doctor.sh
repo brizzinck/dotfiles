@@ -1395,6 +1395,79 @@ else
   info pj ".local/bin/pj not present"
 fi
 
+# ── DEV-d: terminal dev tools (db, api, ci, forge: lazysql, posting, hurl, gh-dash, act, glab, glab-tui, gitlab-ci-local) ──────
+dd_tools=""
+for dd_t in lazysql gh-dash posting hurl act glab glab-tui gitlab-ci-local; do
+  dd_p="$(command -v "$dd_t" 2>/dev/null || true)"
+  [ -n "$dd_p" ] || for dd_d in .local/bin go/bin .cargo/bin .npm-global/bin; do [ -x "$HOME/$dd_d/$dd_t" ] && { dd_p="$HOME/$dd_d/$dd_t"; break; }; done
+  if [ -z "$dd_p" ]; then
+    case "$dd_t" in hurl|act|glab) dd_h="sudo ~/dotfiles/apply-system.sh --only install" ;; *) dd_h="~/dotfiles/infrastructure/dev/user-tools.sh" ;; esac
+    dd_tools="$dd_tools $dd_t missing ($dd_h);"
+  else
+    case "$dd_t" in
+      lazysql|gh-dash) dd_v="$(go version -m "$dd_p" 2>/dev/null | awk '$1 == "mod" {print $3; exit}')" ;;
+      posting) dd_v="$(pipx list --short 2>/dev/null | awk '$1 == "posting" {print $2; exit}')" ;;
+      *) dd_v="$(timeout 5 "$dd_p" --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)" ;;
+    esac
+    dd_tools="$dd_tools $dd_t ${dd_v:-?};"
+  fi
+done
+info dev-tools "${dd_tools# }"
+if [ -x "$DOTFILES/infrastructure/tests/dev/run.sh" ]; then
+  if dd_t="$("$DOTFILES/infrastructure/tests/dev/run.sh" --quick 2>&1)"; then ok dev-test "dev launchers against fakes: $(printf '%s' "$dd_t" | tail -1)"; else bad dev-test "$(printf '%s' "$dd_t" | grep -m1 '^FAIL') (infrastructure/tests/dev/run.sh)"; fi
+else
+  bad dev-test "infrastructure/tests/dev/run.sh missing"
+fi
+dd_bad=""
+for dd_f in lazysql.toml posting.yaml gh-dash-theme.yml glab-tui.toml; do
+  for dd_v in black night; do [ -s "$DOTFILES/themes/generated/$dd_v/$dd_f" ] || dd_bad="$dd_bad themes/generated/$dd_v/$dd_f is missing (render.py);"; done
+done
+if command -v posting >/dev/null 2>&1 || [ -x "$HOME/.local/bin/posting" ]; then
+  [ -e "$HOME/.local/share/posting/themes/everforest.yaml" ] || dd_bad="$dd_bad the posting theme link ~/.local/share/posting/themes/everforest.yaml is broken (stow .);"
+  [ "$(readlink -f "$HOME/.config/posting/config.yaml" 2>/dev/null)" = "$(readlink -f "$DOTFILES/.config/posting/config.yaml")" ] || dd_bad="$dd_bad ~/.config/posting/config.yaml is not the stowed file;"
+fi
+if command -v glab-tui >/dev/null 2>&1 || [ -x "$HOME/.cargo/bin/glab-tui" ]; then
+  [ -e "$HOME/.config/glab-tui/themes/everforest.toml" ] || dd_bad="$dd_bad the glab-tui theme link ~/.config/glab-tui/themes/everforest.toml is broken (stow .);"
+fi
+if [ -n "$dd_bad" ]; then bad dev-theme "$dd_bad"; else ok dev-theme "lazysql, posting, gh-dash and glab-tui outputs exist for both variants; installed tools have their theme links"; fi
+dd_bad=""
+grep -q 'LAZYSQL_NO_TELEMETRY=1' "$DOTFILES/.zshrc" && grep -q 'LAZYSQL_NO_UPDATE_CHECK=1' "$DOTFILES/.zshrc" || dd_bad="$dd_bad .zshrc does not export the lazysql privacy switches;"
+grep -q -- '--no-telemetry' "$DOTFILES/.local/bin/db" && grep -q 'LAZYSQL_NO_UPDATE_CHECK' "$DOTFILES/.local/bin/db" || dd_bad="$dd_bad db does not pass --no-telemetry and LAZYSQL_NO_UPDATE_CHECK;"
+grep -A1 '^history:' "$DOTFILES/.config/posting/config.yaml" 2>/dev/null | grep -q 'enabled: false' || dd_bad="$dd_bad the posting config does not switch its response history off (it keeps resolved URLs and bodies on disk);"
+if [ -n "$dd_bad" ]; then bad dev-privacy "$dd_bad"; else ok dev-privacy "lazysql telemetry and update check off (zshrc + db), posting history off"; fi
+if command -v glab >/dev/null 2>&1; then
+  dd_g="$(timeout 5 glab config get telemetry --global 2>/dev/null)"
+  info glab-telemetry "glab config telemetry = ${dd_g:-unset (this glab version may have no such key)}"
+fi
+if command -v gh >/dev/null 2>&1; then
+  dd_s="$(timeout 10 gh auth status 2>&1 | grep -m1 -i 'logged in')"
+  case "$dd_s" in
+    *keyring*) info gh-token-storage "the gh token is in the keyring" ;;
+    *hosts.yml*) info gh-token-storage "the gh token is in ~/.config/gh/hosts.yml (plaintext; agents use gh; moving it is owner decision Q2 of DEV-d)" ;;
+    "") info gh-token-storage "gh is not logged in" ;;
+    *) info gh-token-storage "$dd_s" ;;
+  esac
+fi
+if command -v act >/dev/null 2>&1 || [ -x "$HOME/.local/bin/act" ]; then
+  [ "$(readlink -f "$HOME/.config/act/actrc" 2>/dev/null)" = "$(readlink -f "$DOTFILES/.config/act/actrc")" ] && ok act-config "~/.config/act/actrc is the stowed file" || bad act-config "act is installed but ~/.config/act/actrc is not the stowed file (cd ~/dotfiles && stow .)"
+fi
+[ -e "$HOME/.gitlab-ci-local/variables.yml" ] && info gcl-home-vars "~/.gitlab-ci-local/variables.yml exists (a plaintext secrets file of gitlab-ci-local; existence only, not read)"
+dd_g="$HOME/.config/envs"
+if [ -e "$dd_g/global.toml" ]; then
+  dd_bad=""
+  [ "$(readlink -f "$dd_g/global.toml")" = "$(readlink -f "$DOTFILES/.config/envs/global.toml")" ] || dd_bad="$dd_bad global.toml is not the stowed file;"
+  for dd_f in global.toml global.local.toml; do
+    [ -e "$dd_g/$dd_f" ] || continue
+    dd_m="$(stat -L -c %a "$dd_g/$dd_f")"
+    [ "$(stat -L -c %u "$dd_g/$dd_f")" = "$(id -u)" ] || dd_bad="$dd_bad $dd_f is not owned by you;"
+    [ $((8#$dd_m & 8#022)) = 0 ] || dd_bad="$dd_bad $dd_f is writable by group or others ($dd_m);"
+  done
+  [ ! -L "$dd_g" ] || dd_bad="$dd_bad ~/.config/envs is a symlink: global.local.toml would land in the repo (make it a real directory, stow .);"
+  if [ -n "$dd_bad" ]; then bad envs-global "$dd_bad"; else info envs-global "global scope: global.toml linked$([ -e "$dd_g/global.local.toml" ] && echo ", global.local.toml $(stat -c %a "$dd_g/global.local.toml")" || echo ", no global.local.toml (optional)")"; fi
+else
+  info envs-global "no ~/.config/envs/global.toml yet (cd ~/dotfiles && stow .)"
+fi
+
 # ── stow symlinks: every tracked config file must resolve to the repo copy ──────
 broken=""
 n_links=0
