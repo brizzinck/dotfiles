@@ -1,0 +1,49 @@
+{
+ "ps": [
+  {
+   "name": "devproj-mariadb-1",
+   "state": "running",
+   "image": "mariadb:11.4",
+   "service": "mariadb",
+   "workdir": "@ROOT@",
+   "files": "@ROOT@/docker-compose.yml"
+  },
+  {
+   "name": "devproj-pg-1",
+   "state": "exited",
+   "image": "postgres:16-alpine",
+   "service": "pg",
+   "workdir": "@ROOT@",
+   "files": "@ROOT@/docker-compose.yml"
+  },
+  {
+   "name": "other-mariadb-1",
+   "state": "running",
+   "image": "mariadb:11.4",
+   "service": "mariadb",
+   "workdir": "/somewhere/else",
+   "files": "/somewhere/else/docker-compose.yml"
+  },
+  {
+   "name": "td-clickhouse",
+   "state": "running",
+   "image": "clickhouse/clickhouse-server:23.3.8.21-alpine",
+   "service": "",
+   "workdir": "",
+   "files": ""
+  },
+  {
+   "name": "plain-nginx",
+   "state": "running",
+   "image": "nginx:1.27",
+   "service": "",
+   "workdir": "",
+   "files": ""
+  }
+ ],
+ "ports": {
+  "devproj-mariadb-1:3306": "127.0.0.1:32768",
+  "other-mariadb-1:3306": "127.0.0.1:41000",
+  "td-clickhouse:9000": "127.0.0.1:19000"
+ }
+}

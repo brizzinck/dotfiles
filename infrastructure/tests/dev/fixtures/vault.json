@@ -1,0 +1,146 @@
+{
+ "folders": [
+  {
+   "id": "f-env",
+   "name": "Env"
+  },
+  {
+   "id": "f-dev",
+   "name": "Env/devproj"
+  },
+  {
+   "id": "f-glob",
+   "name": "Env/global"
+  },
+  {
+   "id": "f-work",
+   "name": "Work"
+  }
+ ],
+ "items": [
+  {
+   "id": "d-dev",
+   "type": 2,
+   "name": "dev",
+   "folderId": "f-dev",
+   "notes": null,
+   "secureNote": {
+    "type": 0
+   },
+   "login": null,
+   "fields": [
+    {
+     "name": "DB_PASSWORD",
+     "value": "SECRET-db-pass-dev",
+     "type": 1
+    },
+    {
+     "name": "DB_URL",
+     "value": "postgres://svc:SECRET-url-pw@dbhost:5432/appdb?sslmode=require&application_name=SECRET-url-query",
+     "type": 1
+    },
+    {
+     "name": "API_TOKEN",
+     "value": "SECRET-api-token",
+     "type": 1
+    },
+    {
+     "name": "NPM_TOKEN",
+     "value": "SECRET-npm-token",
+     "type": 1
+    },
+    {
+     "name": "DB_USER",
+     "value": "svc-SECRET-user",
+     "type": 1
+    }
+   ],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null
+  },
+  {
+   "id": "d-stage",
+   "type": 2,
+   "name": "stage",
+   "folderId": "f-dev",
+   "notes": null,
+   "secureNote": {
+    "type": 0
+   },
+   "login": null,
+   "fields": [
+    {
+     "name": "DB_PASSWORD",
+     "value": "SECRET-p@ss:w/rd#?%",
+     "type": 1
+    },
+    {
+     "name": "API_TOKEN",
+     "value": "SECRET-api-token-stage",
+     "type": 1
+    }
+   ],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null
+  },
+  {
+   "id": "d-prod",
+   "type": 2,
+   "name": "prod",
+   "folderId": "f-dev",
+   "notes": null,
+   "secureNote": {
+    "type": 0
+   },
+   "login": null,
+   "fields": [
+    {
+     "name": "DB_PASSWORD",
+     "value": "SECRET-db-pass-prod",
+     "type": 1
+    },
+    {
+     "name": "API_TOKEN",
+     "value": "SECRET-api-token-prod",
+     "type": 1
+    }
+   ],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null
+  },
+  {
+   "id": "g-def",
+   "type": 2,
+   "name": "default",
+   "folderId": "f-glob",
+   "notes": null,
+   "secureNote": {
+    "type": 0
+   },
+   "login": null,
+   "fields": [
+    {
+     "name": "GITLAB_TOKEN",
+     "value": "SECRET-gitlab-token",
+     "type": 1
+    },
+    {
+     "name": "GITLAB_HOST",
+     "value": "SECRET-gitlab-host.example",
+     "type": 1
+    },
+    {
+     "name": "TD_PW",
+     "value": "SECRET-global-td-pw",
+     "type": 1
+    }
+   ],
+   "attachments": [],
+   "passwordHistory": [],
+   "deletedDate": null
+  }
+ ]
+}

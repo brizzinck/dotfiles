@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# fake lazysql: logs argv, cwd, env NAMES that matter and hashes of DB_PW / DB_USR / DB_QUERY; keeps a copy of its -config file
+# and the modes of that file and its directory
+. "$(dirname "$0")/_dev.sh"
+dev_log "lazysql $*"
+dev_log "lazysql cwd=$PWD"
+dev_log "lazysql env $(hashes DB_PW DB_USR DB_QUERY) telemetry=${LAZYSQL_NO_TELEMETRY:-} update=${LAZYSQL_NO_UPDATE_CHECK:-} dnt=${DO_NOT_TRACK:-} sql_editor=${SQL_EDITOR:-}"
+dev_log "lazysql names $(env | cut -d= -f1 | grep -E '^(DB_|API_|GITLAB_|ENVS_|OPENAI)' | sort | tr '\n' ' ')"
+cfg=""
+while (($#)); do case $1 in -config|--config) cfg=$2; shift ;; esac; shift; done
+if [[ -n $cfg && -f $cfg ]]; then
+  cp "$cfg" "$FAKE_DIR/lazysql.config"
+  dev_log "lazysql config-mode=$(stat -c %a "$cfg") dir-mode=$(stat -c %a "$(dirname "$cfg")") dir=$(dirname "$cfg")"
+fi
+maybe_sleep
+exit "${FAKE_LAZYSQL_RC:-0}"

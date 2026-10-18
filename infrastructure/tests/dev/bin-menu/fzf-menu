@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# fake fzf-menu for the non-UI sections: records what it was given and cancels (exit 1), so no test can open a menu window
+. "$(dirname "$0")/../bin/_dev.sh"
+dev_log "fzf-menu $*"
+cat >"$FAKE_DIR/menu.in"
+exit 1

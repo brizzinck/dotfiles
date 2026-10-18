@@ -1,0 +1,31 @@
+#!/usr/bin/python3 -I
+"""fake docker: reads $FAKE_DIR/docker.json {"ps": [{name,state,image,service,workdir,files}], "ports": {"NAME:PORT": "ADDR:PORT"}};
+answers `ps` (tab format of db), `port NAME PORT/tcp`; logs every other call (exec, compose ...) and exits 0.
+Only read-only queries are ever real; this fake never starts anything."""
+import json, os, sys
+fake = os.environ["FAKE_DIR"]
+def log(line):
+    with open(os.path.join(fake, "dev.log"), "a") as f:
+        f.write(line + "\n")
+args = sys.argv[1:]
+log("docker " + " ".join(args))
+try:
+    data = json.load(open(os.path.join(fake, "docker.json")))
+except OSError:
+    data = {"ps": [], "ports": {}}
+if args[:1] == ["ps"]:
+    show_all = "-a" in args
+    for r in data["ps"]:
+        if r["state"] != "running" and not show_all:
+            continue
+        print("\t".join([r["name"], r["state"], r["image"], r.get("service", ""), r.get("workdir", ""), r.get("files", "")]))
+elif args[:1] == ["port"]:
+    key = args[1] + ":" + args[2].split("/")[0]
+    if key in data["ports"]:
+        print(data["ports"][key])
+        print(data["ports"][key].replace("127.0.0.1", "[::]"))
+    else:
+        sys.exit(1)
+elif args[:1] == ["inspect"] and any("Env" in a for a in args):
+    log("docker INSPECT-ENV-REQUESTED")
+    sys.exit(1)

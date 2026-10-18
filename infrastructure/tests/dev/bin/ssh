@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+. "$(dirname "$0")/_dev.sh"
+dev_log "ssh $*"
+maybe_sleep

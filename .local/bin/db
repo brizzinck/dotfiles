@@ -1,0 +1,1041 @@
+#!/usr/bin/python3 -I
+"""db: terminal database client launcher (DEV-d). Python 3 stdlib only; the shebang is the absolute /usr/bin/python3 -I (this
+process receives secrets through `envs run`, so no PATH lookup of an interpreter). Docs: CLAUDE.md "Dev tools".
+
+  db                          menu: connections of this project, every bound project, the global ones, running DB containers
+  db open NAME [-e ENV] [--ro|--rw] [--prod] [--global] [--root DIR]
+                              open NAME in lazysql; the secrets come from Bitwarden through `envs run`
+  db cli NAME                 the client INSIDE the container of a docker / container connection (no vault, no secret leaves it)
+  db add [NAME] [--global] [--driver D] [--docker SERVICE | --container NAME | --host H [--port N] | --path FILE | --url-secret S]
+         [--database DB] [--user U | --user-secret S] [--password-secret S] [--tunnel HOST] [--envs a,b] [--read-only] [--yes]
+                              write [db.NAME] into .envs.toml (or ~/.config/envs/global.local.toml); prompts for what is missing
+  db list [--json] [--global]  names, driver, where, environments, source (no secrets, no vault, no docker)
+  db check [--all]            validate [db.*] of this project (--all: every bound project and the global scope)
+  db _open NAME ...           internal: the `envs run` child, builds the lazysql config and execs lazysql
+
+A connection is a TOML table in .envs.toml: [db.NAME] driver (mariadb|mysql|postgres|clickhouse|sqlite), one location
+(docker = compose service of THIS project | container = name | host [+ port] | path (sqlite) | url = a declared secret that holds
+the whole URL), database, user | user_secret, password = the NAME of a declared secret (never a value), tunnel (ssh host alias),
+envs = [...], read_only. Docker hosts publish an ephemeral port: it is resolved with `docker port` at every start.
+
+Secrets never go to argv, a repo file or a persistent file. lazysql gets a per-run config on tmpfs whose URL holds only
+placeholders (`${pw}`); the values reach it through its environment and a `printf` command (`SaveOutputTo`), because lazysql's
+connection form (`e`) shows a `${env:...}` URL EXPANDED, password included (checked on v0.7.0). cwd of lazysql is the run
+directory, so no repo `.lazysql.toml` is read; telemetry and the update check are off.
+Exit codes: 0 ok, 1 error, 2 usage, 4 refused (agent, unbound, protected without confirmation), 127 tool missing, 130 cancel.
+"""
+import base64
+import ipaddress
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+from urllib.parse import quote, urlsplit
+
+sys.dont_write_bytecode = True
+
+SELF = Path(__file__).resolve()
+_spec = __import__("importlib.util").util.spec_from_file_location("devtools", SELF.parents[2] / ".config/devtools/devtools.py")
+D = __import__("importlib.util").util.module_from_spec(_spec)
+_spec.loader.exec_module(D)
+E = D.envs()
+PY = "/usr/bin/python3" if os.access("/usr/bin/python3", os.X_OK) else sys.executable
+
+DRIVERS = ("mariadb", "mysql", "postgres", "clickhouse", "sqlite")
+PROVIDER = {"mariadb": "mysql", "mysql": "mysql", "postgres": "postgres", "clickhouse": "clickhouse", "sqlite": "sqlite3"}
+DEFAULT_PORT = {"mariadb": 3306, "mysql": 3306, "postgres": 5432, "clickhouse": 9000}
+CONN_KEYS = {"driver", "docker", "container", "host", "port", "database", "user", "user_secret", "password", "url", "path",
+             "tunnel", "envs", "read_only"}
+LOCATIONS = ("docker", "container", "host", "path", "url")
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+HOST_RE = re.compile(r"^[A-Za-z0-9.-]{1,253}$")
+DBUSER_RE = re.compile(r"^[A-Za-z0-9_.$-]{1,64}$")
+TUNNEL_RE = re.compile(r"^[A-Za-z0-9._@-]{1,64}$")
+DOCKER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+IMAGE_KIND = re.compile(r"(?:^|/)(mariadb|mysql|postgres|clickhouse(?:-server)?)(?::|@|$)")
+LBL_SERVICE, LBL_WORKDIR = "com.docker.compose.service", "com.docker.compose.project.working_dir"
+LBL_FILES = "com.docker.compose.project.config_files"
+
+
+def usage_error(msg):
+    D.fail(msg, 2)
+
+
+# ───────────────────────────── connections: load and validate ─────────────────────────────
+
+class Scope:
+    """One source of connections: a project (.envs.toml of ROOT) or the global scope."""
+
+    def __init__(self, cfg, root, is_global):
+        self.cfg, self.root, self.is_global = cfg, Path(root), is_global
+        self.label = "global" if is_global else (cfg.project or Path(root).name)
+        raw = cfg.data.get("db") if isinstance(cfg.data.get("db"), dict) else {}
+        self.conns = {n: c for n, c in raw.items() if isinstance(c, dict)}
+
+
+def load_scope(root=None, is_global=False, strict=False):
+    if is_global:
+        cfg = E.load_global(strict)
+        return Scope(cfg, cfg.root, True)
+    root = Path(root) if root else E.find_root()
+    return Scope(E.load_cfg(root, strict=strict), root, False)
+
+
+def is_ip(host):
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+        return True
+    except ValueError:
+        return False
+
+
+def validate_conn(name, c, secrets, root, is_global):
+    """List of problems of one [db.NAME] table (see the header for the rules). Secrets are NAMES that must be declared."""
+    p = []
+    if not NAME_RE.match(name):
+        p.append(f"[db.{name}]: the connection name must match ^[a-z0-9][a-z0-9_-]{{0,31}}$")
+    for k in c:
+        if k not in CONN_KEYS:
+            p.append(f"[db.{name}]: unknown key {k!r} (allowed: {', '.join(sorted(CONN_KEYS))})")
+    pre = f"[db.{name}]"
+    drv = c.get("driver")
+    if drv not in DRIVERS:
+        p.append(f"{pre}: driver must be one of {', '.join(DRIVERS)}")
+    where = [k for k in LOCATIONS if k in c]
+    if len(where) != 1:
+        p.append(f"{pre}: exactly one of docker / container / host / path / url is needed (found: {', '.join(where) or 'none'})")
+    if drv == "sqlite" and where and where[0] not in ("path", "url"):
+        p.append(f"{pre}: a sqlite connection is a `path` (or a `url` secret)")
+    if "path" in c and drv != "sqlite":
+        p.append(f"{pre}: `path` is for sqlite only")
+    for k in ("docker", "container"):
+        if k in c and not (isinstance(c[k], str) and DOCKER_RE.match(c[k])):
+            p.append(f"{pre}: {k} must match ^[A-Za-z0-9][A-Za-z0-9_.-]{{0,127}}$")
+    if "docker" in c and is_global:
+        p.append(f"{pre}: `docker` (a compose service) needs a project; use `container = NAME` in the global scope")
+    if "host" in c:
+        h = c["host"]
+        if not (isinstance(h, str) and (HOST_RE.match(h) or is_ip(h))):
+            p.append(f"{pre}: host must be a host name or an IP literal")
+    if "port" in c:
+        port = c["port"]
+        if not (isinstance(port, int) and not isinstance(port, bool) and 1 <= port <= 65535):
+            p.append(f"{pre}: port must be a number from 1 to 65535")
+        if "host" not in c and not any(k in c for k in ("docker", "container")):
+            p.append(f"{pre}: port goes with host, docker or container")
+    for k in ("database", "user"):
+        if k in c and not (isinstance(c[k], str) and DBUSER_RE.match(c[k])):
+            p.append(f"{pre}: {k} must match ^[A-Za-z0-9_.$-]{{1,64}}$")
+    if "tunnel" in c:
+        if not (isinstance(c["tunnel"], str) and TUNNEL_RE.match(c["tunnel"])):
+            p.append(f"{pre}: tunnel must match ^[A-Za-z0-9._@-]{{1,64}}$ (an ssh host alias)")
+        if "host" not in c:
+            p.append(f"{pre}: tunnel needs `host` (the address the bastion connects to)")
+    for k in ("password", "user_secret", "url"):
+        if k in c:
+            v = c[k]
+            if not (isinstance(v, str) and E.NAME_RE.match(v)) or v not in secrets:
+                p.append(f"{pre}: {k} must name a secret declared in [secrets] (a value is never written here)")
+    if "user" in c and "user_secret" in c:
+        p.append(f"{pre}: user and user_secret exclude each other")
+    if "url" in c and any(k in c for k in ("user", "user_secret", "password", "database")):
+        p.append(f"{pre}: with `url` the parts (user, password, database) come from the URL secret")
+    if drv == "sqlite" and any(k in c for k in ("user", "user_secret", "password", "database")):
+        p.append(f"{pre}: a sqlite connection has only a path")
+    if "path" in c:
+        if not isinstance(c["path"], str) or not c["path"] or os.path.isabs(c["path"]):
+            p.append(f"{pre}: path must be relative to the project root")
+        elif root is not None:
+            base = os.path.realpath(root)
+            full = os.path.realpath(os.path.join(base, c["path"]))
+            if full != base and not full.startswith(base + os.sep):
+                p.append(f"{pre}: path leaves the project root")
+        elif is_global:
+            p.append(f"{pre}: path needs a project; the global scope has no root")
+    if "envs" in c:
+        ev = c["envs"]
+        if not (isinstance(ev, list) and ev and all(isinstance(x, str) and E.ENV_RE.match(x) for x in ev)):
+            p.append(f"{pre}: envs must be a list of environment names")
+    if "read_only" in c and not isinstance(c["read_only"], bool):
+        p.append(f"{pre}: read_only must be true or false")
+    return p
+
+
+def scope_problems(sc):
+    out = list(sc.cfg.problems)
+    secrets = sc.cfg.secrets
+    for n, c in sc.conns.items():
+        out += validate_conn(n, c, secrets, None if sc.is_global else sc.root, sc.is_global)
+        ev = c.get("envs")
+        if isinstance(ev, list) and not sc.is_global:
+            out += [f"[db.{n}]: envs names {x!r}, which is not an environment of this project" for x in ev if x not in sc.cfg.envs]
+    if isinstance(sc.cfg.data.get("db"), dict):
+        out += [f"[db.{n}] must be a table" for n, c in sc.cfg.data["db"].items() if not isinstance(c, dict)]
+    return out
+
+
+def needed_secrets(c):
+    return [c[k] for k in ("user_secret", "password", "url") if k in c]
+
+
+def where_of(c):
+    for k in ("docker", "container"):
+        if k in c:
+            return f"{k}:{c[k]}"
+    if "host" in c:
+        return f"{c['host']}:{c.get('port', DEFAULT_PORT.get(c.get('driver'), ''))}" + (f" via {c['tunnel']}" if "tunnel" in c else "")
+    if "path" in c:
+        return c["path"]
+    if "url" in c:
+        return f"url secret {c['url']}"
+    return "?"
+
+
+# ───────────────────────────── docker (read-only queries) ─────────────────────────────
+
+def docker(*args, timeout=10):
+    """(returncode, stdout) of a docker query; only ps / port / inspect with explicit --format fields are used."""
+    dk = D.tool("docker", hint="docker is needed for docker / container connections")
+    try:
+        p = subprocess.run([dk, *args], capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as e:
+        D.fail(f"docker: {e}", 1)
+    return p.returncode, p.stdout
+
+
+PS_FORMAT = "{{.Names}}\t{{.State}}\t{{.Image}}\t{{.Label \"" + LBL_SERVICE + "\"}}\t{{.Label \"" + LBL_WORKDIR + "\"}}\t{{.Label \"" + LBL_FILES + "\"}}"
+
+
+def docker_ps(all_containers=True):
+    """[{name, state, image, service, workdir, files}] (labels only: `.Config.Env` is never asked for)."""
+    rc, out = docker("ps", *(["-a"] if all_containers else []), "--format", PS_FORMAT)
+    if rc != 0:
+        return []
+    rows = []
+    for line in out.splitlines():
+        f = line.split("\t")
+        if len(f) >= 6:
+            rows.append(dict(name=f[0], state=f[1], image=f[2], service=f[3], workdir=f[4], files=f[5]))
+    return rows
+
+
+def find_container(c, root, rows=None):
+    """The ps row of a docker / container connection, or None."""
+    rows = rows if rows is not None else docker_ps()
+    if "container" in c:
+        return next((r for r in rows if r["name"] == c["container"]), None)
+    if root is None:
+        return None
+    real = os.path.realpath(root)
+    hits = [r for r in rows if r["service"] == c["docker"] and r["workdir"] and os.path.realpath(r["workdir"]) == real]
+    return next((r for r in hits if r["state"] == "running"), hits[0] if hits else None)
+
+
+def container_port(name, cport):
+    """host, port published for the container port, via `docker port`; None when it is not published."""
+    rc, out = docker("port", name, f"{cport}/tcp")
+    for line in out.splitlines():
+        addr, _, port = line.strip().rpartition(":")
+        if port.isdigit():
+            host = addr.strip("[]")
+            return ("127.0.0.1" if host in ("", "0.0.0.0", "::") else host), int(port)
+    return None
+
+
+def compose_up_hint(row):
+    files = [f for f in row["files"].split(",") if f]
+    wd = row["workdir"]
+    if not (files and wd and row["service"]):
+        return None
+    args = ["docker", "compose", "--project-directory", wd] + [x for f in files for x in ("-f", f)] + ["up", "-d", row["service"]]
+    return args
+
+
+def clickhouse_is_http(host, port):
+    """True when host:port answers GET /ping with `Ok.`: that is ClickHouse's HTTP port, lazysql speaks the native protocol."""
+    import http.client
+    try:
+        cn = http.client.HTTPConnection(host, port, timeout=2)
+        cn.request("GET", "/ping")
+        body = cn.getresponse().read(16)
+        cn.close()
+    except (OSError, http.client.HTTPException, ValueError):
+        return False
+    return body.strip().startswith(b"Ok.")
+
+
+def resolve_endpoint(name, c, root):
+    """(host, port) a connection reaches: docker / container are looked up now (ephemeral host ports), host is as written."""
+    drv = c["driver"]
+    cport = c.get("port") or DEFAULT_PORT.get(drv)
+    if "host" in c:
+        return c["host"], c.get("port") or DEFAULT_PORT[drv]
+    row = find_container(c, root)
+    label = c.get("docker") or c.get("container")
+    if row is None:
+        D.fail(f"{name}: no container for {'service' if 'docker' in c else 'name'} {label!r}"
+               + (" in this project's compose files" if "docker" in c else ""), 1)
+    if row["state"] != "running":
+        up = compose_up_hint(row)
+        D.fail(f"{name}: container {row['name']} is {row['state']}, not running"
+               + (f"; start it (db menu key `s`, or: {' '.join(shlex.quote(x) for x in up)})" if up else "; start it first"), 1)
+    got = container_port(row["name"], cport)
+    if got is None:
+        D.fail(f"{name}: port {cport} of {row['name']} is not published (docker port shows nothing)", 1)
+    return got
+
+
+# ───────────────────────────── URL and lazysql config ─────────────────────────────
+
+def hostport(host, port):
+    return f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
+
+
+def build_url(c, host, port, values):
+    """(URL template with placeholders, {env name: value}). Secret parts are `${usr}`, `${pw}`, `${q}` (lazysql fills them from
+    the printf commands of the config) so the config file and the connection form never show them. Percent-encoding is done here."""
+    drv = c["driver"]
+    extra = {}
+    if "path" in c:
+        return None, extra                                    # sqlite: the caller makes the absolute path
+    if "url" in c:
+        raw = values[c["url"]]
+        sp = urlsplit(raw)
+        if not sp.scheme or "://" not in raw:
+            D.fail("the url secret is not a URL (scheme://...)", 1)
+        netloc = sp.netloc
+        if "@" in netloc:
+            userinfo, _, hp = netloc.rpartition("@")
+            user, colon, pw = userinfo.partition(":")
+            if colon:                                           # the password stays as written in the URL (already encoded)
+                extra["DB_PW"] = pw
+                userinfo = f"{user}:${{pw}}"
+            netloc = f"{userinfo}@{hp}"
+        url = f"{sp.scheme}://{netloc}{sp.path}"
+        if sp.query:
+            extra["DB_QUERY"] = sp.query
+            url += "?${q}"
+        return url, extra
+    scheme = {"mariadb": "mysql", "mysql": "mysql", "postgres": "postgres", "clickhouse": "clickhouse"}[drv]
+    if "user_secret" in c:
+        extra["DB_USR"] = quote(values[c["user_secret"]], safe="")
+        user = "${usr}"
+    else:
+        user = quote(c.get("user", ""), safe="")
+    auth = user
+    if "password" in c:
+        extra["DB_PW"] = quote(values[c["password"]], safe="")
+        auth = f"{user}:${{pw}}"
+    url = f"{scheme}://" + (f"{auth}@" if auth else "") + (f"localhost:${{port}}" if "tunnel" in c else hostport(host, port))
+    url += "/" + quote(c.get("database", ""), safe="")
+    if drv == "postgres" and host in ("127.0.0.1", "localhost", "::1") and "tunnel" not in c:
+        url += "?sslmode=disable"
+    return url, extra
+
+
+def commands_block(c, extra, host, port):
+    cmds = []
+    for env_name, var in (("DB_USR", "usr"), ("DB_PW", "pw"), ("DB_QUERY", "q")):
+        if env_name in extra:
+            cmds.append(f'{{ Command = {D.toml_str(f"printf %s \"${env_name}\"")}, SaveOutputTo = {D.toml_str(var)} }}')
+    if "tunnel" in c:
+        ssh = (f"ssh -N -o ExitOnForwardFailure=yes -o BatchMode=yes -L ${{port}}:{hostport(host, port)} {c['tunnel']}")
+        cmds.append(f'{{ Command = {D.toml_str(ssh)}, WaitForPort = {D.toml_str("${port}")} }}')
+    if not cmds:
+        return ""
+    return "Commands = [\n" + "".join(f"  {x},\n" for x in cmds) + "]\n"
+
+
+def theme_block():
+    base = Path(os.environ.get("XDG_STATE_HOME") or E.HOME / ".local/state") / "theme/current/lazysql.toml"
+    try:
+        return base.read_text()
+    except OSError:
+        return ""
+
+
+def lazysql_config(label, c, url, extra, host, port, ro, sqlite_path=None):
+    lines = ["[application]", "DisableUpdateCheck = true", "DefaultPageSize = 300", "EnterOpensJSONViewer = false", "",
+             "[[database]]", f"Name = {D.toml_str(label)}", f"Provider = {D.toml_str(PROVIDER[c['driver']])}"]
+    if c.get("database"):
+        lines.append(f"DBName = {D.toml_str(c['database'])}")
+    lines.append(f"URL = {D.toml_str(sqlite_path if sqlite_path is not None else url)}")
+    lines.append(f"ReadOnly = {'true' if ro else 'false'}")
+    text = "\n".join(lines) + "\n" + commands_block(c, extra, host, port)
+    th = theme_block()
+    return text + ("\n" + th if th else "")
+
+
+# ───────────────────────────── commands ─────────────────────────────
+
+def pick_scope_conn(a):
+    """(Scope, name, conn) for NAME of --root / the cwd project / --global (the cwd project first, then global)."""
+    scopes = []
+    if getattr(a, "global_", False):
+        scopes = [load_scope(is_global=True)]
+    else:
+        if a.root:
+            scopes = [load_scope(a.root)]
+        else:
+            try:
+                scopes = [load_scope()]
+            except E.Fail:
+                scopes = []
+            if (E.global_dir() / E.GLOBAL_TOML).is_file():
+                try:
+                    scopes.append(load_scope(is_global=True))
+                except E.Fail:
+                    pass
+    name = a.name
+    for sc in scopes:
+        if name in sc.conns:
+            return sc, name, sc.conns[name]
+    where = ", ".join(sc.label for sc in scopes) or "no project here"
+    known = sorted({n for sc in scopes for n in sc.conns})
+    D.fail(f"no connection {name!r} ({where})" + (f"; known: {', '.join(known)}" if known else "; `db add` creates one"), 1)
+
+
+def check_conn(sc, name, c):
+    probs = [x for x in validate_conn(name, c, sc.cfg.secrets, None if sc.is_global else sc.root, sc.is_global)]
+    if probs:
+        D.fail("\n".join(probs), 1)
+
+
+def cmd_open(a):
+    E.refuse_agent("db open")
+    sc, name, c = pick_scope_conn(a)
+    check_conn(sc, name, c)
+    env = "default" if sc.is_global else (a.env or E.choose_env(sc.cfg))
+    if not sc.is_global and env not in sc.cfg.envs:
+        D.fail(f"unknown environment {env!r} (have: {', '.join(sc.cfg.envs)})", 2)
+    if c.get("envs") and env not in c["envs"]:
+        D.fail(f"{name} exists in {', '.join(c['envs'])}, not in {env}", 1)
+    protected = not sc.is_global and sc.cfg.is_protected(env)
+    if a.rw and a.ro:
+        usage_error("--ro and --rw exclude each other")
+    ro = bool(c.get("read_only")) or protected or a.ro
+    if a.rw:
+        if ro and not typed_rw(f"{name} is {'read-only' if c.get('read_only') else 'in protected ' + env}: writes are blocked by default"):
+            D.fail("not confirmed: staying read-only is the default; nothing opened", 4)
+        ro = False
+    inner = [PY, "-I", str(SELF), "_open", name, "--root", str(sc.root), "--env", env] + (["--global"] if sc.is_global else []) \
+        + (["--ro"] if ro else [])
+    secrets = needed_secrets(c)
+    sys.stdout.flush()
+    if not secrets:
+        os.execv(PY, inner)                                   # nothing secret to fetch: no vault, no envs
+    argv = [str(E.SELF), "run"] + (["-g"] if sc.is_global else ["-e", env]) + (["--prod"] if a.prod else []) + ["--allow-missing", "--"] + inner
+    os.execv(argv[0], argv)
+
+
+def typed_rw(why):
+    if not D.tty():
+        return False
+    sys.stderr.write(f"{why}.\nType rw to open it writable: ")
+    sys.stderr.flush()
+    return sys.stdin.readline().strip() == "rw"
+
+
+def child_secret(name):
+    """The value of a declared secret from the environment `envs run` gave us; must be in ENVS_SECRETS."""
+    injected = os.environ.get("ENVS_SECRETS", "").split()
+    if name not in injected or name not in os.environ:
+        D.fail(f"secret {name} is not set in this environment: `envs set {name}"
+               f"{' -g' if os.environ.get('ENVS_PROJECT') == 'global' else ' -e ' + os.environ.get('ENVS_ENV', 'ENV')}`", 1)
+    return os.environ[name]
+
+
+def cmd__open(a):
+    E.harden_environment()
+    sc, name, c = pick_scope_conn(a)
+    check_conn(sc, name, c)
+    env = a.env
+    lz = D.tool("lazysql", hint=D.USER_TOOLS_HINT)
+    values = {n: child_secret(n) for n in needed_secrets(c)}
+    host = port = None
+    sqlite_path = None
+    if "path" in c:
+        sqlite_path = os.path.realpath(os.path.join(os.path.realpath(sc.root), c["path"]))
+    elif "url" not in c:
+        host, port = resolve_endpoint(name, c, None if sc.is_global else sc.root)
+        if c["driver"] == "clickhouse" and "tunnel" not in c and clickhouse_is_http(host, port):
+            D.fail(f"{name}: lazysql speaks the ClickHouse native protocol (9000); {host}:{port} is the HTTP port (ch-ui). "
+                   "Forward the native port and set port = ...", 1)
+    elif "tunnel" in c:
+        D.fail(f"{name}: a url secret cannot use a tunnel", 1)
+    url, extra = build_url(c, host, port, values)
+    if "tunnel" in c:
+        host, port = c["host"], c.get("port") or DEFAULT_PORT[c["driver"]]
+    run = D.run_dir("db")
+    cfg_path = D.write_private(run / "config.toml",
+                               lazysql_config(f"{name} ({env})", c, url, extra, host, port, a.ro, sqlite_path))
+    child = dict(os.environ)
+    for n in os.environ.get("ENVS_SECRETS", "").split():       # lazysql needs only what the printf commands read
+        child.pop(n, None)
+    child.update(extra)
+    child.update(LAZYSQL_NO_TELEMETRY="1", LAZYSQL_NO_UPDATE_CHECK="1", DO_NOT_TRACK="1", SQL_EDITOR="nvim")
+    values = None
+    os.chdir(run)                                              # no repo .lazysql.toml is ever found from here
+    D.switch_layout()
+    sys.stdout.flush()
+    try:
+        os.execve(lz, ["lazysql", "-config", str(cfg_path), "--no-telemetry"], child)
+    except OSError as e:
+        D.fail(f"cannot run lazysql: {e.strerror}", 127)
+
+
+# container clients --------------------------------------------------------------------------------------------------------
+
+CLI_SH = {
+    "mysql": 'export MYSQL_PWD="${MARIADB_ROOT_PASSWORD:-$MYSQL_ROOT_PASSWORD}"; '
+             'if command -v mariadb >/dev/null 2>&1; then exec mariadb -uroot; else exec mysql -uroot; fi',
+    "postgres": 'exec psql -U "${POSTGRES_USER:-postgres}" "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}"',
+    "clickhouse": 'if [ -n "${CLICKHOUSE_PASSWORD:-}" ]; then exec clickhouse-client ${CLICKHOUSE_USER:+--user "$CLICKHOUSE_USER"} '
+                  '--ask-password; fi; exec clickhouse-client ${CLICKHOUSE_USER:+--user "$CLICKHOUSE_USER"}',
+}
+
+
+def image_kind(image):
+    m = IMAGE_KIND.search(image or "")
+    if not m:
+        return None
+    return {"mariadb": "mysql", "mysql": "mysql", "postgres": "postgres"}.get(m.group(1), "clickhouse")
+
+
+def exec_cli(container, kind):
+    """docker exec -it CONTAINER sh -c '<client>': the password is read from the container's OWN environment inside it and
+    handed to the client through its environment, never argv."""
+    dk = D.tool("docker")
+    sys.stdout.flush()
+    os.execv(dk, [dk, "exec", "-it", container, "sh", "-c", CLI_SH[kind]])
+
+
+def cmd_cli(a):
+    E.refuse_agent("db cli")
+    if a.name.startswith("docker:"):
+        row = next((r for r in docker_ps(False) if r["name"] == a.name[7:]), None)
+        if not row or not image_kind(row["image"]):
+            D.fail(f"no running database container {a.name[7:]!r}", 1)
+        exec_cli(row["name"], image_kind(row["image"]))
+    sc, name, c = pick_scope_conn(a)
+    check_conn(sc, name, c)
+    if not any(k in c for k in ("docker", "container")):
+        D.fail(f"{name}: the container client needs a docker / container connection", 1)
+    row = find_container(c, None if sc.is_global else sc.root)
+    if row is None or row["state"] != "running":
+        D.fail(f"{name}: the container is not running", 1)
+    exec_cli(row["name"], image_kind(row["image"]) or {"mariadb": "mysql", "mysql": "mysql", "postgres": "postgres",
+                                                    "clickhouse": "clickhouse"}.get(c["driver"], "postgres"))
+
+
+def cmd_list(a):
+    scopes = []
+    try:
+        scopes.append(load_scope(a.root) if a.root else load_scope())
+    except E.Fail:
+        pass
+    if (E.global_dir() / E.GLOBAL_TOML).is_file() or a.global_:
+        try:
+            scopes.append(load_scope(is_global=True))
+        except E.Fail as e:
+            if a.global_:
+                raise
+            D.warn("db", e.msg)
+    if a.global_:
+        scopes = [s for s in scopes if s.is_global]
+    rows = []
+    for sc in scopes:
+        for n, c in sc.conns.items():
+            rows.append(dict(name=n, driver=c.get("driver"), where=where_of(c), envs=c.get("envs") or "all",
+                             read_only=bool(c.get("read_only")), source=sc.label, root=str(sc.root), secrets=needed_secrets(c)))
+    if a.json:
+        print(json.dumps(rows, indent=1))
+        return
+    for r in rows:
+        envs_s = ",".join(r["envs"]) if isinstance(r["envs"], list) else r["envs"]
+        print(f"{r['name']:<16} {str(r['driver']):<10} {envs_s:<14} {r['where']:<34} {'[ro]' if r['read_only'] else '    '} {r['source']}")
+    if not rows:
+        print("no connections: `db add` creates one")
+
+
+def cmd_check(a):
+    scopes, bad = [], 0
+    if a.all:
+        seen = set()
+        roots = [Path(E.key_root(k)) for k in E.bindings()]
+        try:
+            roots.insert(0, E.find_root())
+        except E.Fail:
+            pass
+        for r in roots:
+            if (r / E.TOML).is_file() and str(r) not in seen:
+                seen.add(str(r))
+                scopes.append(load_scope(r))
+    else:
+        scopes.append(load_scope(a.root) if a.root else load_scope())
+    if (E.global_dir() / E.GLOBAL_TOML).is_file() and (a.all or a.global_):
+        scopes.append(load_scope(is_global=True))
+    if a.global_ and not a.all:
+        scopes = [s for s in scopes if s.is_global]
+    for sc in scopes:
+        probs = scope_problems(sc)
+        print(f"{sc.label}  {sc.root}  {len(sc.conns)} connection(s)")
+        for p in probs:
+            print(f"  error {p}")
+            bad += 1
+        if not probs:
+            print("  ok")
+    if bad:
+        D.fail(f"{bad} problem(s)", 1)
+
+
+def toml_val(v):
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, list):
+        return E.toml_list(v)
+    return D.toml_str(v)
+
+
+def ask(label, default=None, choices=None):
+    if not D.tty():
+        return default
+    try:
+        if choices:
+            got = E.pick(list(choices), label)
+            return got or default
+        got = input(f"{label}" + (f" [{default}]" if default else "") + ": ").strip()
+    except (EOFError, KeyboardInterrupt):
+        D.fail("cancelled", 130)
+    return got or default
+
+
+def cmd_add(a):
+    E.refuse_agent("db add")
+    sc = load_scope(is_global=True, strict=True) if a.global_ else load_scope(a.root, strict=True)
+    c = {}
+    name = a.name or ask("connection name", "main")
+    if not name:
+        D.fail("a connection name is needed (db add NAME)", 2)
+    if name in sc.conns:
+        D.fail(f"[db.{name}] exists already: edit it with `db` (key E)", 1)
+    drv = a.driver or ask("driver", None, DRIVERS)
+    if drv:
+        c["driver"] = drv
+    for flag, key in (("docker", "docker"), ("container", "container"), ("host", "host"), ("path", "path")):
+        if getattr(a, flag):
+            c[key] = getattr(a, flag)
+    if a.url_secret:
+        c["url"] = a.url_secret
+    if a.port:
+        c["port"] = int(a.port)
+    if not any(k in c for k in LOCATIONS):
+        kind = ask("where", None, ["docker  (compose service of this project)", "container  (a container name)", "host  (host and port)",
+                                   "path  (sqlite file)", "url  (a declared secret that holds the whole URL)"])
+        if kind:
+            k = kind.split()[0]
+            val = ask(f"{k}")
+            if val:
+                c[k] = val
+            if k == "host":
+                pt = ask("port", str(DEFAULT_PORT.get(drv, "")))
+                if pt and pt.isdigit():
+                    c["port"] = int(pt)
+    if "url" not in c and drv != "sqlite":
+        if a.database or D.tty():
+            dbn = a.database or ask("database")
+            if dbn:
+                c["database"] = dbn
+        if a.user_secret:
+            c["user_secret"] = a.user_secret
+        else:
+            u = a.user or ask("user (a literal name; empty = a secret via --user-secret)")
+            if u:
+                c["user"] = u
+        ps = a.password_secret or ask("password secret (a NAME declared in [secrets])", "DB_PASSWORD")
+        if ps:
+            c["password"] = ps
+    if a.tunnel:
+        c["tunnel"] = a.tunnel
+    if a.envs:
+        c["envs"] = [x for x in a.envs.split(",") if x]
+    if a.read_only:
+        c["read_only"] = True
+    declare = {n: "" for n in needed_secrets(c) if n not in sc.cfg.secrets}
+    merged_secrets = dict(sc.cfg.secrets)
+    merged_secrets.update(declare)
+    probs = validate_conn(name, c, merged_secrets, None if sc.is_global else sc.root, sc.is_global)
+    if probs:
+        D.fail("\n".join(probs), 2)
+
+    def edit(ed):
+        for n, d in declare.items():
+            ed.set("secrets", n, D.toml_str(d))
+        table = f"db.{name}"
+        for k in ("driver", "docker", "container", "host", "port", "path", "url", "database", "user", "user_secret", "password",
+                  "tunnel", "envs", "read_only"):
+            if k in c:
+                ed.set(table, k, toml_val(c[k]))
+    E.edit_cfg(sc.cfg, edit)
+    print(f"added [db.{name}] to {sc.cfg.path if not sc.is_global else sc.root / E.GLOBAL_LOCAL}"
+          + (f"; declared secret(s): {', '.join(declare)}" if declare else ""))
+    for n in needed_secrets(c):
+        print(f"next: envs set {n}{' -g' if sc.is_global else ''}   (hidden prompt; the value goes to Bitwarden)")
+
+
+# ───────────────────────────── the menu ─────────────────────────────
+
+def b64(s):
+    return base64.urlsafe_b64encode(str(s).encode()).decode().rstrip("=")
+
+
+def unb64(s):
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4)).decode()
+
+
+def row_id(kind, root, name):
+    return f"{kind}:{b64(root or '-')}:{name}"
+
+
+def parse_id(ident):
+    kind, _, rest = ident.partition(":")
+    root, _, name = rest.partition(":")
+    r = unb64(root)
+    return kind, (None if r == "-" else r), name
+
+
+class MenuState:
+    def __init__(self):
+        self.ro = set()           # (root, name) forced read-only for the next open
+        self.env = {}             # root -> environment picked with `e`
+        self.msg = ""
+
+
+def menu_scopes():
+    out, seen = [], set()
+    try:
+        here = E.find_root()
+        sc = load_scope(here)
+        out.append(sc)
+        seen.add(str(sc.root))
+    except E.Fail:
+        pass
+    for k in E.bindings():
+        r = Path(E.key_root(k))
+        if str(r) in seen or not (r / E.TOML).is_file():
+            continue
+        try:
+            sc = load_scope(r)
+        except E.Fail:
+            continue
+        seen.add(str(r))
+        out.append(sc)
+    if (E.global_dir() / E.GLOBAL_TOML).is_file():
+        try:
+            out.append(load_scope(is_global=True))
+        except E.Fail as e:
+            D.warn("db", e.msg)
+    return out
+
+
+def menu_rows(state):
+    """[(id, text)] and the project label for the header."""
+    scopes = menu_scopes()
+    try:
+        ps = docker_ps()
+    except D.DevError:
+        ps = []
+    rows, n_conn = [], 0
+    for sc in scopes:
+        for n, c in sc.conns.items():
+            n_conn += 1
+            where = where_of(c)
+            if any(k in c for k in ("docker", "container")) and c.get("driver") in DRIVERS:
+                row = find_container(c, None if sc.is_global else sc.root, ps)
+                if row is None:
+                    where += " -> not created"
+                elif row["state"] != "running":
+                    where += " -> stopped"
+                else:
+                    got = container_port(row["name"], c.get("port") or DEFAULT_PORT.get(c.get("driver"), 3306))
+                    where += f" -> {hostport(*got)}" if got else " -> no published port"
+            envs_s = ",".join(c["envs"]) if isinstance(c.get("envs"), list) else "all"
+            ro = bool(c.get("read_only")) or (str(sc.root), n) in state.ro
+            rows.append((row_id("c", sc.root, n), f"{n:<14} {str(c.get('driver')):<10} {envs_s:<12} {where:<44} {'[ro]' if ro else '    '} {sc.label}"))
+    for r in ps:
+        if r["state"] == "running" and image_kind(r["image"]) and not any(
+                find_container(c, None if sc.is_global else sc.root, [r]) for sc in scopes for c in sc.conns.values()
+                if any(k in c for k in ("docker", "container"))):
+            rows.append((row_id("d", None, r["name"]), f"{r['name']:<14} {image_kind(r['image']):<10} {'-':<12} {'docker:' + r['image']:<44}      docker (no config)"))
+    return rows, scopes, n_conn
+
+
+HELP = """db menu keys (NORMAL mode; Alt keys work in both modes)
+  Enter / o   open the connection in lazysql (a docker row opens the client inside the container)
+  r           toggle read-only for the next open of this connection
+  e           pick the environment for this project's connections
+  c           the client inside the container (mysql / psql / clickhouse-client; no vault)
+  a           add a connection ([db.NAME] in .envs.toml); on a docker row it is prefilled
+  E           edit .envs.toml (global: global.local.toml) in $EDITOR
+  y           copy the URL WITHOUT the password
+  s           start a stopped container (asks first)
+  ?           this help      Esc  quit
+Values come from Bitwarden through `envs run` (Env/<project>); nothing secret is on argv, on screen or in a repo file."""
+
+MENU_NORMAL = [("o", "open"), ("l", "open"), ("r", "ro"), ("e", "env"), ("c", "cli"), ("a", "add"), ("E", "edit"), ("y", "copy"),
+               ("s", "start"), ("?", "help")]
+MENU_ALT = {"alt-r": "ro", "alt-e": "env", "alt-c": "cli", "alt-a": "add"}
+
+
+def preview_command():
+    return f"{shlex.quote(PY)} -I {shlex.quote(str(SELF))} _preview {{1}}"
+
+
+def cmd__preview(a):
+    kind, root, name = parse_id(a.ident)
+    if kind == "d":
+        row = next((r for r in docker_ps() if r["name"] == name), None)
+        print(f"container {name}  (no configuration)")
+        if row:
+            print(f"image     {row['image']}\nstate     {row['state']}")
+        print("\nEnter / c: the client inside the container (root password read inside it, never shown)\na: add it as a connection")
+        return
+    sc = load_scope(root) if root and str(root) != str(E.global_dir()) else load_scope(is_global=True)
+    c = sc.conns.get(name)
+    if c is None:
+        print(f"{name}: not found")
+        return
+    print(f"{name}   [{sc.label}]\n")
+    for k in ("driver", "docker", "container", "host", "port", "path", "database", "user", "tunnel", "envs", "read_only"):
+        if k in c:
+            print(f"{k:<12} {c[k]}")
+    for k in ("user_secret", "password", "url"):
+        if k in c:
+            print(f"{k:<12} secret {c[k]}  (value from Bitwarden, never shown)")
+    probs = validate_conn(name, c, sc.cfg.secrets, None if sc.is_global else sc.root, sc.is_global)
+    for p in probs:
+        print(f"problem      {p}")
+    if any(k in c for k in ("docker", "container")) and not probs:
+        row = find_container(c, None if sc.is_global else sc.root)
+        print(f"\ncontainer    {row['name'] + ' (' + row['state'] + ')' if row else 'not created'}")
+    if not probs:
+        env = "default" if sc.is_global else E.choose_env(sc.cfg)
+        flags = (" -g" if sc.is_global else f" -e {env}")
+        print(f"\nruns         envs run{flags} --allow-missing -- db _open {name}   (then: lazysql -config <tmpfs run dir>/config.toml --no-telemetry)")
+        print("             the URL in that config holds placeholders only; the password reaches lazysql through its environment")
+
+
+def menu_fzf(rows, header):
+    binds = "\n".join(f'{k}:become(printf "%s\\n%s\\n%s\\n" {{q}} {a} {{1}})' for k, a in MENU_NORMAL)
+    fm = D.tool("fzf-menu")
+    args = ["-p", "db", "--delimiter=\t", "--with-nth=2..", "--tabstop=4", "--ansi", "--print-query",
+            "--expect=" + ",".join(MENU_ALT), f"--header={header}", "--preview-window=right,45%,wrap,border-left"]
+    if D.tty():
+        args.insert(0, "--here")
+    env = dict(os.environ, FZF_MENU_NORMAL_BINDS=binds)
+    text = "\n".join(f"{i}\t{t}" for i, t in rows) + "\n"
+    p = subprocess.run([fm] + args + [f"--preview={preview_command()}"], input=text, stdout=subprocess.PIPE, text=True, env=env)
+    lines = p.stdout.split("\n")
+    key = lines[1] if len(lines) > 1 else ""
+    ident = (lines[2] if len(lines) > 2 else "").split("\t")[0]
+    return p.returncode, key, ident
+
+
+def run_db(*args):
+    return subprocess.run([PY, "-I", str(SELF), *args]).returncode
+
+
+def pause():
+    try:
+        input("\n[Enter]")
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+
+def copy_url(sc, name, c):
+    if "url" in c:
+        raise D.DevError("a url-secret connection has no URL without the secret", 1)
+    host, port = (None, None) if "path" in c else resolve_endpoint(name, c, None if sc.is_global else sc.root)
+    if "path" in c:
+        url = os.path.join(os.path.realpath(sc.root), c["path"])
+    else:
+        vals = {n: "" for n in needed_secrets(c)}
+        url, _ = build_url({k: v for k, v in c.items() if k != "password"}, host, port, vals)
+    wl = D.tool("wl-copy", required=False)
+    if not wl:
+        raise D.DevError("wl-copy is not installed", 127)
+    subprocess.run([wl], input=url.encode(), check=False)
+    return url
+
+
+def menu_action(action, ident, state, scopes):
+    kind, root, name = parse_id(ident)
+    if kind == "d":
+        row = next((r for r in docker_ps(False) if r["name"] == name), None)
+        if action in ("open", "cli", "enter") and row:
+            exec_cli_wait(row["name"], image_kind(row["image"]))
+        elif action == "add" and row:
+            run_db("add", "--container", name, "--driver", {"mysql": "mariadb", "postgres": "postgres", "clickhouse": "clickhouse"}[image_kind(row["image"])])
+        return
+    sc = next((s for s in scopes if str(s.root) == str(root)), None)
+    if sc is None or name not in sc.conns:
+        return
+    c = sc.conns[name]
+    key = (str(sc.root), name)
+    if action == "open":
+        args = ["open", name, "--root", str(sc.root)] + (["--global"] if sc.is_global else [])
+        env = state.env.get(str(sc.root))
+        if env:
+            args += ["-e", env]
+        if key in state.ro:
+            args.append("--ro")
+        rc = run_db(*args)
+        if rc not in (0, 130):
+            pause()
+    elif action == "ro":
+        state.ro.symmetric_difference_update({key})
+    elif action == "env":
+        if sc.is_global:
+            return
+        got = E.pick([f"{e}{'  [protected]' if sc.cfg.is_protected(e) else ''}" for e in sc.cfg.envs], "environment")
+        if got:
+            state.env[str(sc.root)] = got.split()[0]
+    elif action == "cli":
+        if run_db("cli", name, "--root", str(sc.root), *(["--global"] if sc.is_global else [])) not in (0, 130):
+            pause()
+    elif action == "add":
+        run_db("add", *(["--global"] if sc.is_global else ["--root", str(sc.root)]))
+        pause()
+    elif action == "edit":
+        target = (sc.root / E.GLOBAL_LOCAL) if sc.is_global else (sc.root / E.TOML)
+        ed = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "nvim"
+        subprocess.run([*shlex.split(ed), str(target)])
+    elif action == "copy":
+        try:
+            url = copy_url(sc, name, c)
+            state.msg = f"copied {url}"
+        except (D.DevError, E.Fail) as e:
+            state.msg = e.msg
+            print(e.msg, file=sys.stderr)
+            pause()
+    elif action == "start":
+        row = find_container(c, None if sc.is_global else sc.root)
+        up = compose_up_hint(row) if row and row["state"] != "running" else None
+        if not up:
+            print("nothing to start (the container is running, missing or has no compose labels)", file=sys.stderr)
+            pause()
+            return
+        sys.stderr.write(f"Run: {' '.join(shlex.quote(x) for x in up)} ? [y/N] ")
+        sys.stderr.flush()
+        if sys.stdin.readline().strip().lower().startswith("y"):
+            subprocess.run(up)
+            pause()
+    elif action == "help":
+        print(HELP)
+        pause()
+
+
+def exec_cli_wait(container, kind):
+    dk = D.tool("docker")
+    rc = subprocess.run([dk, "exec", "-it", container, "sh", "-c", CLI_SH[kind]]).returncode
+    if rc not in (0, 130):
+        pause()
+
+
+def cmd_menu(a):
+    E.refuse_agent("db")
+    state = MenuState()
+    while True:
+        rows, scopes, n_conn = menu_rows(state)
+        label = scopes[0].label if scopes else "-"
+        envs_s = state.env.get(str(scopes[0].root)) or (E.choose_env(scopes[0].cfg) if scopes and not scopes[0].is_global and not scopes[0].cfg.problems else "-")
+        header = f"{label} · {envs_s} · {n_conn} connections" + (f" · {state.msg}" if state.msg else "") + "\nEnter/o open  r ro  e env  c cli  a add  E edit  y copy URL  s start  ? help  Esc quit"
+        if not rows:
+            rows = [("-", "(no connections yet: press a to add one)")]
+        rc, key, ident = menu_fzf(rows, header)
+        if rc != 0:
+            return
+        action = MENU_ALT.get(key) or key or "open"
+        if ident in ("", "-") and action != "add":
+            continue
+        try:
+            if ident in ("", "-"):
+                run_db("add")
+                pause()
+            else:
+                menu_action(action, ident, state, scopes)
+        except (D.DevError, E.Fail) as e:
+            print(e.msg, file=sys.stderr)
+            pause()
+
+
+# ───────────────────────────── entry ─────────────────────────────
+
+def build_parser():
+    import argparse
+    ap = argparse.ArgumentParser(prog="db", description="database client launcher (see the header of this file)")
+    sub = ap.add_subparsers(dest="cmd")
+
+    def conn_args(p, name=True):
+        if name:
+            p.add_argument("name")
+        p.add_argument("--root")
+        p.add_argument("-g", "--global", dest="global_", action="store_true")
+    p = sub.add_parser("open")
+    conn_args(p)
+    p.add_argument("-e", "--env")
+    p.add_argument("--ro", action="store_true")
+    p.add_argument("--rw", action="store_true")
+    p.add_argument("--prod", action="store_true")
+    p = sub.add_parser("cli")
+    conn_args(p)
+    p = sub.add_parser("_open")
+    conn_args(p)
+    p.add_argument("--env", required=True)
+    p.add_argument("--ro", action="store_true")
+    p = sub.add_parser("_preview")
+    p.add_argument("ident")
+    p = sub.add_parser("add")
+    p.add_argument("name", nargs="?")
+    p.add_argument("--root")
+    p.add_argument("-g", "--global", dest="global_", action="store_true")
+    for f in ("driver", "docker", "container", "host", "port", "path", "url-secret", "database", "user", "user-secret",
+              "password-secret", "tunnel", "envs"):
+        p.add_argument("--" + f)
+    p.add_argument("--read-only", action="store_true")
+    p.add_argument("--yes", action="store_true")
+    p = sub.add_parser("list")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--root")
+    p.add_argument("-g", "--global", dest="global_", action="store_true")
+    p = sub.add_parser("check")
+    p.add_argument("--all", action="store_true")
+    p.add_argument("--root")
+    p.add_argument("-g", "--global", dest="global_", action="store_true")
+    return ap
+
+
+HANDLERS = {"open": cmd_open, "cli": cmd_cli, "_open": cmd__open, "_preview": cmd__preview, "add": cmd_add, "list": cmd_list,
+            "check": cmd_check}
+
+
+def run(argv):
+    E.harden_environment()
+    a = build_parser().parse_args(argv)
+    if a.cmd is None:
+        return cmd_menu(a) or 0
+    return HANDLERS[a.cmd](a) or 0
+
+
+def main(argv):
+    code = D.main_wrap("db", run, argv)
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
