@@ -338,8 +338,8 @@ quick_nodump() {
   if ! command -v cc >/dev/null; then printf 'skip  nodump (no cc)\n'; return; fi
   python3 -I "$V" call list folders </dev/null >/dev/null
   sup=$(srv_pid); child=$(pgrep -P "$sup" | head -1)
-  lib=$(ls "$FAKE"/cache/vault/nodump-*.so 2>/dev/null | head -1)
-  check "nodump: the library is built once into the cache directory (700)" bash -c '[ -f "$1" ] && [ "$(stat -c %a "$(dirname "$1")")" = 700 ]' _ "$lib"
+  lib=$(ls "$RUN"/vault/nodump-*.so 2>/dev/null | head -1)
+  check "nodump: the library is built into the per-boot runtime directory (tmpfs, 700), never into the persistent cache" bash -c '[ -f "$1" ] && [ "$(stat -c %a "$(dirname "$1")")" = 700 ] && ! ls "$2"/cache/vault/nodump-* >/dev/null 2>&1' _ "$lib" "$FAKE"
   check "nodump: the library makes a process non-dumpable (PR_GET_DUMPABLE 0; a plain process reports 1)" bash -c 'a=$(LD_PRELOAD="$1" python3 -c "import ctypes; print(ctypes.CDLL(None).prctl(3,0,0,0,0))"); b=$(python3 -c "import ctypes; print(ctypes.CDLL(None).prctl(3,0,0,0,0))"); [ "$a" = 0 ] && [ "$b" = 1 ]' _ "$lib"
   check "nodump: the bw server child holding BW_SESSION is non-dumpable (its /proc/PID/environ is closed to other processes)" bash -c '[ -n "$1" ] && ! cat /proc/$1/environ >/dev/null 2>&1' _ "$child"
   stop_bw_servers
@@ -349,6 +349,30 @@ quick_nodump() {
   BW_BIN="$FAKE/preloadbw" VAULT_BW_SERVE=0 python3 -I "$V" call list folders </dev/null >/dev/null
   check "nodump: a bw CLI process that holds the key is started with the library" file_eq "$FAKE/cli-preload" preloaded
   check "nodump: VAULT_BW_NODUMP=0 and a missing cc fall back to no library (the call still works)" bash -c 'rm -f "$1/cli-preload"; VAULT_BW_NODUMP=0 BW_BIN="$1/preloadbw" VAULT_BW_SERVE=0 python3 -I "$2" call list folders </dev/null >/dev/null && [ ! -e "$1/cli-preload" ]' _ "$FAKE" "$V"
+  # FIX3 F5: verified once (marker with the sha256), a corrupt file is not trusted, a failure is reported, builds are serialised
+  check "nodump: nodump-status says yes" bash -c '[ "$(python3 -I "$1" nodump-status)" = yes ]' _ "$V"
+  check "nodump: a probe marker with the library's sha256 sits next to it" bash -c '[ "$(cat "$1.ok")" = "$(sha256sum "$1" | cut -d" " -f1)" ]' _ "$lib"
+  check "nodump: a corrupt library is not trusted: it is rebuilt and works again" bash -c 'echo junk >"$1"; [ "$(python3 -I "$2" nodump-status)" = yes ] && [ "$(sha256sum "$1" | cut -d" " -f1)" = "$(cat "$1.ok")" ] && [ "$(LD_PRELOAD="$1" python3 -c "import ctypes; print(ctypes.CDLL(None).prctl(3,0,0,0,0))")" = 0 ]' _ "$lib" "$V"
+  mkdir -p "$FAKE/nocc" && ln -sf "$(command -v python3)" "$FAKE/nocc/python3"
+  check "nodump: without a C compiler nodump-status says no (no C compiler) and exits 1" bash -c 'out=$(XDG_RUNTIME_DIR="$2/rt-nocc" PATH="$2/nocc" python3 -I "$1" nodump-status); rc=$?; [ $rc = 1 ] && [[ $out == "no (no C compiler"* ]]' _ "$V" "$FAKE"
+  check "nodump: a library that does not make the process non-dumpable fails the probe (reported, not used)" bash -c 'out=$(XDG_RUNTIME_DIR="$2/rt-bad" VAULT_BW_NODUMP_SRC="int vault_noop;" python3 -I "$1" nodump-status); rc=$?; [ $rc = 1 ] && [[ $out == "no (the probe did not report non-dumpable"* ]] && ! ls "$2"/rt-bad/vault/nodump-*.so >/dev/null 2>&1' _ "$V" "$FAKE"
+  check "nodump: a runtime path with a space is refused (LD_PRELOAD splits on it)" bash -c 'mkdir -p -m 700 "$2/rt a b"; out=$(XDG_RUNTIME_DIR="$2/rt a b" python3 -I "$1" nodump-status); [[ $out == "no (the library path contains a space or colon"* ]]' _ "$V" "$FAKE"
+  check "nodump: six processes at once build one library (file lock), no temp file is left" bash -c 'export XDG_RUNTIME_DIR="$2/rt-par"; for i in 1 2 3 4 5 6; do python3 -I "$1" nodump-status >"$2/par.$i" & done; wait; [ "$(cat "$2"/par.? | sort -u)" = yes ] && [ "$(ls "$2"/rt-par/vault/nodump-*.so | wc -l)" = 1 ] && ! ls -a "$2"/rt-par/vault | grep -q "^.nodump\."' _ "$V" "$FAKE"
+  check "nodump: threads of one process all get the library while the first one compiles (old code: the others got None)" bash -c 'XDG_RUNTIME_DIR="$2/rt-thr" python3 -I - "$1" <<"PY"
+import importlib.util, subprocess, sys, threading, time
+spec = importlib.util.spec_from_file_location("vb", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+real = subprocess.run
+def slow(*a, **k):
+    if a and a[0] and a[0][0] == "cc":
+        time.sleep(0.6)
+    return real(*a, **k)
+m.subprocess.run = slow
+out = []
+ts = [threading.Thread(target=lambda: out.append(m.nodump_lib())) for _ in range(4)]
+[t.start() for t in ts]; [t.join() for t in ts]
+sys.exit(0 if len(out) == 4 and all(out) and len(set(out)) == 1 else 1)
+PY' _ "$V" "$FAKE"
+  check "bw-setup: its sync goes through vault-bw.py (no bare BW_SESSION=... bw sync without the library)" bash -c '! grep -Eq "BW_SESSION=[^ ]+ .*bw sync" "$1" && grep -q "vault-bw.py\" sync" "$1"' _ "$REPO/.local/bin/bw-setup"
   # the core limit is set once at import for the whole process tree; no preexec_fn per child is left for it
   out=$(ulimit -c unlimited 2>/dev/null; python3 -I - "$V" <<'PY'
 import importlib.util, sys

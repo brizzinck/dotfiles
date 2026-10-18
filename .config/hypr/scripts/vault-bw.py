@@ -22,6 +22,7 @@ Run through `vault.sh bw CMD` (hub rows in actions.d/u6.tsv, interactive ones in
   vault-bw.py call [--stdin] BW-ARGS...
                               run one bw command through the backend below (--stdin: the body for create / edit is read
                               from stdin; stdout / exit code are bw's): the way shell scripts (linux-pass) reach bw
+  vault-bw.py nodump-status   print yes, or no (reason): do the bw processes that hold the session key run non-dumpable
   vault-bw.py serve-status    print running|stopped and the socket; exit 0 only when the server answers
   vault-bw.py serve-stop      stop the per-session server (the session key stays; the next bw action restarts it)
 
@@ -70,6 +71,7 @@ import string
 import struct
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 from datetime import datetime, timedelta, timezone
@@ -188,34 +190,92 @@ NODUMP_C = """#include <sys/prctl.h>
 __attribute__((constructor)) static void vault_nodump(void) { prctl(PR_SET_DUMPABLE, 0, 0, 0, 0); }
 """
 _nodump_lib = None
+_nodump_why = ""
+_nodump_lock = threading.Lock()
+
+
+def _sha(data):
+    import hashlib
+    return hashlib.sha256(data).hexdigest()
+
+
+def _nodump_build():
+    """(path, "") of a verified library, or ("", reason). The library lives in the per-boot 0700 directory on tmpfs (nothing
+    survives a reboot, so a corrupt or planted file is never trusted for ever), is built under a file lock (concurrent
+    processes build once), is probed once (a child with the library must report PR_GET_DUMPABLE 0) and carries a marker
+    with its own sha256 that every later process compares before it trusts the file."""
+    import fcntl
+    if os.environ.get("VAULT_BW_NODUMP") == "0":
+        return "", "switched off (VAULT_BW_NODUMP=0)"
+    src = os.environ.get("VAULT_BW_NODUMP_SRC") or NODUMP_C     # the env is a test hook (a library that does not work)
+    try:
+        RUN.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError as e:
+        return "", f"no runtime directory ({e.strerror})"
+    if not run_dir_trusted():
+        return "", f"{RUN} is not a private directory of this user"
+    lib = RUN / f"nodump-{_sha(src.encode())[:12]}.so"
+    mark = RUN / (lib.name + ".ok")
+    if re.search(r"[ :]", str(lib)):
+        return "", "the library path contains a space or colon (LD_PRELOAD cannot hold it)"
+
+    def verified():
+        try:
+            return mark.read_text().strip() == _sha(lib.read_bytes())
+        except OSError:
+            return False
+
+    if verified():
+        return str(lib), ""
+    try:
+        with open(RUN / "nodump.lock", "a") as lockf:
+            fcntl.flock(lockf, fcntl.LOCK_EX)
+            if verified():       # another process built it while this one waited
+                return str(lib), ""
+            lib.unlink(missing_ok=True)
+            mark.unlink(missing_ok=True)
+            if not have("cc"):
+                return "", "no C compiler (cc)"
+            tmp = RUN / f".nodump.{os.getpid()}.so"
+            r = subprocess.run(["cc", "-shared", "-fPIC", "-O2", "-x", "c", "-o", str(tmp), "-"], input=src.encode(),
+                               capture_output=True)
+            if r.returncode != 0:
+                tmp.unlink(missing_ok=True)
+                return "", "the compile failed: " + first_line(r.stderr.decode(errors="replace"))
+            os.replace(tmp, lib)
+            # one probe: the library must really make a process non-dumpable (a broken one is ignored by ld.so with a
+            # warning on stderr, and the protection would silently be off)
+            env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LD_PRELOAD": str(lib)}
+            probe = subprocess.run([sys.executable, "-I", "-c",
+                                    "import ctypes, sys; sys.stdout.write(str(ctypes.CDLL(None).prctl(3, 0, 0, 0, 0)))"],
+                                   capture_output=True, text=True, env=env)
+            if probe.stdout.strip() != "0":
+                lib.unlink(missing_ok=True)
+                return "", f"the probe did not report non-dumpable (PR_GET_DUMPABLE {probe.stdout.strip() or '?'}): {first_line(probe.stderr)}"
+            mark.write_text(_sha(lib.read_bytes()))
+            return str(lib), ""
+    except OSError as e:
+        return "", f"cannot build the library ({e.strerror})"
 
 
 def nodump_lib():
     """Path of the LD_PRELOAD library that makes a process non-dumpable (no core, no systemd-coredump journal entry with the
-    environment, /proc/PID/environ closed to the rest of this user's processes), built once with cc, or None."""
-    global _nodump_lib
-    if _nodump_lib is not None:
+    environment, /proc/PID/environ closed to the rest of this user's processes), or None. Thread-safe: every thread gets the
+    same answer, the first one builds."""
+    global _nodump_lib, _nodump_why
+    with _nodump_lock:
+        if _nodump_lib is None:
+            _nodump_lib, _nodump_why = _nodump_build()
         return _nodump_lib or None
-    _nodump_lib = ""
-    if os.environ.get("VAULT_BW_NODUMP") == "0" or not have("cc"):
-        return None
-    import hashlib
-    d = CACHE_HOME / "vault"
-    lib = d / f"nodump-{hashlib.sha256(NODUMP_C.encode()).hexdigest()[:12]}.so"
-    try:
-        d.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if not lib.exists():
-            tmp = d / f".nodump.{os.getpid()}.so"
-            r = subprocess.run(["cc", "-shared", "-fPIC", "-O2", "-x", "c", "-o", str(tmp), "-"], input=NODUMP_C.encode(),
-                               capture_output=True)
-            if r.returncode != 0:
-                tmp.unlink(missing_ok=True)
-                return None
-            os.replace(tmp, lib)
-    except OSError:
-        return None
-    _nodump_lib = str(lib)
-    return _nodump_lib
+
+
+def cmd_nodump_status():
+    """yes, or no (reason): do the bw processes that hold the session key run non-dumpable (doctor)."""
+    if nodump_lib():
+        print("yes")
+        return 0
+    print(f"no ({_nodump_why})")
+    return 1
 
 
 def with_nodump(env):
@@ -1380,6 +1440,8 @@ def main(argv):
         return 0 if st == "unlocked" else 1
     if cmd == "sync":
         return cmd_sync()
+    if cmd == "nodump-status":
+        return cmd_nodump_status()
     if cmd == "_serve":
         return cmd_serve()
     if cmd == "serve-status":
