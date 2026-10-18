@@ -1077,8 +1077,11 @@ section_greeter() {
 #   * the owner keeps full access to the managed homes (u:OWNER:rwx plus a default ACL);
 #   * passwordless "become" for the owner, only for the listed users and never root: a sudoers drop-in (sudo -u USER ...)
 #     and a polkit rule (machinectl shell USER@); users flagged nobecome (aimcp) get neither;
-#   * /srv/dotfiles (published copy of ~/dotfiles, no secrets) and /srv/nvim-shared (nvim plugins + Mason, read-only for the
-#     managed users), both owned by the owner so the commit hook can publish without a password;
+#   * /srv/dotfiles (published copy of ~/dotfiles, no secrets), /srv/nvim-shared (nvim plugins + Mason) and /srv/devtools (the
+#     pinned dev tools lazysql, gh-dash, posting, gitlab-ci-local, glab-tui, workmux, filled by `infrastructure/dev/user-tools.sh
+#     --shared`), all read-only for the managed users and owned by the owner so the commit hook / the installer need no password;
+#     /srv/devtools/.owner names the owner (the trust anchor of the PATH rule, see "Users" in CLAUDE.md); rollback.sh never removes
+#     /srv/devtools (data that the installer rebuilds);
 #   * the first publish, the profile links (run as each managed user) and the shared nvim install (background).
 # Passwords, shells and groups (wheel, docker) of existing users are never touched; no linger for interactive users.
 # Rollback: sudo infrastructure/users/rollback.sh (it also prints what it did).
@@ -1088,6 +1091,7 @@ USERS_SUDOERS=/etc/sudoers.d/50-usr-managed
 USERS_POLKIT=/etc/polkit-1/rules.d/50-usr-managed.rules
 USERS_SRV_DOTFILES=/srv/dotfiles
 USERS_SRV_NVIM=/srv/nvim-shared
+USERS_SRV_DEVTOOLS=/srv/devtools
 
 # stdout: the sudoers drop-in / polkit rule rendered from managed.tsv (users with the `become` capability)
 users_render_sudoers() {
@@ -1276,7 +1280,7 @@ section_users() {
   done
 
   # 4. published directories, owned by the owner: the commit hook writes them without a password
-  for u in "$USERS_SRV_DOTFILES" "$USERS_SRV_NVIM"; do
+  for u in "$USERS_SRV_DOTFILES" "$USERS_SRV_NVIM" "$USERS_SRV_DEVTOOLS"; do
     if [ -d "$u" ] && [ "$(stat -c %U "$u")" = "$OWNER" ] && [ "$(stat -c %a "$u")" = 755 ]; then
       log "unchanged: $u ($OWNER:$grp 755)"
     else
@@ -1284,6 +1288,15 @@ section_users() {
       changed "$u created/fixed ($OWNER:$grp 755, read-only for the managed users)"
     fi
   done
+  # 4b. /srv/devtools/.owner: the account that fills the tool tree. The managed users put /srv/devtools/bin on their PATH and in
+  # the launchers' tool lookup only while the tree is owned by root or by this account and nobody else can write into it
+  if [ -f "$USERS_SRV_DEVTOOLS/.owner" ] && [ "$(cat "$USERS_SRV_DEVTOOLS/.owner")" = "$OWNER" ] &&
+    [ "$(stat -c '%U %a' "$USERS_SRV_DEVTOOLS/.owner")" = "$OWNER 644" ]; then
+    log "unchanged: $USERS_SRV_DEVTOOLS/.owner ($OWNER)"
+  else
+    run install -m 644 -o "$OWNER" -g "$grp" /dev/stdin "$USERS_SRV_DEVTOOLS/.owner" <<<"$OWNER"
+    changed "$USERS_SRV_DEVTOOLS/.owner names $OWNER (user-tools.sh --shared fills the tree as $OWNER)"
+  fi
 
   # 5. passwordless become for the owner: sudoers + polkit, validated before they are installed
   if [ -n "$(managed_users become)" ]; then
@@ -1345,6 +1358,7 @@ section_users() {
   fi
 
   followup "managed users: usr list | usr term td | SUPER+SHIFT+T (picker); checks: ./doctor.sh | grep users-"
+  followup "dev tools for td / yc: infrastructure/dev/user-tools.sh --shared   # fills $USERS_SRV_DEVTOOLS as $OWNER (no sudo); doctor devtools-shared checks it"
   followup "rollback of the users section: sudo $USERS_DIR/rollback.sh (--home-acl-cleanup alone puts only the stripped ACL skeletons and the old secret modes back, as the owner)"
 }
 

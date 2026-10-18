@@ -12,7 +12,7 @@
 #                                              secret-modes-before-*.txt). Done as the owner, only paths the owner owns, no symlink
 #                                              is followed, nothing is chowned. Rarely wanted: the skeletons are what made new files
 #                                              0650/0750; the marker file is removed so doctor's home-acl check goes back to INFO
-# Not undone (never changed by the section): passwords, shells, groups, linger of td/yc, the user-level files in ~/dotfiles
+# Not undone (never changed by the section): the tool tree in the shared directory for the dev tools (data, rebuilt by user-tools.sh --shared); passwords, shells, groups, linger of td/yc, the user-level files in ~/dotfiles
 # (revert those commits; `usr link --restore` as the managed user puts its old links back).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
