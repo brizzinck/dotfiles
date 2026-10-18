@@ -98,7 +98,7 @@ section1() {
     [ "$(jq -r "[.groups[].keep]|join(\",\")" "$1")" = "i-01,i-04,i-06" ]' _ "$(AJ)"
   check "1.2 g2 differs: password and notes; relations of the members" bash -c '
     [ "$(jq -r ".groups[1].differs|join(\",\")" "$1")" = "notes,password" ] && [ "$(jq -r ".groups[1].rel[\"i-05\"]" "$1")" = "differs:password" ] \
-    && [ "$(jq -r ".groups[0].rel[\"i-03\"]" "$1")" = identical ] && [ "$(jq -r ".groups[2].rel[\"i-07\"]" "$1")" = identical ] \
+    && [ "$(jq -r ".groups[0].rel[\"i-03\"]" "$1")" = identical ] && [ "$(jq -r ".groups[2].rel[\"i-07\"]" "$1")" = subset ] \
     && [ "$(jq -r ".groups[2].rel[\"i-09\"]" "$1")" = subset ] && [ "$(jq -r ".groups[2].rel[\"i-08\"]" "$1")" = "differs:password" ]' _ "$(AJ)"
   check "1.3 findings: no-folder 6, empty folders 3, near-dup folders, near-dup names, marked 2" bash -c '
     f=".findings"; [ "$(jq "$f.no_folder|length" "$1")" = 6 ] && [ "$(jq "$f.empty_folder|sort|join(\",\")" -r "$1")" = "f-arch,f-empty,f-old2" ] \
@@ -372,6 +372,8 @@ section3() {
   check "3.11 without --yes and without a terminal: exit 4" bash -c '[ "$1" = 4 ] && grep -q "no terminal" "$2"' _ "$rc" "$ROOT/e12.txt"
   ONLY_REST=1
 }
+
+check "security: complete duplicate preservation and live mutation guards" python3 -I -B "$HERE/safety_test.py" "$SCRIPTS/vault-org.py"
 
 want 1 && section1
 want 2 && section2

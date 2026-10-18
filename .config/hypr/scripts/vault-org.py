@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""vault-org: tidy the Bitwarden vault into a folder tree without ever reading a value. Python 3 stdlib only.
+"""vault-org: tidy the Bitwarden vault into a folder tree without ever displaying a value. Python 3 stdlib only.
 Run through `vault-audit` (.local/bin/vault-audit); `vault-audit --help` is this text.
 
   vault-audit [audit] [--names-hidden] [--json]
@@ -156,30 +156,61 @@ def norm_host(uri):
     return host
 
 
+# Comparison v1 deliberately refuses data whose preservation cannot be verified. These are bw export/API fields,
+# not rbw's reduced record shape. New schema fields require an explicit comparison review before duplicate trash.
+COMPARISON_VERSION = 1
+TYPE_FIELDS = {
+    1: ("login", {"username", "password", "totp", "uris", "fido2Credentials", "passwordRevisionDate"}),
+    2: ("secureNote", {"type"}),
+    3: ("card", {"cardholderName", "brand", "number", "expMonth", "expYear", "code"}),
+    4: ("identity", {"title", "firstName", "middleName", "lastName", "address1", "address2", "address3", "city",
+                     "state", "postalCode", "country", "company", "email", "phone", "ssn", "username",
+                     "passportNumber", "licenseNumber"}),
+    5: ("sshKey", {"privateKey", "publicKey", "keyFingerprint"}),
+}
+ITEM_FIELDS = {"object", "id", "organizationId", "folderId", "type", "name", "notes", "favorite", "reprompt",
+               "fields", "attachments", "passwordHistory", "collectionIds", "revisionDate", "creationDate",
+               "deletedDate", "organizationUseTotp", "edit", "viewPassword", "permissions"} | {v[0] for v in TYPE_FIELDS.values()}
+
+
+def comparison_problem(item):
+    spec = TYPE_FIELDS.get(item.get("type"))
+    if spec is None or set(item) - ITEM_FIELDS:
+        return "unsupported item shape"
+    field, allowed = spec
+    data = item.get(field)
+    if not isinstance(data, dict) or set(data) - allowed:
+        return "unsupported type data"
+    if any(item.get(k) is not None for k in {v[0] for v in TYPE_FIELDS.values()} - {field}):
+        return "unexpected type data"
+    if item.get("attachments"):
+        return "attachments require verified content equality"
+    if item.get("type") == 1 and data.get("fido2Credentials"):
+        return "passkeys require a dedicated preservation check"
+    for field, allowed in (("fields", {"name", "value", "type", "linkedId"}),
+                           ("passwordHistory", {"password", "lastUsedDate"})):
+        values = item.get(field) or []
+        if not isinstance(values, list) or any(not isinstance(v, dict) or set(v) - allowed for v in values):
+            return "unsupported " + field + " shape"
+    uris = data.get("uris") or []
+    if not isinstance(uris, list) or any(not isinstance(v, dict) or set(v) - {"uri", "match"} for v in uris):
+        return "unsupported URI shape"
+    return None
+
+
 def secret_blobs(item):
-    """kind -> bytes of the values that make two items 'the same login'. Only hashed, never stored."""
-    t = BW_TYPE.get(item.get("type"), "login")
-    out = {}
-    if t == "login":
-        lg = item.get("login") or {}
-        out["password"] = lg.get("password")
-        out["totp"] = lg.get("totp")
-    elif t == "card":
-        c = item.get("card") or {}
-        out["password"] = "|".join(str(c.get(k) or "") for k in ("number", "code", "expMonth", "expYear")) \
-            if any(c.get(k) for k in ("number", "code")) else None
-    elif t == "identity":
-        i = item.get("identity") or {}
-        out["password"] = "|".join(str(i.get(k) or "") for k in ("ssn", "passportNumber", "licenseNumber")) \
-            if any(i.get(k) for k in ("ssn", "passportNumber", "licenseNumber")) else None
-    elif t == "ssh":
-        out["password"] = (item.get("sshKey") or {}).get("privateKey")
-    out["notes"] = item.get("notes")
-    flds = [(f.get("name") or "", f.get("value") or "") for f in item.get("fields") or []]
-    out["fields"] = json.dumps(sorted(flds)) if flds else None
-    atts = sorted((a.get("fileName") or "", str(a.get("size") or "")) for a in item.get("attachments") or [])
-    out["attachments"] = json.dumps(atts) if atts else None
-    return {k: (v if v else None) for k, v in out.items()}
+    """Versioned full comparison payloads, HMACed in memory only. Missing payloads may be subsets; unknown data may not."""
+    field = TYPE_FIELDS.get(item.get("type"), (None, None))[0]
+    data = dict(item.get(field) or {}) if field else {}
+    out = {"notes": item.get("notes"), "fields": item.get("fields"), "history": item.get("passwordHistory")}
+    if item.get("type") == 1:
+        out.update({k: data.pop(k, None) for k in ("password", "totp", "uris", "username")})
+        data.pop("fido2Credentials", None)       # non-empty passkeys are refused above
+    out["type-data"] = data
+    out["policy"] = {k: item[k] for k in ("organizationId", "collectionIds", "favorite", "reprompt",
+                                          "organizationUseTotp", "edit", "viewPassword", "permissions") if k in item}
+    return {k: json.dumps(v, sort_keys=True, separators=(",", ":"), ensure_ascii=False) if v not in (None, "", [], {}) else None
+            for k, v in out.items()}
 
 
 def user_value(item):
@@ -215,8 +246,10 @@ def normalise(item, folders, key):
         "notes": bool(item.get("notes")), "fields": len(fnames), "marker": SHARE_FIELD in fnames,
         "attachments": len(item.get("attachments") or []),
         "revision": item.get("revisionDate") or "", "created": item.get("creationDate") or "",
+        "duplicate_review": comparison_problem(item),
     }
-    kx = {"user": hmac_of(key, user_value(item), fold=True)}
+    kx = {"user": hmac_of(key, user_value(item)), "comparison_version": COMPARISON_VERSION,
+          "unsafe": comparison_problem(item)}
     for kind, v in blobs.items():
         kx[kind] = hmac_of(key, v)
     return meta, kx
@@ -224,7 +257,7 @@ def normalise(item, folders, key):
 
 # ───────────────────────────── audit: groups and findings ─────────────────────────────
 
-KINDS = ("password", "totp", "notes", "fields", "attachments")
+KINDS = ("password", "totp", "notes", "fields", "history", "uris", "username", "type-data", "policy")
 
 
 def norm_name(name):
@@ -247,6 +280,10 @@ def data_rank(m):
 def relation(ka, kk):
     """How a member (hashes ka) relates to the keep (kk): identical; subset (it only lacks things the keep has); or
     differs:KIND,... (it has a secret, notes, ... the keep does not have or has differently)."""
+    if ka.get("comparison_version") != COMPARISON_VERSION or kk.get("comparison_version") != COMPARISON_VERSION:
+        return "review:unsupported comparison version"
+    if ka.get("unsafe") or kk.get("unsafe"):
+        return "review:" + (ka.get("unsafe") or kk["unsafe"])
     diff = [k for k in KINDS if ka.get(k) != kk.get(k)]
     if not diff:
         return "identical"
@@ -373,7 +410,7 @@ def build_audit(items, trash_count, folders, key, source="bw-serve"):
         "marked": [m["id"] for m in metas if m["marker"]],
     }
     return {
-        "version": 1, "created": now_iso(), "source": source,
+        "version": 1, "comparison_version": COMPARISON_VERSION, "created": now_iso(), "source": source,
         "trash": trash_count,
         "items": metas,
         "folders": [dict(f, items=counts.get(f["id"], 0)) for f in fl],
@@ -728,6 +765,8 @@ def propose(audit, rules):
     for m in audit["items"]:
         target, note = "keep", ""
         g = in_group.get(m["id"])
+        if m.get("duplicate_review"):
+            note = "duplicate review: " + m["duplicate_review"]
         tool = tool_root(m["folder"])
         if tool:
             note = "tool folder"
@@ -742,7 +781,7 @@ def propose(audit, rules):
                 if g["class"] == "no-user":
                     note += ", no username"
             elif g:
-                note = f"{g['id']} {g['class']}: keep"
+                note = f"{g['id']} {g['class']}: keep" + ("; duplicate review: " + m["duplicate_review"] if m.get("duplicate_review") else "")
             dest, why = rule_target(rules, m)
             if dest is None and m["folder"] in merge_to:
                 dest, why = merge_to[m["folder"]], "merge near-duplicate folder"

@@ -5,7 +5,7 @@ i-05	Acme Portal old	Work	folder:Work/Acme	2026-02-10T08:00:00.000Z	g2 same-logi
 i-21	deploy-key	Work	keep	2026-09-01T10:00:00.000Z	
 i-15	dev	Env/demo	keep	2026-09-01T10:00:00.000Z	tool folder
 i-16	dev	Env/demo	keep	2026-09-01T10:00:00.000Z	tool folder
-i-23	Docs Portal	Mail	keep	2026-09-01T10:00:00.000Z	
+i-23	Docs Portal	Mail	keep	2026-09-01T10:00:00.000Z	duplicate review: attachments require verified content equality
 i-01	Example Mail	-	folder:Mail	2026-09-30T08:00:00.000Z	g1 identical: keep; rule host *.example-mail.test
 i-02	Example Mail	-	trash-duplicate-of:i-01	2026-06-01T08:00:00.000Z	g1 identical
 i-03	Example Mail	Old Stuff	trash-duplicate-of:i-01	2026-03-01T08:00:00.000Z	g1 identical
@@ -14,7 +14,7 @@ i-17	oops	Env/demo	keep	2026-09-01T10:00:00.000Z	tool folder
 i-10	Pixelcraft	Work	folder:Design	2026-09-01T10:00:00.000Z	rule host *.pixelcraft.example
 i-11	pixelcraft.test	Work	keep	2026-09-01T10:00:00.000Z	
 i-06	Shop	Work	keep	2026-08-01T08:00:00.000Z	g3 no-user: keep
-i-07	Shop (no user)	-	trash-duplicate-of:i-06	2026-05-01T08:00:00.000Z	g3 no-user: identical
+i-07	Shop (no user)	-	trash-duplicate-of:i-06	2026-05-01T08:00:00.000Z	g3 no-user: subset
 i-08	Shop guest	-	keep	2026-04-01T08:00:00.000Z	g3 no-user: password differs, older revision, no username
 i-09	Shop old	-	trash-duplicate-of:i-06	2026-01-01T08:00:00.000Z	g3 no-user: subset
 i-12	skalse	Linux	keep	2026-09-01T10:00:00.000Z	tool folder

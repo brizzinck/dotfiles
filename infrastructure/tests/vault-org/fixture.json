@@ -80,7 +80,7 @@
     "totp": null,
     "uris": [
      {
-      "uri": "https://www.login.example-mail.test",
+      "uri": "https://login.example-mail.test/signin",
       "match": null
      }
     ]
@@ -100,12 +100,12 @@
    "notes": null,
    "reprompt": 0,
    "login": {
-    "username": "Alice-Mail",
+    "username": "alice-mail",
     "password": "PW-mail-1",
     "totp": null,
     "uris": [
      {
-      "uri": "login.example-mail.test:8443",
+      "uri": "https://login.example-mail.test/signin",
       "match": null
      }
     ]
@@ -205,7 +205,7 @@
     "totp": null,
     "uris": [
      {
-      "uri": "https://shop.example.test/cart",
+      "uri": "https://shop.example.test",
       "match": null
      }
     ]
