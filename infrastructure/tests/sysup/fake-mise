@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Fake mise for tests/sysup (never the real tool; sysup honours it through SYSUP_MISE only below infrastructure/tests/).
+# Logs "[env] ..." lines to $FAKE_LOG for upgrade/prune/plugins and "[hook-env] cwd|args" for hook-env.
+# `hook-env -s bash` reverses the environment a project "activation" made. The fake's own state format: __MISE_DIFF is the PATH
+# of a text file with lines `NAME=orig` (restore) or `NAME` (unset) and `PATH=...` (restore PATH); sysup never reads it.
+# FAKE_MISE_FAIL=1 makes hook-env fail.
+case "${1:-}" in
+  hook-env)
+    echo "[hook-env] $PWD|$*" >>"$FAKE_LOG"
+    [[ ${FAKE_MISE_FAIL:-} == 1 ]] && { echo "mise ERROR fake failure" >&2; exit 1; }
+    if [[ -f ${__MISE_DIFF:-} ]]; then
+      while IFS= read -r l; do
+        case $l in
+          *=*) printf "export %s=%q\n" "${l%%=*}" "${l#*=}" ;;
+          "") ;;
+          *) printf 'unset %s\n' "$l" ;;
+        esac
+      done <"$__MISE_DIFF"
+    fi
+    printf 'export __MISE_DIFF=%q\n' "fake-new-diff"
+    ;;
+  *)
+    echo "[env] $* GOBIN=${GOBIN:-unset} NPM_CONFIG_PREFIX=${NPM_CONFIG_PREFIX:-unset} SESSION=${__MISE_SESSION:-unset} PATH=$PATH" >>"$FAKE_LOG" ;;
+esac
+exit 0

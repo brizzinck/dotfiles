@@ -373,39 +373,45 @@ plan_has() {
   [[ ,$SKIP, != *,"$s",* ]]
 }
 
-# A shell inside a project (mise activate) has the project's install dirs first in PATH and its [env] exported (GOBIN,
-# NPM_CONFIG_PREFIX ...): take both out, so `go install`, `npm -g` and `mise upgrade` act on the system toolchains. The [env]
-# part reads mise's own record of what it changed (__MISE_DIFF: deflated JSON {original, additions, deletions}); a format
-# that does not parse is skipped (PATH, __MISE_* and MISE_ENV are removed in any case).
+# A shell inside a project (mise activate) has the project's install dirs and `_.path` entries first in PATH and its [env]
+# exported (GOBIN, NPM_CONFIG_PREFIX ...): take all of it out, so `go install`, `npm -g` and `mise upgrade` act on the system
+# toolchains. mise records what it changed in __MISE_DIFF (zlib + MessagePack, values hashed in newer versions): that format
+# is mise's business and is never decoded here. Instead mise undoes its own environment: `mise hook-env -s bash --force` run
+# from $HOME prints the reversal of the old diff (variables, PATH) plus whatever applies to $HOME, and we eval that. When mise
+# cannot be found or fails, an activated project environment is NOT left in place: the run stops and says what to do.
+# /usr/bin/mise is preferred over PATH (a project's `_.path` could shadow it); SYSUP_MISE is a test hook that counts only for
+# a file below <repo>/infrastructure/tests/.
+mise_binary() {
+  local m=${SYSUP_MISE:-} root
+  if [[ -n $m ]]; then
+    root=$(readlink -f "$(dirname "$SELF")/../..")/infrastructure/tests/
+    m=$(readlink -f "$m" 2>/dev/null)
+    [[ $m == "$root"* && -x $m ]] && { echo "$m"; return 0; }
+  fi
+  [[ -x /usr/bin/mise ]] && { echo /usr/bin/mise; return 0; }
+  command -v mise
+}
+
 clean_project_env() {
-  local p out="" parts=()
+  local p out="" parts=() mise undo
+  if [[ -n ${__MISE_DIFF:-}${__MISE_SESSION:-} ]]; then
+    mise=$(mise_binary) || mise=""
+    if [[ -n $mise ]] && undo=$(cd "$HOME" && timeout 30 "$mise" hook-env -s bash --force --quiet 2>/dev/null </dev/null); then
+      eval "$undo"
+    elif [[ ${SYSUP_KEEP_PROJECT_ENV:-} == 1 ]]; then
+      warn "mise could not undo the project environment: continuing with it (SYSUP_KEEP_PROJECT_ENV=1)"
+    else
+      fail "this shell has a mise environment (a project's [env] and PATH entries would reach go install, npm -g ...) and mise could not undo it"
+      echo "start sysup from a fresh terminal outside the project; if \`mise doctor\` shows why mise fails and you want to go on anyway: SYSUP_KEEP_PROJECT_ENV=1 sysup"
+      exit 1
+    fi
+  fi
   IFS=: read -ra parts <<<"$PATH"
   for p in "${parts[@]}"; do
     case $p in */mise/installs/*|*/mise/shims|*/mise/shims/) ;; *) out+="${out:+:}$p" ;; esac
   done
   PATH=$out
   export PATH
-  if [[ -n ${__MISE_DIFF:-} ]] && have python3; then
-    eval "$(python3 -I - <<'PY' 2>/dev/null
-import base64, json, os, re, shlex, zlib
-raw = os.environ.get("__MISE_DIFF", "")
-try:
-    blob = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))
-    try:
-        doc = json.loads(zlib.decompress(blob))
-    except zlib.error:
-        doc = json.loads(zlib.decompress(blob, -15))
-    orig, add = doc.get("original") or {}, doc.get("additions") or {}
-    dele = doc.get("deletions") or {}
-    for k in sorted(set(add) | set(dele)):
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k) or k in ("PATH", "HOME", "PWD"):
-            continue
-        print(f"export {k}={shlex.quote(orig[k])}" if isinstance(orig.get(k), str) else f"unset {k}")
-except Exception:
-    pass
-PY
-)"
-  fi
   local v
   for v in $(compgen -e | grep -E '^(__MISE_|MISE_ENV$)'); do unset "$v"; done
   unset ENVS_PROJECT ENVS_ENV

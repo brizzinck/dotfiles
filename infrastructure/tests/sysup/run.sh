@@ -107,30 +107,69 @@ rm -f "$T/bin/mise"
 out=$(HOME="$T/home" PATH="$T/bin:/usr/bin:/bin" "$SYSUP" --only mise --yes 2>&1); rc=$?
 expect "mise step is skipped when mise is missing" bash -c "[ $rc = 0 ] && grep -q 'mise is not installed' <<<'$out'"
 
-# FIX-DEVb: started inside an activated project, sysup runs with the project's PATH entries, [env] and __MISE_* gone
-cat >"$T/bin/mise" <<'X'
+# FIX-DEVb2: started inside an activated project, sysup lets mise undo its own environment (`mise hook-env -s bash --force` from
+# $HOME; the __MISE_DIFF format is never decoded) before any step runs. The fake mise (tests/sysup/fake-mise) reverses a state
+# file of its own format, so nothing here depends on how real mise encodes its diff.
+FAKEMISE="$HERE/fake-mise"
+rm -f "$T/bin/mise"
+mkdir -p "$T/bin2" "$T/projbin" "$T/real/gobin" "$T/gopath"
+printf '#!/bin/sh\n' >"$T/real/gobin/tool"; chmod +x "$T/real/gobin/tool"
+cat >"$T/bin2/go" <<'X'
 #!/bin/sh
-echo "[env] GOBIN=${GOBIN:-unset} KEEPME=${KEEPME:-unset} PROJ_ONLY=${PROJ_ONLY:-unset} MISE_ENV=${MISE_ENV:-unset} SESSION=${__MISE_SESSION:-unset} PATH=$PATH" >>"$FAKE_LOG"
-exit 0
+case "$1 $2" in
+  "env GOBIN") printf '%s\n' "${GOBIN:-}" ;;
+  "env GOPATH") printf '%s\n' "$GOPATH_FAKE" ;;
+  "version -m") printf '\tpath\texample.com/x/cmd/tool\n\tmod\texample.com/x\tv1.0.0\n' ;;
+  install*) echo "[go install] $2 GOBIN=${GOBIN:-unset} PATH=$PATH" >>"$FAKE_LOG" ;;
+esac
 X
-chmod +x "$T/bin/mise"
+cat >"$T/bin2/npm" <<'X'
+#!/bin/sh
+echo "[npm] $* PREFIX=${NPM_CONFIG_PREFIX:-unset} KEEPME=${KEEPME:-unset} PATH=$PATH" >>"$FAKE_LOG"
+X
+for t in go npm; do printf '#!/bin/sh\necho "PROJECT-%s ran" >>"%s/project-tool-ran"\n' "$t" "$T" >"$T/projbin/$t"; done
+chmod +x "$T/bin2"/* "$T/projbin"/*
+ln -s "$FAKEMISE" "$T/bin2/mise"   # the `mise` step finds it on PATH; hook-env is reached through SYSUP_MISE
+ORIGPATH="$T/bin2:$PATH"
+printf 'GOBIN=%s\nNPM_CONFIG_PREFIX\nPROJ_ONLY\nPATH=%s\n' "$T/real/gobin" "$ORIGPATH" >"$T/diff.state"
 mkdir -p "$T/mise/installs/go/1.22/bin" "$T/mise/shims"
-DIFF=$(python3 -I -B - <<'PY'
-import base64, json, zlib
-d = {"original": {"GOBIN": "/home/real/go/bin"}, "additions": {"GOBIN": "/proj/.bin", "PROJ_ONLY": "1"}, "deletions": {}}
-print(base64.urlsafe_b64encode(zlib.compress(json.dumps(d).encode())).decode().rstrip("="))
-PY
-)
+projrun() { # extra env assignments... : sysup --only npm,go,mise from an "activated project"
+  (cd "$T/proj" && env HOME="$T/home" GOPATH_FAKE="$T/gopath" GOBIN="$T/proj/.bin" NPM_CONFIG_PREFIX="$T/proj/.npm" PROJ_ONLY=1 KEEPME=mine \
+    MISE_ENV=prod __MISE_SESSION=abc __MISE_DIFF="$T/diff.state" PATH="$T/projbin:$T/mise/installs/go/1.22/bin:$T/mise/shims:$ORIGPATH" \
+    "$@" "$SYSUP" --only npm,go,mise --yes 2>&1)
+}
+: >"$FAKE_LOG"; rm -f "$T/project-tool-ran"
+out=$(projrun SYSUP_MISE="$FAKEMISE"); rc=$?
+expect "project env: the run succeeds" test "$rc" = 0
+expect "project env: mise undid its environment, once, from \$HOME, as a forced bash hook-env" bash -c "[ \$(grep -c '^\[hook-env\]' '$FAKE_LOG') = 1 ] && grep -q '^\[hook-env\] $T/home|hook-env -s bash --force' '$FAKE_LOG'"
+expect "project env: go install sees the original GOBIN, not the project's" bash -c "grep '^\[go install\]' '$FAKE_LOG' | grep -q 'GOBIN=$T/real/gobin '"
+expect "project env: npm -g sees no NPM_CONFIG_PREFIX and keeps unrelated variables" bash -c "grep '^\[npm\] -g update' '$FAKE_LOG' | grep -q 'PREFIX=unset KEEPME=mine'"
+expect "project env: the project's _.path entry is out of PATH for go and npm, and its go/npm never ran" bash -c "! grep -E '^\[(npm|go install)\]' '$FAKE_LOG' | grep -q '$T/projbin' && [ ! -e '$T/project-tool-ran' ]"
+expect "project env: mise's install dirs and shims are out of PATH too" bash -c "! grep '^\[' '$FAKE_LOG' | grep -q 'mise/installs\|mise/shims'"
+expect "project env: mise upgrade runs with __MISE_* gone and the project's GOBIN undone" bash -c "grep '^\[env\] upgrade' '$FAKE_LOG' | grep -q 'GOBIN=$T/real/gobin NPM_CONFIG_PREFIX=unset SESSION=unset'"
+expect "project env: MISE_ENV is gone for the steps" bash -c "[ \$(grep -c 'MISE_ENV' '$FAKE_LOG') = 0 ]"
+
+: >"$FAKE_LOG"; rm -f "$T/project-tool-ran"
+projrun SYSUP_MISE="$FAKEMISE" FAKE_MISE_FAIL=1 >"$T/out.txt"; rc=$?
+expect "mise cannot undo it: the run stops before any step (exit 1, nothing ran)" bash -c "[ $rc = 1 ] && ! grep -qE '^\[(npm|go install|env)\]' '$FAKE_LOG' && [ ! -e '$T/project-tool-ran' ] && grep -q 'could not undo' '$T/out.txt'"
+: >"$FAKE_LOG"; rm -f "$T/project-tool-ran"
+projrun SYSUP_MISE="$FAKEMISE" FAKE_MISE_FAIL=1 SYSUP_KEEP_PROJECT_ENV=1 >"$T/out.txt"; rc=$?
+expect "... SYSUP_KEEP_PROJECT_ENV=1 goes on with a warning and the project environment as it is (the owner's decision)" bash -c "[ $rc = 0 ] && grep -q 'SYSUP_KEEP_PROJECT_ENV=1' '$T/out.txt' && [ -e '$T/project-tool-ran' ]"
+if [[ -x /usr/bin/mise ]]; then
+  echo "SKIP  the no-mise cases: a real /usr/bin/mise is installed (covered by G7)"
+else
+  : >"$FAKE_LOG"; rm -f "$T/project-tool-ran" "$T/bin2/mise"   # no mise on PATH either
+  projrun >"$T/out.txt"; rc=$?
+  expect "activated environment and no mise at all: stops (exit 1), nothing ran" bash -c "[ $rc = 1 ] && ! grep -qE '^\[(npm|go install)\]' '$FAKE_LOG' && [ ! -e '$T/project-tool-ran' ]"
+  cp "$FAKEMISE" "$T/fake-mise-outside"
+  : >"$FAKE_LOG"
+  projrun SYSUP_MISE="$T/fake-mise-outside" >"$T/out.txt"; rc=$?
+  expect "SYSUP_MISE outside infrastructure/tests/ is ignored (not a way to run another program)" bash -c "[ $rc = 1 ] && ! grep -q '^\[hook-env\]' '$FAKE_LOG'"
+  ln -s "$FAKEMISE" "$T/bin2/mise"
+fi
 : >"$FAKE_LOG"
-(cd "$T/proj" && HOME="$T/home" KEEPME=mine GOBIN=/proj/.bin PROJ_ONLY=1 MISE_ENV=prod __MISE_SESSION=abc __MISE_DIFF="$DIFF" \
-  PATH="$T/mise/installs/go/1.22/bin:$T/mise/shims:$PATH" "$SYSUP" --only mise --yes >/dev/null 2>&1); rc=$?
-expect "project env: the mise install dirs and shims are out of PATH" bash -c "[ $rc = 0 ] && grep -q '^\[env\]' '$FAKE_LOG' && ! grep '^\[env\]' '$FAKE_LOG' | grep -q 'mise/installs\|mise/shims'"
-expect "project env: the [env] the project added is undone (GOBIN back to the original, PROJ_ONLY unset), other variables stay" bash -c "grep '^\[env\]' '$FAKE_LOG' | grep -q 'GOBIN=/home/real/go/bin KEEPME=mine PROJ_ONLY=unset'"
-expect "project env: MISE_ENV and __MISE_* are gone" bash -c "grep '^\[env\]' '$FAKE_LOG' | grep -q 'MISE_ENV=unset SESSION=unset'"
-expect "project env: PATH entries outside the project stay" bash -c "grep '^\[env\]' '$FAKE_LOG' | grep -q 'PATH=.*/usr/bin'"
-: >"$FAKE_LOG"
-(cd "$T/proj" && HOME="$T/home" GOBIN=/proj/.bin __MISE_DIFF="not-a-diff" "$SYSUP" --only mise --yes >/dev/null 2>&1); rc=$?
-expect "project env: an unreadable __MISE_DIFF is skipped, the run still works" bash -c "[ $rc = 0 ] && grep -q '^\[env\]' '$FAKE_LOG'"
+out=$(cd "$T/proj" && env HOME="$T/home" GOPATH_FAKE="$T/gopath" GOBIN="$T/real/gobin" SYSUP_MISE="$FAKEMISE" PATH="$ORIGPATH" "$SYSUP" --only go --yes 2>&1); rc=$?
+expect "no mise activation in this shell: hook-env is not called and the owner's own GOBIN stays" bash -c "[ $rc = 0 ] && ! grep -q '^\[hook-env\]' '$FAKE_LOG' && grep '^\[go install\]' '$FAKE_LOG' | grep -q 'GOBIN=$T/real/gobin '"
 
 echo "sysup tests: $fails failure(s)"
 exit $((fails > 0))
