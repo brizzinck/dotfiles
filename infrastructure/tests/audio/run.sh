@@ -445,7 +445,7 @@ X
   out=$("$AP" --pick 3 --dry-run)
   [ "$out" = "wpctl set-default 12" ] && pass "10 picker: an Input pick is only wpctl set-default (no move-source-output)" || fail "10 picker input pick ($out)"
   out=$("$AP" --pick 1 --dry-run)
-  [ "$out" = "ee-ctl auto" ] && pass "10 picker: the Automatic row runs ee-ctl auto" || fail "10 picker auto ($out)"
+  [ "$out" = "ee-ctl auto --notify" ] && pass "10 picker: the Automatic row runs ee-ctl auto --notify" || fail "10 picker auto ($out)"
   out=$("$AP" --pick 0 --dry-run)
   grep -q '^pactl move-sink-input 41 alsa_output.pci-x.analog-stereo' <<<"$out" && grep -q '^wpctl set-default 10' <<<"$out" && pass "10 picker: an Output pick still moves the playback streams" || fail "10 picker output pick ($out)"
   echo "[$(node 10 Audio/Sink alsa_output.pci-x.analog-stereo "Speakers"),$(node 11 Audio/Source "$HWSRC" "Built-in mic"),$(meta '{"subject":0,"key":"default.configured.audio.source","type":"Spa:String:JSON","value":{"name":"x"}}')]" >"$F/pw-dump.json"
@@ -551,6 +551,42 @@ X
   q=$(grep -n '^ExecStartPre=.*ee-ctl quit-stray' "$U" | head -1 | cut -d: -f1); pr=$(grep -n '^ExecStartPre=.*ee-ctl prepare' "$U" | head -1 | cut -d: -f1)
   [ -n "$q" ] && [ -n "$pr" ] && [ "$q" -lt "$pr" ] && pass "13 A5: the unit runs quit-stray before prepare" || fail "13 A5 unit order"
 
+  # A7: one reply is read without waiting for a newline (get_global_bypass sends a bare digit)
+  ee_start --preset mic-clean; ee_wait
+  ms=$(python3 -I -B - "$EE" <<'PY'
+import importlib.machinery, importlib.util, sys, time
+l = importlib.machinery.SourceFileLoader("ee_ctl", sys.argv[1]); sp = importlib.util.spec_from_loader("ee_ctl", l); m = importlib.util.module_from_spec(sp); l.exec_module(m)
+t = time.monotonic(); r = m.send("get_global_bypass", reply=True); print(int((time.monotonic() - t) * 1000), r)
+PY
+)
+  [ "${ms#* }" = 2 ] && [ "${ms% *}" -lt 100 ] && pass "13 A7: a reply without a newline returns at once (${ms% *} ms, was 150+)" || fail "13 A7 send latency ($ms)"
+  ee_stop
+  # a hung EasyEffects (every reply 3 s late) costs ns status about a second, not the old 3 s per probe
+    ee_start --preset mic-clean --slow 3; ee_wait
+    a=${EPOCHREALTIME/./}; "$EE" ns status --quiet; rc=$?; b=${EPOCHREALTIME/./}
+    [ $rc -eq 1 ] && [ $(((b - a) / 1000)) -lt 2000 ] && pass "13 A7: a hung EasyEffects: ns status = off/unknown within $(((b - a) / 1000)) ms" || fail "13 A7 hang (rc $rc, $(((b - a) / 1000)) ms)"
+    ee_stop
+  # A7: toggles grace period after login
+  TG="$REPO/.config/waybar/scripts/toggles.sh"
+  mkdir -p "$T/home/.local/bin"; ln -sf "$EE" "$T/home/.local/bin/ee-ctl"
+  export TOGGLES_EE_BIN=/bin/sh
+  out=$(TOGGLES_LOGIN_AGE=5 "$TG" switch ns); sum=$(TOGGLES_LOGIN_AGE=5 "$TG" summary-raw)
+  grep -q 'EasyEffects is starting' <<<"$out" && [ "$(jq -r .class <<<"$sum")" = dim ] && pass "13 A7: 5 s after login a missing EasyEffects shows no warning in the summary" || fail "13 A7 grace ($out | $sum)"
+  out=$(TOGGLES_LOGIN_AGE=300 "$TG" switch ns); sum=$(TOGGLES_LOGIN_AGE=300 "$TG" summary-raw)
+  grep -q 'EasyEffects is not running' <<<"$out" && [ "$(jq -r .class <<<"$sum")" = warning ] && pass "13 A7: later the missing EasyEffects is a warning again" || fail "13 A7 after grace ($out | $sum)"
+  ee_start --preset mic-clean --bypass true; ee_wait
+  sum=$(TOGGLES_LOGIN_AGE=5 "$TG" summary-raw)
+  [ "$(jq -r .class <<<"$sum")" = warning ] && pass "13 A7: a switched-off noise suppression warns even inside the grace period" || fail "13 A7 off in grace ($sum)"
+  ee_stop; unset TOGGLES_EE_BIN
+  # A7: the picker reports an ee-ctl auto failure
+  AP="$REPO/.config/hypr/scripts/audio-picker.sh"
+  mkdir -p "$T/bin3"; printf '#!/bin/sh\nexit 1\n' >"$T/bin3/ee-ctl"; chmod +x "$T/bin3/ee-ctl"
+  printf '#!/bin/sh\ncase "$*" in "get-default-source") cat "$FAKE/default-source";; "get-default-sink") echo alsa_output.pci-x.analog-stereo;; "list short"*) ;; *) echo "pactl $*" >>"$FAKE/log";; esac\n' >"$T/bin3/pactl"; chmod +x "$T/bin3/pactl"
+  echo "[$(node 10 Audio/Sink alsa_output.pci-x.analog-stereo "Speakers"),$(node 11 Audio/Source "$HWSRC" "Built-in mic"),{\"id\":30,\"type\":\"PipeWire:Interface:Metadata\",\"props\":{\"metadata.name\":\"default\"},\"metadata\":[]}]" >"$F/pw-dump.json"; reset_log
+  OLDPATH=$PATH; PATH="$T/bin3:$PATH"
+  "$AP" --pick 1 >/dev/null 2>&1
+  PATH=$OLDPATH
+  grep -q '^notify.*Automatic failed' "$F/log" && ! grep -q '^notify.*Automatic: ' "$F/log" && pass "13 A7: the Automatic row reports a failing ee-ctl auto" || fail "13 A7 picker failure ($(cat "$F/log"))"
 fi
 
 # ── 11. static files ──
@@ -562,31 +598,39 @@ assert p["plugins_order"] == ["rnnoise#0"], p["plugins_order"]
 assert p["rnnoise#0"]["enable-vad"] is False and p["rnnoise#0"]["bypass"] is False
 assert not [k for k in p if k.startswith(("pitch", "autotune", "autogain"))]
 PY
-  python3 -I - "$REPO/.config/wireplumber/wireplumber.conf.d/52-mic-priority.conf" <<'PY' && pass "11 52-mic-priority: fifine/EarPods 2600, webcam 900, internal 1000, BT/EE untouched" || fail "11 mic priority rules"
+  python3 -I - "$REPO/.config/wireplumber/wireplumber.conf.d/52-mic-priority.conf" <<'PY' && pass "11 52-mic-priority: USB 2600, webcams (by name and by form factor) 900, internal 1000, BT/EE untouched" || fail "11 mic priority rules"
 import re, sys
 txt = open(sys.argv[1]).read()
-rules = re.findall(r'node\.name = "(~?)([^"]+)".*?priority\.session = (\d+)', txt, re.S)
-assert len(rules) == 3, rules
-def prio(name, default):
+rules = []
+for conds, val in re.findall(r'matches = \[ \{ (.*?) \} \]\s*actions = \{ update-props = \{ priority\.session = (\d+)', txt, re.S):
+    rules.append(([(k, t, v) for k, t, v in re.findall(r'([\w.-]+) = "(~?)([^"]+)"', conds)], int(val)))
+assert len(rules) == 4, rules
+def prio(props, default):
     p = default
-    for tilde, pat, val in rules:  # later rules override earlier ones
-        if (re.search(pat, name) if tilde else name == pat):
-            p = int(val)
+    for conds, val in rules:  # later rules override earlier ones; all conditions of a rule must match
+        if all(k in props and (re.search(v, props[k]) if t else props[k] == v) for k, t, v in conds):
+            p = val
     return p
-assert prio("alsa_input.usb-3142_fifine_Microphone-00.analog-stereo", 2000) == 2600
-assert prio("alsa_input.usb-Apple__Inc._EarPods_LY9V7QVJ2P-00.mono-fallback", 2000) == 2600
-assert prio("alsa_input.usb-046d_HD_Pro_Webcam_C920-02.analog-stereo", 2000) == 900
-assert prio("alsa_input.usb-Logitech_Camera_X-00.analog-stereo", 2000) == 900
-assert prio("alsa_input.pci-0000_04_00.6.analog-stereo", 2009) == 1000
-assert prio("bluez_input.40_58_99_2F_C1_63", 2010) == 2010
-assert prio("easyeffects_source", 0) == 0
+def node(name, **kw):
+    return dict(kw, **{"node.name": name})
+assert prio(node("alsa_input.usb-3142_fifine_Microphone-00.analog-stereo"), 2000) == 2600
+assert prio(node("alsa_input.usb-Apple__Inc._EarPods_LY9V7QVJ2P-00.mono-fallback"), 2000) == 2600
+assert prio(node("alsa_input.usb-046d_HD_Pro_Webcam_C920-02.analog-stereo"), 2000) == 900
+assert prio(node("alsa_input.usb-Logitech_Camera_X-00.analog-stereo"), 2000) == 900
+assert prio(node("alsa_input.usb-046d_Logitech_BRIO_4K-03.analog-stereo"), 2000) == 900
+assert prio(node("alsa_input.usb-Razer_Inc_Razer_Kiyo-00.analog-stereo"), 2000) == 900
+assert prio(node("alsa_input.usb-Some_Vendor_Thing-00.analog-stereo", **{"device.form-factor": "webcam", "device.bus": "usb"}), 2000) == 900
+assert prio(node("alsa_input.usb-Some_Vendor_Thing-00.analog-stereo", **{"device.form-factor": "microphone", "device.bus": "usb"}), 2000) == 2600
+assert prio(node("alsa_input.pci-0000_04_00.6.analog-stereo"), 2009) == 1000
+assert prio(node("bluez_input.40_58_99_2F_C1_63"), 2010) == 2010
+assert prio(node("easyeffects_source"), 0) == 0
 PY
   U="$REPO/.config/systemd/user/easyeffects.service"
   grep -q '^\[Install\]' "$U" && fail "11 unit has no [Install]" || pass "11 unit has no [Install]"
   grep -q '^ExecCondition=.*WAYLAND_DISPLAY' "$U" && grep -q '^Restart=on-failure' "$U" && grep -q '^PartOf=pipewire.service' "$U" && pass "11 unit: ExecCondition on the Wayland socket, Restart=on-failure, PartOf pipewire" || fail "11 unit keys"
   grep -q '^Restart=always' "$U" && fail "11 unit is never Restart=always" || pass "11 unit is never Restart=always"
-  python3 -m py_compile "$EE" "$HERE/fake-ee.py" 2>/dev/null && pass "11 ee-ctl and fake-ee compile" || fail "11 py_compile"
-  rm -rf "$REPO/.local/bin/__pycache__" "$HERE/__pycache__"
+  PYTHONPYCACHEPREFIX="$T/pyc" python3 -m py_compile "$EE" "$HERE/fake-ee.py" 2>/dev/null && pass "11 ee-ctl and fake-ee compile" || fail "11 py_compile"
+  ls "$REPO/.local/bin/__pycache__" 2>/dev/null | grep -q '^ee-ctl' && fail "11 py_compile leaves no __pycache__ in the repo" || pass "11 py_compile leaves no __pycache__ in the repo"
 fi
 
 echo "---- $passes passed, $fails failed"

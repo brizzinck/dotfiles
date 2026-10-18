@@ -4,6 +4,8 @@
 #   mic-mute-all.sh status      print each source and its mute state; exit 0 when every microphone is muted. Always silent
 #                               (hub toggle row, waybar): no microphone at all prints nothing and exits 1; only a real toggle notifies
 #   --dry-run                   print the wpctl commands instead of running them
+# Muting the hardware microphone also mutes the EasyEffects chain (easyeffects_source, class Audio/Source/Virtual, is excluded
+# from the loop: it carries the hardware signal, so there is nothing separate to mute).
 # The waybar module (pulseaudio#mic) shows the DEFAULT source, and muting all always includes it, so the bar
 # reflects the change. A source that appears later (hot-plugged mic) starts unmuted; press the key again.
 set -u

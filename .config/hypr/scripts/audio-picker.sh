@@ -96,9 +96,10 @@ IFS=$'\t' read -r kind id name desc <<<"${ROWS[$PICK]}"
 run() { if ((DRY)); then echo "$*"; else "$@" >/dev/null 2>&1; fi; }
 
 if [[ $kind == Input && $id == auto ]]; then
-  run ee-ctl auto
-  ((DRY)) && exit 0
-  notify-send -a audio -t 2500 -h string:x-dunst-stack-tag:audio-picker "Default input changed" "Automatic: USB mic > Bluetooth > built-in"
+  # one code path with the hub row: `ee-ctl auto --notify` says what it did; a failure is reported as one
+  if ((DRY)); then echo "ee-ctl auto --notify"; exit 0; fi
+  ee-ctl auto --notify >/dev/null 2>&1 \
+    || notify-send -a audio -u normal -t 4000 -h string:x-dunst-stack-tag:audio-picker "Default input" "Automatic failed: could not clear the manual choice (ee-ctl auto)"
   exit 0
 fi
 

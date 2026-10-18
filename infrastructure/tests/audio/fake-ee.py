@@ -6,6 +6,7 @@
 # --preset     last loaded input preset at start (default empty, like a fresh start)
 # --sticky-preset  load_preset:input:X always leaves NAME loaded (a preset that did not take)
 # --slow       sleep SEC before every reply
+# Unknown getters stay silent here; the real server answers error_property_not_found (the clients only need a bounded wait).
 # get_global_bypass answers a bare digit without a newline like the real server; the other getters end in a newline.
 import os
 import socket
@@ -67,4 +68,11 @@ while True:
             sys.exit(0)
         if rep is not None:
             c.sendall(rep.encode())
+    # like the real QLocalServer the connection stays open until the client closes it (a client that waits for a newline
+    # after a bare "2" really waits)
+    c.settimeout(2)
+    try:
+        c.recv(4096)
+    except OSError:
+        pass
     c.close()

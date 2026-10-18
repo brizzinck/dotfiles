@@ -30,6 +30,14 @@ G_SAVER='󰌪' G_PERF='󰓅'
 
 poke_bar() { rm -f "${XDG_RUNTIME_DIR:-/tmp}/waybar-cache/toggles.json"; pkill -o -u "$UID" -RTMIN+8 -x waybar 2>/dev/null || true; }
 
+# login_age: seconds since the Hyprland instance of this session started (test hook TOGGLES_LOGIN_AGE); a huge number without one
+login_age() {
+  [[ -n ${TOGGLES_LOGIN_AGE:-} ]] && { echo "$TOGGLES_LOGIN_AGE"; return; }
+  local d="${XDG_RUNTIME_DIR:-/run/user/$UID}/hypr/${HYPRLAND_INSTANCE_SIGNATURE:-none}" t
+  t=$(stat -c %Y "$d" 2>/dev/null) || { echo 999999; return; }
+  echo $(($(date +%s) - t))
+}
+
 # probe NAME: sets ON (0/1), GLYPH_ON, GLYPH_OFF, LABEL, DETAIL (short text), TEXT_ON (what the summary shows), HINT
 probe() {
   local d
@@ -80,11 +88,16 @@ probe() {
       # EasyEffects = switch hidden. Normal state = on, so the summary lists it only as a warning (off or EasyEffects not running).
       GLYPH_ON=$G_NS_ON GLYPH_OFF=$G_NS_OFF LABEL="Noise suppression (EasyEffects)" SUMMARY_ON=0
       [[ -x $HOME/.local/bin/ee-ctl && -x ${TOGGLES_EE_BIN:-/usr/bin/easyeffects} ]] || return 1
-      if "$HOME/.local/bin/ee-ctl" ns status --quiet; then
+      local ns
+      ns=$("$HOME/.local/bin/ee-ctl" ns status 2>/dev/null)
+      if [[ $ns == on ]]; then
         ON=1
         d=$(pactl get-default-source 2>/dev/null)
         d=$(pactl --format=json list sources 2>/dev/null | jq -r --arg n "$d" '.[] | select(.name == $n) | .description' 2>/dev/null)
         DETAIL="${d:-microphone}"
+      elif [[ $ns != off && $(login_age) -lt ${TOGGLES_NS_GRACE:-60} ]]; then
+        # EasyEffects starts a few seconds after the session (audio-ensure --boot heals the cards first): no warning glyph yet
+        STATE_TEXT="EasyEffects is starting"
       else
         WARN=1 TEXT_WARN=$GLYPH_OFF
         [[ -n $("$HOME/.local/bin/ee-ctl" socket 2>/dev/null) ]] || STATE_TEXT="EasyEffects is not running"

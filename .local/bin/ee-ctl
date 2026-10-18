@@ -21,7 +21,7 @@
 # State is managed, not hand-edited: the preset lives in the repo (~/.config/audio/easyeffects-mic.json, linked as
 # ~/.local/share/easyeffects/input/mic-clean.json), EasyEffects' own rc is local state that `prepare` rewrites (only the
 # managed keys) before every start. Output side keys are never written.
-# Test hooks: EE_SOCKET, EE_TMP_ROOT, EE_CONFIG_DIR, EE_DATA_DIR, EE_PRESET_SRC, EE_KWRITECONFIG, EE_BACKUP_DIR, EE_NO_NOTIFY, EE_PROC_NAME, EE_UNIT_NAME, EE_QUIT_WAIT.
+# Test hooks: EE_SOCKET, EE_TMP_ROOT, EE_CONFIG_DIR, EE_DATA_DIR, EE_PRESET_SRC, EE_KWRITECONFIG, EE_BACKUP_DIR, EE_NO_NOTIFY, EE_PROC_NAME, EE_UNIT_NAME, EE_QUIT_WAIT, EE_TIMEOUT.
 import configparser
 import json
 import os
@@ -95,27 +95,24 @@ def socket_path():
     return None
 
 
-def send(cmd, reply=False, timeout=3.0):
+def send(cmd, reply=False, timeout=None):
     """One command line; the reply line for getters, else None. None also when EE does not answer."""
     p = socket_path()
     if not p:
         return None
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(timeout)
+    # a live EasyEffects answers in milliseconds; a hung one must not stall the waybar scripts and the hub for seconds
+    s.settimeout(timeout if timeout is not None else float(env("EE_TIMEOUT", "1.0")))
     try:
         s.connect(p)
         s.sendall(cmd.encode() + b"\n")
         if not reply:
             return ""
-        # EasyEffects 8.3 ends most replies with a newline but not all (get_global_bypass sends a bare "2"): after the first
-        # chunk wait only briefly for more
+        # every reply is one short line, but EasyEffects 8.3 does not always end it with a newline (get_global_bypass sends a bare
+        # "2"): return after the first chunk, only a full 4096-byte chunk or an empty one can mean more is coming
         buf = s.recv(4096)
-        s.settimeout(0.15)
-        while buf and b"\n" not in buf:
-            try:
-                chunk = s.recv(4096)
-            except socket.timeout:
-                break
+        while len(buf) % 4096 == 0 and buf and b"\n" not in buf:
+            chunk = s.recv(4096)
             if not chunk:
                 break
             buf += chunk
@@ -245,6 +242,7 @@ def cmd_load(args):
         last = send("get_last_loaded_preset:input", reply=True) or ""
         byp = get_bypass()
         if last == PRESET and byp == "false":
+            poke_bar()  # the toggles summary shows a warning until the chain is up
             return 0
         if time.monotonic() >= end:
             break
