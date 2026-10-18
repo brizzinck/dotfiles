@@ -665,9 +665,129 @@ quick_bw1_slow() {
   fi
 }
 
+# BW-ORG C7: share mode (managed users): read-only over the vault-share broker, no rbw / bw of its own
+quick_share() {
+  local VS="$REPO/infrastructure/tests/vault-share" BF="$FAKE/bfake" SC="$FAKE/vs" out rc bpid i
+  reset
+  rm -rf "$BF" "$SC"; mkdir -p "$BF" "$SC/run" "$SC/etc" "$SC/rt"; chmod 755 "$SC/run" "$SC/etc"; chmod 700 "$SC/rt"
+  cp "$VS/fixture.json" "$BF/vault.json"; cp "$VS/scopes.tsv" "$SC/etc/scopes.tsv"; chmod 644 "$SC/etc/scopes.tsv"; echo td >"$SC/peer"
+  echo '{"email":"test@example.com"}' >"$BF/rbw.json"
+  # the broker (its own fake state directory, so the client's argv log shows only what the CLIENT ran)
+  env FAKE_DIR="$BF" VAULT_RBW_CONF="$BF/rbw.json" VAULT_SHARE_TEST_DIR="$VS" VAULT_SHARE_SCRATCH="$SC" VAULT_SHARE_SOCK="$SC/run/sock" \
+    VAULT_SHARE_SCOPES="$SC/etc/scopes.tsv" VAULT_SHARE_RUNTIME="$SC/rt" VAULT_SHARE_TEST_PEER_FILE="$SC/peer" \
+    RBW_BIN="$BIN/rbw" PATH="$BIN:$PATH" python3 -I -B "$SCRIPTS/vault-share.py" serve 2>"$FAKE/broker.err" &
+  bpid=$!
+  for i in $(seq 50); do [[ -S $SC/run/sock ]] && break; sleep 0.1; done
+  check "16.0 the broker is up for the share tests" test -S "$SC/run/sock"
+  local a0
+  a0=$(wc -l <"$FAKE/argv.log" 2>/dev/null || echo 0)
+  sh_env() { # extra VAR=value...: the client environment of a managed user td
+    env "$@" FAKE_DIR="$FAKE" VAULT_SHARE_TEST_DIR="$VS" VAULT_SHARE_SCRATCH="$SC" VAULT_SHARE_SOCK="$SC/run/sock" VAULT_SHARE_SCOPES="$SC/etc/scopes.tsv" \
+      VAULT_SHARE_RUNTIME="$SC/rt-client" VAULT_SHARE_TEST_PEER_FILE="$SC/peer" VAULT_SHARE_TEST_AS=td VAULT_BROWSE_SHARE=1 \
+      VAULT_BROWSE_STATE="$FAKE/share-state.json" XDG_RUNTIME_DIR="$RUN" PATH="$BIN:$PATH" "${SHELL_BIN:-python3}" -I -B "$BR" "${SH_ARGS[@]}"
+  }
+  SH_ARGS=(rows)
+  out=$(sh_env X=1 | sed 's/\x1b\[[0-9;]*m//g')
+  check "16.1 share rows: the 10 items of td's scope, no Open-the-app row, no password" bash -c '
+    [ "$(grep -c "^[a-z]" <<<"$1")" = 10 ] && ! grep -q "^@app" <<<"$1" && grep -q "Office Wi-Fi" <<<"$1" && ! grep -q "Globex\|Loose login\|WIFIPASS" <<<"$1"' _ "$out"
+  SH_ARGS=(header)
+  out=$(sh_env X=1)
+  check "16.2 share header: read-only, y u o f; no edit / new / trash / lock / type / bw hint" bash -c '
+    grep -q "read-only" <<<"$1" && grep -q "y pass" <<<"$1" && ! grep -qiE "edit|new|trash|lock|type|bw " <<<"$1"' _ "$out"
+  out=$(VAULT_BROWSE_SHARE=1 python3 -I -B -c "
+import importlib.util
+spec = importlib.util.spec_from_file_location('vb', '$BR'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+args, binds = m.menu_args('/x/sock')
+print(binds); print(' '.join(args))" 2>&1)
+  check "16.3 share binds: only y u o f (NORMAL) and alt-y/u/o/f, none of t e n d r h F w S s L b O" bash -c '
+    [ "$(grep -c "become" <<<"$1")" = 4 ] && grep -q "expect=alt-y,alt-u,alt-o,alt-f" <<<"$1" && ! grep -qE "^[tendrhFwSsLbOP]:become" <<<"$1"' _ "$out"
+  SH_ARGS=(preview s-wifi)
+  out=$(sh_env X=1 | sed 's/\x1b\[[0-9;]*m//g')
+  check "16.4 share preview of a login: user, host, password masked, read-only note; no value" bash -c '
+    grep -q "guest" <<<"$1" && grep -q "router.example.test" <<<"$1" && grep -q "password *••••••••" <<<"$1" && ! grep -q "WIFIPASS" <<<"$1" && grep -q "read-only" <<<"$1"' _ "$out"
+  SH_ARGS=(preview acme-host)
+  out=$(sh_env X=1 | sed 's/\x1b\[[0-9;]*m//g')
+  check "16.4 ...a marked item says 'o copies a code'" grep -q "o copies a code" <<<"$out"
+  SH_ARGS=(preview acme-plain)
+  out=$(sh_env X=1 | sed 's/\x1b\[[0-9;]*m//g')
+  check "16.4 ...an unmarked one says the totp is not shared" grep -q "not shared" <<<"$out"
+  # copy through the broker (fake wl-copy): y, u, o; yc has no clipboard
+  share_act() { # ACTION ID [env...]
+    local act=$1 id=$2; shift 2
+    env "$@" FAKE_DIR="$FAKE" VAULT_SHARE_TEST_DIR="$VS" VAULT_SHARE_SCRATCH="$SC" VAULT_SHARE_SOCK="$SC/run/sock" VAULT_SHARE_SCOPES="$SC/etc/scopes.tsv" \
+      VAULT_SHARE_RUNTIME="$SC/rt-client" VAULT_SHARE_TEST_PEER_FILE="$SC/peer" VAULT_SHARE_TEST_AS=td VAULT_BROWSE_SHARE=1 \
+      VAULT_BROWSE_STATE="$FAKE/share-state.json" XDG_RUNTIME_DIR="$RUN" PATH="$BIN:$PATH" python3 -I -B - "$act" "$id" <<PY
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('vb', '$BR'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+ents = {e['id']: e for e in m.list_entries()}
+m.share_dispatch(sys.argv[1], sys.argv[2], {'entries': ents, 'folder': 'All', 'prev': None})
+print('NOTES=' + ' | '.join(m.NOTES))
+PY
+  }
+  : >"$FAKE/wl-sock"
+  rm -f "$FAKE/clip.last" "$FAKE/clip.args"
+  out=$(share_act pass s-wifi WAYLAND_DISPLAY="$FAKE/wl-sock")
+  check "16.5 y copies the password from the broker (sensitive clipboard, the message is for the next header line)" bash -c '
+    [ "$(cat "$1/clip.last")" = WIFIPASS-1 ] && grep -q "wl-copy --sensitive" "$1/argv.log" && grep -q "NOTES=.*password copied" <<<"$2"' _ "$FAKE" "$out"
+  out=$(share_act user s-wifi WAYLAND_DISPLAY="$FAKE/wl-sock")
+  check "16.5 u copies the user name" test "$(cat "$FAKE/clip.last")" = guest
+  out=$(share_act totp acme-host WAYLAND_DISPLAY="$FAKE/wl-sock")
+  check "16.5 o copies a TOTP code of a marked item (6 digits)" bash -c '[[ "$(cat "$1/clip.last")" =~ ^[0-9]{6}$ ]]' _ "$FAKE"
+  out=$(share_act totp acme-plain WAYLAND_DISPLAY="$FAKE/wl-sock")
+  check "16.5 o on an unmarked item copies nothing and says why" bash -c 'grep -q "NOTES=.*TOTP" <<<"$1"' _ "$out"
+  echo CLIP-BEFORE >"$FAKE/clip.last"
+  out=$(share_act pass s-wifi)
+  check "16.6 yc / no Wayland socket: nothing is copied, the message says envs run" bash -c '
+    [ "$(cat "$1/clip.last")" = CLIP-BEFORE ] && grep -q "envs run" <<<"$2"' _ "$FAKE" "$out"
+  out=$(share_act pass lx-td WAYLAND_DISPLAY="$FAKE/wl-sock")
+  check "16.6 an item outside the scope (Linux/td) is the uniform not found, nothing copied" bash -c '
+    [ "$(cat "$1/clip.last")" = CLIP-BEFORE ] && ! grep -q LINUXPASS <<<"$2"' _ "$FAKE" "$out"
+  check "16.7 the client never ran rbw or bw (its argv log has neither since the share tests started)" bash -c '! tail -n +"$(($2 + 1))" "$1/argv.log" | grep -qE "^(rbw|bw) "' _ "$FAKE" "$a0"
+  # locked
+  touch "$BF/rbw-locked"
+  SH_ARGS=(rows)
+  out=$(sh_env X=1 2>&1)
+  check "16.8 a locked vault: rows say so, nothing else" bash -c 'grep -q "Could not read\|locked" <<<"$1"' _ "$out"
+  rm -f "$BF/rbw-locked"
+  # the real entry point: --share needs a runtime directory and a broker; without the broker it ends with the reason
+  out=$(env XDG_RUNTIME_DIR="$RUN" PATH="$BIN:$PATH" VAULT_SHARE_TEST_AS=td python3 -I -B "$BR" --share --here 2>&1 </dev/null); rc=$?
+  check "16.9 --share with no broker: exit 1 and the reason, no crash" bash -c '[ "$1" != 0 ] && ! grep -q Traceback <<<"$2"' _ "$rc" "$out"
+  # 16b the wrapper picks --share for a managed user (a copy of the tree, stub vault-browse.py and vault.sh)
+  local TREE="$FAKE/tree" ME
+  ME=$(id -un)
+  rm -rf "$TREE"; mkdir -p "$TREE/.local/bin" "$TREE/.config/hypr/scripts" "$TREE/infrastructure/users" "$FAKE/xdg/hypr/scripts"
+  cp "$REPO/.local/bin/vault-browse" "$TREE/.local/bin/vault-browse"
+  printf '#!/usr/bin/env python3\nimport sys\nprint("PY", *sys.argv[1:])\n' >"$TREE/.config/hypr/scripts/vault-browse.py"
+  printf '#!/usr/bin/env bash\necho "VAULTSH $*"\n' >"$FAKE/xdg/hypr/scripts/vault.sh"; chmod +x "$FAKE/xdg/hypr/scripts/vault.sh"
+  printf '%s\tcli\tinteractive\tblue\tx\n' "$ME" >"$TREE/infrastructure/users/managed.tsv"
+  out=$(XDG_CONFIG_HOME="$FAKE/xdg" "$TREE/.local/bin/vault-browse" Work 2>&1)
+  check "16b the wrapper as a managed user: share mode, in this terminal, the folder argument kept" test "$out" = "PY --share --here Work"
+  printf 'someone-else\tcli\tinteractive\tblue\tx\n%s\t-\tservice\tred\tx\n' "$ME" >"$TREE/infrastructure/users/managed.tsv"
+  out=$(XDG_CONFIG_HOME="$FAKE/xdg" "$TREE/.local/bin/vault-browse" Work 2>&1)
+  check "16b ...as a service row or an unlisted user it is the owner's path (vault.sh browse)" test "$out" = "VAULTSH browse Work"
+  # linux-pass 15c and bw-setup: refused for a managed user before anything is called
+  mark_argv=$(wc -l <"$FAKE/argv.log")
+  export PATH="$BIN:$PATH"       # the fakes first: even a broken guard can only reach the fake rbw / bw, never the owner's vault
+  out=$(LINUX_PASS_AS_USER=td "$REPO/.local/bin/linux-pass" </dev/null 2>&1); rc=$?
+  check "15c linux-pass as td: exit 4, the Linux folder is the owner's, no bw / rbw call" bash -c '
+    [ "$1" = 4 ] && grep -q "Linux folder is the owner" <<<"$2" && [ "$(wc -l <"$3/argv.log")" = "$4" ]' _ "$rc" "$out" "$FAKE" "$mark_argv"
+  out=$(LINUX_PASS_AS_USER=td "$REPO/.local/bin/linux-pass" --update td </dev/null 2>&1); rc=$?
+  check "15c linux-pass --update as td: exit 4" test "$rc" = 4
+  out=$(LINUX_PASS_AS_USER=td "$REPO/.local/bin/linux-pass" --list </dev/null 2>&1); rc=$?
+  check "15c linux-pass --list as td: exit 4 (Linux/td is not shared)" test "$rc" = 4
+  out=$(LINUX_PASS_AS_USER=nobody-here "$REPO/.local/bin/linux-pass" --help 2>&1); rc=$?
+  check "15c linux-pass --help still works" test "$rc" = 0
+  out=$(BW_SETUP_AS_USER=td "$REPO/.local/bin/bw-setup" --url https://x.example --email a@b.example </dev/null 2>&1); rc=$?
+  check "16c bw-setup as td: exit 4 with the vault-share explanation, no rbw call at all" bash -c '
+    [ "$1" = 4 ] && grep -q "vault-share" <<<"$2" && ! tail -n +"$(($4 + 1))" "$3/argv.log" | grep -qE "^rbw (config|login|register|stop-agent)"' _ "$rc" "$out" "$FAKE" "$a0"
+  kill "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null
+  check "16d the broker's journal has no value and no item name" bash -c '! grep -qE "WIFIPASS|ACMEPASS|Office|guest" "$1"' _ "$FAKE/broker.err"
+}
+
 quick
 
 quick_bw1
+quick_share
 
 if ((QUICK)); then
   printf '\nvault-browse quick test: %d passed, %d failed\n' "$PASS" "$FAILS"

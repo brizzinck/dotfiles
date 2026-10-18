@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
 # vault-browse: the Bitwarden vault browser (SUPER+CTRL+SHIFT+P). `vault-browse` opens the float.tui menu,
 # `vault-browse --here` runs it in this terminal, `vault-browse Linux` starts in that folder. See vault-browse.py --help.
+# A managed user (td, yc: a non-service row of managed.tsv) gets the read-only share mode over the vault-share broker, in its terminal.
+here="$(dirname "$(readlink -f "$0")")/../.."
+registry="${USR_MANAGED_TSV:-$here/infrastructure/users/managed.tsv}"
+if [[ -r $registry ]] && awk -F'\t' -v u="$(id -un)" '!/^[[:space:]]*(#|$)/ && $1 == u && $3 !~ /(^|,)service(,|$)/ { f = 1 } END { exit !f }' "$registry"; then
+  exec /usr/bin/python3 -I "$here/.config/hypr/scripts/vault-browse.py" --share --here "$@"
+fi
 exec "${XDG_CONFIG_HOME:-$HOME/.config}/hypr/scripts/vault.sh" browse "$@"

@@ -27,6 +27,13 @@ restore, Send (through vault-bw.py: one per-session `bw serve` on a unix socket,
 milliseconds instead of a 1 s bw process each; the session key lives in $XDG_RUNTIME_DIR/vault/bw-session). Account settings,
 emergency access and organisation admin stay in the app (the last list row opens it).
 
+Share mode (`vault-browse --share`, what the wrapper starts for a managed user, td or yc): READ-ONLY through the vault-share broker
+that runs in the owner's session (no rbw, no bw, no Trash, no typing, no editing; see vault-share.py). The list is what the owner's
+scope allows, the preview is masked metadata (the broker's describe, cached per run, no live code); y copies the password, u the user,
+o a TOTP code (only items the owner marked `vault-share: totp`), f any field; Enter copies the password of a login or opens the field
+picker. Copies use `wl-copy --sensitive` (yc has no clipboard: use `envs run`). There is no notification daemon for td: a result is
+shown in the next header line. On the owner's side the preview shows `shared with: td, yc` (from /etc/vault-share/scopes.tsv).
+
 Internal subcommands (called by fzf): rows, header [--cycle next|prev], preview ID; `_act NAME ARGS` runs the steps that
 need a terminal (editor, prompts) in their own float.tui window.
 
@@ -34,7 +41,7 @@ Secrets: never in the list, argv, notifications or logs. They go to `wl-copy --s
 `wtype -` on stdin (type-guard.sh: only into the window that was focused before the browser), to bw on stdin, or into
 the 600 edit file on tmpfs that is shredded afterwards. The metadata cache ($XDG_RUNTIME_DIR/vault/browse-index.json:
 names, folders, attachments, masked fields, never a value) only exists while the bw session is open.
-Test hooks: RBW_BIN, BW_BIN, VAULT_BW_SERVE=0 (bw as processes only), VAULT_TERMINAL (command prefix replacing `ghostty --class=float.tui -e`), VAULT_CLEAR_AFTER,
+Test hooks: VAULT_BROWSE_SCOPES (scope file shown in `shared with`), RBW_BIN, BW_BIN, VAULT_BW_SERVE=0 (bw as processes only), VAULT_TERMINAL (command prefix replacing `ghostty --class=float.tui -e`), VAULT_CLEAR_AFTER,
 VAULT_BROWSE_STATE, EDITOR, FZF_MENU_HERE.
 """
 import importlib.util
@@ -81,6 +88,8 @@ ALT_KEYS = {"alt-y": "pass", "alt-u": "user", "alt-o": "totp", "alt-f": "field",
             "alt-w": "gen", "alt-m": "send", "alt-s": "sync", "alt-l": "lock", "alt-b": "unlock", "alt-v": "app"}
 NEEDS_ITEM = {"pass", "user", "totp", "field", "type", "passonly", "edit", "del", "restore", "hist", "files"}
 TRASH_OK = {"restore", "del"}
+SHARE_NORMAL_KEYS = [("y", "pass"), ("u", "user"), ("o", "totp"), ("f", "field")]
+SHARE_ALT_KEYS = {"alt-y": "pass", "alt-u": "user", "alt-o": "totp", "alt-f": "field"}
 
 
 # ───────────────────────────── helpers ─────────────────────────────
@@ -93,13 +102,25 @@ def is_tty():
     return (sys.stdin.isatty() and sys.stderr.isatty()) or os.environ.get("FZF_MENU_HERE") == "1"
 
 
+def share_mode():
+    return os.environ.get("VAULT_BROWSE_SHARE") == "1"
+
+
+NOTES = []        # share mode: results for the next header line (td has no notification daemon)
+
+
 def notify(title, body="", urgency="low"):
+    if share_mode():
+        NOTES.append(clean(body or title))
+        return
     if have("notify-send"):
         subprocess.run(["notify-send", "-a", "vault", "-u", urgency, "-t", "5000",
                         "-h", "string:x-dunst-stack-tag:vault", title, body], check=False)
 
 
 def poke_bar():
+    if share_mode():
+        return
     subprocess.run(["pkill", "-o", "-u", str(os.getuid()), "-RTMIN+15", "-x", "waybar"],
                    check=False, stderr=subprocess.DEVNULL)
 
@@ -350,6 +371,8 @@ def read_index(build=False):
 # ───────────────────────────── rbw data ─────────────────────────────
 
 def list_entries():
+    if share_mode():
+        return share_entries()
     p = rbw("list", "--raw")
     if p.returncode != 0:
         return None
@@ -401,6 +424,8 @@ def write_state(st):
 def folder_names(entries):
     names = sorted({e["folder"] for e in entries if e["folder"]}, key=str.lower)
     out = [ALL] + names
+    if share_mode():
+        return out
     if names and any(not e["folder"] for e in entries):
         out.append(NOFOLDER)
     return out + [TRASH]
@@ -413,6 +438,10 @@ def entry_row(e, extra=""):
 
 
 def build_rows(folder, entries):
+    if share_mode():
+        sel = [e for e in entries if folder == ALL or e["folder"] == folder]
+        return [entry_row(e) for e in sorted(sel, key=lambda e: (e["name"].lower(), e["user"].lower()))] or \
+            ["@none\tNothing is shared with you in this folder"]
     if folder == TRASH:
         idx = read_index(build=True)
         if idx is None:
@@ -437,6 +466,9 @@ def header_text(st):
     cur = st.get("folder", ALL)
     folders = st.get("folders") or [ALL]
     pos = folders.index(cur) + 1 if cur in folders else 1
+    if share_mode():
+        return (f"Shared with you · Folder: {cur} ({pos}/{len(folders)}) · Tab / Shift+Tab: folder\n"
+                "y pass · u user · o totp · f field · Enter: copy · read-only\n" + (st.get("msg") or ""))
     lock = "" if bw_open() else " · bw locked: b"
     return (f"Folder: {cur} ({pos}/{len(folders)}) · Tab / Shift+Tab: folder{lock}\n"
             "y pass · u user · o totp · f field · t type · P pass only · Enter: type\n"
@@ -514,6 +546,8 @@ def render(rec, live=None, files=None):
 
 
 def cmd_preview(ident):
+    if share_mode():
+        return share_preview(ident)
     if ident.startswith("@"):
         print({"@app": "Account settings, emergency access, organisation admin and everything else the\n"
                        "app does stay there. Enter opens the desktop app.",
@@ -543,6 +577,9 @@ def cmd_preview(ident):
     if idx and ident in idx["items"]:
         files = idx["items"][ident]["files"]
     print(render(rec, live, files))
+    who = shared_with(rec["folder"], rec["name"])
+    if who:
+        print(f"\n{DIM}{'shared':<9}{RST}with {', '.join(who)}")
     return 0
 
 
@@ -874,9 +911,11 @@ def vault_sh(*args):
 
 def menu_args(sock):
     me = f"python3 -I {shlex.quote(str(SELF))}"
-    binds = "\n".join(f'{k}:become(printf "%s\\n%s\\n%s\\n" {{q}} {a} {{1}})' for k, a in NORMAL_KEYS)
+    nkeys = SHARE_NORMAL_KEYS if share_mode() else NORMAL_KEYS
+    akeys = SHARE_ALT_KEYS if share_mode() else ALT_KEYS
+    binds = "\n".join(f'{k}:become(printf "%s\\n%s\\n%s\\n" {{q}} {a} {{1}})' for k, a in nkeys)
     args = ["-p", "vault", "--delimiter=\t", "--with-nth=2..", "--tabstop=4", "--print-query",
-            "--expect=" + ",".join(ALT_KEYS),
+            "--expect=" + ",".join(akeys),
             f"--bind=tab:transform-header({me} header --cycle next)+reload-sync({me} rows)",
             f"--bind=shift-tab:transform-header({me} header --cycle prev)+reload-sync({me} rows)",
             f"--preview={me} preview {{1}}", "--preview-window=right,45%,wrap,border-left",
@@ -947,6 +986,8 @@ def read_item_action(action, ident, entry, ctx):
 
 def act_dispatch(action, ident, ctx):
     """Run one action; returns True to keep browsing, False to leave."""
+    if share_mode():
+        return share_dispatch(action, ident, ctx)
     entry = ctx["entries"].get(ident)
     folder = ctx["folder"]
     in_trash = folder == TRASH
@@ -1030,6 +1071,8 @@ def browse(here_flag, folder0):
     if not have("fzf-menu"):
         notify("Vault", "fzf-menu is not installed", "critical")
         return 1
+    if share_mode():
+        return browse_share(folder0)
     if not have(RBW):
         notify("Vault", "rbw is not installed (sudo ./apply-system.sh --only install)", "critical")
         return 1
@@ -1074,6 +1117,209 @@ def browse(here_flag, folder0):
         poke_bar()
 
 
+# ───────────────────────────── share mode (managed users) ─────────────────────────────
+
+SHARE_ERR = ""
+
+
+def share_lib():
+    return mod("vault-share")
+
+
+def share_call(msg):
+    """One broker request; ShareError -> None with the reason in SHARE_ERR (and the next header line)."""
+    global SHARE_ERR
+    sl = share_lib()
+    try:
+        SHARE_ERR = ""
+        return sl.Client().request(msg)
+    except sl.ShareError as e:
+        SHARE_ERR = str(e) + (f" (retry in {e.extra['retry_after']} s)" if e.extra.get("retry_after") else "")
+        return None
+
+
+def share_cache_file():
+    return state_file().with_name(state_file().name.replace(".json", "") + ".share.json")
+
+
+def share_entries():
+    r = share_call({"v": 1, "op": "list"})
+    if r is None:
+        return None
+    entries = [{"id": i["id"], "name": i["name"] or "", "user": i.get("user") or "", "folder": i.get("folder") or "",
+                "type": kind_of(i.get("type")), "hosts": i.get("hosts") or []} for i in r["items"]]
+    cache = share_cache_read()
+    cache["entries"] = {e["id"]: e for e in entries}
+    share_cache_write(cache)
+    return entries
+
+
+def share_cache_read():
+    try:
+        return json.loads(share_cache_file().read_text())
+    except (OSError, ValueError):
+        return {"entries": {}, "describe": {}}
+
+
+def share_cache_write(doc):
+    path = share_cache_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(doc, f)
+
+
+def share_describe(ident):
+    """The broker's describe of one item (names and set/hidden flags, no value), cached for this run."""
+    cache = share_cache_read()
+    if ident in cache.get("describe", {}):
+        return cache["describe"][ident]
+    r = share_call({"v": 1, "op": "describe", "id": ident})
+    if r is None:
+        return None
+    cache.setdefault("describe", {})[ident] = r["item"]
+    share_cache_write(cache)
+    return r["item"]
+
+
+def share_preview(ident):
+    if ident.startswith("@"):
+        print("Nothing is shared with you here. The owner decides what is (scope: vault-share status).")
+        return 0
+    d = share_describe(ident)
+    if d is None:
+        print(SHARE_ERR or "could not read the entry")
+        return 0
+    e = share_cache_read().get("entries", {}).get(ident) or {}
+    print(d["name"] + "\n")
+    print(f"{DIM}{TYPE_NAME.get(d['type'], d['type'])} · {d['folder']}{RST}\n")
+    if e.get("user"):
+        print(f"{DIM}{'user':<9}{RST}{e['user']}")
+    for h in e.get("hosts") or []:
+        print(f"{DIM}{'url':<9}{RST}{h}")
+    for f in d["fields"]:
+        nm = f["name"]
+        label = nm[6:] if nm.startswith("field:") else nm
+        if nm in ("username", "uris") or not f["set"]:
+            continue
+        hidden = f.get("hidden") or nm in ("password", "notes", "number", "code", "private_key", "ssn", "passport_number")
+        print(f"{DIM}{label[:8]:<9}{RST}{MASK if hidden else 'set'}")
+    if d["totp"] == "shared":
+        print(f"{DIM}{'totp':<9}{RST}o copies a code")
+    elif d["totp"] == "refused":
+        print(f"{DIM}{'totp':<9}{RST}not shared (the owner marks an item with vault-share: totp)")
+    print(f"\n{DIM}read-only: values go to the clipboard, nothing is typed{RST}")
+    return 0
+
+
+def share_clipboard_ok():
+    return share_lib().clipboard_ok()
+
+
+def share_get(ident, field_name):
+    r = share_call({"v": 1, "op": "get", "id": ident, "fields": [field_name]})
+    return None if r is None else r["values"].get(field_name)
+
+
+def share_copy(text, what):
+    share_lib().vault_copy(text)
+    notify("Vault", f"{what} copied (sensitive, cleared in 30 s)")
+
+
+def share_dispatch(action, ident, ctx):
+    entry = ctx["entries"].get(ident)
+    if action == "enter":
+        if not ident or ident.startswith("@"):
+            return True
+        action = "pass" if (entry or {}).get("type") == "login" else "field"
+    if not ident or ident.startswith("@"):
+        notify("Vault", "No item selected")
+        return True
+    if action not in ("pass", "user", "totp", "field"):
+        return True
+    if not share_clipboard_ok():
+        notify("Vault", "No clipboard for this user: use envs run (values go into the command)")
+        return True
+    d = share_describe(ident)
+    if d is None:
+        notify("Vault", SHARE_ERR or "Could not read the item")
+        return True
+    typ = d["type"]
+    if action == "pass":
+        fld = {"login": "password", "card": "number", "ssh": "private_key", "note": "notes"}.get(typ)
+        if fld is None:
+            action = "field"
+    if action == "user":
+        fld = "username"
+    elif action == "totp":
+        r = share_call({"v": 1, "op": "totp", "id": ident})
+        if r is None:
+            notify("Vault", SHARE_ERR or "No code")
+        else:
+            share_copy(r["code"], f"code ({r['left']} s left)")
+        return True
+    if action == "field":
+        rows = [f"{f['name']}\t{f['name'][6:] if f['name'].startswith('field:') else f['name']}" for f in d["fields"] if f["set"]]
+        row = pick(rows, "field", f"{d['name']}: Enter copies that field") if rows else None
+        if not row:
+            return True
+        fld = row.split("\t")[0]
+    val = share_get(ident, fld)
+    if val is None:
+        notify("Vault", SHARE_ERR or f"{d['name']} has no {fld}")
+    else:
+        share_copy(val, fld.replace("field:", ""))
+    val = None
+    return True
+
+
+def shared_with(folder, name):
+    """Owner side: the managed users whose scope covers this item, from the scope file (empty list when it does not exist)."""
+    path = Path(os.environ.get("VAULT_BROWSE_SCOPES") or "/etc/vault-share/scopes.tsv")
+    try:
+        text = path.read_text()
+    except OSError:
+        return []
+    sl = share_lib()
+    rules, _ = sl.parse_rules(text)
+    return [u for u in sorted(rules) if sl.in_scope(rules[u], folder, name)]
+
+
+def browse_share(folder0):
+    if not (Path(os.environ.get("XDG_RUNTIME_DIR") or "/nonexistent").is_dir()):
+        print("vault-browse: no runtime directory: open a terminal of your own (the owner: SUPER+SHIFT+T)", file=sys.stderr)
+        return 1
+    RUN.mkdir(parents=True, exist_ok=True)
+    os.chmod(RUN, 0o700)
+    state = RUN / f"browse-state.{os.getpid()}.json"
+    os.environ["VAULT_BROWSE_STATE"] = str(state)
+    sock = str(RUN / f"fzf-browse.{os.getpid()}.sock")
+    st = {"folder": folder0 or ALL, "folders": [ALL], "count": 0}
+    try:
+        while True:
+            entries = list_entries()
+            if entries is None:
+                print("vault-browse: " + (SHARE_ERR or "could not read the shared items"), file=sys.stderr)
+                return 3 if "locked" in SHARE_ERR else 1
+            folders = folder_names(entries)
+            if st["folder"] not in folders:
+                st["folder"] = ALL
+            st.update(folders=folders, count=len(entries), msg="; ".join(NOTES))
+            NOTES.clear()
+            write_state(st)
+            rows = build_rows(st["folder"], entries)
+            rc, _query, key, ident = run_menu(rows, st, sock, True)
+            action = SHARE_ALT_KEYS.get(key, key) if key else ("enter" if rc == 0 else "")
+            if not action:
+                return 0
+            st = read_state()
+            ctx = {"entries": {e["id"]: e for e in entries}, "folder": st["folder"], "prev": None}
+            share_dispatch(action, ident, ctx)
+    finally:
+        for f in (state, share_cache_file()):
+            f.unlink(missing_ok=True)
+
+
 def main(argv):
     if argv and argv[0] in ("-h", "--help"):
         print(__doc__)
@@ -1086,8 +1332,10 @@ def main(argv):
         return cmd_preview(argv[1])
     if argv and argv[0] == "_act" and len(argv) > 1:
         return call_act(*argv[1:])
+    if "--share" in argv:
+        os.environ["VAULT_BROWSE_SHARE"] = "1"      # the fzf child processes (rows, header, preview) inherit it
     here = "--here" in argv
-    rest = [a for a in argv if a != "--here"]
+    rest = [a for a in argv if a not in ("--here", "--share")]
     return browse(here, rest[0] if rest else "")
 
 

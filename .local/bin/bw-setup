@@ -23,6 +23,22 @@ while (($#)); do
   esac
 done
 
+# BW-ORG: a managed user (td, yc) has no vault of its own: the owner's broker serves its scope (vault-share), so nothing here may
+# configure rbw or log bw in. BW_SETUP_AS_USER (test hook) can only make the run count as managed, never as the owner.
+managed_lib="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../infrastructure/users/lib.sh"
+if [[ -r $managed_lib ]]; then
+  # shellcheck source=../../infrastructure/users/lib.sh
+  . "$managed_lib"
+  managed_list=$(managed_users interactive)       # not `managed_users | grep -q`: the early exit of grep + pipefail would be 141
+  for who in "$(id -un)" "${BW_SETUP_AS_USER:-}"; do
+    if [[ -n $who ]] && grep -qx -- "$who" <<<"$managed_list"; then
+      echo "$who gets vault values through vault-share (the owner's broker); no rbw or bw of its own." >&2
+      echo "\`vault-share status\` shows your scope; secrets for commands: envs run." >&2
+      exit 4
+    fi
+  done
+fi
+
 command -v rbw >/dev/null || { echo "rbw is not installed. Run: sudo ~/dotfiles/apply-system.sh --only install" >&2; exit 1; }
 
 self_dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")

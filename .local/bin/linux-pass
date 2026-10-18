@@ -272,6 +272,20 @@ while (($#)); do
   esac
 done
 
+# BW-ORG: the Linux folder is the owner's. A managed user's vault access is the broker, and Linux/<user> is in no scope
+# (LINUX_PASS_AS_USER, a test hook, can only make the run count as managed, never as the owner)
+managed_lib="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../infrastructure/users/lib.sh"
+if [[ -r $managed_lib ]]; then
+  # shellcheck source=../../infrastructure/users/lib.sh
+  . "$managed_lib"
+  managed_list=$(managed_users interactive)       # not `managed_users | grep -q`: the early exit of grep + pipefail would be 141
+  for who in "$(id -un)" "${LINUX_PASS_AS_USER:-}"; do
+    if [[ -n $who ]] && grep -qx -- "$who" <<<"$managed_list"; then
+      echo "linux-pass: the Linux folder is the owner's and is shared with nobody: he runs \`linux-pass --update $who\` after your passwd." >&2
+      exit 4
+    fi
+  done
+fi
 if [[ $mode != list ]]; then
   [[ -t 0 ]] || die "needs a terminal: the passwords are typed here"
 fi
