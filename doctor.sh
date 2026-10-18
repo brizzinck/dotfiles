@@ -1545,11 +1545,18 @@ grep -q -- '--no-telemetry' "$DOTFILES/.local/bin/db" && grep -q 'LAZYSQL_NO_UPD
 grep -A1 '^history:' "$DOTFILES/.config/posting/config.yaml" 2>/dev/null | grep -q 'enabled: false' || dd_bad="$dd_bad the posting config does not switch its response history off (it keeps resolved URLs and bodies on disk);"
 if [ -n "$dd_bad" ]; then bad dev-privacy "$dd_bad"; else ok dev-privacy "lazysql telemetry and update check off (zshrc + db), posting history off"; fi
 if command -v glab >/dev/null 2>&1; then
-  dd_g="$(timeout 5 glab config get telemetry --global 2>/dev/null)"
-  info glab-telemetry "glab config telemetry = ${dd_g:-unset (this glab version may have no such key)}"
+  # read the config file, never run glab: with telemetry on it sends an event after every command and ignored the TERM
+  # of `timeout 5` for minutes (doctor hung on it); offline and instant
+  dd_gc="${GLAB_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/glab-cli}/config.yml"
+  dd_g="$(sed -n 's/^telemetry:[[:space:]]*//p' "$dd_gc" 2>/dev/null | head -n1 | tr -d "\"'")"
+  info glab-telemetry "glab config telemetry = ${dd_g:-unset (no $dd_gc or no telemetry key yet)}"
 fi
 if command -v gh >/dev/null 2>&1; then
-  dd_s="$(timeout 10 gh auth status 2>&1 | grep -m1 -i 'logged in')"
+  # offline: `gh auth status` asks the API; the token's storage is visible in hosts.yml (oauth_token = plaintext)
+  dd_gh="${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}/hosts.yml"
+  if grep -qs '^[[:space:]]*oauth_token:' "$dd_gh"; then dd_s="Logged in (hosts.yml)"
+  elif grep -qs '^[[:space:]]*user:' "$dd_gh"; then dd_s="Logged in (keyring)"
+  else dd_s=""; fi
   case "$dd_s" in
     *keyring*) info gh-token-storage "the gh token is in the keyring" ;;
     *hosts.yml*) info gh-token-storage "the gh token is in ~/.config/gh/hosts.yml (plaintext; agents use gh; moving it is owner decision Q2 of DEV-d)" ;;
