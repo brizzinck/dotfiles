@@ -8,6 +8,7 @@
 #   run.sh --quick    no tmux: rows, header, previews, masking (used by doctor.sh)
 #   run.sh --keep     keep the temp dir (path printed at the end)
 set -u
+export PYTHONDONTWRITEBYTECODE=1   # python3 -I ignores PYTHON* variables (hence -B there); this covers the other interpreters: no __pycache__ in the repo
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 SCRIPTS="$REPO/.config/hypr/scripts"
@@ -131,45 +132,45 @@ quick() {
   # shellcheck disable=SC1091
   . "$FAKE/env.sh"
   export VAULT_BROWSE_STATE="$st"
-  out=$(python3 -I "$BR" rows)
+  out=$(python3 -I -B "$BR" rows)
   check "rows: every non-trashed item, no secret" bash -c '[ "$(grep -c "^i-" <<<"$1")" = 10 ] && ! grep -q "PW-" <<<"$1"' _ "$out"
   check "rows: Open-the-app hint row" grep -q '^@app' <<<"$out"
   check "rows: type tags (card, id, note, ssh)" bash -c 'grep -q "Visa.*card" <<<"$1" && grep -q "Passport.*id" <<<"$1" && grep -q "Wi-Fi.*note" <<<"$1" && grep -q "deploy.*ssh" <<<"$1"' _ "$out"
-  out=$(python3 -I "$BR" header --cycle next >/dev/null; python3 -I "$BR" rows | sed 's/\x1b\[[0-9;]*m//g')
+  out=$(python3 -I -B "$BR" header --cycle next >/dev/null; python3 -I -B "$BR" rows | sed 's/\x1b\[[0-9;]*m//g')
   check "rows --cycle next: first folder (Linux)" bash -c 'grep -q "^i-skalse" <<<"$1" && ! grep -q "github" <<<"$1"' _ "$out"
-  check "header: folder and keys" bash -c 'python3 -I "$1" header | grep -q "Folder: Linux (2/" ' _ "$BR"
-  for i in 1 2 3; do python3 -I "$BR" header --cycle next >/dev/null; python3 -I "$BR" rows >/dev/null; done
-  out=$(python3 -I "$BR" header --cycle next >/dev/null; python3 -I "$BR" rows)
+  check "header: folder and keys" bash -c 'python3 -I -B "$1" header | grep -q "Folder: Linux (2/" ' _ "$BR"
+  for i in 1 2 3; do python3 -I -B "$BR" header --cycle next >/dev/null; python3 -I -B "$BR" rows >/dev/null; done
+  out=$(python3 -I -B "$BR" header --cycle next >/dev/null; python3 -I -B "$BR" rows)
   check "trash with bw locked: unlock hint row" grep -q '^@unlock' <<<"$out"
-  out=$(python3 -I "$BR" preview i-github | sed 's/\x1b\[[0-9;]*m//g')
+  out=$(python3 -I -B "$BR" preview i-github | sed 's/\x1b\[[0-9;]*m//g')
   check "preview login: user shown" grep -q 'brizzinck' <<<"$out"
   check "preview login: password masked" bash -c 'grep -q "pass *••••••••" <<<"$1" && ! grep -q "PW-github" <<<"$1"' _ "$out"
   check "preview login: live TOTP and seconds left" grep -qE '[0-9]{3} [0-9]{3} \([0-9]+s\)' <<<"$out"
   check "preview login: hidden field masked, text field shown" bash -c 'grep -q "api_key *••••••••" <<<"$1" && ! grep -q "TOKEN-api" <<<"$1" && grep -q "region *eu-north" <<<"$1"' _ "$out"
   check "preview login: URL" grep -q 'https://github.com' <<<"$out"
-  out=$(python3 -I "$BR" preview i-visa | sed 's/\x1b\[[0-9;]*m//g')
+  out=$(python3 -I -B "$BR" preview i-visa | sed 's/\x1b\[[0-9;]*m//g')
   check "preview card: last 4 only, cvv masked" bash -c 'grep -q "•••• 1111" <<<"$1" && ! grep -q "4111111111111111" <<<"$1" && ! grep -q "CVV-secret" <<<"$1" && grep -q "12/2030" <<<"$1"' _ "$out"
-  out=$(python3 -I "$BR" preview i-passport | sed 's/\x1b\[[0-9;]*m//g')
+  out=$(python3 -I -B "$BR" preview i-passport | sed 's/\x1b\[[0-9;]*m//g')
   check "preview identity: ssn / passport masked" bash -c '! grep -q "SSN-123" <<<"$1" && ! grep -q "PASSPORT-AB" <<<"$1" && grep -q "Kyiv" <<<"$1"' _ "$out"
-  out=$(python3 -I "$BR" preview i-wifi | sed 's/\x1b\[[0-9;]*m//g')
+  out=$(python3 -I -B "$BR" preview i-wifi | sed 's/\x1b\[[0-9;]*m//g')
   check "preview note: text masked, line count shown" bash -c '! grep -q "NOTE-secret" <<<"$1" && grep -q "2 lines" <<<"$1"' _ "$out"
-  out=$(python3 -I "$BR" preview i-deploy | sed 's/\x1b\[[0-9;]*m//g')
+  out=$(python3 -I -B "$BR" preview i-deploy | sed 's/\x1b\[[0-9;]*m//g')
   check "preview ssh key: fingerprint and public key, private masked" bash -c 'grep -q "SHA256:fingerprintOK" <<<"$1" && grep -q "ssh-ed25519" <<<"$1" && ! grep -q "SSHPRIVATE" <<<"$1"' _ "$out"
   # an open bw session adds attachments and the trash to the preview
   reset unlocked
   export VAULT_BROWSE_STATE="$st"
-  for i in 1 2 3 4; do python3 -I "$BR" header --cycle next >/dev/null; python3 -I "$BR" rows >/dev/null; done
-  out=$(python3 -I "$BR" header --cycle next >/dev/null; python3 -I "$BR" rows | sed 's/\x1b\[[0-9;]*m//g')
+  for i in 1 2 3 4; do python3 -I -B "$BR" header --cycle next >/dev/null; python3 -I -B "$BR" rows >/dev/null; done
+  out=$(python3 -I -B "$BR" header --cycle next >/dev/null; python3 -I -B "$BR" rows | sed 's/\x1b\[[0-9;]*m//g')
   check "trash view lists the trashed item" grep -q 'old-forum' <<<"$out"
-  out=$(python3 -I "$BR" preview i-docs | sed 's/\x1b\[[0-9;]*m//g')
+  out=$(python3 -I -B "$BR" preview i-docs | sed 's/\x1b\[[0-9;]*m//g')
   check "index: attachments in the preview (bw open)" grep -q 'report.pdf (11 Bytes)' <<<"$out"
   check "index file: mode 600 and no secret" bash -c '[ "$(stat -c %a "$1")" = 600 ] && ! grep -qE "PW-|TOKEN-api|4111111111111111|SSHPRIVATE|JBSWY3DP" "$1"' _ "$RUN/vault/browse-index.json"
-  out=$(python3 -I "$BR" preview i-old | sed 's/\x1b\[[0-9;]*m//g')
+  out=$(python3 -I -B "$BR" preview i-old | sed 's/\x1b\[[0-9;]*m//g')
   check "preview of a trashed item: masked, deletion date, hint" bash -c 'grep -q "in the trash since 2026-09-30" <<<"$1" && ! grep -q "PW-old" <<<"$1" && grep -q "r restores" <<<"$1"' _ "$out"
   # the terminal runner outside a tty: VAULT_TERMINAL gets the `_act` command, bw edits the vault
   : >"$FAKE/editor-script"
   echo '.name = "Fresh SSH" | .sshKey.privateKey = "x"' >"$FAKE/editor-script"
-  python3 -I -c "
+  python3 -I -B -c "
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location('vb', '$BR'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 m.run_tui('new-tpl', 'ssh', 'Work')" >/dev/null 2>&1
@@ -211,73 +212,73 @@ quick_bw1() {
   # shellcheck disable=SC1091
   . "$FAKE/env.sh"
   : >"$FAKE/argv.log"
-  out=$(python3 -I "$V" call list folders </dev/null)
+  out=$(python3 -I -B "$V" call list folders </dev/null)
   check "server: the first bw action starts ONE bw serve, then it is requests only" bash -c 'a=$(grep -a "^bw " "$1/argv.log"); [ "$(wc -l <<<"$a")" = 1 ] && grep -q "^bw serve --hostname unix://" <<<"$a" && grep -q "^bw-serve GET /list/object/folders" "$1/argv.log"' _ "$FAKE"
   check "server: answer has the CLI shape (a JSON array of folders)" bash -c 'jq -e "type==\"array\" and (map(.name) | index(\"Work\"))" <<<"$1" >/dev/null' _ "$out"
-  python3 -I "$V" call get item i-github </dev/null >/dev/null
-  python3 -I "$V" call list items --trash </dev/null >/dev/null
+  python3 -I -B "$V" call get item i-github </dev/null >/dev/null
+  python3 -I -B "$V" call list items --trash </dev/null >/dev/null
   check "server: later calls start no process" bash -c '[ "$(grep -ac "^bw " "$1/argv.log")" = 1 ] && grep -aq "^bw-serve GET /object/item/i-github" "$1/argv.log" && grep -aq "^bw-serve GET /list/object/items?trash=true" "$1/argv.log"' _ "$FAKE"
   check "socket: mode 600 (an umask-077 process), directory 700, owned by the owner" bash -c '[ "$(stat -c %a "$1/bw.sock")" = 600 ] && [ "$(stat -c %a "$1")" = 700 ] && [ "$(stat -c %U "$1/bw.sock")" = "$(id -un)" ]' _ "$RUN/vault"
   check "socket: no TCP listener of the server (port 8087; this test's supervisor and its bw child, not the owner's real server)" no_tcp_listener
-  check "socket: nobody (another user) cannot reach it (acl-reach.py)" bash -c 'out=$(python3 -I "$1/infrastructure/users/acl-reach.py" "$(id -u nobody)" "$2" 2>&1); ! grep -q "bw.sock" <<<"$out"' _ "$REPO" "$RUN"
+  check "socket: nobody (another user) cannot reach it (acl-reach.py)" bash -c 'out=$(python3 -I -B "$1/infrastructure/users/acl-reach.py" "$(id -u nobody)" "$2" 2>&1); ! grep -q "bw.sock" <<<"$out"' _ "$REPO" "$RUN"
   p1=$(srv_pid)
   check "secret: the session key is in no argv (supervisor, bw child, argv log, start command)" bash -c 'for p in $(pgrep -f "^(/usr/bin/)?python3 .*(vault-bw.py _serve|bw-serve.py)"); do tr "\0" " " </proc/$p/cmdline | grep -q "$2" && exit 1; done; ! grep -aq "$2" "$1/argv.log"; exit 0' _ "$FAKE" "$key"
   check "secret: the key reaches the bw child through its environment only; the log is 600 and holds no key" bash -c 'c=$(pgrep -P "$1" | head -1); tr "\0" "\n" </proc/$c/environ | grep -q "^BW_SESSION=$3$" && [ "$(stat -c %a "$2/bw-serve.log")" = 600 ] && ! grep -aq "$3" "$2/bw-serve.log"' _ "$p1" "$RUN/vault" "$key"
   # write paths through the server: create / edit / delete / restore / attachment
   : >"$FAKE/argv.log"
-  jq -nc '{type:1,name:"viaserver",notes:null,favorite:false,folderId:null,fields:[],login:{username:"u",password:"PW-gitlab-pass",totp:null,uris:[]}}' | base64 -w0 | python3 -I "$V" call --stdin create item >/dev/null
+  jq -nc '{type:1,name:"viaserver",notes:null,favorite:false,folderId:null,fields:[],login:{username:"u",password:"PW-gitlab-pass",totp:null,uris:[]}}' | base64 -w0 | python3 -I -B "$V" call --stdin create item >/dev/null
   check "server: create item (body is the base64 JSON from stdin) reaches the vault, not argv" bash -c '[ "$(jq -r ".items[]|select(.name==\"viaserver\")|.login.username" "$1/vault.json")" = u ] && ! grep -aq "PW-gitlab" "$1/argv.log" && grep -aqx "bw-serve POST /object/item" "$1/argv.log"' _ "$FAKE"
-  python3 -I "$V" call delete item i-google </dev/null; python3 -I "$V" call restore item i-google </dev/null >/dev/null; python3 -I "$V" call delete item i-wifi --permanent </dev/null
+  python3 -I -B "$V" call delete item i-google </dev/null; python3 -I -B "$V" call restore item i-google </dev/null >/dev/null; python3 -I -B "$V" call delete item i-wifi --permanent </dev/null
   check "server: delete (trash) / restore / delete --permanent map to DELETE, POST restore, DELETE ?permanent" bash -c 'grep -aq "^bw-serve DELETE /object/item/i-google$" "$1/argv.log" && grep -aq "^bw-serve POST /restore/item/i-google" "$1/argv.log" && grep -aq "^bw-serve DELETE /object/item/i-wifi?permanent=true" "$1/argv.log" && [ "$(jq -r "[.items[]|select(.id==\"i-wifi\")]|length" "$1/vault.json")" = 0 ] && [ "$(jq -r ".items[]|select(.id==\"i-google\")|.deletedDate" "$1/vault.json")" = null ]' _ "$FAKE"
   echo "upload me" >"$FAKE/up2.txt"
-  python3 -I "$V" call create attachment --file "$FAKE/up2.txt" --itemid i-github </dev/null >/dev/null
-  python3 -I "$V" call get attachment att-1 --itemid i-github --output "$FAKE/dl/got.bin" </dev/null >/dev/null
+  python3 -I -B "$V" call create attachment --file "$FAKE/up2.txt" --itemid i-github </dev/null >/dev/null
+  python3 -I -B "$V" call get attachment att-1 --itemid i-github --output "$FAKE/dl/got.bin" </dev/null >/dev/null
   check "server: attachment upload (multipart) and download (to a 600 file)" bash -c '[ "$(cat "$1/last-upload")" = "upload me" ] && [ "$(cat "$1/dl/got.bin")" = ATTACHMENT-CONTENT ] && [ "$(stat -c %a "$1/dl/got.bin")" = 600 ]' _ "$FAKE"
   # BW1-fix 6: non-ASCII, quotes and a newline in the file name arrive intact (the fake server decodes like busboy)
   for nm in 'отчёт ünï 日本.txt' 'a"b;c.txt' $'line\nbreak.txt'; do
     printf 'x' >"$FAKE/$nm"
-    python3 -I "$V" call create attachment --file "$FAKE/$nm" --itemid i-github </dev/null >/dev/null
+    python3 -I -B "$V" call create attachment --file "$FAKE/$nm" --itemid i-github </dev/null >/dev/null
     check "attachment upload keeps the file name: $(printf '%q' "$nm")" bash -c 'jq -e --arg n "$2" "any(.items[]|select(.id==\"i-github\")|.attachments[]?.fileName; . == \$n)" "$1" >/dev/null' _ "$FAKE/vault.json" "$nm"
     rm -f "$FAKE/$nm"
   done
   # DEV-b C3: folder rename and delete have a REST form too (PUT / DELETE /object/folder/ID), the CLI is the fallback
   : >"$FAKE/argv.log"
-  jq -nc '{name:"Work2"}' | base64 -w0 | python3 -I "$V" call --stdin edit folder f-work >/dev/null
+  jq -nc '{name:"Work2"}' | base64 -w0 | python3 -I -B "$V" call --stdin edit folder f-work >/dev/null
   check "server: rename folder = PUT /object/folder/ID (body not in argv)" bash -c 'grep -aqx "bw-serve PUT /object/folder/f-work" "$1/argv.log" && [ "$(jq -r ".folders[]|select(.id==\"f-work\")|.name" "$1/vault.json")" = Work2 ] && ! grep -aq Work2 "$1/argv.log"' _ "$FAKE"
-  python3 -I "$V" call delete folder f-work </dev/null
+  python3 -I -B "$V" call delete folder f-work </dev/null
   check "server: delete folder = DELETE /object/folder/ID, its items stay without a folder" bash -c 'grep -aqx "bw-serve DELETE /object/folder/f-work" "$1/argv.log" && [ "$(jq -r "[.folders[]|select(.id==\"f-work\")]|length" "$1/vault.json")" = 0 ] && [ "$(jq -r ".items[]|select(.id==\"i-github\")|.folderId" "$1/vault.json")" = null ]' _ "$FAKE"
   : >"$FAKE/argv.log"
-  jq -nc '{name:"Linux2"}' | base64 -w0 | VAULT_BW_SERVE=0 python3 -I "$V" call --stdin edit folder f-linux >/dev/null
-  VAULT_BW_SERVE=0 python3 -I "$V" call delete folder f-mcp </dev/null
+  jq -nc '{name:"Linux2"}' | base64 -w0 | VAULT_BW_SERVE=0 python3 -I -B "$V" call --stdin edit folder f-linux >/dev/null
+  VAULT_BW_SERVE=0 python3 -I -B "$V" call delete folder f-mcp </dev/null
   check "CLI fallback: edit folder / delete folder reach the vault" bash -c 'grep -aq "^bw edit folder f-linux" "$1/argv.log" && grep -aq "^bw delete folder f-mcp" "$1/argv.log" && [ "$(jq -r ".folders|map(.name)|join(\",\")" "$1/vault.json")" = Linux2 ]' _ "$FAKE"
   : >"$FAKE/argv.log"
   touch "$FAKE/rbw-locked"
   check "fake rbw unlock: locked, then unlocked through the fake pinentry (master-pw)" bash -c '! rbw unlocked && rbw unlock && rbw unlocked' 
-  check "server: an error answer keeps the CLI behaviour (exit 1, message on stderr)" bash -c 'out=$(python3 -I "$1" call get item i-nothing </dev/null 2>&1); rc=$?; [ $rc = 1 ] && grep -q "Not found" <<<"$out"' _ "$V"
-  check "no REST form (Send create) falls back to the CLI process" bash -c ': >"$1/argv.log"; echo "{}" | base64 -w0 | python3 -I "$2" call --stdin send create >/dev/null 2>&1; grep -aq "^bw send create" "$1/argv.log"' _ "$FAKE" "$V"
+  check "server: an error answer keeps the CLI behaviour (exit 1, message on stderr)" bash -c 'out=$(python3 -I -B "$1" call get item i-nothing </dev/null 2>&1); rc=$?; [ $rc = 1 ] && grep -q "Not found" <<<"$out"' _ "$V"
+  check "no REST form (Send create) falls back to the CLI process" bash -c ': >"$1/argv.log"; echo "{}" | base64 -w0 | python3 -I -B "$2" call --stdin send create >/dev/null 2>&1; grep -aq "^bw send create" "$1/argv.log"' _ "$FAKE" "$V"
   # lock stops the server, drops the session
-  python3 -I "$V" lock </dev/null
+  python3 -I -B "$V" lock </dev/null
   check "lock: server stopped, socket gone, session dropped, bw locked" bash -c '! kill -0 "$1" 2>/dev/null && [ ! -e "$2/bw.sock" ] && [ ! -e "$2/bw-session" ] && [ ! -f "$3/bw-unlocked" ]' _ "$p1" "$RUN/vault" "$FAKE"
   # CLI-only mode and fallback when the server cannot start
   reset unlocked
   : >"$FAKE/argv.log"
-  VAULT_BW_SERVE=0 python3 -I "$V" call list folders </dev/null >/dev/null
+  VAULT_BW_SERVE=0 python3 -I -B "$V" call list folders </dev/null >/dev/null
   check "fallback: VAULT_BW_SERVE=0 uses the bw process and starts no server" bash -c 'grep -aq "^bw list folders" "$1/argv.log" && ! grep -aq "^bw serve" "$1/argv.log" && [ ! -S "$2/bw.sock" ]' _ "$FAKE" "$RUN/vault"
   : >"$FAKE/argv.log"
   printf '#!/bin/sh\n[ "$1" = serve ] && exit 3\nexec %s "$@"\n' "$BIN/bw" >"$FAKE/badbw"; chmod +x "$FAKE/badbw"
-  out=$(BW_BIN="$FAKE/badbw" VAULT_BW_SERVE_POLL=0.2 python3 -I "$V" call list folders </dev/null)
+  out=$(BW_BIN="$FAKE/badbw" VAULT_BW_SERVE_POLL=0.2 python3 -I -B "$V" call list folders </dev/null)
   check "fallback: a server that cannot start falls back to the CLI, same answer" bash -c 'jq -e "type==\"array\"" <<<"$1" >/dev/null && ! grep -aq "^bw-serve" "$2/argv.log"' _ "$out" "$FAKE"
     # a server killed hard leaves a stale socket: the next call starts a new one
   reset unlocked
-  python3 -I "$V" call list folders </dev/null >/dev/null
+  python3 -I -B "$V" call list folders </dev/null >/dev/null
   p1=$(srv_pid); kill -9 "$p1"; sleep 0.5
   : >"$FAKE/argv.log"
-  out=$(python3 -I "$V" call list folders </dev/null)
+  out=$(python3 -I -B "$V" call list folders </dev/null)
   p2=$(srv_pid)
   check "stale socket after a kill -9: the next call replaces the server and works" bash -c 'jq -e "type==\"array\"" <<<"$1" >/dev/null && [ -n "$3" ] && [ "$3" != "$2" ]' _ "$out" "$p1" "$p2"
   # session-start (login) stops a server left over by a lingering user manager
   reset unlocked
-  python3 -I "$V" call list folders </dev/null >/dev/null
+  python3 -I -B "$V" call list folders </dev/null >/dev/null
   p1=$(srv_pid)
   "$VAULT_SH" session-start >/dev/null 2>&1
   check "session-start: the old server is stopped and the old session dropped" bash -c 'for i in $(seq 40); do kill -0 "$1" 2>/dev/null || exit 0; sleep 0.2; done; exit 1' _ "$p1"
@@ -285,16 +286,16 @@ quick_bw1() {
   # unlock starts the server with the NEW key and syncs through it
   reset
   : >"$FAKE/argv.log"
-  python3 -I "$V" unlock </dev/null >/dev/null
+  python3 -I -B "$V" unlock </dev/null >/dev/null
   check "unlock: pinentry -> one bw unlock process (password on a /dev/fd pipe, not in its environment) -> server started -> sync is a request" bash -c 'grep -aqE "^bw unlock --raw --passwordfile /dev/fd/[0-9]+$" "$1/argv.log" && [ "$(cat "$1/unlock-env-hits")" = 0 ] && grep -aq "^bw serve" "$1/argv.log" && grep -aq "^bw-serve POST /sync" "$1/argv.log" && ! grep -aq "^bw sync" "$1/argv.log"' _ "$FAKE"
-  check "  a second ensure() costs no process at all" bash -c 'n=$(grep -ac "^bw " "$1/argv.log"); python3 -I "$2" unlock </dev/null; [ "$(grep -ac "^bw " "$1/argv.log")" = "$n" ]' _ "$FAKE" "$V"
-  python3 -I "$V" lock </dev/null
+  check "  a second ensure() costs no process at all" bash -c 'n=$(grep -ac "^bw " "$1/argv.log"); python3 -I -B "$2" unlock </dev/null; [ "$(grep -ac "^bw " "$1/argv.log")" = "$n" ]' _ "$FAKE" "$V"
+  python3 -I -B "$V" lock </dev/null
   # rbw-first call sites
   reset unlocked
   : >"$FAKE/argv.log"
   out=$("$REPO/.local/bin/linux-pass" --list </dev/null 2>&1)
   check "linux-pass --list: names come from rbw, bw is not started at all" bash -c '! grep -aqE "^bw( |-serve)" "$1/argv.log" && grep -aq "^rbw list --raw" "$1/argv.log" && grep -q "skalse" <<<"$2"' _ "$FAKE" "$out"
-  check "generator: character passwords are made locally (no bw process), 24 chars with every class" bash -c 'python3 -I - "$1" <<PY
+  check "generator: character passwords are made locally (no bw process), 24 chars with every class" bash -c 'python3 -I -B - "$1" <<PY
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("vb", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 pw = m.generate_password("-ulns", "--length", "24")
@@ -321,7 +322,7 @@ quick_slow_first_server() {
   reset unlocked
   # shellcheck disable=SC1091
   . "$FAKE/env.sh"
-  out=$(FAKE_BW_DELAY=2.5 python3 -I - "$V" <<'PY'
+  out=$(FAKE_BW_DELAY=2.5 python3 -I -B - "$V" <<'PY'
 import importlib.util, sys, time
 spec = importlib.util.spec_from_file_location("vb", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 import os
@@ -350,7 +351,7 @@ quick_nodump() {
   . "$FAKE/env.sh"
   unset VAULT_BW_NODUMP
   if ! command -v cc >/dev/null; then printf 'skip  nodump (no cc)\n'; return; fi
-  python3 -I "$V" call list folders </dev/null >/dev/null
+  python3 -I -B "$V" call list folders </dev/null >/dev/null
   sup=$(srv_pid); child=$(pgrep -P "$sup" | head -1)
   lib=$(ls "$RUN"/vault/nodump-*.so 2>/dev/null | head -1)
   check "nodump: the library is built into the per-boot runtime directory (tmpfs, 700), never into the persistent cache" bash -c '[ -f "$1" ] && [ "$(stat -c %a "$(dirname "$1")")" = 700 ] && ! ls "$2"/cache/vault/nodump-* >/dev/null 2>&1' _ "$lib" "$FAKE"
@@ -360,21 +361,21 @@ quick_nodump() {
   # a bw CLI process (the fallback) with the key gets it too
   printf '#!/bin/sh\ncase "$LD_PRELOAD" in *nodump-*.so*) echo preloaded >"%s/cli-preload" ;; esac\nexec %s "$@"\n' "$FAKE" "$BIN/bw" >"$FAKE/preloadbw"; chmod +x "$FAKE/preloadbw"
   rm -f "$FAKE/cli-preload"
-  BW_BIN="$FAKE/preloadbw" VAULT_BW_SERVE=0 python3 -I "$V" call list folders </dev/null >/dev/null
+  BW_BIN="$FAKE/preloadbw" VAULT_BW_SERVE=0 python3 -I -B "$V" call list folders </dev/null >/dev/null
   check "nodump: a bw CLI process that holds the key is started with the library" file_eq "$FAKE/cli-preload" preloaded
-  check "nodump: VAULT_BW_NODUMP=0 and a missing cc fall back to no library (the call still works)" bash -c 'rm -f "$1/cli-preload"; VAULT_BW_NODUMP=0 BW_BIN="$1/preloadbw" VAULT_BW_SERVE=0 python3 -I "$2" call list folders </dev/null >/dev/null && [ ! -e "$1/cli-preload" ]' _ "$FAKE" "$V"
+  check "nodump: VAULT_BW_NODUMP=0 and a missing cc fall back to no library (the call still works)" bash -c 'rm -f "$1/cli-preload"; VAULT_BW_NODUMP=0 BW_BIN="$1/preloadbw" VAULT_BW_SERVE=0 python3 -I -B "$2" call list folders </dev/null >/dev/null && [ ! -e "$1/cli-preload" ]' _ "$FAKE" "$V"
   # FIX3 F5: verified once (marker with the sha256), a corrupt file is not trusted, a failure is reported, builds are serialised
-  check "nodump: nodump-status says yes" bash -c '[ "$(python3 -I "$1" nodump-status)" = yes ]' _ "$V"
+  check "nodump: nodump-status says yes" bash -c '[ "$(python3 -I -B "$1" nodump-status)" = yes ]' _ "$V"
   check "nodump: a probe marker with the library's sha256 sits next to it" bash -c '[ "$(cat "$1.ok")" = "$(sha256sum "$1" | cut -d" " -f1)" ]' _ "$lib"
-  check "nodump: a corrupt library is not trusted: nodump-status says no, nodump-build rebuilds it and it works again" bash -c 'echo junk >"$1"; [ "$(python3 -I "$2" nodump-status | cut -c1-2)" = no ] && [ "$(python3 -I "$2" nodump-build)" = yes ] && [ "$(sha256sum "$1" | cut -d" " -f1)" = "$(cat "$1.ok")" ] && [ "$(LD_PRELOAD="$1" python3 -c "import ctypes; print(ctypes.CDLL(None).prctl(3,0,0,0,0))")" = 0 ]' _ "$lib" "$V"
+  check "nodump: a corrupt library is not trusted: nodump-status says no, nodump-build rebuilds it and it works again" bash -c 'echo junk >"$1"; [ "$(python3 -I -B "$2" nodump-status | cut -c1-2)" = no ] && [ "$(python3 -I -B "$2" nodump-build)" = yes ] && [ "$(sha256sum "$1" | cut -d" " -f1)" = "$(cat "$1.ok")" ] && [ "$(LD_PRELOAD="$1" python3 -c "import ctypes; print(ctypes.CDLL(None).prctl(3,0,0,0,0))")" = 0 ]' _ "$lib" "$V"
   mkdir -p "$FAKE/nocc" && ln -sf "$(command -v python3)" "$FAKE/nocc/python3"
-  check "nodump: without a C compiler nodump-status says no (no C compiler) and exits 1" bash -c 'out=$(XDG_RUNTIME_DIR="$2/rt-nocc" PATH="$2/nocc" python3 -I "$1" nodump-build); rc=$?; [ $rc = 1 ] && [[ $out == "no (no C compiler"* ]]' _ "$V" "$FAKE"
-  check "nodump: a library that does not make the process non-dumpable fails the probe (reported, not used)" bash -c 'out=$(XDG_RUNTIME_DIR="$2/rt-bad" VAULT_BW_NODUMP_SRC="int vault_noop;" python3 -I "$1" nodump-build); rc=$?; [ $rc = 1 ] && [[ $out == "no (the probe did not report non-dumpable"* ]] && ! ls "$2"/rt-bad/vault/nodump-*.so >/dev/null 2>&1' _ "$V" "$FAKE"
-  check "nodump: a runtime path with a space is refused (LD_PRELOAD splits on it)" bash -c 'mkdir -p -m 700 "$2/rt a b"; out=$(XDG_RUNTIME_DIR="$2/rt a b" python3 -I "$1" nodump-build); [[ $out == "no (the library path contains a space or colon"* ]]' _ "$V" "$FAKE"
-  check "nodump: six processes at once build one library (file lock), no temp file is left" bash -c 'export XDG_RUNTIME_DIR="$2/rt-par"; for i in 1 2 3 4 5 6; do python3 -I "$1" nodump-build >"$2/par.$i" & done; wait; [ "$(cat "$2"/par.? | sort -u)" = yes ] && [ "$(ls "$2"/rt-par/vault/nodump-*.so | wc -l)" = 1 ] && ! ls -a "$2"/rt-par/vault | grep -q "^.nodump\."' _ "$V" "$FAKE"
+  check "nodump: without a C compiler nodump-status says no (no C compiler) and exits 1" bash -c 'out=$(XDG_RUNTIME_DIR="$2/rt-nocc" PATH="$2/nocc" python3 -I -B "$1" nodump-build); rc=$?; [ $rc = 1 ] && [[ $out == "no (no C compiler"* ]]' _ "$V" "$FAKE"
+  check "nodump: a library that does not make the process non-dumpable fails the probe (reported, not used)" bash -c 'out=$(XDG_RUNTIME_DIR="$2/rt-bad" VAULT_BW_NODUMP_SRC="int vault_noop;" python3 -I -B "$1" nodump-build); rc=$?; [ $rc = 1 ] && [[ $out == "no (the probe did not report non-dumpable"* ]] && ! ls "$2"/rt-bad/vault/nodump-*.so >/dev/null 2>&1' _ "$V" "$FAKE"
+  check "nodump: a runtime path with a space is refused (LD_PRELOAD splits on it)" bash -c 'mkdir -p -m 700 "$2/rt a b"; out=$(XDG_RUNTIME_DIR="$2/rt a b" python3 -I -B "$1" nodump-build); [[ $out == "no (the library path contains a space or colon"* ]]' _ "$V" "$FAKE"
+  check "nodump: six processes at once build one library (file lock), no temp file is left" bash -c 'export XDG_RUNTIME_DIR="$2/rt-par"; for i in 1 2 3 4 5 6; do python3 -I -B "$1" nodump-build >"$2/par.$i" & done; wait; [ "$(cat "$2"/par.? | sort -u)" = yes ] && [ "$(ls "$2"/rt-par/vault/nodump-*.so | wc -l)" = 1 ] && ! ls -a "$2"/rt-par/vault | grep -q "^.nodump\."' _ "$V" "$FAKE"
   # FIX5 (review 8): nodump-status (doctor) is read-only and never compiles; a failed build is retried by the long-lived server
-  check "nodump: nodump-status in a fresh runtime directory compiles nothing and says no (old code built the library as a side effect)" bash -c 'mkdir -p -m 700 "$2/rt-ro/vault"; out=$(XDG_RUNTIME_DIR="$2/rt-ro" python3 -I "$1" nodump-status); rc=$?; [ $rc = 1 ] && [[ $out == "no (the library is not built yet"* ]] && ! ls -a "$2"/rt-ro/vault | grep -q nodump' _ "$V" "$FAKE"
-  check "nodump: a failed build is tried again after VAULT_BW_NODUMP_RETRY seconds, not before (old code: the failure stayed for the life of the process)" bash -c 'XDG_RUNTIME_DIR="$2/rt-retry" VAULT_BW_NODUMP_RETRY=1 python3 -I - "$1" <<"PY"
+  check "nodump: nodump-status in a fresh runtime directory compiles nothing and says no (old code built the library as a side effect)" bash -c 'mkdir -p -m 700 "$2/rt-ro/vault"; out=$(XDG_RUNTIME_DIR="$2/rt-ro" python3 -I -B "$1" nodump-status); rc=$?; [ $rc = 1 ] && [[ $out == "no (the library is not built yet"* ]] && ! ls -a "$2"/rt-ro/vault | grep -q nodump' _ "$V" "$FAKE"
+  check "nodump: a failed build is tried again after VAULT_BW_NODUMP_RETRY seconds, not before (old code: the failure stayed for the life of the process)" bash -c 'XDG_RUNTIME_DIR="$2/rt-retry" VAULT_BW_NODUMP_RETRY=1 python3 -I -B - "$1" <<"PY"
 import importlib.util, sys, time
 spec = importlib.util.spec_from_file_location("vb", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 real_have = m.have
@@ -385,7 +386,7 @@ assert m.nodump_lib() is None        # inside the window: no new attempt
 time.sleep(1.2)
 sys.exit(0 if m.nodump_lib() else 1)
 PY' _ "$V" "$FAKE"
-  check "nodump: threads of one process all get the library while the first one compiles (old code: the others got None)" bash -c 'XDG_RUNTIME_DIR="$2/rt-thr" python3 -I - "$1" <<"PY"
+  check "nodump: threads of one process all get the library while the first one compiles (old code: the others got None)" bash -c 'XDG_RUNTIME_DIR="$2/rt-thr" python3 -I -B - "$1" <<"PY"
 import importlib.util, subprocess, sys, threading, time
 spec = importlib.util.spec_from_file_location("vb", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 real = subprocess.run
@@ -401,7 +402,7 @@ sys.exit(0 if len(out) == 4 and all(out) and len(set(out)) == 1 else 1)
 PY' _ "$V" "$FAKE"
   check "bw-setup: its sync goes through vault-bw.py (no bare BW_SESSION=... bw sync without the library)" bash -c '! grep -Eq "BW_SESSION=[^ ]+ .*bw sync" "$1" && grep -q "vault-bw.py" "$1" && grep -q "vbw_py\" sync" "$1"' _ "$REPO/.local/bin/bw-setup"
   # the core limit is set once at import for the whole process tree; no preexec_fn per child is left for it
-  out=$(ulimit -c unlimited 2>/dev/null; python3 -I - "$V" <<'PY'
+  out=$(ulimit -c unlimited 2>/dev/null; python3 -I -B - "$V" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("vb", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 print([l for l in open("/proc/self/limits") if l.startswith("Max core")][0].split()[4:6])
@@ -418,7 +419,7 @@ quick_lock_midstart() {
   reset unlocked
   # shellcheck disable=SC1091
   . "$FAKE/env.sh"
-  out=$(python3 -I - "$V" "$RUN/vault/bw-session" <<'PY'
+  out=$(python3 -I -B - "$V" "$RUN/vault/bw-session" <<'PY'
 import importlib.util, os, sys, threading, time
 spec = importlib.util.spec_from_file_location("vb", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 import subprocess
@@ -458,22 +459,22 @@ quick_lock_order() {
   reset unlocked
   # shellcheck disable=SC1091
   . "$FAKE/env.sh"
-  python3 -I "$V" call list folders </dev/null >/dev/null
-  python3 -I "$V" lock </dev/null
+  python3 -I -B "$V" call list folders </dev/null >/dev/null
+  python3 -I -B "$V" lock </dev/null
   check "lock order: bw lock got the key, and the session file was already gone when it ran" grep -qx 'session=gone sock=.* key=SESSION-KEY-abc' "$FAKE/lock-state"
   check "  and the bw lock process ran after the server was stopped (socket gone)" grep -qx 'session=gone sock=gone key=SESSION-KEY-abc' "$FAKE/lock-state"
   check "  session file and socket are gone afterwards" bash -c '[ ! -e "$1/bw-session" ] && [ ! -e "$1/bw.sock" ]' _ "$RUN/vault"
   # a start that holds the flock (in flight) is waited for: lock removes the key at once but stops the server only afterwards
   reset unlocked
-  python3 -I "$V" call list folders </dev/null >/dev/null
+  python3 -I -B "$V" call list folders </dev/null >/dev/null
   flock "$RUN/vault/bw-serve.lock" sleep 2.5 &
   holder=$!
   sleep 0.3
-  python3 -I "$V" lock </dev/null &
+  python3 -I -B "$V" lock </dev/null &
   lockpid=$!
   sleep 1
   check "lock waits for the start flock: the key is already gone, bw lock has not run yet" bash -c '[ ! -e "$1/vault/bw-session" ] && kill -0 "$2" 2>/dev/null && [ ! -s "$3/lock-state" ]' _ "$RUN" "$lockpid" "$FAKE"
-  check "  a client that wants a server now cannot start one (no key)" bash -c 'python3 -I - "$1" <<PY
+  check "  a client that wants a server now cannot start one (no key)" bash -c 'python3 -I -B - "$1" <<PY
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("vb", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 sys.exit(0 if m.start_serve(wait=1) is False else 1)
@@ -487,7 +488,7 @@ PY' _ "$V"
 # BW1-fix 4: the idle default is 15 minutes even though rbw's lock_timeout here is a year
 quick_idle_limit() {
   local V="$SCRIPTS/vault-bw.py" out
-  out=$(python3 -I - "$V" "$FAKE" <<'PY'
+  out=$(python3 -I -B - "$V" "$FAKE" <<'PY'
 import importlib.util, json, os, sys
 spec = importlib.util.spec_from_file_location("vb", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 conf = os.path.join(sys.argv[2], "idle-rbw.json")
@@ -515,12 +516,12 @@ quick_no_core() {
   reset unlocked
   # shellcheck disable=SC1091
   . "$FAKE/env.sh"
-  ( ulimit -c unlimited 2>/dev/null; python3 -I "$V" call list folders </dev/null >/dev/null )
+  ( ulimit -c unlimited 2>/dev/null; python3 -I -B "$V" call list folders </dev/null >/dev/null )
   sup=$(srv_pid); child=$(pgrep -P "$sup" | head -1)
   check "core: the server supervisor and its bw child run with RLIMIT_CORE 0 (started from a shell that allowed cores)" bash -c 'for p in "$1" "$2"; do grep -q "^Max core file size *0 *0" /proc/$p/limits || exit 1; done' _ "$sup" "$child"
   stop_bw_servers
   printf '#!/bin/sh\nulimit -c >"%s/cli-core"\nexec %s "$@"\n' "$FAKE" "$BIN/bw" >"$FAKE/corebw"; chmod +x "$FAKE/corebw"
-  ( ulimit -c unlimited 2>/dev/null; BW_BIN="$FAKE/corebw" VAULT_BW_SERVE=0 python3 -I "$V" call list folders </dev/null >/dev/null )
+  ( ulimit -c unlimited 2>/dev/null; BW_BIN="$FAKE/corebw" VAULT_BW_SERVE=0 python3 -I -B "$V" call list folders </dev/null >/dev/null )
   check "core: a bw CLI process (the fallback) runs with RLIMIT_CORE 0 too" file_eq "$FAKE/cli-core" 0
   check "core: the systemd-run launch carries -p LimitCORE=0" grep -q '"-p", "LimitCORE=0"' "$V"
 }
@@ -531,11 +532,11 @@ quick_socket_trust() {
   reset unlocked
   # shellcheck disable=SC1091
   . "$FAKE/env.sh"
-  check "RUN has no /tmp fallback: without XDG_RUNTIME_DIR it is /run/user/UID/vault (all three scripts)" bash -c 'for f in vault-bw vault-browse vault-totp; do ! grep -q "or \"/tmp\"" "$1/$f.py" || exit 1; done; out=$(env -u XDG_RUNTIME_DIR python3 -I -c "
+  check "RUN has no /tmp fallback: without XDG_RUNTIME_DIR it is /run/user/UID/vault (all three scripts)" bash -c 'for f in vault-bw vault-browse vault-totp; do ! grep -q "or \"/tmp\"" "$1/$f.py" || exit 1; done; out=$(env -u XDG_RUNTIME_DIR python3 -I -B -c "
 import importlib.util, os, sys
 spec = importlib.util.spec_from_file_location(\"vb\", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 print(m.RUN)" "$1/vault-bw.py"); [ "$out" = "/run/user/$(id -u)/vault" ]' _ "$SCRIPTS"
-  out=$(python3 -I - "$V" "$FAKE" <<'PY'
+  out=$(python3 -I -B - "$V" "$FAKE" <<'PY'
 import importlib.util, os, socket, sys, threading
 spec = importlib.util.spec_from_file_location("vb", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 fake = sys.argv[2]
@@ -580,7 +581,7 @@ PY
   stop_bw_servers
   mkdir -p "$FAKE/lrun"; rm -rf "$FAKE/lrun/vault"; ln -s "$RUN/vault" "$FAKE/lrun/vault"
   : >"$FAKE/argv.log"
-  out=$(XDG_RUNTIME_DIR="$FAKE/lrun" python3 -I "$V" call list folders </dev/null)
+  out=$(XDG_RUNTIME_DIR="$FAKE/lrun" python3 -I -B "$V" call list folders </dev/null)
   check "untrusted run directory: bw runs as a CLI process, no server, no socket request" bash -c 'jq -e "type==\"array\"" <<<"$1" >/dev/null && grep -aq "^bw list folders" "$2/argv.log" && ! grep -aqE "^(bw serve|bw-serve)" "$2/argv.log"' _ "$out" "$FAKE"
   rm -rf "$FAKE/lrun" "$FAKE/trust" "$FAKE/trust-link"
 }
@@ -621,11 +622,11 @@ quick_bw1_slow() {
   . "$FAKE/env.sh"
   # idle stop: the key stays, the next action starts it again
   reset unlocked
-  VAULT_BW_IDLE=2 python3 -I "$V" call list folders </dev/null >/dev/null
+  VAULT_BW_IDLE=2 python3 -I -B "$V" call list folders </dev/null >/dev/null
   p1=$(srv_pid)
   check "idle: the server stops after the idle limit (VAULT_BW_IDLE)" wait_srv_gone 50
   check "idle: socket removed, the session file stays" bash -c '[ ! -e "$1/bw.sock" ] && [ -s "$1/bw-session" ]' _ "$RUN/vault"
-  VAULT_BW_IDLE=600 python3 -I "$V" call list folders </dev/null >/dev/null
+  VAULT_BW_IDLE=600 python3 -I -B "$V" call list folders </dev/null >/dev/null
   p2=$(srv_pid)
   check "idle: the next bw action starts a new server with the stored key" bash -c '[ -n "$2" ] && [ "$1" != "$2" ] && kill -0 "$2"' _ "$p1" "$p2"
   # rbw lock stops it (the agent was seen unlocked first)
@@ -636,7 +637,7 @@ quick_bw1_slow() {
   # the supervisor must not spawn `rbw unlocked` every tick (every 2 s was ~43k processes a day)
   reset unlocked
   : >"$FAKE/argv.log"
-  VAULT_BW_SERVE_POLL=0.2 VAULT_BW_RBW_POLL=1.5 python3 -I "$V" call list folders </dev/null >/dev/null
+  VAULT_BW_SERVE_POLL=0.2 VAULT_BW_RBW_POLL=1.5 python3 -I -B "$V" call list folders </dev/null >/dev/null
   sleep 3.4
   check "rbw poll: with a 0.2 s tick and VAULT_BW_RBW_POLL=1.5 rbw unlocked runs at most 3 times in 3.4 s" bash -c '[ "$(grep -ac "^rbw unlocked" "$1/argv.log")" -le 3 ] && [ "$(grep -ac "^rbw unlocked" "$1/argv.log")" -ge 1 ]' _ "$FAKE"
   stop_bw_servers
@@ -644,11 +645,11 @@ quick_bw1_slow() {
   if XDG_RUNTIME_DIR=$REAL_XDG systemctl --user show-environment >/dev/null 2>&1 && command -v systemd-run >/dev/null; then
     local unit="vault-bw-serve-test-$$" sd="env XDG_RUNTIME_DIR=$REAL_XDG systemctl --user"
     reset unlocked
-    VAULT_BW_LAUNCH=auto VAULT_BW_UNIT=$unit VAULT_BW_SYSTEMD_RUNTIME=$REAL_XDG python3 -I "$V" call list folders </dev/null >/dev/null
+    VAULT_BW_LAUNCH=auto VAULT_BW_UNIT=$unit VAULT_BW_SYSTEMD_RUNTIME=$REAL_XDG python3 -I -B "$V" call list folders </dev/null >/dev/null
     check "unit launch: the server runs as a transient user unit (outlives the window it was started from)" bash -c '$1 is-active '$unit' | grep -qx active' _ "$sd"
     check "  the unit has LimitCORE=0" bash -c '$1 show '$unit' -p LimitCORE | grep -qx "LimitCORE=0"' _ "$sd"
     check "  the session key is not a property of the unit (it is read from the 600 file)" bash -c '! $1 show '$unit' -p Environment | grep -q SESSION-KEY' _ "$sd"
-    VAULT_BW_LAUNCH=auto VAULT_BW_UNIT=$unit VAULT_BW_SYSTEMD_RUNTIME=$REAL_XDG python3 -I "$V" lock </dev/null
+    VAULT_BW_LAUNCH=auto VAULT_BW_UNIT=$unit VAULT_BW_SYSTEMD_RUNTIME=$REAL_XDG python3 -I -B "$V" lock </dev/null
     check "  lock ends the unit" bash -c 'sleep 1; ! $1 is-active '$unit' | grep -qx active' _ "$sd"
     $sd stop "$unit" 2>/dev/null
   else

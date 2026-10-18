@@ -15,6 +15,7 @@
 #   tmux), zsh side with a fake worker (ignore list through aliases and wrappers)
 # 5 hook overhead: 1000 x preexec + precmd with an instant fake atuin, average must stay under 1 ms
 set -u
+export PYTHONDONTWRITEBYTECODE=1   # python3 -I ignores PYTHON* variables (hence -B there); this covers the other interpreters: no __pycache__ in the repo
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 QUICK=0
@@ -349,7 +350,7 @@ s2() {
 # same `(?is)` flags, same POSIX classes, and `.` follows the `s` flag the same way.
 s2_dialect() {
   have python3 && grep -P '' /dev/null 2>/dev/null; [[ $? -le 1 ]] || { echo "SKIP  FIX5-3 dialect check (grep -P missing)"; return; }
-  python3 -I -c 'import sys, tomllib; sys.stdout.write(tomllib.load(open(sys.argv[1], "rb"))["history_filter"][0])' "$REPO/.config/atuin/config.toml" >"$T/atuin.re"
+  python3 -I -B -c 'import sys, tomllib; sys.stdout.write(tomllib.load(open(sys.argv[1], "rb"))["history_filter"][0])' "$REPO/.config/atuin/config.toml" >"$T/atuin.re"
   local want line got bad="" n=0 ml row
   while IFS= read -r row; do
     want=${row%%@@*} line=${row#*@@} got=show
@@ -436,7 +437,7 @@ s2_secrets() {
   rows=$(wc -l <"$T/secret.rows")
   [[ $out == "rows=$rows" ]] && pass "M2/L3: $rows secret and false-positive command lines classified as expected" || fail "M2/L3 secret table: $out"
   # atuin's history_filter is the same expression (live second layer, and what `atuin history prune` applies after the import)
-  expect "L2: config.toml history_filter is (?is) + DF_SECRET_CMD_RE" python3 -I -c '
+  expect "L2: config.toml history_filter is (?is) + DF_SECRET_CMD_RE" python3 -I -B -c '
 import subprocess, sys, tomllib
 cfg = tomllib.load(open(sys.argv[1], "rb"))
 rx = subprocess.run(["zsh", "-f", "-c", "source %s; print -rn -- $DF_SECRET_CMD_RE" % sys.argv[2]], capture_output=True, text=True).stdout

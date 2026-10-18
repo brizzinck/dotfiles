@@ -4,9 +4,10 @@
 # ASCII-identical keys (digits, - = +), bare / Shift-only keys, names that already are physical and multi-character keys get none,
 # `unbind` and `clear` in the config remove the twin, an explicit physical bind of the owner is never overridden, Ctrl+/ -> 0x1f.
 set -u
+export PYTHONDONTWRITEBYTECODE=1   # python3 -I ignores PYTHON* variables (hence -B there); this covers the other interpreters: no __pycache__ in the repo
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
-out="$(PYTHONPYCACHEPREFIX=/tmp/pycache python3 -I - "$REPO/.config/layout" <<'PY'
+out="$(PYTHONPYCACHEPREFIX=/tmp/pycache python3 -I -B - "$REPO/.config/layout" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1])
 import layout as lay

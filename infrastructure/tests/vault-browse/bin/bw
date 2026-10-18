@@ -11,7 +11,7 @@ decode() { base64 -d; }
 next_id() { local n; n=$(cat "$FAKE_DIR/seq" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" >"$FAKE_DIR/seq"; echo "$1-$n"; }
 cmd=${1:-}
 case $cmd in
-  serve) exec python3 -I "$(dirname "$0")/bw-serve.py" "$@" ;;
+  serve) exec python3 -I -B "$(dirname "$0")/bw-serve.py" "$@" ;;
   status)
     if unlocked; then echo '{"status":"unlocked"}'; else echo '{"status":"locked"}'; fi ;;
   unlock)

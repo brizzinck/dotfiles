@@ -4,6 +4,7 @@
 # The header is cut out of the real files and run with a body that only sleeps, so nothing of doctor or apply-system runs.
 #   run.sh
 set -u
+export PYTHONDONTWRITEBYTECODE=1   # python3 -I ignores PYTHON* variables (hence -B there); this covers the other interpreters: no __pycache__ in the repo
 unset DOCTOR_SELF APPLY_SYSTEM_SELF   # doctor runs this test with DOCTOR_SELF exported, which would skip the copy under test
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
@@ -30,7 +31,7 @@ check "the header was found in both scripts" bash -c '[ "$(grep -c "mktemp -d" "
 # run SCRIPT SIGNAL: start it in its own process group, wait for the private copy, send the signal to the group (what the
 # terminal does for Ctrl+C), print "rc=<returncode> leftovers=<n>"
 runsig() {
-  python3 -I - "$1" "$2" "$SCRATCH/tmp" "$SCRATCH/log" <<'PY'
+  python3 -I -B - "$1" "$2" "$SCRATCH/tmp" "$SCRATCH/log" <<'PY'
 import glob, os, signal, subprocess, sys, time
 script, sig, tmp, log = sys.argv[1], getattr(signal, sys.argv[2]), sys.argv[3], sys.argv[4]
 os.makedirs(tmp, exist_ok=True)
@@ -52,7 +53,7 @@ PY
 # runone SCRIPT SIGNAL: the signal goes to the WRAPPER process only (not the group): kill from outside, a closing terminal.
 # Prints "rc=<returncode> secs=<n> leftovers=<n> copy_alive=<0|1>" (the copy's own pid is read from the log it writes)
 runone() {
-  python3 -I - "$1" "$2" "$SCRATCH/tmp" "$SCRATCH/log" <<'PY'
+  python3 -I -B - "$1" "$2" "$SCRATCH/tmp" "$SCRATCH/log" <<'PY'
 import glob, os, signal, subprocess, sys, time
 script, sig, tmp, log = sys.argv[1], getattr(signal, sys.argv[2]), sys.argv[3], sys.argv[4]
 os.makedirs(tmp, exist_ok=True)

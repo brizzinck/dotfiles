@@ -4,6 +4,7 @@
 # directory must hold no socket afterwards. Slow suites run in their quick variant; the live tmux server is never involved.
 #   run.sh
 set -u
+export PYTHONDONTWRITEBYTECODE=1   # python3 -I ignores PYTHON* variables (hence -B there); this covers the other interpreters: no __pycache__ in the repo
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 command -v tmux >/dev/null || { echo "SKIP: tmux is required"; exit 0; }
@@ -23,6 +24,6 @@ case_run() { # NAME CMD...
 case_run safe-close "$REPO/infrastructure/tests/safe-close/run.sh"
 case_run tmux-destroy "$REPO/infrastructure/tests/tmux-destroy/run.sh"
 case_run fzf-menu-selftest "$REPO/.local/bin/fzf-menu" --self-test
-case_run keymap-collector python3 -I "$REPO/.config/keymap/keymap.py" gen
+case_run keymap-collector python3 -I -B "$REPO/.config/keymap/keymap.py" gen
 printf 'tmux socket tests: %s passed, %s failed\n' "$passes" "$fails"
 [ "$fails" -eq 0 ]

@@ -4,6 +4,7 @@
 # touched (the scratch tree lives in $TMPDIR). Run: infrastructure/tests/users/run.sh [--quick]   (doctor runs --quick)
 #   --quick   skips the nvim cases
 set -u
+export PYTHONDONTWRITEBYTECODE=1   # python3 -I ignores PYTHON* variables (hence -B there); this covers the other interpreters: no __pycache__ in the repo
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
 USR="$REPO/.local/bin/usr"
@@ -86,7 +87,7 @@ if command -v node >/dev/null 2>&1; then
 fi
 
 # ── vault-who: a window of `usr term` is the managed user ───────────────────────
-out="$(python3 -I - "$REPO/.config/hypr/scripts/vault-who.py" <<'PY'
+out="$(python3 -I -B - "$REPO/.config/hypr/scripts/vault-who.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("vw", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 cases = [
@@ -134,7 +135,7 @@ for want in .config/mise .local/bin/envs .local/bin/fzf-menu .local/bin/bw-setup
   [ -e "$T/srv/$want" ] && ok || bad "sync: $want is not published"
 done
 [ -L "$T/h/td/.local/bin/envs" ] && [ "$(readlink "$T/h/td/.local/bin/envs")" = "$T/srv/.local/bin/envs" ] && ok || bad "td's envs is not linked to the published copy"
-out="$(python3 -I - "$T/srv/.local/bin/envs" <<'PY' 2>&1
+out="$(python3 -I -B - "$T/srv/.local/bin/envs" <<'PY' 2>&1
 import importlib.machinery, importlib.util, sys
 loader = importlib.machinery.SourceFileLoader("envs_mod", sys.argv[1])
 m = importlib.util.module_from_spec(importlib.util.spec_from_loader("envs_mod", loader))
@@ -183,7 +184,7 @@ case "$("$USR" term td --dry-run 2>&1)" in *"_session td tmux"*) ok ;; *) bad "u
 printf 'nobody\t-\tinteractive,clipboard\torange\n' >"$T/clip.tsv"
 mkdir -p "$T/rt"
 chmod 700 "$T/rt"
-(cd "$T/rt" && python3 -I -c '
+(cd "$T/rt" && python3 -I -B -c '
 import socket, os
 for n in ("wayland-9", "pipewire-0", "bus"):
     s = socket.socket(socket.AF_UNIX); s.bind(n); os.chmod(n, 0o666)
@@ -198,7 +199,7 @@ expect "clipboard wayland" "user:nobody:rw-" "$(getfacl -p "$T/rt/wayland-9" 2>/
 expect "clipboard pipewire denied" "user:nobody:---" "$(getfacl -p "$T/rt/pipewire-0" 2>/dev/null | grep '^user:nobody:')"
 expect "clipboard bus denied" "user:nobody:---" "$(getfacl -p "$T/rt/bus" 2>/dev/null | grep '^user:nobody:')"
 expect "clipboard socket in a subdirectory denied" "user:nobody:---" "$(getfacl -p "$T/rt/systemd/io.systemd.Manager" 2>/dev/null | grep '^user:nobody:')"
-(cd "$T/rt" && python3 -I -c '
+(cd "$T/rt" && python3 -I -B -c '
 import socket, os
 os.makedirs("later", mode=0o755)
 s = socket.socket(socket.AF_UNIX); s.bind("later-sock"); os.chmod("later-sock", 0o666)
@@ -219,7 +220,7 @@ expect "wayland pipewire denied" "user:nobody:---" "$(getfacl -p "$T/rt/pipewire
 REACH="$REPO/infrastructure/users/acl-reach.py"
 NOBODY=$(id -u nobody 2>/dev/null || echo 65534)
 mkdir -p "$T/rt2/pub" && chmod 700 "$T/rt2" && chmod 755 "$T/rt2/pub"
-(cd "$T/rt2" && python3 -I -c '
+(cd "$T/rt2" && python3 -I -B -c '
 import socket, os
 for n in ("wayland-9", "bus", "pub/inner.sock"):
     s = socket.socket(socket.AF_UNIX); s.bind(n); os.chmod(n, 0o666)
@@ -476,7 +477,7 @@ FAKE
   printf '#!/bin/sh\nexit 0\n' >"$T/fakebin/notify-send"; chmod +x "$T/fakebin/notify-send"
   (umask 022; PATH="$T/fakebin:$PATH" XDG_STATE_HOME="$T/vstate" "$VS" ssh-agent on >/dev/null 2>&1)
   expect "FIX2 vault.sh ssh-agent on: state dir 0700, flag 0600" "700 600" "$(stat -c %a "$T/vstate/vault" 2>/dev/null) $(stat -c %a "$T/vstate/vault/ssh-agent" 2>/dev/null)"
-  (umask 022; python3 -I - "$REPO/.local/bin/mcp-add" "$T/mstate" <<'PY'
+  (umask 022; python3 -I -B - "$REPO/.local/bin/mcp-add" "$T/mstate" <<'PY'
 import importlib.machinery, importlib.util, os, sys
 os.environ["MCP_STATE_DIR"] = sys.argv[2]
 loader = importlib.machinery.SourceFileLoader("mcp_add", sys.argv[1]); spec = importlib.util.spec_from_loader("mcp_add", loader)

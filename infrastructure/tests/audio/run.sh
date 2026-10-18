@@ -7,6 +7,7 @@
 #   infrastructure/tests/audio/run.sh [--quick]     --quick runs the fast sections only, under 3 s (doctor runs this)
 #   ONLY=1,3 infrastructure/tests/audio/run.sh      pick sections
 set -u
+export PYTHONDONTWRITEBYTECODE=1   # python3 -I ignores PYTHON* variables (hence -B there); this covers the other interpreters: no __pycache__ in the repo
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 QUICK=0
@@ -105,7 +106,7 @@ cp "$REPO/.config/audio/easyeffects-mic.json" "$EE_PRESET_SRC"
 EEPID=""
 ee_start() { # ee_start [fake-ee args]
   rm -f "$F/ee-log" "$F/ee-log.ready"
-  python3 -I "$HERE/fake-ee.py" "$EE_SOCKET" "$F/ee-log" "$@" &
+  python3 -I -B "$HERE/fake-ee.py" "$EE_SOCKET" "$F/ee-log" "$@" &
   EEPID=$!
   FAKEPIDS+=("$EEPID")
 }
@@ -121,7 +122,7 @@ if want 1; then
   ee_stop
   # fallback to /tmp/runtime-$USER (the Qt rule when /run/user/UID is 0710)
   mkdir -p -m 700 "$T/tmp/runtime-testuser"
-  ( EE_SOCKET= python3 -I "$HERE/fake-ee.py" "$T/tmp/runtime-testuser/EasyEffectsServer" "$F/ee-log2" & echo $! >"$F/pid2"; wait ) &
+  ( EE_SOCKET= python3 -I -B "$HERE/fake-ee.py" "$T/tmp/runtime-testuser/EasyEffectsServer" "$F/ee-log2" & echo $! >"$F/pid2"; wait ) &
   FAKEPIDS+=("$!")
   for _ in $(seq 1 50); do [ -S "$T/tmp/runtime-testuser/EasyEffectsServer" ] && break; sleep 0.1; done
   [ "$(EE_SOCKET= "$EE" socket)" = "$T/tmp/runtime-testuser/EasyEffectsServer" ] && pass "1 socket: falls back to /tmp/runtime-USER" || fail "1 socket: falls back to /tmp/runtime-USER"
@@ -171,7 +172,7 @@ X
     mkdir -p "$EE_DATA_DIR/input"
     echo '{"old":1}' >"$EE_DATA_DIR/input/mic-clean.json"
     "$EE" prepare; rc=$?
-    out=$(python3 -I - "$RC" <<'PY'
+    out=$(python3 -I -B - "$RC" <<'PY'
 import configparser, sys
 c = configparser.RawConfigParser(interpolation=None, strict=False); c.optionxform = str; c.read(sys.argv[1])
 want = {("Window","enableServiceMode"):"true",("Window","autostartOnLogin"):"false",("Window","width"):"1275",
@@ -272,7 +273,7 @@ cat >"$T/bin/pw-record" <<'X'
 # fake pw-record: logs argv, writes a 16 kHz mono s16 wav (mode in $FAKE/rec-mode: live | constant | zeros) to the last argument
 echo "pw-record $*" >>"$FAKE/log"
 for a; do out=$a; done
-python3 -I - "$out" "$(cat "$FAKE/rec-mode" 2>/dev/null || echo live)" <<'PY'
+python3 -I -B - "$out" "$(cat "$FAKE/rec-mode" 2>/dev/null || echo live)" <<'PY'
 import array, math, sys
 mode = sys.argv[2]
 n = 24000
@@ -558,14 +559,14 @@ X
   # A5: an EasyEffects outside the unit is asked to quit before prepare/start
   if [ "$QUICK" = 0 ]; then
   rm -f "$F/ee-log" "$F/ee-log.ready"
-  ( exec -a "$EE_PROC_NAME" python3 -I "$HERE/fake-ee.py" "$EE_SOCKET" "$F/ee-log" ) &
+  ( exec -a "$EE_PROC_NAME" python3 -I -B "$HERE/fake-ee.py" "$EE_SOCKET" "$F/ee-log" ) &
   STRAY=$!; FAKEPIDS+=("$STRAY"); ee_wait
   EE_QUIT_WAIT=3 "$EE" quit-stray 2>/dev/null; rc=$?
   sleep 0.2
   [ $rc -eq 0 ] && logged quit_app "$F/ee-log" && ! kill -0 "$STRAY" 2>/dev/null && pass "13 A5: quit-stray sends quit_app to an EasyEffects outside the unit and it exits" || fail "13 A5 quit-stray (rc $rc)"
   [ "$(grep -c '^notify .*EasyEffects started outside' "$F/log")" = 1 ] && logged "logger -t ee-ctl closed an EasyEffects" "$F/log" && pass "13 FIX5: closing a stray EasyEffects is logged and notified once" || fail "13 FIX5 stray notice ($(grep -c notify "$F/log"))"
   rm -f "$EE_SOCKET"
-  ( exec -a "$EE_PROC_NAME" python3 -I "$HERE/fake-ee.py" "$EE_SOCKET" "$F/ee-log" ) &
+  ( exec -a "$EE_PROC_NAME" python3 -I -B "$HERE/fake-ee.py" "$EE_SOCKET" "$F/ee-log" ) &
   STRAY=$!; FAKEPIDS+=("$STRAY"); ee_wait
   unitname=$(sed -n '$s|.*/||p' /proc/self/cgroup)
   EE_UNIT_NAME="$unitname" EE_QUIT_WAIT=1 "$EE" quit-stray 2>/dev/null
@@ -575,7 +576,7 @@ X
   EE_UNIT_NAME="${unitname:1}" EE_QUIT_WAIT=1 "$EE" quit-stray 2>/dev/null
   sleep 0.2
   ! kill -0 "$STRAY" 2>/dev/null && pass "13 FIX5: only the exact last cgroup component counts as the unit (a substring match left it running)" || fail "13 FIX5 exact cgroup match"
-  ( exec -a "$EE_PROC_NAME" python3 -I "$HERE/fake-ee.py" "$EE_SOCKET" "$F/ee-log" ) &
+  ( exec -a "$EE_PROC_NAME" python3 -I -B "$HERE/fake-ee.py" "$EE_SOCKET" "$F/ee-log" ) &
   STRAY=$!; FAKEPIDS+=("$STRAY"); ee_wait
   : >"$F/log"
   EE_UNIT_NAME="$unitname" EE_QUIT_WAIT=1 "$EE" quit-stray 2>/dev/null
@@ -644,14 +645,14 @@ fi
 
 # ── 11. static files ──
 if want 11; then
-  python3 -I - "$REPO/.config/audio/easyeffects-mic.json" <<'PY' && pass "11 preset: only rnnoise#0, vad off, bypass off" || fail "11 preset JSON"
+  python3 -I -B - "$REPO/.config/audio/easyeffects-mic.json" <<'PY' && pass "11 preset: only rnnoise#0, vad off, bypass off" || fail "11 preset JSON"
 import json, sys
 p = json.load(open(sys.argv[1]))["input"]
 assert p["plugins_order"] == ["rnnoise#0"], p["plugins_order"]
 assert p["rnnoise#0"]["enable-vad"] is False and p["rnnoise#0"]["bypass"] is False
 assert not [k for k in p if k.startswith(("pitch", "autotune", "autogain"))]
 PY
-  python3 -I - "$REPO/.config/wireplumber/wireplumber.conf.d/52-mic-priority.conf" <<'PY' && pass "11 52-mic-priority: USB 2600, webcams (by name and by form factor) 900, internal 1000, BT/EE untouched" || fail "11 mic priority rules"
+  python3 -I -B - "$REPO/.config/wireplumber/wireplumber.conf.d/52-mic-priority.conf" <<'PY' && pass "11 52-mic-priority: USB 2600, webcams (by name and by form factor) 900, internal 1000, BT/EE untouched" || fail "11 mic priority rules"
 import re, sys
 txt = open(sys.argv[1]).read()
 rules = []

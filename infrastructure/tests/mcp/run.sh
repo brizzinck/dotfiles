@@ -6,6 +6,7 @@
 #   run.sh [--quick]   --quick (doctor) skips the pieces that start a real gateway and the real `claude` CLI
 # The desktop-ro and gateway parts need the pinned venv and mcp-proxy (mcp-install); without them they print SKIP.
 set -u
+export PYTHONDONTWRITEBYTECODE=1   # python3 -I ignores PYTHON* variables (hence -B there); this covers the other interpreters: no __pycache__ in the repo
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 QUICK=0
@@ -181,7 +182,7 @@ check "clean: without Chromium a stub explains how to install it" bash -c 'out=$
 check "mine: OFF by default -> stub, no autoConnect" bash -c 'out=$(MCP_STATE_DIR="$5" MCP_CHROME_DEVTOOLS_BIN="$2" MCP_STUB_PYTHON="$3" "$1" mine); grep -q "^stub" <<<"$out" && ! grep -q autoConnect <<<"$out"' _ "$CH" "$SCRATCH/fake-cdt" "$SCRATCH/fake-py" x "$SCRATCH/state"
 check "mine: ON -> --autoConnect with the owner's Chrome profile" bash -c 'mkdir -p "$5"; touch "$5/chrome-mine.enabled"; out=$(MCP_STATE_DIR="$5" MCP_CHROME_DEVTOOLS_BIN="$2" MCP_STUB_PYTHON="$3" "$1" mine); grep -q -- "--autoConnect" <<<"$out" && grep -q "com.google.Chrome" <<<"$out"; rc=$?; rm -f "$5/chrome-mine.enabled"; exit $rc' _ "$CH" "$SCRATCH/fake-cdt" "$SCRATCH/fake-py" x "$SCRATCH/state"
 # the placeholder server is standard library only (no FastMCP import, ~9 MB instead of ~45 MB): it must still speak MCP like the FastMCP one did
-check "stub server: initialize / tools/list / tools/call status / unknown tool / unknown method over stdio, standard library only" python3 -I - "$REPO/.config/mcp/stub-server.py" <<'PYEOF'
+check "stub server: initialize / tools/list / tools/call status / unknown tool / unknown method over stdio, standard library only" python3 -I -B - "$REPO/.config/mcp/stub-server.py" <<'PYEOF'
 import json, subprocess, sys
 p = subprocess.Popen(["python3", "-I", "-S", sys.argv[1], "chrome-devtools-mine", "switched off"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
 def ask(i, method, params=None):
@@ -275,7 +276,7 @@ fi
 CT="$CODEX_DIR/config.toml"
 if [[ ! -f $SCRATCH/claude-before.json ]]; then MCP_CONFIG_DIR="$ADDCFG" "$ADD" --codex >/dev/null 2>&1; fi
 check "codex: mcphub removed" bash -c '! grep -q "mcp_servers.mcphub" "$1"' _ "$CT"
-check "codex: gateway servers use url + http_headers_helper" python3 -I -c '
+check "codex: gateway servers use url + http_headers_helper" python3 -I -B -c '
 import sys, tomllib
 d = tomllib.load(open(sys.argv[1], "rb"))["mcp_servers"]
 for n in ("desktop-ro", "chrome-devtools", "context7"):
@@ -460,9 +461,9 @@ check "run: a missing credential refuses to start (78)" bash -c '"${@}" >/dev/nu
 # serve.py: env check, bearer middleware, and the real server surface when the telegram-mcp venv exists
 TG_PY="${TELEGRAM_MCP_PY:-/opt/telegram-mcp/venv/bin/python}"
 if [[ -x $TG_PY && -d ${TELEGRAM_MCP_SRC:-/opt/telegram-mcp/src} ]]; then
-  count_py env TELEGRAM_MCP_PY="$TG_PY" TELEGRAM_MCP_SRC="${TELEGRAM_MCP_SRC:-/opt/telegram-mcp/src}" python3 -I "$HERE/test_telegram_serve.py" "$REPO"
+  count_py env TELEGRAM_MCP_PY="$TG_PY" TELEGRAM_MCP_SRC="${TELEGRAM_MCP_SRC:-/opt/telegram-mcp/src}" python3 -I -B "$HERE/test_telegram_serve.py" "$REPO"
 else
-  count_py python3 -I "$HERE/test_telegram_serve.py" "$REPO"
+  count_py python3 -I -B "$HERE/test_telegram_serve.py" "$REPO"
   skip "real telegram-mcp tool surface and gateway allowlist names (no /opt/telegram-mcp yet; set TELEGRAM_MCP_PY/TELEGRAM_MCP_SRC)"
 fi
 
@@ -757,9 +758,9 @@ check "managed.tsv: tgconfirm is a service user with no ACL, no become, created 
 check "window rule float-confirm: float, center, pin, stay_focused, no_screen_share, class float.confirm" bash -c 'r=$(sed -n "/name = \"float-confirm\"/,/^})/p" "$1"); for k in "float = true" "center = true" "pin = true" "stay_focused = true" "no_screen_share = true"; do grep -qF "$k" <<<"$r" || exit 1; done; grep -q "class = .*float.*confirm" <<<"$r"' _ "$REPO/.config/hypr/hyprland.lua"
 check "popup ghostty config: no keybinds, no clipboard access, no shell integration, nothing from the owner's config" bash -c 'grep -q "^keybind = clear" "$1" && grep -q "^clipboard-read = deny" "$1" && grep -q "^clipboard-write = deny" "$1" && grep -q "^shell-integration = none" "$1" && ! grep -q "config-file" "$1"' _ "$CFD/ghostty-popup.conf"
 check "popup.py: the code comes from the system RNG and is never written or logged" bash -c 'grep -q "SystemRandom" "$1" && ! grep -n "print(.*code\|write.*code\|json.dump.*code" "$1"' _ "$CFD/popup.py"
-count_py python3 -I "$HERE/test_confirm.py" "$REPO"
-count_py python3 -I "$HERE/test_wayland.py" "$REPO"
-count_py env TGPOPUP_QUICK="$QUICK" python3 -I "$HERE/test_popup.py" "$REPO"
+count_py python3 -I -B "$HERE/test_confirm.py" "$REPO"
+count_py python3 -I -B "$HERE/test_wayland.py" "$REPO"
+count_py env TGPOPUP_QUICK="$QUICK" python3 -I -B "$HERE/test_popup.py" "$REPO"
 
 # --- mcp-guard: deny rules in a throwaway settings.json -----------------------------------------------------------------------
 GUARD="$REPO/.local/bin/mcp-guard"

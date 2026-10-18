@@ -32,7 +32,7 @@ fresh() { # tree warm|cold|old
   printf 'SESSION-KEY-abc' >"$RUN/vault/bw-session"; chmod 600 "$RUN/vault/bw-session"; touch "$FAKE/bw-unlocked"
   : >"$FAKE/argv.log"
   echo '.name = "github edited" | .login.username = "brizz2"' >"$FAKE/editor-script"
-  if [[ $1 == warm ]]; then python3 -I "$2/.config/hypr/scripts/vault-bw.py" call status </dev/null >/dev/null; : >"$FAKE/argv.log"; fi
+  if [[ $1 == warm ]]; then python3 -I -B "$2/.config/hypr/scripts/vault-bw.py" call status </dev/null >/dev/null; : >"$FAKE/argv.log"; fi
 }
 run() { # tree mode flow: prints "procs/requests/seconds"
   local tree=$1 mode=$2 flow=$3 secs
@@ -40,7 +40,7 @@ run() { # tree mode flow: prints "procs/requests/seconds"
   case $flow in
     linux-pass-list) local t0; t0=$(date +%s.%N); ( cd "$FAKE" && "$tree/.local/bin/linux-pass" --list </dev/null >/dev/null 2>&1 ); secs=$(awk -v a="$t0" -v b="$(date +%s.%N)" 'BEGIN { printf "%.2f", b - a }') ;;
     *) secs=$(MEASURE_SETUP="$tree/.local/bin/mcp-telegram-setup" VAULT_BW="$tree/.config/hypr/scripts/vault-bw.py" \
-         python3 -I "$HERE/measure_flows.py" "$flow" "$tree/.config/hypr/scripts" "$BIN" 2>/dev/null | tail -1) ;;
+         python3 -I -B "$HERE/measure_flows.py" "$flow" "$tree/.config/hypr/scripts" "$BIN" 2>/dev/null | tail -1) ;;
   esac
   printf '%s/%s/%ss' "$(grep -ac '^bw ' "$FAKE/argv.log")" "$(grep -ac '^bw-serve ' "$FAKE/argv.log")" "$secs"
 }
