@@ -16,7 +16,7 @@
 #
 # One install run: free-space check -> Arch news + confirmation -> pacman cache prune -> archlinux-keyring first ->
 # pacman + AUR (yay, fully automatic) -> flatpak -> rustup + cargo crates -> npm -g (Codex, Gemini, ...) -> pipx/uv tools ->
-# Go tools (go install @latest) -> Claude Code -> nvim (lazy lockfile bump committed in the nvim submodule, Mason, treesitter) ->
+# Go tools (go install @latest) -> mise tools (global config only) -> Claude Code -> nvim (lazy lockfile bump committed in the nvim submodule, Mason, treesitter) ->
 # oh-my-zsh + zsh plugins -> tmux plugins (tpm) -> report: pacnew, reboot hint, services to restart, failed units.
 # The whole run holds a sleep/idle/lid inhibitor and is logged to ~/.local/state/sysup/last.log.
 # NOT part of it: firmware (hub rows "Firmware"), the real downloads of packages happen earlier in the background
@@ -31,7 +31,7 @@ PRED="${SYSUP_PRED:-/var/lib/dotfiles-predownload}"
 PKGCACHE="${SYSUP_PKGCACHE:-/var/cache/pacman/pkg}"
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 WAYBAR_SCRIPTS="$HOME/.config/waybar/scripts"
-STEPS=(space news prune keyring repo flatpak rust npm pipx go claude nvim zsh tmux report)
+STEPS=(space news prune keyring repo flatpak rust npm pipx go mise claude nvim zsh tmux report)
 
 mkdir -p "$STATE"
 
@@ -248,6 +248,18 @@ step_go() {
   return 0
 }
 
+# mise (DEV-b): only the global config counts (the run starts from $HOME, so a project's .mise.toml is never read); skipped
+# without mise. Failures are warnings like step_go.
+step_mise() {
+  have mise || { echo "mise is not installed"; return 0; }
+  local bad=0
+  mise plugins update || true   # "no plugins" is normal: the core tools are built in
+  mise upgrade --yes || bad=1
+  mise prune --yes || bad=1
+  ((bad)) && warn "mise could not update or prune everything (see above)"
+  return 0
+}
+
 step_claude() {
   if have claude; then claude update; else echo "claude is not installed"; fi
 }
@@ -369,6 +381,8 @@ run_steps() {
     return 0
   fi
   sudo -v || { fail "sudo is needed"; exit 1; }
+  # never from a project directory: its pinned go/node/python (mise) must not be the one `go install` or `npm -g` uses
+  cd "$HOME" || true
   # keep the sudo timestamp alive for steps that call sudo themselves (yay has its own --sudoloop)
   ( while sleep 50; do sudo -n true 2>/dev/null || exit; done ) &
   KEEP=$!

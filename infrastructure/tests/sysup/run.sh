@@ -48,7 +48,7 @@ printf '1700000000\n2\nok\n' >"$T/pred/state"
 export XDG_STATE_HOME="$T/state" SYSUP_PKGCACHE="$T/cache" SYSUP_PRED="$T/pred" XDG_RUNTIME_DIR="$T/run" PATH="$T/bin:$PATH"
 mkdir -p "$XDG_RUNTIME_DIR"
 
-expect "steps list in order" bash -c "[ \"\$($SYSUP steps | tr '\n' ' ')\" = 'space news prune keyring repo flatpak rust npm pipx go claude nvim zsh tmux report ' ]"
+expect "steps list in order" bash -c "[ \"\$($SYSUP steps | tr '\n' ' ')\" = 'space news prune keyring repo flatpak rust npm pipx go mise claude nvim zsh tmux report ' ]"
 expect "dry run prints the plan and writes no log" bash -c "$SYSUP --dry-run | grep -q keyring && [ ! -e '$T/state/sysup/last.log' ]"
 
 "$SYSUP" check --quiet
@@ -88,6 +88,24 @@ chmod +x "$T/bin/df"
 expect "refuses below 2 GiB" test "$rc" != 0
 "$SYSUP" --only space --yes --force >/dev/null 2>&1; rc=$?
 expect "--force continues" test "$rc" = 0
+
+# mise step (DEV-b): runs after go, from $HOME (never from the directory sysup was started in), skipped without mise
+cat >"$T/bin/mise" <<'X'
+#!/bin/sh
+echo "[fake mise] $PWD|$*" >>"$FAKE_LOG"
+exit 0
+X
+chmod +x "$T/bin/mise"
+mkdir -p "$T/home" "$T/proj"
+: >"$FAKE_LOG"
+(cd "$T/proj" && HOME="$T/home" "$SYSUP" --only mise --yes >/dev/null 2>&1); rc=$?
+expect "mise step exits 0" test "$rc" = 0
+expect "mise step: plugins update, upgrade, prune in order" bash -c "[ \"\$(grep 'fake mise' '$FAKE_LOG' | sed 's/.*|//' | tr '\n' ',')\" = 'plugins update,upgrade --yes,prune --yes,' ]"
+expect "mise step runs from HOME, not the start directory" bash -c "grep 'fake mise' '$FAKE_LOG' | grep -q '$T/home|' && ! grep 'fake mise' '$FAKE_LOG' | grep -q '$T/proj'"
+expect "mise is listed after go in the dry run" bash -c "$SYSUP --dry-run | tr -s ' \n' ' ' | grep -q 'go mise claude'"
+rm -f "$T/bin/mise"
+out=$(HOME="$T/home" PATH="$T/bin:/usr/bin:/bin" "$SYSUP" --only mise --yes 2>&1); rc=$?
+expect "mise step is skipped when mise is missing" bash -c "[ $rc = 0 ] && grep -q 'mise is not installed' <<<'$out'"
 
 echo "sysup tests: $fails failure(s)"
 exit $((fails > 0))
