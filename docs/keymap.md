@@ -17,7 +17,7 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Desktop | [System, power, bar](#system-power-bar) | 12 |
 | Desktop | [Pointer from the keyboard](#pointer-from-the-keyboard) | 21 |
 | Desktop | [Other Hyprland binds](#other-hyprland-binds) | 16 |
-| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 152 |
+| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 155 |
 | Terminal | [tmux: this setup](#tmux-this-setup) | 55 |
 | Terminal | [tmux: stock prefix keys](#tmux-stock-prefix-keys) | 80 |
 | Terminal | [Terminal: ghostty](#terminal-ghostty) | 13 |
@@ -39,7 +39,7 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Menus and bar | [Menus: list grammar](#menus-list-grammar) | 19 |
 | Menus and bar | [Menus: keys of each menu](#menus-keys-of-each-menu) | 66 |
 | Menus and bar | [TUIs and viewers](#tuis-and-viewers) | 3 |
-| Menus and bar | [Bar (waybar)](#bar-waybar) | 47 |
+| Menus and bar | [Bar (waybar)](#bar-waybar) | 48 |
 | Apps and login | [Telegram](#telegram) | 6 |
 | Apps and login | [Browser (Vimium C)](#browser-vimium-c) | 32 |
 | Apps and login | [Obsidian (Vim mode)](#obsidian-vim-mode) | 23 |
@@ -360,6 +360,8 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; a b` | Audio: Dictation menu and backend |
 | `Super+; a c` | Audio: Dictation next language |
 | `Super+; a d` | Audio: App volume down |
+| `Super+; a e` | Audio: Noise suppression |
+| `Super+; a i` | Audio: Mic automatic |
 | `Super+; a l` | Audio: Dictation language |
 | `Super+; a m` | Audio: Mute mics |
 | `Super+; a n` | Audio: Media menu |
@@ -450,6 +452,7 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; f a` | Fix: Restart audio |
 | `Super+; f c` | Fix: Crash toasts |
 | `Super+; f d` | Fix: Clean up detached terminals |
+| `Super+; f e` | Fix: Audio chain |
 | `Super+; f l` | Fix: Recent crashes |
 | `Super+; f m` | Fix: Crash mute list |
 | `Super+; f n` | Fix: Restart dunst |
@@ -1207,6 +1210,7 @@ Two bars per monitor: compact and full (SUPER+B switches, SUPER+CTRL+B hides). C
 | `L` | toggle | Switch: Keep working with the lid closed |
 | `L` | toggle | Switch: Night light |
 | `L` | VPN picker | Switch: VPN |
+| `L` | toggle | Switch: Noise suppression |
 | `L` | toggle (needs the popup) | Switch: Telegram sending |
 | `L` | next profile | Switch: Power profile |
 | `R` | choose | Switch: Power profile |

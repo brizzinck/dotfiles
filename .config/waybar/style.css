@@ -36,7 +36,7 @@ tooltip label { color: @fg; padding: 4px 6px; }
 #clock, #privacy, #custom-recording, #custom-media, #custom-dictation, #custom-reminder, #custom-health, #custom-updates, #custom-toggles, #custom-ai, #custom-vault,
 #custom-mode, #custom-power, #custom-tray-leader, #custom-pin, #network, #bluetooth, #pulseaudio, #backlight, #battery,
 #cpu, #memory, #temperature, #language,
-#custom-sw-dnd, #custom-sw-caffeine, #custom-sw-awake, #custom-sw-lid, #custom-sw-night, #custom-sw-tgsend, #custom-sw-vpn {
+#custom-sw-dnd, #custom-sw-caffeine, #custom-sw-awake, #custom-sw-lid, #custom-sw-night, #custom-sw-ns, #custom-sw-tgsend, #custom-sw-vpn {
   padding: 0 8px;
   margin: 4px 0;
   border-radius: 6px;
@@ -44,7 +44,7 @@ tooltip label { color: @fg; padding: 4px 6px; }
 }
 
 /* drawer children sit closer together */
-#custom-sw-dnd, #custom-sw-caffeine, #custom-sw-awake, #custom-sw-lid, #custom-sw-night, #custom-sw-tgsend, #custom-sw-vpn,
+#custom-sw-dnd, #custom-sw-caffeine, #custom-sw-awake, #custom-sw-lid, #custom-sw-night, #custom-sw-ns, #custom-sw-tgsend, #custom-sw-vpn,
 #custom-power, #bluetooth, #pulseaudio, #backlight, #cpu, #temperature { padding: 0 6px; }
 #custom-toggles.leader, #network, #pulseaudio, #memory, #custom-tray-leader { padding: 0 6px 0 8px; }
 
@@ -52,7 +52,7 @@ tooltip label { color: @fg; padding: 4px 6px; }
 #clock:hover, #custom-recording:hover, #custom-media:hover, #custom-dictation:hover, #custom-reminder:hover, #custom-health:hover, #custom-updates:hover, #custom-toggles:hover, #custom-ai:hover,
 #custom-vault:hover, #custom-pin:hover, #custom-mode:hover, #custom-power:hover, #network:hover, #bluetooth:hover, #pulseaudio:hover,
 #battery:hover, #cpu:hover, #memory:hover, #temperature:hover, #language:hover,
-#custom-sw-dnd:hover, #custom-sw-caffeine:hover, #custom-sw-awake:hover, #custom-sw-lid:hover, #custom-sw-night:hover, #custom-sw-tgsend:hover,
+#custom-sw-dnd:hover, #custom-sw-caffeine:hover, #custom-sw-awake:hover, #custom-sw-lid:hover, #custom-sw-night:hover, #custom-sw-ns:hover, #custom-sw-tgsend:hover,
 #custom-sw-vpn:hover { background: @surface; color: @fg; }
 
 /* pinned apps sit close together as one group (the group box itself has no padding) */

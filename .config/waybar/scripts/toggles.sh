@@ -6,14 +6,17 @@
 #   toggles.sh switch NAME         JSON for one child: on = glyph + class enabled, off = glyph + class dim
 #   toggles.sh toggle NAME         flip it, then refresh the bar (signal 8)
 #   toggles.sh state NAME          exit 0 when NAME is on (used by the hub)
-#   NAME is one of: dnd caffeine awake lid night vpn tgsend (tgsend only exists while the tgconfirm broker runs: Telegram sending)
+#   NAME is one of: dnd caffeine awake lid night vpn ns tgsend (tgsend only exists while the tgconfirm broker runs: Telegram sending;
+#   ns = microphone noise suppression, only exists with EasyEffects and the ee-ctl helper)
+# ns is the one switch whose NORMAL state is on: the summary shows it only when it is off or the chain is broken (class warning),
+# never as an "enabled" switch, so a healthy machine still reads "all off".
 # (the power profile child is hypr/scripts/power-profile.sh waybar; a profile other than balanced counts as enabled)
 # Colour classes: normal | dim | enabled | warning | critical (waybar/style.css maps them to palette tokens).
 set -u
 
 SCRIPTS="$HOME/.config/hypr/scripts"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NAMES=(dnd caffeine awake lid night vpn tgsend power)
+NAMES=(dnd caffeine awake lid night vpn ns tgsend power)
 G_OFF='󰨙'
 G_DND_ON='󰂛' G_DND_OFF='󰂜'
 G_CAF_ON='󰅶' G_CAF_OFF='󰛊'
@@ -22,6 +25,7 @@ G_LID_ON='󰌢' G_LID_OFF='󰛧'
 G_NIT_ON='󰖔' G_NIT_OFF='󰖔'
 G_VPN_ON='󰦝' G_VPN_OFF='󰦜'
 G_TGS_ON='󰒊' G_TGS_OFF='󰒊'
+G_NS_ON='󰍬' G_NS_OFF='󰍭'
 G_SAVER='󰌪' G_PERF='󰓅'
 
 poke_bar() { rm -f "${XDG_RUNTIME_DIR:-/tmp}/waybar-cache/toggles.json"; pkill -o -u "$UID" -RTMIN+8 -x waybar 2>/dev/null || true; }
@@ -29,7 +33,7 @@ poke_bar() { rm -f "${XDG_RUNTIME_DIR:-/tmp}/waybar-cache/toggles.json"; pkill -
 # probe NAME: sets ON (0/1), GLYPH_ON, GLYPH_OFF, LABEL, DETAIL (short text), TEXT_ON (what the summary shows), HINT
 probe() {
   local d
-  ON=0 DETAIL="" HINT="" STATE_TEXT=""
+  ON=0 DETAIL="" HINT="" STATE_TEXT="" WARN=0 SUMMARY_ON=1
   case $1 in
     dnd)
       GLYPH_ON=$G_DND_ON GLYPH_OFF=$G_DND_OFF LABEL="Do not disturb"
@@ -71,6 +75,21 @@ probe() {
       [[ -n $d ]] && { ON=1; DETAIL=$d; }
       TEXT_ON=$GLYPH_ON
       HINT="L: VPN picker" ;;
+    ns)
+      # noise suppression: ee-ctl ns status (exit 0 = EasyEffects answers, rnnoise active, global bypass off); no ee-ctl or no
+      # EasyEffects = switch hidden. Normal state = on, so the summary lists it only as a warning (off or EasyEffects not running).
+      GLYPH_ON=$G_NS_ON GLYPH_OFF=$G_NS_OFF LABEL="Noise suppression (EasyEffects)" SUMMARY_ON=0
+      [[ -x $HOME/.local/bin/ee-ctl && -x ${TOGGLES_EE_BIN:-/usr/bin/easyeffects} ]] || return 1
+      if "$HOME/.local/bin/ee-ctl" ns status --quiet; then
+        ON=1
+        d=$(pactl get-default-source 2>/dev/null)
+        d=$(pactl --format=json list sources 2>/dev/null | jq -r --arg n "$d" '.[] | select(.name == $n) | .description' 2>/dev/null)
+        DETAIL="${d:-microphone}"
+      else
+        WARN=1 TEXT_WARN=$GLYPH_OFF
+        [[ -n $("$HOME/.local/bin/ee-ctl" socket 2>/dev/null) ]] || STATE_TEXT="EasyEffects is not running"
+      fi
+      HINT="L: toggle" ;;
     tgsend)
       # Telegram sending (mcp-telegram-send): the broker's world-readable state file; no state file = no broker = switch hidden
       GLYPH_ON=$G_TGS_ON GLYPH_OFF=$G_TGS_OFF LABEL="Telegram sending (AI may ask)"
@@ -116,18 +135,24 @@ summary() {
 }
 
 summary_raw() { # the full-bar JSON, probed now
-  local n on=() lines=() text
+  local n on=() warn=() lines=() text
   for n in "${NAMES[@]}"; do
     probe "$n" || continue
-    ((ON)) && on+=("$TEXT_ON")
+    ((ON && SUMMARY_ON)) && on+=("$TEXT_ON")
+    ((WARN)) && warn+=("$TEXT_WARN")
     lines+=("$(state_line)")
   done
-  if ((${#on[@]} == 0)); then
+  if ((${#on[@]} == 0 && ${#warn[@]} == 0)); then
     json "$G_OFF" dim "Toggles: all off"$'\n'"$(printf '%s\n' "${lines[@]}")"$'\n\nL: toggles menu'
     return 0
   fi
-  text="${on[*]}"
-  json "$text" enabled "Toggles: ${#on[@]} on"$'\n'"$(printf '%s\n' "${lines[@]}")"$'\n\nL: toggles menu'
+  text="${on[*]}${on[*]:+ }${warn[*]}"
+  text=${text% }
+  if ((${#warn[@]})); then
+    json "$text" warning "Toggles: ${#on[@]} on, ${#warn[@]} need attention"$'\n'"$(printf '%s\n' "${lines[@]}")"$'\n\nL: toggles menu'
+  else
+    json "$text" enabled "Toggles: ${#on[@]} on"$'\n'"$(printf '%s\n' "${lines[@]}")"$'\n\nL: toggles menu'
+  fi
 }
 
 switch() {
@@ -152,8 +177,9 @@ toggle() {
     lid) "$SCRIPTS/lid.sh" toggle ;;
     night) if pgrep -x hyprsunset >/dev/null; then pkill -x hyprsunset; else setsid -f hyprsunset -t 4500 >/dev/null 2>&1; fi ;;
     vpn) ghostty --class=float.tui -e zsh -ic vpn ;;
+    ns) "$HOME/.local/bin/ee-ctl" ns toggle ;;   # it notifies once and pokes the bar itself
     tgsend) setsid -f "$HOME/.local/bin/mcp-telegram-send" toggle >/dev/null 2>&1 </dev/null ;;   # it pokes the bar itself when the popup is answered
-    *) echo "toggles.sh: unknown switch '${1:-}' (dnd caffeine awake lid night vpn tgsend)" >&2; return 2 ;;
+    *) echo "toggles.sh: unknown switch '${1:-}' (dnd caffeine awake lid night vpn ns tgsend)" >&2; return 2 ;;
   esac
   poke_bar
 }

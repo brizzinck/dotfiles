@@ -7,7 +7,7 @@
 #                              the preset = on); one replacing notification, then the waybar toggles are refreshed
 #   ee-ctl ns status [--quiet] exit 0 = on (EE answers, rnnoise active, global bypass off), 1 = off or unknown
 #   ee-ctl status [--json]     unit, pid, socket, preset, ns, rc keys, default source, source pin, live input links
-#   ee-ctl auto                forget a manual default-source choice (pw-metadata -d default.configured.audio.source), so the
+#   ee-ctl auto [--notify]     forget a manual default-source choice (pw-metadata -d default.configured.audio.source), so the
 #                              WirePlumber priorities (52-mic-priority.conf: USB > Bluetooth > built-in) decide again
 #   ee-ctl start|restart       systemctl --user reset-failed + start|restart easyeffects
 # 
@@ -333,11 +333,17 @@ def live_inputs(objs):
 
 
 def cmd_auto(args):
+    say = print
+    if "--notify" in args:
+        def say(text):
+            print(text)
+            if not os.environ.get("EE_NO_NOTIFY"):
+                run(["notify-send", "-a", "audio", "-t", "2500", "-h", "string:x-dunst-stack-tag:audio-picker", "Microphone", text])
     objs = pw_dump()
     before = default_meta(objs)
     pin = before.get("default.configured.audio.source")
     if not pin:
-        print("no manual microphone choice (already automatic)")
+        say("Automatic (no manual microphone choice)")
         return 0
     rc, _ = run(["pw-metadata", "-n", "default", "-d", "0", "default.configured.audio.source"])
     if rc != 0:
@@ -347,7 +353,7 @@ def cmd_auto(args):
     for k, v in before.items():
         if k != "default.configured.audio.source" and "sink" in k and after.get(k) != v:
             print("ee-ctl: WARNING sink key %s changed (%s -> %s)" % (k, v, after.get(k)), file=sys.stderr)
-    print("cleared the microphone choice %s" % pin)
+    say("Automatic: USB mic > Bluetooth > built-in (cleared %s)" % pin)
     return 0
 
 

@@ -237,7 +237,7 @@
   "group/toggles": {
     "orientation": "inherit",
     "drawer": { "transition-duration": 220, "transition-left-to-right": false, "children-class": "drawer-child" },
-    "modules": ["custom/toggles#leader", "custom/sw-dnd", "custom/sw-caffeine", "custom/sw-awake", "custom/sw-lid", "custom/sw-night", "custom/sw-tgsend", "custom/power"]
+    "modules": ["custom/toggles#leader", "custom/sw-dnd", "custom/sw-caffeine", "custom/sw-awake", "custom/sw-lid", "custom/sw-night", "custom/sw-ns", "custom/sw-tgsend", "custom/power"]
   },
   "custom/toggles#leader": {
     "exec": "~/.config/waybar/scripts/toggles.sh summary",
@@ -283,6 +283,15 @@
     "interval": 30,
     "signal": 8,
     "on-click": "~/.config/waybar/scripts/toggles.sh toggle night"
+  },
+  // noise suppression (EasyEffects RNNoise between every microphone and every app, AUDIO2): hidden without EasyEffects;
+  // L flips the rnnoise bypass (session only, every login starts with it on); the leader summary only shows it when it is off or broken
+  "custom/sw-ns": {
+    "exec": "~/.config/waybar/scripts/toggles.sh switch ns",
+    "return-type": "json",
+    "interval": 30,
+    "signal": 8,
+    "on-click": "~/.config/waybar/scripts/toggles.sh toggle ns"
   },
   // Telegram sending (broker tgconfirm): hidden without the broker; L: asks for the confirmation popup, then ON for 60 min
   "custom/sw-tgsend": {
@@ -366,7 +375,7 @@
     "format-source": "󰍬",
     "format-source-muted": "󰍭",
     "scroll-step": 2,
-    "tooltip-format": "{source_desc} {source_volume}%\n\nL: input picker · M: mute all microphones · R: wiremix · Scroll: volume",
+    "tooltip-format": "Input: {source_desc} {source_volume}%\n\nL: input picker · M: mute all microphones · R: wiremix · Scroll: volume",
     "on-click": "~/.config/hypr/scripts/audio-picker.sh",
     "on-click-right": "ghostty --class=float.tui -e wiremix",
     "on-click-middle": "~/.config/hypr/scripts/mic-mute-all.sh"

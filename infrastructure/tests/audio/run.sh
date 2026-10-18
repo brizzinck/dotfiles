@@ -417,6 +417,70 @@ if want 8; then
   ls "$T/run" | grep -q audio-mic && fail "8 probes leave no temp audio" || pass "8 probes leave no temp audio"
 fi
 
+# ── 10. audio-picker (input rows) ──
+if want 10; then
+  AP="$REPO/.config/hypr/scripts/audio-picker.sh"
+  node() { printf '{"id":%s,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"%s","node.name":"%s","node.description":"%s"}}}' "$1" "$2" "$3" "$4"; }
+  meta() { printf '{"id":30,"type":"PipeWire:Interface:Metadata","props":{"metadata.name":"default"},"metadata":[%s]}' "$1"; }
+  mkdir -p "$T/bin2"
+  cat >"$T/bin2/pactl" <<'X'
+#!/bin/sh
+case "$*" in
+  "get-default-sink") echo alsa_output.pci-x.analog-stereo ;;
+  "get-default-source") cat "$FAKE/default-source" ;;
+  "list short sink-inputs") printf '41\t5\t6\tx\n42\t5\t6\tx\n' ;;
+  "list short source-outputs") printf '51\t5\t6\tx\n' ;;
+  *) echo "pactl $*" >>"$FAKE/log" ;;
+esac
+X
+  chmod +x "$T/bin2/pactl"
+  echo "$HWSRC" >"$F/default-source"
+  echo "[$(node 10 Audio/Sink alsa_output.pci-x.analog-stereo "Speakers"),$(node 11 Audio/Source "$HWSRC" "Built-in mic"),$(node 12 Audio/Source alsa_input.usb-fifine "Fifine USB"),$(meta '')]" >"$F/pw-dump.json"
+  OLDPATH=$PATH; PATH="$T/bin2:$PATH"
+  list=$("$AP" --list)
+  grep -q $'^1\t● Input: Automatic (best microphone)' <<<"$list" && pass "10 picker: the Automatic row heads the Input rows and carries the marker without a pin" || fail "10 picker list ($list)"
+  grep -q $'^2\t● Input: Built-in mic' <<<"$list" && pass "10 picker: the default input keeps its marker" || fail "10 picker default marker"
+  out=$("$AP" --pick 3 --dry-run)
+  [ "$out" = "wpctl set-default 12" ] && pass "10 picker: an Input pick is only wpctl set-default (no move-source-output)" || fail "10 picker input pick ($out)"
+  out=$("$AP" --pick 1 --dry-run)
+  [ "$out" = "ee-ctl auto" ] && pass "10 picker: the Automatic row runs ee-ctl auto" || fail "10 picker auto ($out)"
+  out=$("$AP" --pick 0 --dry-run)
+  grep -q '^pactl move-sink-input 41 alsa_output.pci-x.analog-stereo' <<<"$out" && grep -q '^wpctl set-default 10' <<<"$out" && pass "10 picker: an Output pick still moves the playback streams" || fail "10 picker output pick ($out)"
+  echo "[$(node 10 Audio/Sink alsa_output.pci-x.analog-stereo "Speakers"),$(node 11 Audio/Source "$HWSRC" "Built-in mic"),$(meta '{"subject":0,"key":"default.configured.audio.source","type":"Spa:String:JSON","value":{"name":"x"}}')]" >"$F/pw-dump.json"
+  "$AP" --list | grep -q $'^1\t  Input: Automatic' && pass "10 picker: no marker on Automatic while a manual choice pins the source" || fail "10 picker pinned marker"
+  PATH=$OLDPATH
+fi
+
+# ── 12. waybar toggles (ns) ──
+if want 12; then
+  TG="$REPO/.config/waybar/scripts/toggles.sh"
+  mkdir -p "$T/home/.local/bin"
+  ln -sf "$EE" "$T/home/.local/bin/ee-ctl"
+  export TOGGLES_EE_BIN=/bin/sh
+  echo "$HWSRC" >"$F/default-source"
+  printf '[{"name":"%s","description":"Built-in mic"}]\n' "$HWSRC" >"$F/sources.json"
+  ee_stop; ee_start --preset mic-clean; ee_wait
+  out=$("$TG" switch ns)
+  [ "$(jq -r .class <<<"$out")" = enabled ] && grep -q 'on (Built-in mic)' <<<"$out" && grep -q 'L: toggle"' <<<"$out" && pass "12 toggles: ns on = enabled, shows the active microphone, hint line" || fail "12 toggles ns on ($out)"
+  "$TG" state ns && pass "12 toggles: state ns = exit 0 when on" || fail "12 toggles state on"
+  sum=$("$TG" summary-raw)
+  grep -q '󰍬\|󰍭' <<<"$(jq -r .text <<<"$sum")" && fail "12 toggles: ns on never appears in the summary glyphs" || pass "12 toggles: ns on never appears in the summary glyphs"
+  [ "$(jq -r .class <<<"$sum")" = dim ] && pass "12 toggles: healthy machine still reads all off" || fail "12 toggles summary class ($sum)"
+  ee_stop; ee_start --preset mic-clean --bypass true; ee_wait
+  out=$("$TG" switch ns)
+  [ "$(jq -r .class <<<"$out")" = dim ] && grep -q 'Noise suppression (EasyEffects): off' <<<"$out" && pass "12 toggles: ns off = dim child" || fail "12 toggles ns off ($out)"
+  sum=$("$TG" summary-raw)
+  [ "$(jq -r .class <<<"$sum")" = warning ] && [ "$(jq -r .text <<<"$sum")" = '󰍭' ] && pass "12 toggles: ns off shows its glyph in the summary with class warning" || fail "12 toggles summary off ($sum)"
+  "$TG" state ns && fail "12 toggles: state ns = exit 1 when off" || pass "12 toggles: state ns = exit 1 when off"
+  ee_stop
+  out=$("$TG" switch ns)
+  grep -q 'EasyEffects is not running' <<<"$out" && pass "12 toggles: EasyEffects not running is spelled out" || fail "12 toggles dead ($out)"
+  [ "$(jq -r .class <<<"$("$TG" summary-raw)")" = warning ] && pass "12 toggles: a dead chain is a warning in the summary" || fail "12 toggles dead summary"
+  out=$(TOGGLES_EE_BIN=/nonexistent "$TG" switch ns)
+  [ "$(jq -r .text <<<"$out")" = "" ] && pass "12 toggles: without EasyEffects the switch is hidden" || fail "12 toggles hidden ($out)"
+  unset TOGGLES_EE_BIN
+fi
+
 # ── 11. static files ──
 if want 11; then
   python3 -I - "$REPO/.config/audio/easyeffects-mic.json" <<'PY' && pass "11 preset: only rnnoise#0, vad off, bypass off" || fail "11 preset JSON"

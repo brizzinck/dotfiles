@@ -1,0 +1,4 @@
+# AUDIO2: microphone noise suppression (EasyEffects RNNoise) and the automatic microphone choice. Format: see the header of ~/.config/hub/hub.
+mic-ns	Toggles	Noise suppression on the microphone	-	toggle	~/.local/bin/ee-ctl ns toggle	~/.local/bin/ee-ctl ns status --quiet	easyeffects ~/.local/bin/ee-ctl	ON = EasyEffects RNNoise sits between every microphone and every app (dictation keeps the raw microphone). Off lasts until the next login.	a e;Noise suppression
+mic-auto	Sound	Microphone: automatic choice	-	run	~/.local/bin/ee-ctl auto --notify	-	pw-metadata ~/.local/bin/ee-ctl	Forget a manual input choice: USB mic > Bluetooth headset > built-in mic.	a i;Mic automatic
+audio-chain	Fix	Audio chain status (EasyEffects)	-	tui	+pause ~/.local/bin/audio-ensure --ee --verbose	-	easyeffects ~/.local/bin/audio-ensure	Checks microphone -> EasyEffects (RNNoise) -> apps: unit, preset, rc keys, default source, source pin. Fix: ee-ctl restart or audio-ensure.	f e;Audio chain

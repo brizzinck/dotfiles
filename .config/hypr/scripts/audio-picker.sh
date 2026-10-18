@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Output / input device picker (fzf-menu, vim keys). SUPER+SHIFT+A, also a hub row.
-#   Enter      make the device the default and move the running streams to it
+#   Enter      make the device the default and move the running streams to it (Output rows; Input rows never move
+#              streams: EasyEffects (processAllInputs) routes every recording app, a stream moved by hand would leave it)
 #   Alt+Enter  make it the default only (running streams stay where they are)
+#   The first Input row, "Automatic (best microphone)", forgets a manual choice (ee-ctl auto): USB mic > Bluetooth > built-in.
+#   A manual Input pick pins the microphone for the session; the login autostart (audio-ensure --boot) clears it.
 #   audio-picker.sh --list              print the rows (index, kind, id, default marker, name)
 #   audio-picker.sh --pick N [--keep]   apply row N without the menu (--keep = Alt+Enter behaviour)
 #   audio-picker.sh --next              switch to the next output device and move the running streams (SHIFT+Mute)
@@ -37,12 +40,21 @@ mapfile -t ROWS < <(pw-dump | jq -r '
        ($p["node.description"] // $p["node.name"])] ]
   | (map(select(.[0] == "Output")) + map(select(.[0] == "Input"))) | .[] | @tsv')
 ((${#ROWS[@]})) || { notify-send -a audio -u low "Audio devices" "no devices found"; exit 1; }
+# the Automatic row heads the Input rows; it carries the marker while no manual microphone choice (source pin) exists
+pin=$(pw-dump | jq -r '[.[] | select(.type == "PipeWire:Interface:Metadata" and .props["metadata.name"] == "default") | .metadata[]?
+  | select(.key == "default.configured.audio.source")] | length')
+first_in=${#ROWS[@]}
+for i in "${!ROWS[@]}"; do [[ ${ROWS[$i]} == Input$'\t'* ]] && { first_in=$i; break; }; done
+ROWS=("${ROWS[@]:0:first_in}" "Input"$'\t'"auto"$'\t'"-"$'\t'"Automatic (best microphone)" "${ROWS[@]:first_in}")
 
 labels=()
 for r in "${ROWS[@]}"; do
   IFS=$'\t' read -r kind id name desc <<<"$r"
   mark="  "
-  if [[ $kind == Output && $name == "$def_sink" ]] || [[ $kind == Input && $name == "$def_source" ]]; then mark="● "; fi
+  if [[ $kind == Output && $name == "$def_sink" ]]; then mark="● "; fi
+  if [[ $kind == Input ]]; then
+    if [[ $id == auto ]]; then [[ ${pin:-0} == 0 ]] && mark="● "; elif [[ $name == "$def_source" ]]; then mark="● "; fi
+  fi
   labels+=("$mark$kind: $desc")
 done
 
@@ -83,21 +95,22 @@ fi
 IFS=$'\t' read -r kind id name desc <<<"${ROWS[$PICK]}"
 run() { if ((DRY)); then echo "$*"; else "$@" >/dev/null 2>&1; fi; }
 
+if [[ $kind == Input && $id == auto ]]; then
+  run ee-ctl auto
+  ((DRY)) && exit 0
+  notify-send -a audio -t 2500 -h string:x-dunst-stack-tag:audio-picker "Default input changed" "Automatic: USB mic > Bluetooth > built-in"
+  exit 0
+fi
+
 run wpctl set-default "$id"
 moved=0
-if ((!KEEP)); then
-  if [[ $kind == Output ]]; then
-    # sink inputs = playback streams; the sink is addressed by node.name
-    while read -r si _; do
-      [[ -n $si ]] || continue
-      run pactl move-sink-input "$si" "$name" && moved=$((moved + 1))
-    done < <(pactl list short sink-inputs)
-  else
-    while read -r so _; do
-      [[ -n $so ]] || continue
-      run pactl move-source-output "$so" "$name" && moved=$((moved + 1))
-    done < <(pactl list short source-outputs)
-  fi
+# only playback streams are moved; recording streams stay where EasyEffects (processAllInputs) put them, and they follow the default by themselves
+if ((!KEEP)) && [[ $kind == Output ]]; then
+  # sink inputs = playback streams; the sink is addressed by node.name
+  while read -r si _; do
+    [[ -n $si ]] || continue
+    run pactl move-sink-input "$si" "$name" && moved=$((moved + 1))
+  done < <(pactl list short sink-inputs)
 fi
 
 ((DRY)) && exit 0
