@@ -12,6 +12,13 @@ QUICK=0
 [ "${1:-}" = --quick ] && QUICK=1
 T="$(mktemp -d)"
 trap 'chmod -R u+w "$T" 2>/dev/null; rm -rf "$T"' EXIT
+unset DISPLAY WAYLAND_DISPLAY
+mkdir -p "$T/safebin"
+for tool in fzf-menu ghostty notify-send hyprctl wl-copy; do
+  printf '#!/bin/sh\nexit 0\n' >"$T/safebin/$tool"
+done
+chmod +x "$T/safebin"/*
+export PATH="$T/safebin:$PATH"
 PASS=0 FAIL=0
 ok() { PASS=$((PASS + 1)); }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL  %s\n' "$*"; }
@@ -64,6 +71,18 @@ fi
 exec /usr/bin/getent "$@"
 FAKE
 chmod +x "$T/fakebin/getent"
+# Exercise the directory repair branches even when the host already has vault-share set up correctly.
+# All other stat calls still inspect the real scratch fixtures.
+cat >"$T/fakebin/stat" <<'FAKE'
+#!/bin/sh
+case "$*" in
+  '-c %U:%G %a /run/vault-share' | '-c %U:%G %a /etc/vault-share')
+    printf 'root:root 700\n'
+    exit 0 ;;
+esac
+exec /usr/bin/stat "$@"
+FAKE
+chmod +x "$T/fakebin/stat"
 mkdir -p "$T/dryhome/skel"
 setfacl -d -m g::r-x,o::r-x,m::r-x "$T/dryhome/skel" 2>/dev/null
 printf 'echo hi\n' >"$T/dryhome/leak.sh"

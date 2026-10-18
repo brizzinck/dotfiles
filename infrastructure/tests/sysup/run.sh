@@ -3,6 +3,10 @@
 # Never touches the real system: nothing is installed, the real steps (repo, flatpak, npm, go, nvim ...) are never run.
 #   infrastructure/tests/sysup/run.sh
 set -u
+unset DISPLAY WAYLAND_DISPLAY
+# Only the project-environment cases below may activate mise. An inherited diff could undo the fake PATH.
+for v in $(compgen -e | grep -E '^(__MISE_|MISE_ENV$)'); do unset "$v"; done
+unset SYSUP_MISE SYSUP_KEEP_PROJECT_ENV SYSUP_INNER
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 SYSUP="$REPO/.local/bin/sysup"
@@ -10,6 +14,9 @@ UPDATES="$REPO/.config/waybar/scripts/updates.sh"
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/state" "$T/cache" "$T/pred"
+for tool in fzf-menu ghostty notify-send hyprctl wl-copy pkill; do
+  printf '#!/bin/sh\nexit 0\n' >"$T/bin/$tool"
+done
 fails=0
 pass() { printf 'PASS  %s\n' "$1"; }
 fail() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
@@ -45,7 +52,7 @@ export FAKE_LOG="$T/fake.log"
 # beta is already "downloaded" (a .sig alone must not count for alpha)
 touch "$T/cache/beta-2:3.1-1-x86_64.pkg.tar.zst" "$T/cache/alpha-1.1-1-x86_64.pkg.tar.zst.sig"
 printf '1700000000\n2\nok\n' >"$T/pred/state"
-export XDG_STATE_HOME="$T/state" SYSUP_PKGCACHE="$T/cache" SYSUP_PRED="$T/pred" XDG_RUNTIME_DIR="$T/run" PATH="$T/bin:$PATH"
+export XDG_STATE_HOME="$T/state" SYSUP_PKGCACHE="$T/cache" SYSUP_PRED="$T/pred" XDG_RUNTIME_DIR="$T/run" PATH="$T/bin:/usr/bin"
 mkdir -p "$XDG_RUNTIME_DIR"
 export SYSUP_TEST_HOME="$T/home"   # sysup takes HOME from the password database; this hook (scratch XDG_STATE_HOME only) replaces it
 
@@ -111,7 +118,7 @@ expect "mise is listed after go in the dry run" bash -c "$SYSUP --dry-run | tr -
 rm -f "$T/bin/mise"
 # a PATH without /usr/bin (mise is installed there now): links to the few basics sysup needs, none to mise (L9)
 mkdir -p "$T/nomise"
-for t in bash env sh dirname basename date mktemp cat sed grep awk tr id readlink mkdir rm sort head tail printf cut ls tee df uname hostname stat find wc; do
+for t in bash env sh dirname basename date mktemp cat sed grep awk tr id readlink mkdir rm sort head tail printf cut ls tee df uname hostname stat find wc getent mv xargs sleep timeout flock jq pacman systemd-inhibit script; do
   [ -x "/usr/bin/$t" ] && ln -sf "/usr/bin/$t" "$T/nomise/$t"
 done
 out=$(HOME="$T/home" PATH="$T/bin:$T/nomise" "$SYSUP" --only mise --yes 2>&1); rc=$?
