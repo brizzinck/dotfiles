@@ -18,6 +18,7 @@ zsh-widget	up-line-or-beginning-search	History entries that start like the typed
 zsh-widget	down-line-or-beginning-search	History entries that start like the typed text (down)
 zsh-widget	autosuggest-accept	Accept the autosuggestion
 zsh-widget	sudo-command-line	Put sudo in front of the command line
+zsh-widget	pj-widget	Projects: switch to or create the tmux session of a repo (pj)
 zsh-widget	edit-command-line	Edit the whole line in nvim
 zsh-widget	visual-mode	Visual selection
 zsh-widget	visual-line-mode	Visual selection by line

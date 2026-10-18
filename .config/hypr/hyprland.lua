@@ -537,7 +537,7 @@ hl.bind(mainMod .. " + SHIFT + A", hl.dsp.exec_cmd(scripts .. "/audio-picker.sh"
 hl.bind(mainMod .. " + SHIFT + B", hl.dsp.exec_cmd(tui .. " bluetui"), { description = "Bluetooth (bluetui)" })
 hl.bind(mainMod .. " + I", hl.dsp.exec_cmd(scripts .. "/wifi.sh"), { description = "Wi-Fi picker (fzf, nmcli)" })
 hl.bind(mainMod .. " + D", hl.dsp.exec_cmd(tui .. " btop"), { description = "System monitor (btop)" })
-hl.bind(mainMod .. " + P", hl.dsp.exec_cmd(terminal .. " -e ~/.config/tmux/scripts/sessionizer.sh"), { description = "Project sessions (tmux)" })
+hl.bind(mainMod .. " + P", hl.dsp.exec_cmd("~/.local/bin/pj open"), { description = "Project sessions: pick a repo or session" })
 hl.bind(mainMod .. " + C", hl.dsp.exec_cmd(scripts .. "/clipboard.sh"), { description = "Clipboard history" })
 hl.bind(mainMod .. " + SHIFT + C", hl.dsp.exec_cmd("hyprpicker -a"), { description = "Color picker" })
 hl.bind(mainMod .. " + period", hl.dsp.exec_cmd(scripts .. "/emoji.sh"), { description = "Emoji picker" })

@@ -17,11 +17,11 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Desktop | [System, power, bar](#system-power-bar) | 12 |
 | Desktop | [Pointer from the keyboard](#pointer-from-the-keyboard) | 21 |
 | Desktop | [Other Hyprland binds](#other-hyprland-binds) | 16 |
-| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 162 |
+| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 165 |
 | Terminal | [tmux: this setup](#tmux-this-setup) | 56 |
 | Terminal | [tmux: stock prefix keys](#tmux-stock-prefix-keys) | 80 |
 | Terminal | [Terminal: ghostty](#terminal-ghostty) | 13 |
-| Terminal | [zsh line editor](#zsh-line-editor) | 34 |
+| Terminal | [zsh line editor](#zsh-line-editor) | 36 |
 | Terminal | [zsh helpers](#zsh-helpers) | 15 |
 | Terminal | [zsh aliases](#zsh-aliases) | 42 |
 | Editor | [Neovim: AI agents](#neovim-ai-agents) | 25 |
@@ -37,7 +37,7 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Editor | [Neovim: files and misc](#neovim-files-and-misc) | 17 |
 | Editor | [Neovim: moving and editing](#neovim-moving-and-editing) | 62 |
 | Menus and bar | [Menus: list grammar](#menus-list-grammar) | 19 |
-| Menus and bar | [Menus: keys of each menu](#menus-keys-of-each-menu) | 98 |
+| Menus and bar | [Menus: keys of each menu](#menus-keys-of-each-menu) | 105 |
 | Menus and bar | [TUIs and viewers](#tuis-and-viewers) | 4 |
 | Menus and bar | [Bar (waybar)](#bar-waybar) | 48 |
 | Apps and login | [Telegram](#telegram) | 6 |
@@ -71,7 +71,7 @@ Hyprland. Terminals, browser, file managers, the launcher, the hub and the cheat
 | `Super+S` | YouTube Music |
 | `Super+N` | Obsidian |
 | `Super+D` | System monitor (btop) |
-| `Super+P` | Project sessions (tmux) |
+| `Super+P` | Project sessions: pick a repo or session |
 | `Super+=` | Calculator (qalc) |
 | `Super+/` | Shortcut search (every key of every tool) |
 | `Super+Shift+/` | Shortcut reference page (browser window) |
@@ -483,9 +483,12 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; x w` | AI and MCP: Ask about the window |
 | `Super+; j c` | Dev: Check projects |
 | `Super+; j e` | Dev: Environments |
+| `Super+; j g` | Dev: Clone a repository |
 | `Super+; j i` | Dev: Import .env |
 | `Super+; j m` | Dev: mise tools |
+| `Super+; j p` | Dev: Projects |
 | `Super+; j u` | Dev: Use environment |
+| `Super+; j w` | Dev: New workmux task |
 
 ## Terminal
 
@@ -501,7 +504,7 @@ tmux, read from a private server that loads tmux.conf (notes are the -N text of 
 | `Prefix C` | New named session (name is mandatory and unique) |  |
 | `Prefix D` | Detach |  |
 | `Prefix E` | File tree sidebar in a pane (focus it) |  |
-| `Prefix F` | Project sessionizer: fuzzy-pick a directory, jump to or create its session |  |
+| `Prefix F` | Projects: switch to or create the tmux session of a repo, worktree or directory |  |
 | `Prefix H` | Resize pane left by 5 (repeatable) |  |
 | `Prefix I` | TPM: install plugins |  |
 | `Prefix J` | Resize pane down by 5 (repeatable) |  |
@@ -679,6 +682,7 @@ zsh vi-mode (Esc = NORMAL, cursor beam = INSERT, block = NORMAL; [I] [N] [V] in 
 | `Ctrl+T` | Insert a file path (fzf) | INSERT, NORMAL |
 | `Ctrl+U` | Delete to the start of the line | INSERT |
 | `Ctrl+W` | Delete the word before the cursor | INSERT |
+| `Ctrl+X p` | Projects: switch to or create the tmux session of a repo (pj) | INSERT |
 | `Ctrl+X s` | Put sudo in front of the command line | INSERT |
 | `Ctrl+Y` | Accept the autosuggestion | INSERT, NORMAL |
 | `Esc` | NORMAL mode | INSERT |
@@ -690,6 +694,7 @@ zsh vi-mode (Esc = NORMAL, cursor beam = INSERT, block = NORMAL; [I] [N] [V] in 
 | `V` | Visual selection by line | NORMAL |
 | `v` | Edit the whole line in nvim | NORMAL |
 | `y` | Yank (copies to the Wayland clipboard) | NORMAL |
+| `g p` | Projects: switch to or create the tmux session of a repo (pj) | NORMAL |
 | `g s` | Put sudo in front of the command line | NORMAL |
 | `Ctrl+[` | NORMAL mode (same as Esc) (KEYTIMEOUT is 1, so Esc switches at once) | INSERT |
 | `i` / `a` / `I` / `A` / `o` / `O` | Back to INSERT (at / after the cursor, line start or end, new line) | NORMAL |
@@ -1208,6 +1213,13 @@ Menu-specific keys keep the Alt+ form (works in both modes) and get a NORMAL let
 | `F1` / `F2` | Previous / next completion group | Completion menu (Tab) |
 | `Esc` | NORMAL mode: j k g G v / i a q as in every menu (Esc again quits) | Completion menu (Tab) |
 | `Enter` | Accept the completion | Completion menu (Tab) |
+| `Enter` | Switch to or create the tmux session of the row (a worktree row: the window that works in it) | Projects (SUPER+P, prefix F, Ctrl+X p) |
+| `o` / `Alt+O` | A window of its own: focus the window that shows the session, else a new terminal (Hyprland only) | Projects (SUPER+P, prefix F, Ctrl+X p) |
+| `d` / `Alt+D` | Kill the session (asks when something runs, a client is attached or wm-* windows exist) | Projects (SUPER+P, prefix F, Ctrl+X p) |
+| `w` / `Alt+W` | New workmux task in the row's repo (branch picker, wm-* window in the project session) | Projects (SUPER+P, prefix F, Ctrl+X p) |
+| `c` / `Alt+C` | Clone a repository from gh or glab and open it | Projects (SUPER+P, prefix F, Ctrl+X p) |
+| `t` / `Alt+T` | Trust the repo's .tmux-session.toml (its commands are shown first) | Projects (SUPER+P, prefix F, Ctrl+X p) |
+| `Alt+Enter` | Create with the default layout, ignoring .tmux-session.toml | Projects (SUPER+P, prefix F, Ctrl+X p) |
 
 ### TUIs and viewers
 

@@ -184,3 +184,10 @@ zsh-helpers	git dft	Structural diff of the working tree with difftastic (git dif
 zsh-helpers	git dlog	git log -p through difftastic (delta stays the pager of git diff and git log)
 zsh-helpers	git dshow	git show through difftastic
 zsh-helpers	git leaks	Secret scan of the staged changes with gitleaks (the pre-commit hook runs the same rules; values redacted)
+menu-keys	Enter	Switch to or create the tmux session of the row (a worktree row: the window that works in it)	Projects (SUPER+P, prefix F, Ctrl+X p)
+menu-keys	o / Alt+O	A window of its own: focus the window that shows the session, else a new terminal (Hyprland only)	Projects (SUPER+P, prefix F, Ctrl+X p)
+menu-keys	d / Alt+D	Kill the session (asks when something runs, a client is attached or wm-* windows exist)	Projects (SUPER+P, prefix F, Ctrl+X p)
+menu-keys	w / Alt+W	New workmux task in the row's repo (branch picker, wm-* window in the project session)	Projects (SUPER+P, prefix F, Ctrl+X p)
+menu-keys	c / Alt+C	Clone a repository from gh or glab and open it	Projects (SUPER+P, prefix F, Ctrl+X p)
+menu-keys	t / Alt+T	Trust the repo's .tmux-session.toml (its commands are shown first)	Projects (SUPER+P, prefix F, Ctrl+X p)
+menu-keys	Alt+Enter	Create with the default layout, ignoring .tmux-session.toml	Projects (SUPER+P, prefix F, Ctrl+X p)

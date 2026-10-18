@@ -20,3 +20,4 @@
 .local/bin/envs
 .local/bin/fzf-menu
 .local/bin/bw-setup
+.local/bin/pj

@@ -12,6 +12,7 @@
 #   Hyprland grabs Alt+S (screenshot), so the old Alt+s never reached the shell; S stays vi's substitute-line, and the
 #   sudo plugin's Esc-Esc cannot work with a 10 ms KEYTIMEOUT. Ctrl+X s has ua/ru twins (Ctrl+X ы / і), gs too.
 #   ua/ru layouts: every NORMAL/operator/visual key has a Cyrillic twin from the physical-key map (layout-keys.zsh)
+#   pj: Ctrl+X p (INSERT/emacs) and NORMAL `gp` open the project picker (tmux session per repo); twins like gs
 #   Ctrl+R / Ctrl+T / Alt+C: the same fzf widgets on the shared modal look (INSERT/NORMAL, [I]/[N] in the prompt)
 [[ -o zle && -o interactive ]] || return 0
 
@@ -41,6 +42,24 @@ if (( ${+LAYOUT_US_OF} )); then
     bindkey -M viins "^X$_df_c" sudo-command-line
   done
   unset _df_c _df_u
+fi
+
+# pj (project picker): Ctrl+X p in INSERT/emacs, `gp` in NORMAL (a free g-key). Inside tmux Enter switches the client to the
+# project's session, outside it attaches. Twins: Ctrl+X з / з (the us p key on ua/ru) here, gp via _df_dup_pairs below.
+if (( $+commands[pj] )); then
+  pj-widget() { zle -I; pj --here </dev/tty; zle reset-prompt }
+  zle -N pj-widget
+  bindkey -M emacs '^Xp' pj-widget
+  bindkey -M viins '^Xp' pj-widget
+  bindkey -M vicmd 'gp' pj-widget
+  if (( ${+LAYOUT_US_OF} )); then
+    for _df_c _df_u in "${(@kv)LAYOUT_US_OF}"; do
+      [[ $_df_u == p ]] || continue
+      bindkey -M emacs "^X$_df_c" pj-widget
+      bindkey -M viins "^X$_df_c" pj-widget
+    done
+    unset _df_c _df_u
+  fi
 fi
 
 # ── mode indicator (RPROMPT) ─────────────────────────────────────────────────

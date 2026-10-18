@@ -466,6 +466,8 @@ echo "-- 10. check"
 mkdir -p "$T/emptyrepo"
 out=$(PJ_REPO="$T/emptyrepo" pjx check); rc=$?
 expect "check: config line and repo notice, exit 0" bash -c 'test "$1" = 0 && printf "%s\n" "$2" | grep -q "^PASS  pj: config" && printf "%s\n" "$2" | grep -q "^INFO  pj: repo files not found"' _ "$rc" "$out"
+out=$(pjx check); rc=$?
+expect "check: on this repo every key wire is PASS (SUPER+P, prefix F, no sessionizer.sh, cli profile)" bash -c 'test "$1" = 0 && for w in "SUPER+P runs pj open" "prefix F opens pj" "sessionizer.sh is gone" "cli profile lists"; do printf "%s\n" "$2" | grep -q "^PASS  pj: .*$w" || exit 1; done' _ "$rc" "$out"
 printf 'roots = "nope"\n' >"$T/bad.toml"
 out=$(PJ_CONFIG="$T/bad.toml" PJ_REPO="$T/emptyrepo" pjx check); rc=$?
 expect "check: a broken config is FAIL and exit 1" bash -c 'test "$1" = 1 && printf "%s\n" "$2" | grep -q "^FAIL  pj: config does not parse"' _ "$rc" "$out"

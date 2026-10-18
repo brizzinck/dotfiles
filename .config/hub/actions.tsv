@@ -30,7 +30,6 @@ notif-dismiss-all	Notify	Dismiss all notifications	-	run	dunstctl close-all	-	du
 win-menu	Windows	This window: action menu	SUPER+SHIFT+W	run	~/.config/hypr/scripts/window-menu.sh	-	fzf-menu	Float, pin, opacity, move, screenshot, copy class, close, kill... on the window that was focused before the hub opened.	w m;Action menu
 win-switch	Windows	Window switcher (all workspaces)	SUPER+SHIFT+space	run	~/.config/hypr/scripts/window-switcher.sh	-	fzf-menu	The preview shows the window details and its app icon.	w s;Switcher
 launcher	Windows	App launcher (rofi: Ctrl+j/k move, Ctrl+d/u page, Esc cancel)	SUPER+space	run	pkill rofi || rofi -show drun	-	rofi	-	space;Apps
-sessionizer	TUI	Project sessions (tmux sessionizer)	SUPER+P	run	ghostty -e ~/.config/tmux/scripts/sessionizer.sh	-	ghostty tmux fzf	-
 vpn	TUI	VPN / proxy toggle (vpn)	-	tui	zsh -ic vpn	-	zsh	fzf over the VPN daemons present on this machine; asks for sudo.
 jf	TUI	Fuzzy journal (jf)	-	tui	zsh -ic jf	-	zsh journalctl fzf	journalctl -b piped into fzf.
 btop	TUI	System monitor (btop)	SUPER+D	tui	btop	-	btop	-	s t;btop
