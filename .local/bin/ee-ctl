@@ -1,0 +1,445 @@
+#!/usr/bin/env python3
+# ee-ctl: the only code that talks to EasyEffects (microphone noise suppression, AUDIO2; see CLAUDE.md "Audio").
+#   ee-ctl socket              print the control socket path (EE_SOCKET, $XDG_RUNTIME_DIR, /tmp/runtime-$USER); exit 1 when none
+#   ee-ctl prepare [--dry-run] write the managed keys into EasyEffects' KConfig database and link the preset (EE must not run)
+#   ee-ctl load [--wait SEC]   load the preset mic-clean into the running EE and confirm it (exit 1 when it did not take)
+#   ee-ctl ns on|off|toggle    noise suppression on/off = bypass of the rnnoise plugin (session only: every start reloads
+#                              the preset = on); one replacing notification, then the waybar toggles are refreshed
+#   ee-ctl ns status [--quiet] exit 0 = on (EE answers, rnnoise active, global bypass off), 1 = off or unknown
+#   ee-ctl status [--json]     unit, pid, socket, preset, ns, rc keys, default source, source pin, live input links
+#   ee-ctl auto                forget a manual default-source choice (pw-metadata -d default.configured.audio.source), so the
+#                              WirePlumber priorities (52-mic-priority.conf: USB > Bluetooth > built-in) decide again
+#   ee-ctl start|restart       systemctl --user reset-failed + start|restart easyeffects
+# 
+# Why a socket client and no D-Bus/CLI: EasyEffects 8 listens on a QLocalServer ("EasyEffectsServer", newline-terminated text
+# commands, one reply line for getters). Qt wants a runtime dir that is 0700, and /run/user/1000 is 0710 here (the usr
+# clipboard-acl traverse ACL), so Qt falls back to /tmp/runtime-$USER; the socket is only trusted when it and its parent dir
+# are owned by this uid and the dir has no group/other write (the same rule Qt applies).
+# State is managed, not hand-edited: the preset lives in the repo (~/.config/audio/easyeffects-mic.json, linked as
+# ~/.local/share/easyeffects/input/mic-clean.json), EasyEffects' own rc is local state that `prepare` rewrites (only the
+# managed keys) before every start. Output side keys are never written.
+# Test hooks: EE_SOCKET, EE_TMP_ROOT, EE_CONFIG_DIR, EE_DATA_DIR, EE_PRESET_SRC, EE_KWRITECONFIG, EE_BACKUP_DIR, EE_NO_NOTIFY, EE_PROC_NAME.
+import configparser
+import json
+import os
+import shutil
+import socket
+import stat
+import subprocess
+import sys
+import time
+
+PRESET = "mic-clean"
+SOCK_NAME = "EasyEffectsServer"
+UID = os.getuid()
+HOME = os.path.expanduser("~")
+
+
+def env(name, default):
+    return os.environ.get(name) or default
+
+
+def config_dir():
+    return env("EE_CONFIG_DIR", os.path.join(HOME, ".config", "easyeffects"))
+
+
+def data_dir():
+    return env("EE_DATA_DIR", os.path.join(HOME, ".local", "share", "easyeffects"))
+
+
+def preset_src():
+    return env("EE_PRESET_SRC", os.path.join(HOME, ".config", "audio", "easyeffects-mic.json"))
+
+
+def rc_path():
+    return os.path.join(config_dir(), "db", "easyeffectsrc")
+
+
+def run(cmd, timeout=5):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout
+    except (OSError, subprocess.SubprocessError):
+        return 127, ""
+
+
+def trusted(path):
+    """Socket owned by us, parent dir owned by us without group/other write."""
+    try:
+        st = os.lstat(path)
+        pst = os.lstat(os.path.dirname(path))
+    except OSError:
+        return False
+    if not stat.S_ISSOCK(st.st_mode) or st.st_uid != UID:
+        return False
+    if not stat.S_ISDIR(pst.st_mode) or pst.st_uid != UID or pst.st_mode & 0o022:
+        return False
+    return True
+
+
+def socket_path():
+    cands = []
+    if os.environ.get("EE_SOCKET"):
+        cands.append(os.environ["EE_SOCKET"])
+    rt = os.environ.get("XDG_RUNTIME_DIR")
+    if rt:
+        cands.append(os.path.join(rt, SOCK_NAME))
+    user = os.environ.get("USER") or str(UID)
+    cands.append(os.path.join(env("EE_TMP_ROOT", "/tmp"), "runtime-" + user, SOCK_NAME))
+    for c in cands:
+        if trusted(c):
+            return c
+    return None
+
+
+def send(cmd, reply=False, timeout=3.0):
+    """One command line; the reply line for getters, else None. None also when EE does not answer."""
+    p = socket_path()
+    if not p:
+        return None
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect(p)
+        s.sendall(cmd.encode() + b"\n")
+        if not reply:
+            return ""
+        # EasyEffects 8.3 ends most replies with a newline but not all (get_global_bypass sends a bare "2"): after the first
+        # chunk wait only briefly for more
+        buf = s.recv(4096)
+        s.settimeout(0.15)
+        while buf and b"\n" not in buf:
+            try:
+                chunk = s.recv(4096)
+            except socket.timeout:
+                break
+            if not chunk:
+                break
+            buf += chunk
+        return buf.split(b"\n", 1)[0].decode(errors="replace").strip()
+    except OSError:
+        return None
+    finally:
+        s.close()
+
+
+def ee_pids():
+    """pids of this user's easyeffects process (argv0 basename), without this script."""
+    out = []
+    for d in os.listdir("/proc"):
+        if not d.isdigit() or int(d) == os.getpid():
+            continue
+        try:
+            if os.stat("/proc/" + d).st_uid != UID:
+                continue
+            with open("/proc/%s/cmdline" % d, "rb") as f:
+                argv0 = f.read().split(b"\0", 1)[0].decode(errors="replace")
+        except OSError:
+            continue
+        if os.path.basename(argv0) == env("EE_PROC_NAME", "easyeffects"):
+            out.append(int(d))
+    return out
+
+
+def notify(text):
+    if os.environ.get("EE_NO_NOTIFY"):
+        return
+    run(["notify-send", "-a", "audio", "-h", "string:x-dunst-stack-tag:mic-ns", text])
+
+
+def poke_bar():
+    rt = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
+    try:
+        os.unlink(os.path.join(rt, "waybar-cache", "toggles.json"))
+    except OSError:
+        pass
+    run(["pkill", "-o", "-u", str(UID), "-RTMIN+8", "-x", "waybar"])
+
+
+# ---------------------------------------------------------------- prepare
+
+MANAGED = [
+    ("Window", "enableServiceMode", "true"),
+    ("Window", "autostartOnLogin", "false"),
+    ("EffectsPipelines", "processAllInputs", "true"),
+    ("EffectsPipelines", "excludeMonitorStreams", "true"),
+    ("EffectsPipelines", "inactivityTimerEnable", "true"),
+    ("EffectsPipelines", "bypass", "false"),
+    ("StreamInputs", "useDefaultInputDevice", "true"),
+    ("StreamInputs", "inputDevice", ""),
+    ("StreamInputs", "plugins", "rnnoise#0"),
+    ("StreamInputs", "listenToMic", "false"),
+    ("StreamInputs", "blocklist", ""),
+    ("Presets", "lastLoadedInputPreset", PRESET),
+]
+
+
+def cmd_prepare(args):
+    dry = "--dry-run" in args
+    if ee_pids() and not dry:
+        print("ee-ctl: EasyEffects is running, stop it first (ee-ctl restart does that through the unit)", file=sys.stderr)
+        return 1
+    rc = rc_path()
+    kw = env("EE_KWRITECONFIG", "kwriteconfig6")
+    if not dry:
+        os.makedirs(os.path.dirname(rc), exist_ok=True)
+    for grp, key, val in MANAGED:
+        if dry:
+            print("%s [%s] %s=%s" % (rc, grp, key, val))
+            continue
+        r = subprocess.run([kw, "--file", rc, "--group", grp, "--key", key, val], capture_output=True, text=True)
+        if r.returncode != 0:
+            print("ee-ctl: %s failed for [%s] %s: %s" % (kw, grp, key, r.stderr.strip()), file=sys.stderr)
+            return 1
+    link = os.path.join(data_dir(), "input", PRESET + ".json")
+    src = preset_src()
+    if dry:
+        print("link %s -> %s" % (link, src))
+        return 0
+    if not os.path.isfile(src):
+        print("ee-ctl: preset source %s is missing (stow .)" % src, file=sys.stderr)
+        return 1
+    os.makedirs(os.path.dirname(link), exist_ok=True)
+    if os.path.lexists(link) and not os.path.islink(link):
+        b = env("EE_BACKUP_DIR", os.path.join(HOME, ".local", "share", "dotfiles-backups", "easyeffects"))
+        b = os.path.join(b, "preset-" + time.strftime("%Y%m%d-%H%M%S"))
+        os.makedirs(b, mode=0o700, exist_ok=True)
+        shutil.move(link, os.path.join(b, PRESET + ".json"))
+    tmp = link + ".new"
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    os.symlink(src, tmp)
+    os.replace(tmp, link)  # atomic ln -sfn
+    return 0
+
+
+# ---------------------------------------------------------------- load / ns
+
+def get_bypass():
+    r = send("get_property:input:rnnoise:0:bypass", reply=True)
+    return r
+
+
+def cmd_load(args):
+    wait = 15.0
+    if "--wait" in args:
+        try:
+            wait = float(args[args.index("--wait") + 1])
+        except (IndexError, ValueError):
+            print("usage: ee-ctl load [--wait SEC]", file=sys.stderr)
+            return 2
+    end = time.monotonic() + wait
+    while socket_path() is None or send("get_global_bypass", reply=True) is None:
+        if time.monotonic() >= end:
+            print("ee-ctl: EasyEffects socket did not answer within %gs" % wait, file=sys.stderr)
+            return 1
+        time.sleep(0.25)
+    send("load_preset:input:" + PRESET)
+    last = ""
+    while True:
+        last = send("get_last_loaded_preset:input", reply=True) or ""
+        byp = get_bypass()
+        if last == PRESET and byp == "false":
+            return 0
+        if time.monotonic() >= end:
+            break
+        time.sleep(0.25)
+        send("load_preset:input:" + PRESET)  # a load before the pipeline exists can be dropped: repeat it
+    print("ee-ctl: preset not active (last loaded '%s', rnnoise bypass '%s')" % (last, get_bypass()), file=sys.stderr)
+    return 1
+
+
+def ns_state():
+    """True on, False off, None EE does not answer / unknown."""
+    byp = get_bypass()
+    if byp not in ("true", "false"):
+        return None
+    glob = send("get_global_bypass", reply=True)
+    if glob is None:
+        return None
+    return byp == "false" and glob != "1"
+
+
+def cmd_ns(args):
+    sub = args[0] if args else ""
+    if sub == "status":
+        st = ns_state()
+        if "--quiet" not in args:
+            print({True: "on", False: "off", None: "unknown (EasyEffects not running)"}[st])
+        return 0 if st else 1
+    if sub not in ("on", "off", "toggle"):
+        print("usage: ee-ctl ns on|off|toggle|status [--quiet]", file=sys.stderr)
+        return 2
+    byp = get_bypass()
+    if byp not in ("true", "false"):
+        notify("EasyEffects is not running (audio-ensure)")
+        print("ee-ctl: EasyEffects does not answer", file=sys.stderr)
+        return 1
+    want_on = (byp == "true") if sub == "toggle" else sub == "on"
+    send("set_property:input:rnnoise:0:bypass:%s" % ("false" if want_on else "true"))
+    time.sleep(0.05)
+    now = get_bypass()
+    if now != ("false" if want_on else "true"):
+        print("ee-ctl: bypass did not change (now '%s')" % now, file=sys.stderr)
+        return 1
+    notify("Noise suppression: %s" % ("on" if want_on else "off"))
+    poke_bar()
+    return 0
+
+
+# ---------------------------------------------------------------- pipewire helpers
+
+def pw_dump():
+    rc, out = run(["pw-dump"], timeout=8)
+    if rc != 0:
+        return []
+    try:
+        return json.loads(out)
+    except ValueError:
+        return []
+
+
+def default_meta(objs):
+    """{key: value-string} of the 'default' metadata."""
+    res = {}
+    for o in objs:
+        if o.get("type") == "PipeWire:Interface:Metadata" and o.get("props", {}).get("metadata.name") == "default":
+            for m in o.get("metadata", []):
+                v = m.get("value")
+                if isinstance(v, dict):
+                    v = v.get("name", json.dumps(v))
+                res[m.get("key")] = v
+    return res
+
+
+def node_names(objs):
+    return {o["id"]: o.get("info", {}).get("props", {}).get("node.name", "") for o in objs if o.get("type") == "PipeWire:Interface:Node"}
+
+
+def live_inputs(objs):
+    """Nodes that feed EasyEffects' input pipeline (links whose input node is an ee_sie_* node, output node is not ee_*)."""
+    names = node_names(objs)
+    res = []
+    for o in objs:
+        if o.get("type") != "PipeWire:Interface:Link":
+            continue
+        i = o.get("info", {})
+        src, dst = names.get(i.get("output-node-id"), ""), names.get(i.get("input-node-id"), "")
+        if dst.startswith("ee_sie_") and not src.startswith(("ee_", "easyeffects")) and src not in res:
+            res.append(src)
+    return res
+
+
+def cmd_auto(args):
+    objs = pw_dump()
+    before = default_meta(objs)
+    pin = before.get("default.configured.audio.source")
+    if not pin:
+        print("no manual microphone choice (already automatic)")
+        return 0
+    rc, _ = run(["pw-metadata", "-n", "default", "-d", "0", "default.configured.audio.source"])
+    if rc != 0:
+        print("ee-ctl: pw-metadata could not clear the choice", file=sys.stderr)
+        return 1
+    after = default_meta(pw_dump())
+    for k, v in before.items():
+        if k != "default.configured.audio.source" and "sink" in k and after.get(k) != v:
+            print("ee-ctl: WARNING sink key %s changed (%s -> %s)" % (k, v, after.get(k)), file=sys.stderr)
+    print("cleared the microphone choice %s" % pin)
+    return 0
+
+
+# ---------------------------------------------------------------- status
+
+def rc_keys():
+    cp = configparser.RawConfigParser(interpolation=None, strict=False)
+    cp.optionxform = str
+    try:
+        cp.read(rc_path())
+    except (configparser.Error, OSError):
+        pass
+    g = lambda s, k: cp.get(s, k, fallback=None)  # noqa: E731
+    return {
+        "processAllInputs": g("EffectsPipelines", "processAllInputs"),
+        "useDefaultInputDevice": g("StreamInputs", "useDefaultInputDevice"),
+        "listenToMic": g("StreamInputs", "listenToMic"),
+        "plugins": g("StreamInputs", "plugins"),
+        "inputDevice": g("StreamInputs", "inputDevice"),
+    }
+
+
+def cmd_status(args):
+    objs = pw_dump()
+    meta = default_meta(objs)
+    rc, unit = run(["systemctl", "--user", "is-active", "easyeffects"])
+    pids = ee_pids()
+    sock = socket_path()
+    byp = get_bypass() if sock else None
+    st = {
+        "unit": unit.strip() or "unknown",
+        "pid": pids[0] if pids else None,
+        "socket": sock,
+        "preset": send("get_last_loaded_preset:input", reply=True) if sock else None,
+        "ns": {True: "on", False: "off", None: "unknown"}[ns_state()] if sock else "unknown",
+        "rnnoise_bypass": byp,
+        "global_bypass": send("get_global_bypass", reply=True) if sock else None,
+        "rc": rc_keys(),
+        "default_source": run(["pactl", "get-default-source"])[1].strip() or None,
+        "source_pin": meta.get("default.configured.audio.source"),
+        "input_links": live_inputs(objs),
+    }
+    if "--json" in args:
+        print(json.dumps(st, indent=2))
+        return 0
+    print("unit:           %s" % st["unit"])
+    print("pid:            %s" % (st["pid"] or "-"))
+    print("socket:         %s" % (st["socket"] or "none"))
+    print("preset:         %s" % (st["preset"] or "-"))
+    print("noise supp.:    %s (rnnoise bypass %s, global bypass %s)" % (st["ns"], st["rnnoise_bypass"], st["global_bypass"]))
+    print("rc:             %s" % " ".join("%s=%s" % kv for kv in st["rc"].items()))
+    print("default source: %s" % (st["default_source"] or "-"))
+    print("source pin:     %s" % (st["source_pin"] or "none (automatic)"))
+    print("input links:    %s" % (", ".join(st["input_links"]) or "none (idle: EasyEffects only links while an app records)"))
+    return 0
+
+
+def cmd_unit(action):
+    run(["systemctl", "--user", "reset-failed", "easyeffects"])
+    rc, _ = run(["systemctl", "--user", action, "easyeffects"], timeout=60)
+    return 0 if rc == 0 else 1
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        with open(__file__) as f:
+            for line in f.readlines()[1:]:
+                if not line.startswith("#") or line.startswith("# Why"):
+                    break
+                print(line[2:].rstrip("\n"))
+        return 0
+    c, rest = argv[0], argv[1:]
+    if c == "socket":
+        p = socket_path()
+        if p:
+            print(p)
+        return 0 if p else 1
+    if c == "prepare":
+        return cmd_prepare(rest)
+    if c == "load":
+        return cmd_load(rest)
+    if c == "ns":
+        return cmd_ns(rest)
+    if c == "status":
+        return cmd_status(rest)
+    if c == "auto":
+        return cmd_auto(rest)
+    if c in ("start", "restart"):
+        return cmd_unit(c)
+    print("usage: ee-ctl socket|prepare|load|ns|status|auto|start|restart (-h)", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,19 @@
+[Unit]
+Description=EasyEffects microphone noise suppression (managed by audio-ensure / ee-ctl)
+# Not WantedBy=default.target on purpose: linger would start it at boot, before the Wayland session and the seat ACL.
+# `audio-ensure --boot` (Hyprland autostart) starts it after the sound cards are healed; `ee-ctl start|restart` by hand.
+After=pipewire.service wireplumber.service pipewire-pulse.service
+PartOf=pipewire.service
+ConditionPathExists=/usr/bin/easyeffects
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+# a logout removes the Wayland socket: EasyEffects exits and must not crash-loop
+ExecCondition=/bin/sh -c 'test -n "$WAYLAND_DISPLAY" && test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"'
+ExecStartPre=%h/.local/bin/ee-ctl prepare
+ExecStart=/usr/bin/easyeffects --service-mode --hide-window
+ExecStartPost=%h/.local/bin/ee-ctl load --wait 15
+ExecStop=/usr/bin/easyeffects --quit
+Restart=on-failure
+RestartSec=2
