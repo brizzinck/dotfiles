@@ -1,0 +1,404 @@
+#!/usr/bin/python3 -I
+"""llm: the local LLM (DEV-e): llama.cpp on Vulkan, started on demand, gone again after 5 idle minutes. Python 3 stdlib only.
+Docs: CLAUDE.md "Local LLM (DEV-e)".
+
+  llm models [list|fetch [NAME...|--default|--all-candidates]|check [--deep]|path NAME]
+                               the catalogue (~/.config/llm/models.tsv); fetch downloads into ~/.local/share/llm/models/ with
+                               curl (resumable), checks the pinned sha256 before the rename and stamps the file
+  llm model [NAME|--pick]      show / set the active model (state file ~/.local/state/llm/model); --pick = fzf-menu list
+  llm token ensure|rotate|path the bearer token of the server (~/.local/state/llm/token, 0600, dir 0700)
+
+Exit codes: 0 ok, 1 error, 2 usage, 3 not available (package / model / socket missing; the message says the fix), 4 timeout,
+130 interrupted. Test hooks (never needed by hand): LLM_STATE_DIR, LLM_DATA_DIR, LLM_MODELS_DIR, LLM_CONFIG_DIR, LLM_CATALOG.
+"""
+import hashlib
+import os
+import secrets
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+DEFAULT_ROLE = "default"
+SAFE_NAME_RE = r"^[a-z0-9][a-z0-9._-]*$"
+
+
+def _xdg(var, rel):
+    return Path(os.environ.get(var) or Path(os.environ.get("HOME", "/")) / rel)
+
+
+STATE = Path(os.environ.get("LLM_STATE_DIR") or _xdg("XDG_STATE_HOME", ".local/state") / "llm")
+DATA = Path(os.environ.get("LLM_DATA_DIR") or _xdg("XDG_DATA_HOME", ".local/share") / "llm")
+MODELS_DIR = Path(os.environ.get("LLM_MODELS_DIR") or DATA / "models")
+CONF = Path(os.environ.get("LLM_CONFIG_DIR") or _xdg("XDG_CONFIG_HOME", ".config") / "llm")
+CATALOG = Path(os.environ.get("LLM_CATALOG") or CONF / "models.tsv")
+TOKEN_FILE = STATE / "token"
+
+
+class Fail(Exception):
+    def __init__(self, msg, code=1):
+        super().__init__(msg)
+        self.code = code
+
+
+def err(msg):
+    print("llm: " + msg, file=sys.stderr)
+
+
+def human(n):
+    for unit, div in (("GB", 1e9), ("MB", 1e6), ("kB", 1e3)):
+        if n >= div:
+            return f"{n / div:.1f} {unit}"
+    return f"{n} B"
+
+
+# --------------------------------------------------------------------------------------------------------------
+# catalogue, model files, stamps
+def catalogue():
+    import re
+    try:
+        text = CATALOG.read_text()
+    except OSError as e:
+        raise Fail(f"cannot read the model catalogue {CATALOG}: {e.strerror}", 3)
+    rows = []
+    for n, line in enumerate(text.splitlines(), 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        f = line.split("\t")
+        if len(f) < 6:
+            raise Fail(f"{CATALOG}:{n}: need id, file, url, sha256, size, role (tab separated)")
+        m = {"id": f[0], "file": f[1], "url": f[2], "sha256": f[3].lower(), "size": int(f[4]), "role": f[5],
+             "note": f[6] if len(f) > 6 else ""}
+        if not re.match(SAFE_NAME_RE, m["id"]) or "/" in m["file"] or m["file"].startswith("."):
+            raise Fail(f"{CATALOG}:{n}: unsafe id or file name")
+        if not re.fullmatch(r"[0-9a-f]{64}", m["sha256"]):
+            raise Fail(f"{CATALOG}:{n}: sha256 must be 64 hex digits")
+        rows.append(m)
+    return rows
+
+
+def find_model(name, rows=None):
+    rows = rows if rows is not None else catalogue()
+    for m in rows:
+        if m["id"] == name:
+            return m
+    raise Fail(f"unknown model '{name}' (llm models list)", 2)
+
+
+def default_model(rows):
+    for m in rows:
+        if m["role"] == DEFAULT_ROLE:
+            return m
+    raise Fail("the catalogue has no default model", 1)
+
+
+def active_id(rows):
+    try:
+        name = (STATE / "model").read_text().strip()
+    except OSError:
+        name = ""
+    return name or default_model(rows)["id"]
+
+
+def model_path(m):
+    return MODELS_DIR / m["file"]
+
+
+def stamp_path(m):
+    return STATE / "fetched" / (m["file"] + ".ok")
+
+
+def stamp_write(m, path):
+    st = path.stat()
+    sp = stamp_path(m)
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    tmp = sp.with_name(sp.name + ".tmp")
+    tmp.write_text(f"{st.st_size}\t{st.st_mtime_ns}\t{m['sha256']}\n")
+    os.replace(tmp, sp)
+
+
+def stamp_state(m):
+    """(state, detail): fetched | missing | partial | changed | unverified (file there, no stamp). No hashing."""
+    path = model_path(m)
+    if not path.exists():
+        part = path.with_name(path.name + ".part")
+        if part.exists():
+            return "partial", f"{human(part.stat().st_size)} of {human(m['size'])}"
+        return "missing", ""
+    st = path.stat()
+    try:
+        size, mtime, sha = stamp_path(m).read_text().split()
+    except (OSError, ValueError):
+        return "unverified", "no stamp (llm models fetch verifies it)"
+    if int(size) != st.st_size or int(mtime) != st.st_mtime_ns or sha != m["sha256"] or st.st_size != m["size"]:
+        return "changed", "size or mtime differs from the verified file"
+    return "fetched", ""
+
+
+def sha256_file(path, progress=False):
+    h = hashlib.sha256()
+    total = path.stat().st_size
+    done = 0
+    with open(path, "rb") as f:
+        while True:
+            b = f.read(1 << 20)
+            if not b:
+                break
+            h.update(b)
+            done += len(b)
+            if progress and sys.stderr.isatty():
+                print(f"\r  verifying {done * 100 // max(total, 1)}%", end="", file=sys.stderr, flush=True)
+    if progress and sys.stderr.isatty():
+        print("\r" + " " * 24 + "\r", end="", file=sys.stderr)
+    return h.hexdigest()
+
+
+# --------------------------------------------------------------------------------------------------------------
+def fetch_one(m):
+    """Download + verify one model. Idempotent and resumable. Raises Fail on a wrong hash (the part file is removed)."""
+    path = model_path(m)
+    part = path.with_name(path.name + ".part")
+    state, _ = stamp_state(m)
+    if state == "fetched":
+        print(f"{m['id']}: already fetched ({human(m['size'])})")
+        return
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(MODELS_DIR, 0o700)
+    if path.exists():  # a file without (or with a stale) stamp: trust the hash, not the name
+        if path.stat().st_size == m["size"] and sha256_file(path, True) == m["sha256"]:
+            stamp_write(m, path)
+            print(f"{m['id']}: verified existing file")
+            return
+        err(f"{m['id']}: {path.name} has the wrong size or hash, downloading it again")
+        path.unlink()
+        try:
+            stamp_path(m).unlink()
+        except OSError:
+            pass
+    have = part.stat().st_size if part.exists() else 0
+    need = m["size"] - have
+    free = shutil.disk_usage(MODELS_DIR).free
+    if free < need + (1 << 28):
+        raise Fail(f"{m['id']}: needs {human(need)} but only {human(free)} is free in {MODELS_DIR}")
+    if have > m["size"]:
+        part.unlink()
+        have = 0
+    if have < m["size"]:
+        print(f"{m['id']}: {'resuming' if have else 'downloading'} {human(m['size'])} from huggingface.co")
+        cmd = ["curl", "-fL", "--retry", "3", "--retry-delay", "2", "--proto", "=https", "--proto-redir", "=https",
+               "-C", "-", "-o", str(part), "-#" if sys.stderr.isatty() else "-sS", m["url"]]
+        try:
+            rc = subprocess.run(cmd).returncode
+        except FileNotFoundError:
+            raise Fail("curl is not installed", 3)
+        except KeyboardInterrupt:
+            raise Fail("interrupted (the partial download is kept, run the same command to resume)", 130)
+        if rc != 0:
+            raise Fail(f"{m['id']}: curl failed (exit {rc}); the partial download is kept, run the same command to resume")
+    if not part.exists() or part.stat().st_size != m["size"]:
+        got = part.stat().st_size if part.exists() else 0
+        if part.exists():
+            part.unlink()
+        raise Fail(f"{m['id']}: downloaded {got} bytes, expected {m['size']}; partial file removed")
+    if sha256_file(part, True) != m["sha256"]:
+        part.unlink()
+        raise Fail(f"{m['id']}: sha256 does not match the catalogue; the download was deleted")
+    os.chmod(part, 0o600)
+    os.replace(part, path)
+    stamp_write(m, path)
+    print(f"{m['id']}: fetched and verified ({path})")
+
+
+def cmd_models(args):
+    rows = catalogue()
+    sub = args[0] if args else "list"
+    rest = args[1:]
+    if sub == "list":
+        act = active_id(rows)
+        for m in rows:
+            state, detail = stamp_state(m)
+            print(f"{'*' if m['id'] == act else ' '} {m['id']:<14} {m['role']:<9} {human(m['size']):>8}  "
+                  f"{state}{' (' + detail + ')' if detail else ''}  {m['note']}")
+        return 0
+    if sub == "path":
+        if len(rest) != 1:
+            raise Fail("usage: llm models path NAME", 2)
+        print(model_path(find_model(rest[0], rows)))
+        return 0
+    if sub == "check":
+        deep = "--deep" in rest
+        bad = 0
+        for m in rows:
+            state, detail = stamp_state(m)
+            if state == "fetched" and deep:
+                if sha256_file(model_path(m), True) != m["sha256"]:
+                    state, detail = "changed", "sha256 differs"
+            if state in ("changed", "unverified"):
+                bad = 1
+            if state != "missing":
+                print(f"{m['id']}: {state}{' (' + detail + ')' if detail else ''}")
+        return bad
+    if sub == "fetch":
+        names = [a for a in rest if not a.startswith("-")]
+        flags = [a for a in rest if a.startswith("-")]
+        unknown = [f for f in flags if f not in ("--default", "--all-candidates")]
+        if unknown:
+            raise Fail(f"unknown option {unknown[0]} (llm models fetch [NAME...|--default|--all-candidates])", 2)
+        want = [find_model(n, rows) for n in names]
+        if "--default" in flags or (not names and "--all-candidates" not in flags):
+            want.append(default_model(rows))
+        if "--all-candidates" in flags:
+            want += [m for m in rows if m["role"] != "tiny"]
+        seen, uniq = set(), []
+        for m in want:
+            if m["id"] not in seen:
+                seen.add(m["id"])
+                uniq.append(m)
+        failed = 0
+        for m in uniq:
+            try:
+                fetch_one(m)
+            except Fail as e:
+                if e.code == 130:
+                    raise
+                err(str(e))
+                failed = 1
+        return failed
+    raise Fail("usage: llm models [list|fetch [NAME...|--default|--all-candidates]|check [--deep]|path NAME]", 2)
+
+
+# --------------------------------------------------------------------------------------------------------------
+def systemctl_user(*a, check=False):
+    try:
+        return subprocess.run(["systemctl", "--user", *a], capture_output=True, text=True, timeout=200)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return subprocess.CompletedProcess(a, 1, "", "")
+
+
+def server_loaded():
+    return systemctl_user("is-active", "--quiet", "llm-server.service").returncode == 0
+
+
+def restart_if_loaded():
+    """Apply a new model or token: only a loaded server is restarted, an idle one picks the change up at its next start."""
+    if not server_loaded():
+        return False
+    systemctl_user("stop", "llm-proxy.service", "llm-server.service")
+    systemctl_user("start", "llm-proxy.service")
+    return True
+
+
+def pick_model(rows):
+    act = active_id(rows)
+    ordered = sorted(rows, key=lambda m: m["id"] != act)
+    lines = []
+    for m in ordered:
+        state, _ = stamp_state(m)
+        lines.append(f"{m['id']}\t{'*' if m['id'] == act else ' '} {m['id']:<14} {m['role']:<9} {human(m['size']):>8}  "
+                     f"{'fetched' if state == 'fetched' else state}  {m['note']}")
+    args = ["-p", "llm model", "--delimiter=\t", "--with-nth=2..", "--tabstop=4", "--header=Enter sets the active model"]
+    if sys.stdin.isatty() or sys.stdout.isatty():
+        args.insert(0, "--here")
+    try:
+        p = subprocess.run(["fzf-menu"] + args, input="\n".join(lines) + "\n", stdout=subprocess.PIPE, text=True)
+    except FileNotFoundError:
+        raise Fail("fzf-menu is not installed", 3)
+    if p.returncode != 0:
+        return None
+    return p.stdout.split("\t")[0].strip() or None
+
+
+def cmd_model(args):
+    rows = catalogue()
+    pick = "--pick" in args
+    names = [a for a in args if not a.startswith("-")]
+    if [a for a in args if a.startswith("-") and a != "--pick"] or len(names) > 1:
+        raise Fail("usage: llm model [NAME|--pick]", 2)
+    if pick:
+        name = pick_model(rows)
+        if name is None:
+            return 0
+    elif names:
+        name = names[0]
+    else:
+        m = find_model(active_id(rows), rows)
+        state, detail = stamp_state(m)
+        print(f"{m['id']} ({m['file']}): {state}{' - ' + detail if detail else ''}")
+        return 0
+    m = find_model(name, rows)
+    state, _ = stamp_state(m)
+    if state != "fetched":
+        raise Fail(f"{m['id']} is not fetched ({state}); run: llm models fetch {m['id']}", 3)
+    STATE.mkdir(parents=True, exist_ok=True)
+    os.chmod(STATE, 0o700)
+    tmp = STATE / "model.tmp"
+    tmp.write_text(m["id"] + "\n")
+    os.replace(tmp, STATE / "model")
+    restarted = restart_if_loaded()
+    print(f"active model: {m['id']}" + (" (server restarted)" if restarted else ""))
+    return 0
+
+
+# --------------------------------------------------------------------------------------------------------------
+def token_ensure(rotate=False):
+    STATE.mkdir(parents=True, exist_ok=True)
+    os.chmod(STATE, 0o700)
+    if TOKEN_FILE.exists() and not rotate:
+        if TOKEN_FILE.stat().st_mode & 0o077:
+            os.chmod(TOKEN_FILE, 0o600)
+        return False
+    tmp = STATE / "token.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(secrets.token_urlsafe(32) + "\n")
+    os.replace(tmp, TOKEN_FILE)
+    return True
+
+
+def token_read():
+    try:
+        return TOKEN_FILE.read_text().strip()
+    except OSError:
+        raise Fail(f"no token yet; run: llm token ensure", 3)
+
+
+def cmd_token(args):
+    sub = args[0] if args else ""
+    if sub == "ensure":
+        token_ensure()
+        return 0
+    if sub == "rotate":
+        token_ensure(rotate=True)
+        restarted = restart_if_loaded()
+        print("token rotated" + (" (server restarted)" if restarted else ""))
+        return 0
+    if sub == "path":
+        print(TOKEN_FILE)
+        return 0
+    raise Fail("usage: llm token ensure|rotate|path", 2)
+
+
+# --------------------------------------------------------------------------------------------------------------
+COMMANDS = {"models": cmd_models, "model": cmd_model, "token": cmd_token}
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0 if len(argv) > 1 else 2
+    cmd = argv[1]
+    fn = COMMANDS.get(cmd)
+    if fn is None:
+        err(f"unknown command or preset '{cmd}' (llm --help)")
+        return 2
+    try:
+        return fn(argv[2:]) or 0
+    except Fail as e:
+        err(str(e))
+        return e.code
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

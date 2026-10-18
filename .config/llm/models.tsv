@@ -1,0 +1,11 @@
+# Local LLM model catalogue (DEV-e). Read by `llm models` / `llm model`. Columns (tab separated):
+#   id  file  url  sha256  size(bytes)  role  note
+# url is pinned to the Hugging Face commit; sha256 and size are the LFS values of that commit (checked against
+# https://huggingface.co/api/models/<repo>/tree/<commit>, field lfs.oid). `llm models fetch` verifies the hash before it
+# renames the download, so a changed or truncated file is never used. role: default | quality | candidate | fallback | tiny
+# (`fetch --all-candidates` takes everything except tiny). Files live in ~/.local/share/llm/models/. All Apache-2.0, not gated.
+qwen3.5-2b	Qwen3.5-2B-Q4_K_M.gguf	https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/Qwen3.5-2B-Q4_K_M.gguf	aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223	1280835840	default	Qwen3.5 2B: multilingual (ru/uk/en), small KV cache, fast on Vulkan
+qwen3.5-4b	Qwen3.5-4B-Q4_K_M.gguf	https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-Q4_K_M.gguf	00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4	2740937888	quality	Qwen3.5 4B: better translation and commit messages, about half the speed
+gemma-4-e2b	gemma-4-E2B-it-Q4_K_M.gguf	https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/0314792d7f1f7e229411f620751375812bb9faf2/gemma-4-E2B-it-Q4_K_M.gguf	740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8	3106738272	candidate	Gemma 4 E2B: usually the strongest small model for Ukrainian, large file (bake-off only)
+qwen3-4b-2507	Qwen3-4B-Instruct-2507-Q4_K_M.gguf	https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946bb6b655725eafa393f4a9745d460374c9/Qwen3-4B-Instruct-2507-Q4_K_M.gguf	3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597	2497281120	fallback	Qwen3 4B Instruct 2507: plain transformer, the fallback if a Qwen3.5 hybrid op runs on the CPU
+qwen3.5-0.8b	Qwen3.5-0.8B-Q4_K_M.gguf	https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/6ab461498e2023f6e3c1baea90a8f0fe38ab64d0/Qwen3.5-0.8B-Q4_K_M.gguf	bd258782e35f7f458f8aced1adc053e6e92e89bc735ba3be89d38a06121dc517	532517120	tiny	Qwen3.5 0.8B: battery case or if the 2B misses the latency target (never fetched by default)

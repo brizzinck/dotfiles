@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# fake curl for the llm tests: "downloads" $FAKE_CURL_SRC into the -o file, honours `-C -` (resume from the size of the existing
+# file), logs the argv to $FAKE_LOG. FAKE_CURL_FAIL=N exits N without writing; FAKE_CURL_CUT=BYTES writes only that many bytes
+# of the remaining part and exits 18 (a dropped connection).
+out="" resume=0 url="" args=("$@")
+while [ $# -gt 0 ]; do
+  case $1 in
+    -o) out=$2; shift ;;
+    -C) resume=1; shift ;;
+    --retry|--retry-delay|--proto|--proto-redir) shift ;;
+    -*) ;;
+    *) url=$1 ;;
+  esac
+  shift
+done
+printf 'curl %s\n' "${args[*]}" >>"${FAKE_LOG:-/dev/null}"
+[ -n "${FAKE_CURL_FAIL:-}" ] && exit "$FAKE_CURL_FAIL"
+[ -n "$out" ] && [ -n "${FAKE_CURL_SRC:-}" ] || exit 2
+skip=0
+[ "$resume" = 1 ] && [ -f "$out" ] && skip=$(stat -c %s "$out")
+total=$(stat -c %s "$FAKE_CURL_SRC")
+if [ "$skip" -ge "$total" ] && [ "$resume" = 1 ] && [ -f "$out" ]; then exit 33; fi   # curl: 416 range not satisfiable
+if [ -n "${FAKE_CURL_CUT:-}" ]; then
+  tail -c +$((skip + 1)) "$FAKE_CURL_SRC" | head -c "$FAKE_CURL_CUT" >>"$out"
+  exit 18
+fi
+if [ "$skip" -gt 0 ]; then tail -c +$((skip + 1)) "$FAKE_CURL_SRC" >>"$out"; else cp "$FAKE_CURL_SRC" "$out"; fi
+exit 0
