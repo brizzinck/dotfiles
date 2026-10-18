@@ -226,7 +226,7 @@ close_active_menu() {
 # While the menu is open the client watches that pid: a window closed with SUPER+W (or a crash) must end the call, whoever else
 # serves the next request (the standby becomes a live server at that moment, so "a server is alive" says nothing about this menu).
 hot_request() { # REQ -> 0 when answered (also cancelled by a dead server), 1 when the server did not take it
-  local req=$1 i spid
+  local req=$1 i spid deadline
   mkfifo "$req/done"
   exec 8<>"$req/done"
   if [[ -p $RUN/server.fifo ]]; then printf '%s\n' "$req" >"$RUN/server.fifo"; else exec 8>&-; return 1; fi
@@ -240,9 +240,12 @@ hot_request() { # REQ -> 0 when answered (also cancelled by a dead server), 1 wh
     # its `mkdir owner` and writing `started`): never go cold then, that would be a second menu. Wait for `started` (or an
     # answer) as long as the server process lives; when it died without either, the request counts as cancelled.
     if mkdir "$req/owner" 2>/dev/null; then exec 8>&-; return 1; fi
+    # The pid is read ONCE, now: server.pid belongs to the server that holds the claim. Following the file would make a NEW server
+    # (a standby that took over after this one died before `started`) keep the wait alive for ever; the wait is bounded as well.
+    spid=$(cat "$RUN/server.pid" 2>/dev/null)
+    deadline=$((SECONDS + ${FZF_MENU_CLAIM_WAIT:-30}))
     while [[ ! -e $req/started && ! -e $req/rc ]]; do
-      spid=$(cat "$RUN/server.pid" 2>/dev/null)
-      if [[ -z $spid ]] || ! kill -0 "$spid" 2>/dev/null; then
+      if [[ -z $spid ]] || ! kill -0 "$spid" 2>/dev/null || ((SECONDS >= deadline)); then
         [[ -e $req/started || -e $req/rc ]] || echo 1 >"$req/rc"
         break
       fi
@@ -429,6 +432,7 @@ server_cleanup() {
   # after the files are gone (the standby that takes the lock makes its own), and also on SIGHUP: a copy of the descriptor in a
   # child must not keep server.lock
   flock -u 7 2>/dev/null
+  exec 5>&- 2>/dev/null   # the slot lock too: a server that lingers after its answer must not keep its slot
   return 0
 }
 
@@ -490,7 +494,9 @@ server_main() {
   fi
   server_cleanup
   trap - EXIT
-  [[ -n $req ]] && echo finished >"$req/done"
+  # O_RDWR on the fifo never blocks (a write-only open blocks for ever when the client already gave up and closed its end: it
+  # returns on seeing the `rc` file after a 0.5 s read timeout, which can fall between our `rc` and this line)
+  [[ -n $req ]] && { exec 4<>"$req/done" && echo finished >&4; exec 4>&-; } 2>/dev/null
   exit 0
 }
 
@@ -501,18 +507,22 @@ self_test() {
   have tmux || { echo "self-test: tmux is required"; return 2; }
   have fzf || { echo "self-test: fzf is required"; return 2; }
   [[ -r $LIB ]] || { echo "self-test: missing $LIB"; return 2; }
+  # poll the pane until it matches (a fixed sleep flaked under load): wait_pane PATTERN SECONDS
+  wait_pane() { local i; for ((i = 0; i < $2 * 20; i++)); do [[ $(tmux -L "$sock" capture-pane -p -t t 2>/dev/null) == *"$1"* ]] && return 0; sleep 0.05; done; return 1; }
   case_run() { # NAME EXPECT KEYS...  (keys: literal text with = prefix, otherwise tmux key names)
     local name=$1 want=$2 k
     shift 2
     tmux -L "$sock" kill-session -t t 2>/dev/null
     tmux -L "$sock" new-session -d -s t -x 100 -y 24 \
       "bash -c 'out=\$($SELF --here -p \"\${TEST_PROMPT:-test}\" < <(seq 30)); echo \"RES[\$out]\"; sleep 3'"
-    sleep 0.7
+    wait_pane '[I] test>' 5
     for k in "$@"; do
       if [[ $k == =* ]]; then tmux -L "$sock" send-keys -t t -l "${k#=}"; else tmux -L "$sock" send-keys -t t "$k"; fi
+      # an Escape from INSERT is only done when the tag says NORMAL (the next key must not arrive inside fzf's escape delay)
+      if [[ $k == Escape ]] && [[ $(tmux -L "$sock" capture-pane -p -t t) == *"[I] test>"* ]]; then wait_pane '[N] test>' 2; fi
       sleep 0.15
     done
-    sleep 0.5
+    wait_pane 'RES[' 3
     out=$(tmux -L "$sock" capture-pane -p -t t | grep -a 'RES\[' | head -1)
     if [[ $out == "RES[$want]" ]]; then printf 'ok    %s\n' "$name"; else printf 'FAIL  %s (got %s, want RES[%s])\n' "$name" "${out:-nothing}" "$want"; fails=$((fails + 1)); fi
   }

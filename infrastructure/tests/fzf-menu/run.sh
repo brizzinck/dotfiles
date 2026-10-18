@@ -65,7 +65,13 @@ open_menu() { # NAME [fzf-menu args...]
 }
 close_menu() { # keys... ; waits for the client, sets RC
   local k
-  for k in "$@"; do tmux -L "$S" send-keys -t "$MENU_WIN" "$k"; sleep 0.1; done
+  for k in "$@"; do
+    tmux -L "$S" send-keys -t "$MENU_WIN" "$k"
+    # an Escape from INSERT is finished when the tag says NORMAL: the next key must not arrive inside fzf's escape delay (a fixed
+    # 0.1 s pause flaked under load: the two Escapes were read as one sequence)
+    if [[ $k == Escape && $(screen_of "$MENU_WIN") == *"[I]"* ]]; then wait_for '[[ $(screen_of '"$MENU_WIN"') == *"[N]"* ]]' 60; fi
+    sleep 0.1
+  done
   wait "$CLIENT_PID"
   RC=$?
 }
@@ -307,7 +313,16 @@ claim_case() { # MODE slow|die: a fake server that wins `mkdir owner`, then stal
     exec 3<>"$RUN/server.fifo"
     read -r -u 3 rq
     mkdir "$rq/owner"
-    if [[ $mode == slow ]]; then
+    if [[ $mode == takeover ]]; then
+      # the claimant dies after the client lost the claim (0.5 s), and a DIFFERENT live process takes over server.pid (a standby
+      # that became the server): the old loop followed the file and waited for ever
+      sleep 1.2
+      kill "$SP"
+      sleep 600 & echo "$!" >"$RUN/server.pid"; echo "$!" >"$T/sp2.pid"
+      sleep 3
+    elif [[ $mode == stall ]]; then
+      sleep 4                                  # alive, never writes `started`: only the bound ends the wait
+    elif [[ $mode == slow ]]; then
       sleep 1.8
       echo "$BASHPID" >"$rq/started.tmp" && mv -f "$rq/started.tmp" "$rq/started"
       echo picked >"$rq/out"; echo 0 >"$rq/rc"; echo finished 1<>"$rq/done"   # O_RDWR: a plain write blocks on a fifo nobody reads
@@ -327,9 +342,41 @@ claim_case() { # MODE slow|die: a fake server that wins `mkdir owner`, then stal
 claim_case slow
 expect "5j: a slow server that owns the request is waited for: its answer comes back (old code: gave up after 1 s)" test "$RC" = 0 -a "$(cat "$T/m5j.out")" = picked
 expect "5j: ... and no cold menu was opened (old code: a second window)" test ! -s "$FT_DIR/term.log"
+FZF_MENU_CLAIM_WAIT=20 claim_case takeover
+expect "5j: the wait watches the pid read at the lost claim, not a new server.pid (old code: waits for ever)" test "$RC" = 1 -a ! -s "$T/m5j.out"
+expect "5j: ... no cold menu either" test ! -s "$FT_DIR/term.log"
+kill "$(cat "$T/sp2.pid")" 2>/dev/null
+FZF_MENU_CLAIM_WAIT=2 claim_case stall
+expect "5j: a server that stays alive but never starts is given up on after the bound (old code: waits for ever)" test "$RC" = 1 -a ! -s "$T/m5j.out"
 claim_case die
 expect "5j: a server that died holding the claim = cancelled (status 1, no output)" test "$RC" = 1 -a ! -s "$T/m5j.out"
 expect "5j: ... and no cold menu was opened (old code: the same request ran again cold)" test ! -s "$FT_DIR/term.log"
+
+# ── case 5k (FIX5 #2): the client already closed its end of the `done` fifo when the server reports `finished`: the server must still
+# exit (a write-only open of a fifo nobody reads blocks for ever: the server and its window stayed, holding the slot lock) ──
+echo "== case 5k: finished with no reader =="
+fresh
+"$FM" --server-start
+wait_for '[[ -p '"$RUN"'/server.fifo ]]' 100
+req=$(mktemp -d "$RUN/req.XXXXXX")
+seq 5 >"$req/in"
+printf '%s\n' 'declare -- PROMPT="t5k"' 'declare -- TITLE="t5k"' 'declare -- NORESTORE="1"' 'declare -- SIZE="normal"' 'declare -a FZF_ARGS=()' >"$req/cfg"
+env -0 >"$req/env"
+mkfifo "$req/done"
+exec 8<>"$req/done"
+printf '%s\n' "$req" >"$RUN/server.fifo"
+wait_for '[[ -e '"$req"'/started ]]' 100
+W5K=$(win_of "fzf-menu-server-a")
+wait_for '[[ $(screen_of '"$W5K"') == *"[I]"* ]]' 100
+exec 8>&-                                          # the client gave up (its 0.5 s read timed out) before the server said `finished`
+tmux -L "$S" send-keys -t "$W5K" Enter
+wait_for '[[ -e '"$req"'/rc ]]' 60
+SP5K=$(cat "$req/started")
+expect "5k: the answer was served (rc 0, row 1)" test "$(cat "$req/rc" 2>/dev/null)" = 0 -a "$(cat "$req/out" 2>/dev/null)" = 1
+wait_for '! kill -0 '"$SP5K"' 2>/dev/null' 60
+expect "5k: the server process exits although nobody reads the done fifo (old code: blocks in open for ever)" bash -c "! kill -0 $SP5K 2>/dev/null"
+kill "$SP5K" 2>/dev/null
+rm -rf "$req"
 fi
 
 # ── case 5g (LOW #10): a standby that meets the probe lock for a moment waits for it instead of exiting ──
