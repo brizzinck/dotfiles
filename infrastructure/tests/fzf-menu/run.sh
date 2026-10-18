@@ -4,11 +4,11 @@
 # the window (geometry only when it differs), --no-clear in window modes, Esc / Enter / toggle, and the modal self-test.
 # Fakes: hyprctl (canned JSON, logs every eval), the terminal (FZF_MENU_TERMINAL: starts the command in a window of a private tmux
 # server), fzf (case 4). The owner's Hyprland, menus and clipboard are never touched (XDG_RUNTIME_DIR is a scratch directory).
-#   run.sh [--quick]   --quick (doctor) = cases 1, 3, 4, 5a (dead serving window), 5e (window switcher) and 5g
+#   run.sh [--quick]   --quick (doctor) = cases 1, 3, 4, 5a (dead serving window), 5e (window switcher), 5g, 7a (hidden menu) and 8a (standby ordering)
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
-FM="$REPO/.local/bin/fzf-menu"
+FM="${FZF_MENU_UNDER_TEST:-$REPO/.local/bin/fzf-menu}"   # FZF_MENU_UNDER_TEST: run the suite against another copy (an older version)
 QUICK=0
 [[ ${1:-} == --quick ]] && QUICK=1
 for c in tmux fzf jq; do command -v "$c" >/dev/null || { echo "SKIP: tmux, fzf and jq are required"; exit 0; }; done
@@ -35,7 +35,7 @@ RUN="$T/xdg/fzf-menu"
 export FT_DIR="$T/ft" FT_SOCK="$S" XDG_RUNTIME_DIR="$T/xdg" XDG_CONFIG_HOME="$REPO/.config" HYPRLAND_INSTANCE_SIGNATURE=fake
 export FZF_MENU_TERMINAL="$HERE/bin/fake-term" FZF_MENU_SERVER_ADDR=0xserver TERM=xterm-256color
 export PATH="$HERE/bin:$PATH"
-reset_logs() { : >"$FT_DIR/term.log"; : >"$FT_DIR/hypr.log"; }
+reset_logs() { : >"$FT_DIR/term.log"; : >"$FT_DIR/hypr.log"; rm -f "$FT_DIR/shown" "$FT_DIR/hide" "$FT_DIR/map-hide.log" "$FT_DIR"/ws-menu-*; }
 reset_logs
 # a 1920x1200 monitor at scale 1; the server window already has the normal menu size (60% x 65%) on it
 echo '[{"id":0,"name":"eDP-1","focused":true,"width":1920,"height":1200,"scale":1.0}]' >"$FT_DIR/monitors.json"
@@ -82,25 +82,26 @@ echo "== case 1: hot request on slot a =="
 wait_for '[[ -p '"$RUN"'/server.fifo && -r '"$RUN"'/server.pid ]]' 100
 expect "server a is up (fifo, pid, slot file)" test "$(active_slot)" = a
 PID_A=$(cat "$RUN/server.pid")
+A_AT_START=$(count_term fzf-menu-server-a)
 open_menu m1
 close_menu Enter
 expect "request 1: chosen row is printed, status 0" test "$RC" = 0 -a "$(cat "$T/m1.out")" = 1
 expect "request 1 was hot" grep -q 'hot=1' "$T/m1.trace"
+[[ -n ${FT_TRACE:-} ]] && echo "TRACE $(tr '\n' ' ' <"$T/m1.trace")"   # latency numbers: t0 -> server_got / shown / list_start (ms)
 expect "request 1: exactly one toggle_special(menu-a), none for menu-b" test "$(count_log 'toggle_special("menu-a")')" = 1 -a "$(count_log 'toggle_special("menu-b")')" = 0
 expect "request 1: no resize / no_anim when the window already has the target size" test "$(count_log 'resize')" = 0 -a "$(count_log 'no_anim')" = 0
 expect "the slot a server is gone after its one request" bash -c '! kill -0 '"$PID_A"' 2>/dev/null'
-expect "standby of slot b was started" wait_for '[[ $(count_term fzf-menu-server-b) -ge 1 ]]' 60
+expect "standby of slot b was started (by the parked server a, before any menu)" wait_for '[[ $(count_term fzf-menu-server-b) -ge 1 ]]' 60
 
 # ── case 2: request 2 is served by b, which then starts a standby a ──
 if ((!QUICK)); then
   echo "== case 2: second request on slot b =="
   wait_for '[[ $(active_slot) = b && -r '"$RUN"'/server.pid ]]' 100
   echo '[{"address":"0xserver","size":[1152,780],"monitor":0,"pid":1,"class":"float.tui","workspace":{"id":-99,"name":"special:menu-b"}}]' >"$FT_DIR/clients.json"
-  A_BEFORE=$(count_term fzf-menu-server-a)
   open_menu m2
   close_menu Enter
   expect "request 2 was hot and served by slot b" bash -c 'grep -q hot=1 "$1/m2.trace" && [[ $2 = 1 ]]' _ "$T" "$(count_log 'toggle_special("menu-b")')"
-  expect "request 2: standby of slot a was started again" wait_for '[[ $(count_term fzf-menu-server-a) -gt '"$A_BEFORE"' ]]' 60
+  expect "request 2: standby of slot a was started again (when b became the active server)" wait_for '[[ $(count_term fzf-menu-server-a) -gt '"$A_AT_START"' ]]' 60
 fi
 
 # ── case 3: --size large resizes + centres inside one eval with no_anim around it ──
@@ -410,6 +411,217 @@ close_menu Enter
 export FZF_MENU_SERVER_ADDR=0xserver
 expect "5h: toggle_special still happens" test "$(count_log 'toggle_special("menu-a")')" = 1
 expect "5h: no dispatcher with an empty address (old code: set_prop / resize / center on \"address:\")" test "$(count_log 'address:"')" = 0
+fi
+
+# ── case 7 (FIX-MENU2): a menu that is open but hidden (another window took the focus, Hyprland hid its special workspace) ──
+# fake hyprctl: `$FT_DIR/hide` present = no monitor shows the menu window; fake-events.py = the Hyprland event socket (socket2)
+hide_menu() { echo "${1:-99}" >"$FT_DIR/hide"; }
+show_menu() { rm -f "$FT_DIR/hide"; }
+ev() { echo "$1" >"$T/ev.fifo"; }
+start_events() { # the event socket of the fake instance (wait_conn: a watcher connected)
+  rm -f "$T/ev.fifo" "$T/ev.conn"; mkfifo "$T/ev.fifo"; : >"$T/ev.conn"; EVSEEN=0
+  "$HERE/bin/fake-events.py" "$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock" "$T/ev.fifo" "$T/ev.conn" &
+  EVPID=$!
+  wait_for '[[ -S '"$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE"'/.socket2.sock ]]' 60
+}
+stop_events() { [[ -n ${EVPID:-} ]] && kill "$EVPID" 2>/dev/null; wait "$EVPID" 2>/dev/null; EVPID=""; rm -rf "$XDG_RUNTIME_DIR/hypr"; }
+wait_conn() { wait_for '[[ $(wc -l <"'"$T"'/ev.conn") -gt ${EVSEEN:-0} ]]' 60; EVSEEN=$(wc -l <"$T/ev.conn"); }   # a NEW watcher connected to the event socket
+
+echo "== case 7a: a second call while the open menu is hidden cancels it and opens a new one =="
+fresh
+show_menu
+export FZF_MENU_HIDE_MS=60000                      # the watcher stays out of this case: only the toggle rule is tested
+"$FM" --server-start
+wait_for '[[ -p '"$RUN"'/server.fifo ]]' 100
+open_menu h1
+OLD=$CLIENT_PID
+expect "7a: the first menu is open and visible" test -n "$MENU_WIN"
+wait_for 'standby_held' 100                        # the standby of slot b (250 ms after the menu opened) takes the new request
+hide_menu
+"$FM" -p h2 < <(seq 3) >"$T/h2.out" 2>"$T/h2.trace" &
+NEW=$!
+CLIENT_PID=$OLD
+wait_client 6
+expect "7a: the hidden menu's caller got 1 and no output" test "$RC" = 1 -a ! -s "$T/h1.out"
+show_menu
+wait_for '[[ -n $(win_of fzf-menu-server-b) ]]' 100
+W7=$(win_of fzf-menu-server-b)
+wait_for '[[ $(screen_of '"$W7"') == *"[I]"* ]]' 100
+expect "7a: the new menu opened (window of the standby shows the list)" test "$(screen_of "$W7" | grep -c '\[I\]')" -ge 1
+tmux -L "$S" send-keys -t "$W7" Enter
+CLIENT_PID=$NEW
+wait_client 6
+expect "7a: the new call is answered normally (status 0, row 1)" test "$RC" = 0 -a "$(cat "$T/h2.out")" = 1
+unset FZF_MENU_HIDE_MS
+
+if ((!QUICK)); then
+echo "== case 7b: a visible menu is still closed by the second call =="
+fresh
+show_menu
+export FZF_MENU_HIDE_MS=60000
+"$FM" --server-start
+wait_for '[[ -p '"$RUN"'/server.fifo ]]' 100
+open_menu h3
+TERMS_BEFORE=$(grep -c . "$FT_DIR/term.log")
+"$FM" -p h3b < <(seq 2) >"$T/h3b.out" 2>&1
+RC2=$?
+CLIENT_PID=$CLIENT_PID wait_client 6
+expect "7b: the second call exits 1 at once, the first caller got 1" test "$RC2" = 1 -a "$RC" = 1
+expect "7b: ... and no new menu terminal was opened" test "$(grep -c . "$FT_DIR/term.log")" -le "$((TERMS_BEFORE + 1))"
+unset FZF_MENU_HIDE_MS
+
+echo "== case 7c: hidden for more than FZF_MENU_HIDE_MS cancels the menu (events) =="
+fresh
+show_menu
+export FZF_MENU_HIDE_MS=1000
+start_events
+"$FM" --server-start
+wait_for '[[ -p '"$RUN"'/server.fifo ]]' 100
+open_menu h4
+wait_conn
+expect "7c: the watcher listens on the event socket" test -s "$T/ev.conn"
+T0=$(date +%s%N)
+hide_menu
+ev 'activespecialv2>>,,eDP-1'
+wait_client 5
+EL=$((($(date +%s%N) - T0) / 1000000))
+expect "7c: cancelled (status 1, no output) after about a second (${EL} ms)" test "$RC" = 1 -a ! -s "$T/h4.out" -a "$EL" -ge 900 -a "$EL" -lt 4000
+show_menu
+
+echo "== case 7d: a short hide is kept =="
+fresh
+show_menu
+"$FM" --server-start
+wait_for '[[ -p '"$RUN"'/server.fifo ]]' 100
+open_menu h5
+wait_conn
+hide_menu
+ev 'activespecialv2>>,,eDP-1'
+sleep 0.4
+show_menu
+ev 'activespecialv2>>menu-a,special:menu-a,eDP-1'
+sleep 2
+expect "7d: still open after the flicker (old code and a too eager watcher: cancelled)" kill -0 "$CLIENT_PID"
+tmux -L "$S" send-keys -t "$MENU_WIN" Enter
+wait_client 6
+expect "7d: ... and answered normally" test "$RC" = 0 -a "$(cat "$T/h5.out")" = 1
+
+echo "== case 7e: a menu whose window has the focus is not cancelled =="
+fresh
+show_menu
+# hyprctl prints hex addresses (the focus check reads one with a hex pattern): this case has a real-looking one
+export FZF_MENU_SERVER_ADDR=0xa5e1
+echo '[{"address":"0xa5e1","size":[1152,780],"monitor":0,"pid":1,"class":"float.tui","workspace":{"id":-98,"name":"special:menu-a"}}]' >"$FT_DIR/clients.json"
+"$FM" --server-start
+wait_for '[[ -p '"$RUN"'/server.fifo ]]' 100
+open_menu h6
+wait_conn
+printf '{\n    "address": "0xa5e1",\n    "class": "float.tui"\n}\n' >"$FT_DIR/activewindow.json"   # hyprctl prints it indented
+hide_menu
+ev 'activewindowv2>>a5e1'
+sleep 2.2
+expect "7e: still open" kill -0 "$CLIENT_PID"
+echo '{"address":"0xprev","class":"x","title":"x"}' >"$FT_DIR/activewindow.json"
+show_menu
+tmux -L "$S" send-keys -t "$MENU_WIN" Escape Escape
+wait_client 6
+stop_events
+export FZF_MENU_SERVER_ADDR=0xserver
+echo '[{"address":"0xserver","size":[1152,780],"monitor":0,"pid":1,"class":"float.tui","workspace":{"id":-98,"name":"special:menu-a"}}]' >"$FT_DIR/clients.json"
+
+echo "== case 7f: no event socket = polling every 500 ms =="
+fresh
+show_menu
+"$FM" --server-start
+wait_for '[[ -p '"$RUN"'/server.fifo ]]' 100
+open_menu h7
+sleep 0.3
+hide_menu
+wait_client 6
+expect "7f: cancelled by polling (status 1)" test "$RC" = 1 -a ! -s "$T/h7.out"
+show_menu
+unset FZF_MENU_HIDE_MS
+
+echo "== case 7g: cold menu on a regular workspace: visible = toggle, hidden = cancelled and replaced =="
+fresh
+show_menu
+export FZF_MENU_NO_SERVER=1
+echo '[{"address":"0xserver","size":[1152,780],"monitor":0,"pid":1,"class":"float.tui","workspace":{"id":3,"name":"3"}}]' >"$FT_DIR/clients.json"
+"$FM" --cold -p c7 < <(seq 3) >"$T/c7.out" 2>&1 &
+CLIENT_PID=$!
+wait_for '[[ -n $(win_of "menu: c7") ]]' 100
+MENU_WIN=$(win_of "menu: c7")
+wait_for '[[ $(screen_of '"$MENU_WIN"') == *"[I]"* ]]' 100
+"$FM" --cold -p c7b < <(seq 2) >/dev/null 2>&1
+RC2=$?
+wait_client 6
+expect "7g: visible cold menu: the second call closes it (both status 1, no second window)" test "$RC2" = 1 -a "$RC" = 1 -a -z "$(win_of "menu: c7b")"
+"$FM" --cold -p c8 < <(seq 3) >"$T/c8.out" 2>&1 &
+CLIENT_PID=$!
+wait_for '[[ -n $(win_of "menu: c8") ]]' 100
+MENU_WIN=$(win_of "menu: c8")
+wait_for '[[ $(screen_of '"$MENU_WIN"') == *"[I]"* ]]' 100
+hide_menu 99
+OLD=$CLIENT_PID
+"$FM" --cold -p c9 < <(seq 3) >"$T/c9.out" 2>&1 &
+NEW=$!
+CLIENT_PID=$OLD
+wait_client 6
+expect "7g: hidden cold menu: cancelled (status 1)" test "$RC" = 1 -a ! -s "$T/c8.out"
+show_menu
+wait_for '[[ -n $(win_of "menu: c9") ]]' 100
+W9=$(win_of "menu: c9")
+wait_for '[[ $(screen_of '"$W9"') == *"[I]"* ]]' 100
+tmux -L "$S" send-keys -t "$W9" Enter
+CLIENT_PID=$NEW
+wait_client 6
+expect "7g: ... and the new menu opened and was answered" test "$RC" = 0 -a "$(cat "$T/c9.out")" = 1
+unset FZF_MENU_NO_SERVER
+echo '[{"address":"0xserver","size":[1152,780],"monitor":0,"pid":1,"class":"float.tui","workspace":{"id":-98,"name":"special:menu-a"}}]' >"$FT_DIR/clients.json"
+fi
+
+# ── case 8 (FIX-MENU2, the live bug): a standby is never mapped while a menu is shown ──
+# Hyprland hides the special workspace a monitor shows when a window is mapped on a special workspace that does not exist yet.
+# The fake models it (fake-term: map-hide.log + $FT_DIR/hide). The old code started the standby 250 ms after a menu opened: every
+# hot menu vanished half a second later (waybar right click on the volume icon).
+echo "== case 8a: no standby window appears while a menu is shown =="
+fresh
+show_menu
+unset FZF_MENU_HIDE_MS
+"$FM" --server-start
+wait_for '[[ -p '"$RUN"'/server.fifo ]]' 100
+wait_for 'standby_held' 100                        # b is parked before the first menu
+open_menu m8a
+N_BEFORE=$(grep -c . "$FT_DIR/term.log")
+sleep 1.3                                          # the old 250 ms standby spawn, and some time for a late one
+expect "8a: no terminal was started while the menu is shown" test "$(grep -c . "$FT_DIR/term.log")" = "$N_BEFORE"
+expect "8a: the shown menu was not hidden (old code: the standby mapped on a new special workspace)" test ! -e "$FT_DIR/hide" -a ! -s "$FT_DIR/map-hide.log"
+expect "8a: ... and its caller still waits" kill -0 "$CLIENT_PID"
+close_menu Enter
+expect "8a: answered normally (status 0, row 1)" test "$RC" = 0 -a "$(cat "$T/m8a.out")" = 1
+
+if ((!QUICK)); then
+echo "== case 8b: a menu right after another one waits for the standby that is still on its way =="
+fresh
+show_menu
+export FT_MAP_DELAY=0.3                            # a terminal needs 0.3 s until its window is mapped
+"$FM" --server-start
+wait_for '[[ -p '"$RUN"'/server.fifo ]]' 100
+wait_for 'standby_held' 100
+open_menu m8b1
+close_menu Enter
+# b took over and started the standby a' (its window maps 0.3 s later): the next menu is requested at once
+wait_for '[[ $(active_slot) = b && -r '"$RUN"'/server.pid ]]' 100
+echo '[{"address":"0xserver","size":[1152,780],"monitor":0,"pid":1,"class":"float.tui","workspace":{"id":-99,"name":"special:menu-b"}}]' >"$FT_DIR/clients.json"
+open_menu m8b2
+sleep 1.2
+expect "8b: the second menu was shown without being hidden by the late standby (old code / no wait: hidden)" test ! -e "$FT_DIR/hide" -a ! -s "$FT_DIR/map-hide.log"
+expect "8b: ... it is on screen and waits" kill -0 "$CLIENT_PID"
+expect "8b: ... and the standby a' did get its window (it is parked, ready for the third menu)" test "$(count_term fzf-menu-server-a)" -ge 2
+close_menu Enter
+expect "8b: answered normally" test "$RC" = 0 -a "$(cat "$T/m8b2.out")" = 1
+unset FT_MAP_DELAY
+echo '[{"address":"0xserver","size":[1152,780],"monitor":0,"pid":1,"class":"float.tui","workspace":{"id":-98,"name":"special:menu-a"}}]' >"$FT_DIR/clients.json"
 fi
 
 # ── case 6: the modal self-test ──

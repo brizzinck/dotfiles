@@ -32,15 +32,18 @@
 # Subcommands:
 #   --server [a|b]           hold a hidden menu terminal (special workspace "menu-a" / "menu-b") that answers ONE request at once
 #                            and then exits: the window closes like any window (the hub closes the same way, no jerk), and a
-#                            standby terminal of the other slot, started 250 ms after a menu opened, takes the next request
-#                            (~40 ms instead of a 0.4 s cold ghostty)
+#                            standby terminal of the other slot, started as soon as a server is parked and idle (NEVER while
+#                            a menu is shown: mapping a window on a new special workspace hides the shown one), takes the
+#                            next request (~40 ms instead of a 0.4 s cold ghostty)
 #                            A request is claimed with an atomic `mkdir req/owner` and `req/started` holds the serving pid, which the
 #                            client watches (a closed menu window ends the call as cancelled); one terminal per slot (slot-a.lock)
 #   --server-start           start the server unless one runs or waits (Hyprland autostart)
 #   --self-test              headless check of the modal (private tmux server), exit 0 = every case passed
 #   --cold                   force the cold path for this call (latency comparison)
 #
-# Toggle: calling it again while a menu is open closes that menu (the second press of a bind).
+# Toggle: calling it again while a menu is open and VISIBLE closes that menu (the second press of a bind). A menu that is open but
+# hidden (another window took the focus and Hyprland hid its special workspace) is stale: the new call cancels it (status 1 for
+# its caller) and opens its own menu. A server menu whose window stays hidden for FZF_MENU_HIDE_MS (1000) cancels itself.
 # State and requests live in $XDG_RUNTIME_DIR/fzf-menu (mode 700).
 set -u
 
@@ -161,7 +164,7 @@ write_request() {
 
 # serve_request DIR: runs in the terminal that shows the list
 serve_request() {
-  local req=$1 rc=0 kv
+  local req=$1 rc=0 kv mwin wpid lrc owner
   [[ -d $req && -r $req/cfg ]] || die "bad request $req"
   (
     # fzf and every execute / preview child it starts inherit the open descriptors: the fifo (3), the slot lock (5), the standby and
@@ -169,6 +172,17 @@ serve_request() {
     # keep any of them (it would hold server.lock for ever: the standby never gets its turn and every later menu goes cold)
     exec 3>&- 5>&- 6>&- 7>&- 8>&- 9>&-
     echo "$BASHPID" >"$RUN/active.pid"
+    # the window of this menu: the toggle rule and the hidden-menu watcher need to know whether it is on screen
+    mwin=${MENU_ADDR-}
+    if [[ $SERVER_MODE != 1 ]] && in_hypr; then mwin=$(server_window); fi
+    printf '%s\n' "$mwin" >"$RUN/active.win"
+    wpid=""
+    if [[ $SERVER_MODE == 1 && -n $mwin ]] && in_hypr; then
+      # before the caller's environment is imported below: the watcher uses the server's own runtime dir and Hyprland instance
+      owner=$BASHPID
+      (watch_menu "$mwin" "$owner") >/dev/null 2>&1 </dev/null &
+      wpid=$!
+    fi
     # the caller's environment (CLIP_*, preview helpers, ...) without the terminal identity of the caller
     while IFS= read -r -d '' kv; do
       case ${kv%%=*} in
@@ -181,15 +195,20 @@ serve_request() {
     . "$req/cfg"
     printf '\033]2;%s\007' "$TITLE"
     # a cold window opens at the float.tui rule size; a server window was already sized by server_show
-    if [[ $SERVER_MODE != 1 && $SIZE != normal ]] && in_hypr; then geometry_apply "$(server_window)" "$SIZE"; fi
+    if [[ $SERVER_MODE != 1 && $SIZE != normal ]] && in_hypr; then geometry_apply "$mwin" "$SIZE"; fi
     [[ -n ${FZF_MENU_TRACE:-} ]] && echo "list_start $(now_ms)" >>"$req/trace"
     run_list "$req/in" "$req/out"
+    lrc=$?
+    [[ -n $wpid ]] && kill "$wpid" 2>/dev/null
+    exit "$lrc"
   ) || rc=$?
+  rm -f "$RUN/active.win" "$RUN/active.pid"
   # no terminal reset here: the window closes right after, and fzf --no-clear left the menu itself as the last frame
   echo "$rc" >"$req/rc"
 }
 
 SERVER_MODE=0
+MENU_ADDR=""   # the server's own window (set by server_main before it serves)
 
 server_alive() {
   local pid
@@ -219,6 +238,77 @@ close_active_menu() {
   local p
   p=$(active_menu_pid)
   [[ -n $p ]] && kill -0 "$p" 2>/dev/null && pkill -TERM -P "$p" -x fzf 2>/dev/null
+}
+
+# Is the window of the open menu on screen? Prints visible | hidden | unknown. A special-workspace window counts as visible while a
+# monitor shows that special workspace, a regular one while its workspace is the active one of a monitor. unknown (no address yet,
+# no Hyprland, an unreadable answer) is treated as visible by the callers: the old behaviour, never a wrong cancel.
+menu_state() { # ADDR
+  local c m
+  [[ -n ${1:-} ]] && in_hypr || { echo unknown; return 0; }
+  c=$(hyprctl -j clients 2>/dev/null) && m=$(hyprctl -j monitors 2>/dev/null) || { echo unknown; return 0; }
+  jq -rn --arg a "$1" --argjson c "$c" --argjson m "$m" '
+    ([$c[] | select(.address == $a)][0]) as $w
+    | if $w == null then "hidden"
+      else ($w.workspace) as $ws
+        | (if ($ws.name | startswith("special:")) then any($m[]; .specialWorkspace.name == $ws.name)
+           else any($m[]; .activeWorkspace.id == $ws.id) end)
+        | if . then "visible" else "hidden" end end' 2>/dev/null || echo unknown
+}
+
+# is the menu in flight stale (open, but its window is not on screen)?
+active_menu_hidden() {
+  local p w
+  p=$(active_menu_pid)
+  [[ -n $p ]] && kill -0 "$p" 2>/dev/null || return 1
+  w=$(cat "$RUN/active.win" 2>/dev/null)
+  [[ $(menu_state "$w") == hidden ]]
+}
+
+# watch_menu ADDR OWNER_PID: runs next to a server menu. When the window of the menu stays hidden for FZF_MENU_HIDE_MS (1000)
+# (another window took the focus and Hyprland hid the special workspace) the menu is cancelled like an Esc, so the caller does not
+# wait for ever for a menu nobody sees. Event driven (socket2: activespecial / activewindow / ... wake a check; a 5 s read timeout is
+# the safety net), 500 ms polling without socat or the socket. A short hide (a flicker) is kept; a menu whose window has the focus
+# is never cancelled.
+watch_menu() {
+  local addr=$1 owner=$2 line rc t0 ev=0 spid="" sock hide_ms=${FZF_MENU_HIDE_MS:-1000}
+  [[ $hide_ms =~ ^[0-9]{1,6}$ ]] || hide_ms=1000
+  hide_ms=$((10#$hide_ms))
+  trap 'exit 0' TERM INT HUP
+  trap '[[ -n $spid ]] && kill "$spid" 2>/dev/null' EXIT
+  sock="${XDG_RUNTIME_DIR:-/tmp}/hypr/${HYPRLAND_INSTANCE_SIGNATURE:-none}/.socket2.sock"
+  if have socat && [[ -S $sock ]]; then
+    exec 4< <(exec socat -u "UNIX-CONNECT:$sock" - 2>/dev/null)
+    spid=$!
+    ev=1
+  fi
+  while kill -0 "$owner" 2>/dev/null; do
+    if ((ev)); then
+      if read -r -t 5 -u 4 line; then
+        case ${line%%>>*} in
+          activespecial* | activewindow* | workspace* | closewindow | openwindow | movewindow* | focusedmon* | monitor*) ;;
+          *) continue ;;
+        esac
+      else
+        rc=$?
+        ((rc > 128)) || ev=0       # end of the stream: poll from now on
+      fi
+    else
+      sleep 0.5
+    fi
+    [[ $(menu_state "$addr") == hidden ]] || continue
+    t0=$(now_ms)
+    while kill -0 "$owner" 2>/dev/null; do
+      sleep 0.1
+      [[ $(menu_state "$addr") == hidden ]] || break
+      if (($(now_ms) - t0 >= hide_ms)); then
+        [[ $(active_addr) == "$addr" ]] && break   # the menu window itself has the focus
+        pkill -TERM -P "$owner" -x fzf 2>/dev/null
+        exit 0
+      fi
+    done
+  done
+  exit 0
 }
 
 # A one-shot server claims a request with an atomic `mkdir $req/owner` and then writes its OWN pid into `$req/started`. The client
@@ -288,9 +378,15 @@ menu_gui() {
   t0=$(now_ms)
   mkdir -p "$RUN" && chmod 700 "$RUN"
   have "$TERMINAL" || die "$TERMINAL not found (use --here)"
-  # toggle: a second call closes the menu that is open
+  # toggle: a second call closes the menu that is open and visible
   exec 9>"$RUN/menu.lock"
-  if ! flock -n 9; then close_active_menu; cat >/dev/null; exit 1; fi
+  if ! flock -n 9; then
+    # a visible menu is closed (the second press of a bind); one that is open but hidden is stale: cancel it (its caller gets 1)
+    # and open this call's menu once the old caller released the lock
+    if ! active_menu_hidden; then close_active_menu; cat >/dev/null; exit 1; fi
+    close_active_menu
+    flock -w 5 9 || { cat >/dev/null; exit 1; }
+  fi
   prev=$(active_addr)
   [[ -n $prev ]] && printf '%s\n' "$prev" >"$RUN/prev-window"
   # requests of crashed callers older than an hour
@@ -335,6 +431,25 @@ spawn_slot() {
   # the lock descriptors of the caller must not leak into the new terminal (the active server's lock would never be released)
   env -u TMUX -u TMUX_PANE setsid -f "$TERMINAL" --class=float.tui --title="$SERVER_TITLE-$slot" -e "$SELF" --server "$slot" \
     3>&- 5>&- 6>&- 7>&- 8>&- 9>&- >/dev/null 2>&1 </dev/null
+}
+
+# the in-flight mark of a standby: its time in ms, written before the terminal is started, removed by that terminal once its window
+# is mapped and parked (an older mark than 1.5 s is a standby that never came: ignored)
+spawn_standby() { # SLOT
+  standby_waiting && return 0
+  now_ms >"$RUN/standby.spawning"
+  spawn_slot "$1"
+}
+
+# wait (at most 0.6 s) while a standby is on its way: its window mapping would hide the menu this server is about to show
+wait_standby_spawn() {
+  local i t
+  for ((i = 0; i < 60; i++)); do
+    t=$(cat "$RUN/standby.spawning" 2>/dev/null) || return 0
+    [[ $t =~ ^[0-9]+$ ]] || return 0
+    (($(now_ms) - t > 1500)) && return 0
+    sleep 0.01
+  done
 }
 
 # start the first hidden terminal: only when no server is running and none waits (a lock keeps two callers from starting two)
@@ -440,8 +555,11 @@ server_cleanup() {
 
 # One-shot server terminal of a slot (a or b): waits hidden, serves exactly ONE request, then exits. The window therefore
 # closes like any window (the hub does the same): Hyprland fades the last frame (the menu itself, fzf --no-clear) and closes
-# the empty special workspace by itself (misc:close_special_on_empty). 250 ms after a menu opened a standby of the other slot
-# is started, so the next menu is hot again.
+# the empty special workspace by itself (misc:close_special_on_empty). Ordering rule (FIX-MENU2): Hyprland hides the special
+# workspace that a monitor shows when a window is mapped on a special workspace that does not exist yet (the standby's own one,
+# destroyed while empty), so a standby is started by a server that has just become active and idle, never while a menu is shown
+# (it used to start 250 ms after a menu opened: every hot menu vanished half a second later), and a server about to show a menu
+# first waits (bounded) for a standby that is still on its way to be parked (`standby.spawning`).
 server_main() {
   local slot=${1:-a} req="" addr ws i
   case $slot in a | b) ;; *) slot=a ;; esac
@@ -459,7 +577,11 @@ server_main() {
   # the window lookup (hyprctl clients + jq, slow under load) is done now, while this terminal only waits: once it is the active
   # server a client finds the fifo and `started` comes at once
   addr=$(server_window)
+  # a fresh terminal can be asked before its window is mapped: wait for it here (still hidden and idle), so the window really
+  # exists, on its special workspace, when the in-flight mark is cleared
+  for ((i = 0; i < 30 && ${#addr} == 0; i++)); do sleep 0.05; addr=$(server_window); done
   park_window "$addr"
+  rm -f "$RUN/standby.spawning"
   exec 7>"$RUN/server.lock"
   flock 7
   flock -u 6
@@ -477,6 +599,8 @@ server_main() {
     park_window "$addr"
   fi
   clear
+  # the standby of the other slot: now, while nothing of ours is shown (see above); a standby that already waits is left alone
+  spawn_standby "$(other_slot "$slot")"
   # a request is ours only when the atomic claim works (a client that gave up took it first: skip, wait for the next one)
   while read -r -u 3 req; do
     [[ $req == "$RUN"/req.* && -d $req ]] && mkdir "$req/owner" 2>/dev/null && break
@@ -485,9 +609,9 @@ server_main() {
   if [[ -n $req ]]; then
     echo $$ >"$req/started.tmp" && mv -f "$req/started.tmp" "$req/started"   # our pid: the client watches it
     [[ -n ${FZF_MENU_TRACE:-} || -e $req/trace ]] && echo "server_got $(now_ms)" >>"$req/trace"
-    # the standby of the other slot, detached (the window and this shell are gone by then)
-    setsid -f "$SELF" --spawn-standby "$(other_slot "$slot")" 3>&- 5>&- 6>&- 7>&- 8>&- 9>&- >/dev/null 2>&1 </dev/null
+    wait_standby_spawn
     # the size of THIS request (the cfg is bash `declare` output; only its SIZE line is read here)
+    MENU_ADDR=$addr
     SIZE=$(sed -n 's/^declare -- SIZE="\(.*\)"$/\1/p' "$req/cfg")
     [[ $SIZE == large ]] || SIZE=normal
     server_show "$addr"

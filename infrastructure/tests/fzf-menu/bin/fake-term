@@ -9,10 +9,23 @@ while (($#)); do
   esac
   shift
 done
+# Hyprland model: a hidden server window sits on its special workspace "menu-SLOT", which exists only while a window is on it. Mapping
+# a window on a special workspace that does not exist yet hides the special workspace a monitor shows ($FT_DIR/shown, set by the
+# fake hyprctl on toggle_special): $FT_DIR/hide then makes the fake monitors report nothing shown, and map-hide.log gets a line.
+# FT_MAP_DELAY = seconds a terminal needs before its window is mapped (a real ghostty takes 0.3 to 0.5 s).
+slot=""
+[[ $title == fzf-menu-server-[ab] ]] && slot=${title#fzf-menu-server-}
+if [[ -n $slot ]]; then
+  [[ -n ${FT_MAP_DELAY:-} ]] && sleep "$FT_MAP_DELAY"
+  if [[ ! -e $FT_DIR/ws-menu-$slot ]]; then
+    : >"$FT_DIR/ws-menu-$slot"
+    if [[ -e $FT_DIR/shown ]]; then : >"$FT_DIR/hide"; echo "menu-$slot mapped while $(cat "$FT_DIR/shown") is shown" >>"$FT_DIR/map-hide.log"; fi
+  fi
+fi
 done_f=$(mktemp -u "$FT_DIR/done.XXXXXX")
 cmd=$(printf '%q ' "$@")
 envs=()
-for n in XDG_RUNTIME_DIR XDG_CONFIG_HOME PATH HOME HYPRLAND_INSTANCE_SIGNATURE FZF_MENU_TERMINAL FZF_MENU_SERVER_ADDR FZF_MENU_TRACE FZF_MENU_NO_SERVER FT_DIR FT_SOCK TERM; do
+for n in XDG_RUNTIME_DIR XDG_CONFIG_HOME PATH HOME HYPRLAND_INSTANCE_SIGNATURE FZF_MENU_TERMINAL FZF_MENU_SERVER_ADDR FZF_MENU_TRACE FZF_MENU_NO_SERVER FZF_MENU_HIDE_MS FT_DIR FT_SOCK TERM; do
   [[ -v $n ]] && envs+=(-e "$n=${!n}")
 done
 id=$(tmux -L "$FT_SOCK" new-window -d -P -F '#{window_id}' "${envs[@]}" -n "$title" "$cmd; touch $done_f") || exit 1
@@ -23,4 +36,8 @@ for ((i = 0; i < 1200; i++)); do
   tmux -L "$FT_SOCK" display-message -p -t "$id" '' >/dev/null 2>&1 || break
   sleep 0.05
 done
+if [[ -n $slot ]]; then   # the window is gone: its special workspace is destroyed; a menu shown there is gone too
+  rm -f "$FT_DIR/ws-menu-$slot"
+  [[ $(cat "$FT_DIR/shown" 2>/dev/null) == "menu-$slot" ]] && rm -f "$FT_DIR/shown" "$FT_DIR/hide"
+fi
 exit 0

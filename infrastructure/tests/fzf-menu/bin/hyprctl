@@ -3,9 +3,25 @@
 log() { printf '%s\n' "$*" >>"$FT_DIR/hypr.log"; }
 case "$*" in
   "-j clients" | "clients -j") cat "$FT_DIR/clients.json" ;;
-  "-j monitors" | "monitors -j") cat "$FT_DIR/monitors.json" ;;
+  "-j monitors" | "monitors -j")
+    # what a monitor shows: the special workspace / regular workspace of the 0xserver window (the menu is on screen), or nothing
+    # while $FT_DIR/hide exists (another window took the focus and Hyprland hid the menu); $FT_DIR/hide holds a regular workspace
+    # id (default 99) to show on the monitor then
+    if [[ -e $FT_DIR/hide ]]; then
+      jq --argjson id "$(cat "$FT_DIR/hide" 2>/dev/null | grep -E '^[0-9]+$' || echo 99)" \
+        '.[0].specialWorkspace = {id: 0, name: ""} | .[0].activeWorkspace = {id: $id, name: ($id | tostring)}' "$FT_DIR/monitors.json"
+    else
+      jq --slurpfile c "$FT_DIR/clients.json" \
+        '($c[0][0].workspace // {id: 1, name: "1"}) as $w
+         | if ($w.name | startswith("special:")) then .[0].specialWorkspace = $w | .[0].activeWorkspace = {id: 1, name: "1"}
+           else .[0].specialWorkspace = {id: 0, name: ""} | .[0].activeWorkspace = $w end' "$FT_DIR/monitors.json"
+    fi ;;
   "activewindow -j" | "-j activewindow") cat "$FT_DIR/activewindow.json" ;;
-  eval\ *) log "EVAL ${*#eval }"; echo ok ;;
+  eval\ *)
+    log "EVAL ${*#eval }"
+    # toggle_special("menu-X") shows that special workspace (an earlier hide is over; map-hide.log in fake-term)
+    if [[ $* =~ toggle_special\(\"(menu-[ab])\"\) ]]; then rm -f "$FT_DIR/hide"; echo "${BASH_REMATCH[1]}" >"$FT_DIR/shown"; fi
+    echo ok ;;
   dispatch\ *) log "DISPATCH ${*#dispatch }"; echo ok ;;
   *) log "OTHER $*" ;;
 esac
