@@ -752,11 +752,24 @@ def _own_file_problem(path):
         st = os.stat(path)
     except OSError as e:
         return f"cannot read {path}: {e.strerror}"
-    if st.st_uid != os.getuid():
+    if st.st_uid != os.getuid() and not _published_file(path, st):
         return f"{path} is not owned by you"
     if st.st_mode & 0o022:
         return f"{path} is writable by group or others (chmod go-w)"
     return None
+
+
+def _published_file(path, st):
+    """A managed user's global.toml is a link into the owner's published checkout (/srv/dotfiles): the file belongs to whoever owns
+    that checkout, which is also where this very script and every launcher run from, so trusting it adds nothing. Never for the
+    owner's own checkout (its files are the owner's, the first rule) or for anything that resolves outside the published tree."""
+    try:
+        if REPO == HOME or str(REPO).startswith(str(HOME) + os.sep):
+            return False
+        rp, root = os.path.realpath(path), os.path.realpath(REPO)
+        return rp.startswith(root + os.sep) and st.st_uid == os.stat(root).st_uid and not (os.stat(root).st_mode & 0o022)
+    except OSError:
+        return False
 
 
 def merge_global(gtext, ltext):

@@ -500,6 +500,57 @@ while IFS='|' read -r label res; do
   [ "$res" = ok ] && ok || bad "$label: $res"
 done <<<"$out"
 case "$out" in *"py tool inside the tree|ok"*) ;; *) bad "devtools.py harness did not run: $out" ;; esac
+# a managed user's global.toml is a link into the published tree: accepted as the owner's file (not "owned by you"), other
+# foreign files and a group-writable published file still refused; the owner's own checkout keeps the plain owner rule
+mkdir -p "$T/pub/.local/bin" "$T/pub/.config/envs" "$T/h99/.config/envs"
+cp "$REPO/.local/bin/envs" "$T/pub/.local/bin/envs"; chmod 755 "$T/pub" "$T/pub/.local" "$T/pub/.local/bin" "$T/pub/.config" "$T/pub/.config/envs"
+printf 'project = "global"\n' >"$T/pub/.config/envs/global.toml"; chmod 644 "$T/pub/.config/envs/global.toml"
+ln -sfn "$T/pub/.config/envs/global.toml" "$T/h99/.config/envs/global.toml"
+printf 'project = "global"\n' >"$T/foreign.toml"; chmod 644 "$T/foreign.toml"
+out="$(python3 -I -B - "$T/pub/.local/bin/envs" "$T" <<'PY' 2>&1
+import importlib.machinery, importlib.util, os, sys
+loader = importlib.machinery.SourceFileLoader("envs_pub", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("envs_pub", loader)); loader.exec_module(m)
+T = sys.argv[2]
+os.getuid = lambda: 99999          # the caller is a managed user: neither file belongs to uid 99999
+def r(label, got, want):
+    print(f"{label}|{'ok' if got == want else f'FAIL got {got!r} want {want!r}'}")
+r("envs: link into the published tree is accepted", m._own_file_problem(f"{T}/h99/.config/envs/global.toml"), None)
+r("envs: a foreign file outside the published tree is refused", m._own_file_problem(f"{T}/foreign.toml") is not None, True)
+os.chmod(f"{T}/pub/.config/envs/global.toml", 0o664)
+r("envs: a group-writable published file is refused", "writable by group" in (m._own_file_problem(f"{T}/h99/.config/envs/global.toml") or ""), True)
+os.chmod(f"{T}/pub/.config/envs/global.toml", 0o644)
+os.chmod(f"{T}/pub", 0o775)
+r("envs: a group-writable published root is not trusted", m._own_file_problem(f"{T}/h99/.config/envs/global.toml") is not None, True)
+PY
+)"
+while IFS='|' read -r label res; do
+  [ -n "$label" ] || continue
+  [ "$res" = ok ] && ok || bad "$label: $res"
+done <<<"$out"
+case "$out" in *"link into the published tree is accepted|ok"*) ;; *) bad "envs published-file harness did not run: $out" ;; esac
+# the launchers' runtime directory without a logind session (usr exec / sudo): a private /dev/shm directory, never a planted one
+fb="/dev/shm/devtools-run-$(id -u)"
+if [ ! -e "$fb" ] && [ -d /dev/shm ] && [ -w /dev/shm ]; then
+  out="$(XDG_RUNTIME_DIR="$T/no-runtime" python3 -I -B - "$REPO/.config/devtools" "$fb" <<'PY' 2>&1
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import devtools as D
+fb = sys.argv[2]
+print("rb", D.runtime_base() == __import__("pathlib").Path(fb), oct(os.stat(fb).st_mode & 0o777))
+os.chmod(fb, 0o755)
+try:
+    D.runtime_base(); print("loose ACCEPTED")
+except D.DevError as e:
+    print("loose refused")
+PY
+)"
+  rmdir "$fb" 2>/dev/null
+  expect "devtools: no /run/user/UID = a private /dev/shm directory, a loose one is refused" "rb True 0o700
+loose refused" "$out"
+else
+  printf 'skip  devtools runtime fallback test: %s exists or /dev/shm is not writable\n' "$fb"
+fi
 # the hints of a missing tool name the owner step for a managed account
 grep -q 'managed_account' "$REPO/.config/devtools/devtools.py" && ok || bad "devtools.py has no managed_account()"
 

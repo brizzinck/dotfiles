@@ -169,7 +169,21 @@ REPO_PKG_HINT = ("the owner installs the package: sudo ~/dotfiles/apply-system.s
 
 
 def runtime_base():
-    return Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+    """The user's runtime directory (tmpfs). Without one (a managed user reached by `usr exec` / sudo has no logind session, hence
+    no /run/user/UID) a private directory of our own in /dev/shm: created 0700, and refused when it is a link, not ours or not
+    0700 (that sticky directory is writable by everybody, so the name could have been planted)."""
+    p = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+    if p.is_dir():
+        return p
+    fb = Path(f"/dev/shm/devtools-run-{os.getuid()}")
+    try:
+        fb.mkdir(mode=0o700, exist_ok=True)
+        st = os.lstat(fb)
+    except OSError as e:
+        fail(f"no runtime directory ({p} is missing) and {fb} cannot be made: {e.strerror}", 1)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or (st.st_mode & 0o077):
+        fail(f"{fb} exists but is not a private directory of yours: remove it", 1)
+    return fb
 
 
 def run_root():
