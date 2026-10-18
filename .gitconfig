@@ -45,7 +45,7 @@
 	verbose = true
 [difftool "difftastic"]
 	# structural diff (difftastic); delta stays the pager. git dft / git dlog / git dshow
-	cmd = difft "$LOCAL" "$REMOTE"
+	cmd = difft \"$LOCAL\" \"$REMOTE\"
 [difftool]
 	prompt = false
 [alias]
