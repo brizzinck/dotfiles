@@ -1,0 +1,9 @@
+# vault-share scopes (generic rows). Rendered by `sudo ./apply-system.sh --only users` into /etc/vault-share/scopes.tsv together with
+# the owner's ~/.config/vault-share/scopes.local.tsv (0600, not in the repo: the per-company folder rows live there).
+# Format: user<TAB>rule. User `*` = every interactive managed user (infrastructure/users/managed.tsv), `{user}` = that user's name.
+# Rule `P/**` = folder P and everything below it; `P/NAME` = one item (folder P, name NAME); exact, case-sensitive, NFC.
+# TOTP seeds and SSH private keys are never served unless the item has the custom field `vault-share: totp` / `ssh`.
+# `Linux/<user>` is deliberately in no scope: the Linux passwords stay the owner's (SUPER+CTRL+U types them from his session).
+# Grammar and checks: .config/hypr/scripts/vault-share.py --help; `vault-share.py check-scopes FILE`.
+*	Shared/**
+*	Users/{user}/**

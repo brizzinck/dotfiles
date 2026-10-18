@@ -25,6 +25,7 @@ SENT=('PW-mail-1' 'PW-acme-new' 'PW-acme-old' 'PW-shop-1' 'PW-shop-guest' 'PW-px
   'JBSWY3DPEHPK3PXP' 'SSHPRIVATE-vo' '4111111111111111' 'CVV-secret-737' 'alice-mail' 'bob-acme' 'carol-shop' 'dave-px' 'erin-totp'
   'master-pw' 'SESSION-KEY-abc')
 cleanup() {
+  tmux_cleanup 2>/dev/null
   stop_bw
   [[ -n ${SAMPLER:-} ]] && kill "$SAMPLER" 2>/dev/null
   if ((KEEP)); then echo "kept: $ROOT"; else rm -rf "$ROOT"; fi
@@ -32,14 +33,14 @@ cleanup() {
 trap cleanup EXIT
 
 cat >"$ROOT/env.sh" <<ENV
-export FAKE_DIR='$FAKE' XDG_RUNTIME_DIR='$RUN' XDG_STATE_HOME='$ROOT/state' XDG_DATA_HOME='$ROOT/data' XDG_CONFIG_HOME='$ROOT/conf' XDG_CACHE_HOME='$ROOT/cache'
-export PATH='$VB':/usr/bin:/bin
+export FAKE_DIR='$FAKE' XDG_RUNTIME_DIR='$RUN' XDG_STATE_HOME='$ROOT/state' XDG_DATA_HOME='$ROOT/data' XDG_CACHE_HOME='$ROOT/cache'
+export PATH='$VB':'$REPO/.local/bin':/usr/bin:/bin
 export RBW_BIN=rbw BW_BIN=bw PINENTRY_BIN='$VB/pinentry' VAULT_RBW_CONF='$FAKE/rbw.json'
 export VAULT_BW_LAUNCH=popen VAULT_BW_SERVE_POLL=0.3 VAULT_BW_RBW_POLL=0.3 VAULT_BW_NODUMP=0
-export ENVS_TOOL_PATH='$VB' ENVS_TEST_ROOT_PID=$$ VAULT_ORG_USERS=skalse,td,yc FZF_MENU_NO_SERVER=1 HOME='$ROOT/home'
+export ENVS_TOOL_PATH='$VB' ENVS_TEST_ROOT_PID=$$ VAULT_ORG_USERS=skalse,td,yc FZF_MENU_NO_SERVER=1 VAULT_ORG_CONF='$ROOT/conf' VAULT_ORG_SCOPES=/nonexistent/scopes.tsv
 unset WAYLAND_DISPLAY DISPLAY CLAUDECODE TMUX TMUX_PANE
 ENV
-mkdir -p "$FAKE" "$ROOT/home" "$ROOT/state" "$ROOT/data" "$ROOT/conf" "$ROOT/cache"
+mkdir -p "$FAKE" "$ROOT/state" "$ROOT/data" "$ROOT/conf/vault-org" "$ROOT/conf/vault-share" "$ROOT/cache"
 echo '{"email":"test@example.com"}' >"$FAKE/rbw.json"
 # shellcheck disable=SC1091
 . "$ROOT/env.sh"
@@ -133,7 +134,133 @@ section1() {
   check "1.8 usage error is exit 2" bash -c 'A() { python3 -I -B "$1/vault-org.py" "${@:2}"; }; A "$1" audit --bogus >/dev/null 2>&1; [ $? = 2 ]' _ "$SCRIPTS"
 }
 
+
+# ───────────── 2: plan, validation, reviewer ─────────────
+PLANF() { echo "$ROOT/state/vault/org-plan.tsv"; }
+META() { echo "$ROOT/state/vault/org-plan.meta.json"; }
+fresh_plan() { # unlocked fixture, audit + plan with the example rules and a td overlay
+  reset unlocked
+  cp "$REPO/infrastructure/vault-org/rules.example.tsv" "$ROOT/conf/vault-org/rules.tsv"
+  chmod 600 "$ROOT/conf/vault-org/rules.tsv"
+  printf 'td\tWork/Acme/**\nyc\tWork/Globex/**\n' >"$ROOT/conf/vault-share/scopes.local.tsv"
+  chmod 600 "$ROOT/conf/vault-share/scopes.local.tsv"
+  A audit >/dev/null 2>&1
+  A plan >"$ROOT/plan-out.txt" 2>&1
+}
+norm_plan() { sed '1s/audit=[^ ]* items=\([0-9]*\) generated=.*/audit=AUDIT items=\1 generated=GEN/' "$1"; }
+plan_row() { awk -F'\t' -v id="$1" '$1==id || ($1=="@folder" && $2==id)' "$(PLANF)"; }
+plan_target() { plan_row "$1" | awk -F'\t' '{ print ($1=="@folder") ? $4 : $4 }'; }
+variant() { # NAME sed-expression: the golden plan with one edit becomes the plan file
+  norm_plan "$HERE/plan.golden.tsv" | sed '1s/AUDIT/'"$(jq -r .created "$(AJ)")"'/; 1s/GEN/2026-10-18T00:00:00Z/' | sed "$2" >"$(PLANF)"
+}
+bad_plan() { A check >"$ROOT/chk.txt" 2>&1; local rc=$?; [[ $rc == 4 ]]; }
+
+section2() {
+  local rc
+  fresh_plan
+  check "2.3 plan is 600 and matches the golden file (example rules)" bash -c '
+    [ "$(stat -c %a "$1")" = 600 ] && [ "$(sed "1s/audit=[^ ]* items=\([0-9]*\) generated=.*/audit=AUDIT items=\1 generated=GEN/" "$1")" = "$(cat "$2")" ]' _ "$(PLANF)" "$HERE/plan.golden.tsv"
+  check "2.3 plan summary: moves, trash, deletes and the scope impact per user (counts only)" bash -c '
+    grep -q "6 moves, 4 duplicates to the trash, 0 folder renames, 3 empty folders deleted" "$1" && grep -qE "td: [0-9]+ -> [0-9]+ items in scope" "$1" && grep -qE "yc: " "$1"' _ "$ROOT/plan-out.txt"
+  check "2.3 the td overlay shows: Acme items move into td's scope (0 -> 2)" grep -q "td: 0 -> 2" "$ROOT/plan-out.txt"
+  A check >/dev/null 2>&1; check "2.3 check accepts the generated plan" test $? = 0
+  A plan --rules "$ROOT/conf/vault-org/rules.tsv" >/dev/null 2>&1; rc=$?
+  check "2.3 a second plan over a clean plan is allowed (nothing was edited)" test $rc = 0
+  A plan >/dev/null 2>&1; echo "x" >>"$(PLANF)"
+  A plan >/dev/null 2>"$ROOT/p2.txt"; rc=$?
+  check "2.3 plan refuses to overwrite manual edits, --force keeps a .bak" bash -c '[ "$1" = 4 ]' _ "$rc"
+  A plan --force >/dev/null 2>&1
+  check "2.3 --force replaced it and kept the old one as .bak" bash -c '[ -f "$1.bak" ] && tail -1 "$1.bak" | grep -q "^x$" && ! grep -q "^x$" "$1"' _ "$(PLANF)"
+  A plan --force --rules "$ROOT/none.tsv" >"$ROOT/p3.txt" 2>&1
+  check "2.3 no rules file: every proposal stays (only duplicates and empty folders change)" bash -c 'grep -q "no rules file" "$1" && ! grep -q "folder:" "$2"' _ "$ROOT/p3.txt" "$(PLANF)"
+  # validation
+  fresh_plan
+  variant a 's/^i-20\t\(.*\)\tfolder:Home\t/i-20\t\1\tfolder:Ho*me\t/'; bad_plan
+  check "2.4 a * in a target folder is refused (exit 4)" grep -q "Ho\*me" "$ROOT/chk.txt"
+  variant b 's/trash-duplicate-of:i-01/trash-duplicate-of:i-99/'; bad_plan
+  check "2.4 a duplicate of an unknown id is refused" grep -q "i-99 is not in the plan" "$ROOT/chk.txt"
+  variant c 's/^\(i-01\t[^\t]*\t[^\t]*\t\)folder:Mail/\1trash-duplicate-of:i-02/'; bad_plan
+  check "2.4 a cycle / chain (i-01 -> i-02 -> i-01) is refused" grep -q "no chains or cycles" "$ROOT/chk.txt"
+  variant d 's/^\(i-12\t[^\t]*\t[^\t]*\t\)keep/\1folder:Personal/'; bad_plan
+  check "2.4 moving the Linux item out of its tool folder is refused" grep -q "i-12: moves between a tool folder" "$ROOT/chk.txt"
+  variant d2 's/^\(@folder\tf-linux\tLinux\t\)keep/\1rename:Linux2/'; bad_plan
+  check "2.4 renaming Linux is refused (Linux/td stays)" grep -q "folder f-linux: a tool folder is never renamed" "$ROOT/chk.txt"
+  A check --allow-tool-folders >/dev/null 2>&1; check "2.4 --allow-tool-folders lifts the tool-folder guard" test $? = 0
+  variant e 's/^\(@folder\tf-old\tOld Stuff\t\)keep/\1rename:Mail/'; bad_plan
+  check "2.4 renaming onto an existing folder is refused (move the items instead)" grep -q "exists already" "$ROOT/chk.txt"
+  variant f 's/^\(i-10\t[^\t]*\t[^\t]*\t\)folder:Design/\1trash-duplicate-of:i-11/'; bad_plan
+  check "2.4 a duplicate pair outside one audit group needs the manual flag" grep -q "not in the same audit group" "$ROOT/chk.txt"
+  variant f2 's/^\(i-10\t[^\t]*\t[^\t]*\t\)folder:Design\t\([^\t]*\)\t.*/\1trash-duplicate-of:i-11\t\2\tmanual/'; A check >/dev/null 2>&1
+  check "2.4 ...and passes with the manual flag" test $? = 0
+  variant g 's/^i-08\tShop guest/i-08\tShop\tguest/'; bad_plan
+  check "2.4 a tab inside a name breaks the row (6 columns) and is refused" grep -q "6 columns" "$ROOT/chk.txt"
+  variant h '1s/v1/v2/'; bad_plan
+  check "2.4 a wrong header version is refused" grep -q "plan version" "$ROOT/chk.txt"
+  variant i 's/^\(i-13\t[^\t]*\t[^\t]*\t\)keep/\1trash-duplicate-of:i-12/'; bad_plan
+  check "2.4 an item of a tool folder is never trashed" grep -q "tool folder are never trashed" "$ROOT/chk.txt"
+  check "2.6 sentinels: not in the plan, the meta file, the preview or the check output" no_sentinel "$(PLANF)" "$(META)" "$ROOT/plan-out.txt" "$ROOT/chk.txt"
+  fresh_plan
+  check "2.6 the preview shows metadata and the scope, no value" bash -c '
+    out=$(python3 -I -B "$1" _preview i-04 2>&1); grep -q "portal.acme-corp.test" <<<"$out" && grep -q "shared with: td" <<<"$out" && grep -q "group g2" <<<"$out"' _ "$SCRIPTS/vault-org.py"
+  python3 -I -B "$SCRIPTS/vault-org.py" _preview i-04 >"$ROOT/prev.txt" 2>&1
+  check "2.6 preview has no sentinel" no_sentinel "$ROOT/prev.txt"
+  check "2.6 the argv log of plan/check has no sentinel and no write request" bash -c '! grep -qE "^bw-serve (POST|PUT|DELETE)" "$1"' _ "$FAKE/argv.log"
+  ((QUICK)) || section2_tmux
+}
+
+# the reviewer in a private tmux server (the real fzf-menu --here, the display unset)
+SOCKT="vorg-$$"
+T=(tmux -L "$SOCKT")
+tmux_cleanup() { "${T[@]}" kill-server 2>/dev/null; rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SOCKT"; }
+screen() { local out s; out=$("${T[@]}" capture-pane -p -J -t t 2>/dev/null)
+  for s in "${SENT[@]}"; do grep -aqF -- "$s" <<<"$out" && echo "$s" >>"$ROOT/leaks.log"; done; printf '%s\n' "$out"; }
+screen_has() { screen | grep -aqE -- "$1"; }
+wait_for() { local i max=$(( ${2:-8} * 5 )); for ((i = 0; i < max; i++)); do screen_has "$1" && return 0; sleep 0.2; done; return 1; }
+k() { local x; for x in "$@"; do "${T[@]}" send-keys -t t "$x"; sleep 0.2; done; }
+lit() { "${T[@]}" send-keys -t t -l "$1"; sleep 0.2; }
+wait_target() { # ID VALUE [seconds]: the plan row's target reaches VALUE
+  local i; for ((i = 0; i < ${3:-10} * 5; i++)); do [[ $(plan_target "$1") == "$2" ]] && return 0; sleep 0.2; done; return 1; }
+
+section2_tmux() {
+  fresh_plan
+  rm -f "$ROOT/leaks.log"
+  "${T[@]}" new-session -d -s t -x 160 -y 40 "bash --noprofile --norc -c '. $ROOT/env.sh; python3 -I -B $SCRIPTS/vault-org.py review; echo EXIT[\$?]; sleep 30'"
+  check "2.5 the reviewer opens: header with counts and the keys" wait_for 'Reorganise.*filter all' 15
+  check "2.5 rows show the mark, name, folder, target and the td scope column" wait_for 'Acme Portal +Work +→ Work/Acme +\[td\]' 4
+  # f: folder picker. Query filters, Esc = NORMAL, f opens the picker, type Mail, Enter
+  lit "Wi-Fi"; k Escape; k f
+  check "2.5 f opens the folder picker" wait_for 'folder>' 8
+  lit "Home"; k Enter
+  check "2.5 f then Home then Enter: the plan row is folder:Home" wait_target i-20 "folder:Home" 6
+  lit "Wi-Fi"; k Escape; k f; wait_for 'folder>' 8; lit "Mail"; k Enter
+  check "2.5 f picks another folder: Mail" wait_target i-20 "folder:Mail" 6
+  check "2.5 the plan file stays 600 after each step" test "$(mode_of "$(PLANF)")" = 600
+  # the ua/ru twin of n (keep) is the same physical key: Cyrillic т
+  lit "Wi-Fi"; k Escape; lit "т"
+  check "2.5 the ua/ru twin of n sets keep" wait_target i-20 keep 6
+  # n then D: i-03 keep, then D on i-01 trashes the others again
+  lit "Old Stuff"; k Escape; k n
+  check "2.5 n on i-03 sets keep" wait_target i-03 keep 6
+  lit "Example"; k Escape; k D
+  check "2.5 D on i-01 trashes the other members of its group" wait_target i-03 "trash-duplicate-of:i-01" 6
+  # u undo restores i-03 to keep
+  k Escape; k u
+  check "2.5 u undoes the D" wait_target i-03 keep 6
+  # t filter
+  k Escape; k t
+  check "2.5 t cycles the filter (changes)" wait_for 'filter changes' 6
+  # Enter marks reviewed
+  k Enter; sleep 0.6
+  check "2.5 Enter marks the row reviewed (meta file)" bash -c '[ "$(jq ".reviewed|length" "$1")" -ge 1 ]' _ "$(META)"
+  check "2.5 the plan file is still valid after the session" bash -c 'A() { python3 -I -B "$1" "${@:2}"; }; A "$2" check >/dev/null 2>&1' _ "$SCRIPTS/vault-org.py" "$SCRIPTS/vault-org.py"
+  k Escape; k Escape; k q
+  check "2.5 the reviewer ends with exit 0" wait_for 'EXIT\[0\]' 8
+  check "2.6 no sentinel on any reviewer screen" test ! -s "$ROOT/leaks.log"
+  tmux_cleanup
+}
+
 want 1 && section1
+want 2 && section2
 
 echo
 echo "passed $PASS, failed $FAILS"

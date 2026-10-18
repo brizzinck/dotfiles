@@ -24,10 +24,14 @@ import hashlib
 import hmac
 import importlib.machinery
 import importlib.util
+import fnmatch
 import json
 import os
 import re
 import secrets
+import shlex
+import shutil
+import subprocess
 import sys
 import unicodedata
 import urllib.parse
@@ -43,8 +47,6 @@ STATE = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") /
 PLAN = STATE / "org-plan.tsv"
 JOURNAL = STATE / "org-journal.tsv"
 BACKUPS = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "vault-backups"
-CONF = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "vault-org"
-RULES = CONF / "rules.tsv"
 BW_TYPE = {1: "login", 2: "note", 3: "card", 4: "identity", 5: "ssh"}
 SHARE_FIELD = "vault-share"
 TOOL_FOLDER_RE = re.compile(r"^(?:(?:Env|Linux|MCP)|(?:Users/[^/]+|Shared)/Env)(?:/|$)")
@@ -474,9 +476,758 @@ def report(doc, hidden=False):
     return "\n".join(out)
 
 
+# ───────────────────────────── scopes (display only) ─────────────────────────────
+
+CONF_ROOT = Path(os.environ.get("VAULT_ORG_CONF") or Path.home() / ".config")   # holds vault-org/ and vault-share/ (test hook)
+
+
+def vs():
+    return load("vault_share", HERE / "vault-share.py")
+
+
+def interactive_users():
+    """Interactive managed users from the registry (infrastructure/users/managed.tsv; a service row is none)."""
+    out = []
+    try:
+        for line in (REPO / "infrastructure/users/managed.tsv").read_text().splitlines():
+            if line.strip() and not line.startswith("#"):
+                c = line.split("\t")
+                if len(c) >= 3 and "service" not in c[2].split(","):
+                    out.append(c[0])
+    except OSError:
+        pass
+    return out
+
+
+def scope_rules():
+    """-> (rules {user: [rule]}, planned). The installed /etc/vault-share/scopes.tsv when it exists; else what apply-system
+    would render from the repo file and the owner's overlay (planned = True)."""
+    v = vs()
+    etc = Path(os.environ.get("VAULT_ORG_SCOPES") or "/etc/vault-share/scopes.tsv")
+    try:
+        rules, _ = v.parse_rules(etc.read_text())
+        return rules, False
+    except OSError:
+        pass
+    try:
+        import pwd
+        owner = pwd.getpwuid(os.getuid()).pw_name
+    except Exception:
+        owner = "owner"
+    local = CONF_ROOT / "vault-share" / "scopes.local.tsv"
+    local_text = ""
+    ok, _why = v.trusted_local_file(local, os.getuid())
+    if ok:
+        local_text = local.read_text()
+    try:
+        repo_text = (REPO / "infrastructure/vault-share/scopes.tsv").read_text()
+    except OSError:
+        repo_text = ""
+    text, _w, _p = v.render_scopes(repo_text, local_text, interactive_users(), owner)
+    rules, _ = v.parse_rules(text)
+    return rules, True
+
+
+def scope_users(rules, folder, name):
+    v = vs()
+    return [u for u in sorted(rules) if v.in_scope(rules[u], folder, name)]
+
+
+# ───────────────────────────── plan: file format ─────────────────────────────
+
+class Row:
+    __slots__ = ("kind", "id", "name", "current", "target", "rev", "note")
+
+    def __init__(self, kind, id, name, current, target, rev="-", note=""):
+        self.kind, self.id, self.name, self.current, self.target, self.rev, self.note = \
+            kind, id, clean(name), current, target, rev or "-", clean(note)
+
+    def line(self):
+        if self.kind == "folder":
+            return "\t".join(["@folder", self.id, self.name, self.target, self.rev, self.note])
+        return "\t".join([self.id, self.name, self.current or "-", self.target, self.rev, self.note])
+
+    def copy(self):
+        return Row(self.kind, self.id, self.name, self.current, self.target, self.rev, self.note)
+
+
+def format_plan(header, rows):
+    out = [f"# vault-org plan v1 audit={header['audit']} items={header['items']} generated={header['generated']}",
+           "# id\tname\tcurrent\ttarget\trevision\tnote"]
+    out += [r.line() for r in rows]
+    return "\n".join(out) + "\n"
+
+
+def parse_plan(text):
+    """-> (header, rows, problems)."""
+    header, rows, problems = {}, [], []
+    lines = text.splitlines()
+    m = re.match(r"^# vault-org plan v(\d+) audit=(\S*) items=(\d+) generated=(\S+)$", lines[0]) if lines else None
+    if not m:
+        return header, rows, ["the first line is not a 'vault-org plan v1' header"]
+    header = {"version": int(m.group(1)), "audit": m.group(2), "items": int(m.group(3)), "generated": m.group(4)}
+    for n, line in enumerate(lines[1:], 2):
+        if not line.strip() or line.startswith("#"):
+            continue
+        c = line.split("\t")
+        if c[0] == "@folder":
+            if len(c) != 6:
+                problems.append(f"line {n}: a folder row has 6 columns")
+                continue
+            rows.append(Row("folder", c[1], c[2], None, c[3], c[4], c[5]))
+        else:
+            if len(c) != 6:
+                problems.append(f"line {n}: an item row has 6 columns (a tab in a name or note?)")
+                continue
+            rows.append(Row("item", c[0], c[1], None if c[2] == "-" else c[2], c[3], c[4], c[5]))
+    return header, rows, problems
+
+
+def tool_root(folder):
+    """The tool folder tree a folder belongs to (Env, Linux, MCP, Users/x/Env, Shared/Env), or None."""
+    m = TOOL_FOLDER_RE.match(folder or "")
+    if not m:
+        return None
+    mm = re.match(r"^(Env|Linux|MCP|(?:Users/[^/]+|Shared)/Env)(?:/|$)", folder)
+    return mm.group(1)
+
+
+def folder_problem(name):
+    if len(name) > 512:
+        return "longer than 512 characters"
+    if any(ord(c) < 32 or ord(c) == 127 for c in name) or "\t" in name:
+        return "control character"
+    if "*" in name:
+        return "a * is not allowed"
+    return vs().valid_path(unicodedata.normalize("NFC", name))
+
+
+def validate_plan(header, rows, audit=None, allow_tool=False):
+    problems = []
+    if header.get("version") != 1:
+        problems.append("plan version is not 1")
+    if not header.get("audit"):
+        problems.append("the header has no audit id")
+    seen, by = set(), {}
+    for r in rows:
+        key = (r.kind, r.id)
+        if key in seen:
+            problems.append(f"{r.id}: listed twice")
+        seen.add(key)
+        by[(r.kind, r.id)] = r
+    items = {r.id: r for r in rows if r.kind == "item"}
+    folder_names = {r.id: r.name for r in rows if r.kind == "folder"}
+    groups = {}
+    if audit:
+        for g in audit.get("groups", []):
+            for i in g["members"]:
+                groups[i] = g["id"]
+    renames = {}
+    for r in rows:
+        t = r.target
+        if r.kind == "item":
+            if t == "keep":
+                continue
+            if t.startswith("folder:"):
+                bad = folder_problem(t[7:])
+                if bad:
+                    problems.append(f"{r.id}: target folder {t[7:]!r}: {bad}")
+                    continue
+                if not allow_tool and (tool_root(r.current) or tool_root(t[7:])) and tool_root(r.current) != tool_root(t[7:]):
+                    problems.append(f"{r.id}: moves between a tool folder (Linux, MCP, Env/*) and another folder are refused "
+                                    "(--allow-tool-folders)")
+            elif t.startswith("trash-duplicate-of:"):
+                k = t.split(":", 1)[1]
+                if not allow_tool and tool_root(r.current):
+                    problems.append(f"{r.id}: items in a tool folder are never trashed (--allow-tool-folders)")
+                if k not in items:
+                    problems.append(f"{r.id}: the keep {k} is not in the plan")
+                    continue
+                if k == r.id:
+                    problems.append(f"{r.id}: duplicate of itself")
+                elif items[k].target.startswith("trash-duplicate-of:"):
+                    problems.append(f"{r.id}: the keep {k} is itself trashed (no chains or cycles)")
+                elif audit and not (groups.get(r.id) and groups.get(r.id) == groups.get(k)) and "manual" not in r.note.split():
+                    problems.append(f"{r.id}: {k} is not in the same audit group (pick it in the reviewer: it is then marked manual)")
+            else:
+                problems.append(f"{r.id}: unknown item target {t!r}")
+        else:
+            if t == "keep":
+                continue
+            if tool_root(r.name) and not allow_tool:
+                problems.append(f"folder {r.id}: a tool folder is never renamed or deleted (--allow-tool-folders)")
+                continue
+            if t == "delete-if-empty":
+                continue
+            if t.startswith("rename:"):
+                bad = folder_problem(t[7:])
+                if bad:
+                    problems.append(f"folder {r.id}: new name {t[7:]!r}: {bad}")
+                    continue
+                if t[7:] in {n for i, n in folder_names.items() if i != r.id}:
+                    problems.append(f"folder {r.id}: {t[7:]!r} exists already: move the items instead")
+                if t[7:] in renames:
+                    problems.append(f"folder {r.id}: {t[7:]!r} is the new name of another folder too")
+                renames[t[7:]] = r.id
+            else:
+                problems.append(f"folder {r.id}: unknown folder target {t!r}")
+    return problems
+
+
+# ───────────────────────────── plan: rules and proposals ─────────────────────────────
+
+def load_rules(path):
+    """-> (rules [(kind, pattern, target)], note). A missing file is no rules."""
+    p = Path(path)
+    if not p.exists():
+        return [], f"no rules file ({p}): every proposal stays where it is (format: infrastructure/vault-org/rules.example.tsv)"
+    rules = []
+    for n, line in enumerate(p.read_text().splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        c = line.split("\t")
+        if len(c) != 3 or c[0] not in ("host", "name", "folder", "type"):
+            raise Fail(f"{p} line {n}: expected kind<TAB>pattern<TAB>folder with kind host|name|folder|type", 4)
+        bad = folder_problem(c[2])
+        if bad:
+            raise Fail(f"{p} line {n}: target folder: {bad}", 4)
+        rules.append((c[0], c[1], c[2]))
+    return rules, ""
+
+
+def rule_target(rules, meta):
+    for kind, pat, target in rules:
+        if kind == "host" and any(fnmatch.fnmatchcase(h, pat.lower()) for h in meta["hosts"]):
+            return target, f"rule host {pat}"
+        if kind == "name" and fnmatch.fnmatchcase(meta["name"].casefold(), pat.casefold()):
+            return target, f"rule name {pat}"
+        if kind == "folder" and meta["folder"] and fnmatch.fnmatchcase(meta["folder"], pat):
+            return target, f"rule folder {pat}"
+        if kind == "type" and meta["type"] == pat:
+            return target, f"rule type {pat}"
+    return None, ""
+
+
+def propose(audit, rules):
+    """The generated plan rows from an audit document and the rules."""
+    metas = {i["id"]: i for i in audit["items"]}
+    folders = {f["id"]: f for f in audit["folders"]}
+    in_group = {}
+    for g in audit["groups"]:
+        for i in g["members"]:
+            in_group[i] = g
+    # near-duplicate folders: the items of the smaller one go to the larger one, the smaller one is deleted when empty
+    merge_to, folder_note = {}, {}
+    for ids in audit["findings"]["near_dup_folder"]:
+        ranked = sorted(ids, key=lambda i: (-folders[i]["items"], folders[i]["name"].casefold(), i))
+        major = ranked[0]
+        for i in ranked[1:]:
+            merge_to[folders[i]["name"]] = folders[major]["name"]
+            folder_note[i] = f"near-duplicate of {folders[major]['name']!r}"
+    rows = []
+    for m in audit["items"]:
+        target, note = "keep", ""
+        g = in_group.get(m["id"])
+        tool = tool_root(m["folder"])
+        if tool:
+            note = "tool folder"
+        elif g and m["id"] != g["keep"] and g["rel"].get(m["id"]) in ("identical", "subset"):
+            target = f"trash-duplicate-of:{g['keep']}"
+            note = f"{g['id']} {g['class']}" + ("" if g["class"] == "identical" else f": {g['rel'][m['id']]}")
+        else:
+            if g and m["id"] != g["keep"]:
+                rel = g["rel"].get(m["id"], "")
+                kinds = rel.split(":", 1)[1].replace(",", " and ") + " differs" if rel.startswith("differs:") else rel
+                note = f"{g['id']} {g['class']}: {kinds}" + (", older revision" if m["revision"] < metas[g["keep"]]["revision"] else "")
+                if g["class"] == "no-user":
+                    note += ", no username"
+            elif g:
+                note = f"{g['id']} {g['class']}: keep"
+            dest, why = rule_target(rules, m)
+            if dest is None and m["folder"] in merge_to:
+                dest, why = merge_to[m["folder"]], "merge near-duplicate folder"
+            if dest and dest != m["folder"]:
+                target = f"folder:{dest}"
+                note = (note + "; " if note else "") + why
+        rows.append(Row("item", m["id"], m["name"], m["folder"], target, m["revision"], note))
+    empty = set(audit["findings"]["empty_folder"])
+    for f in audit["folders"]:
+        target, note = "keep", folder_note.get(f["id"], "")
+        if tool_root(f["name"]):
+            note = "tool folder"
+        elif f["id"] in empty:
+            target, note = "delete-if-empty", "empty"
+        elif f["id"] in folder_note:
+            target = "delete-if-empty"
+        rows.append(Row("folder", f["id"], f["name"], None, target, "-", note))
+    return rows
+
+
+# ───────────────────────────── plan: files and commands ─────────────────────────────
+
+META = STATE / "org-plan.meta.json"
+
+
+def load_audit(m):
+    try:
+        return json.loads(audit_path(m).read_text())
+    except (OSError, ValueError):
+        raise Fail("no audit yet: run vault-audit first (it is removed on lock and at login)", 1)
+
+
+def sha(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def read_meta():
+    try:
+        return json.loads(META.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def write_meta(meta):
+    atomic_write(META, json.dumps(meta, indent=1, sort_keys=True) + "\n")
+
+
+def load_plan(path=PLAN):
+    try:
+        text = Path(path).read_text()
+    except OSError:
+        raise Fail(f"no plan yet: run vault-audit plan ({path})", 1)
+    header, rows, problems = parse_plan(text)
+    if problems:
+        raise Fail("the plan is invalid:\n  " + "\n  ".join(problems), 4)
+    return header, rows
+
+
+def save_plan(header, rows, path=PLAN):
+    atomic_write(path, format_plan(header, rows))
+
+
+def has_manual_edits():
+    if not PLAN.exists():
+        return False
+    meta = read_meta()
+    return bool(meta.get("reviewed")) or sha(PLAN.read_text()) != meta.get("sha")
+
+
+def summary_counts(rows, audit, rules):
+    """Counts of what the plan does and the scope impact per user (counts only)."""
+    c = {"move": 0, "trash": 0, "rename": 0, "delete": 0, "keep": 0}
+    metas = {i["id"]: i for i in audit["items"]} if audit else {}
+    before = {u: 0 for u in rules}
+    after = {u: 0 for u in rules}
+    for r in rows:
+        if r.kind == "folder":
+            if r.target.startswith("rename:"):
+                c["rename"] += 1
+            elif r.target == "delete-if-empty":
+                c["delete"] += 1
+            continue
+        if r.target.startswith("folder:"):
+            c["move"] += 1
+        elif r.target.startswith("trash-duplicate-of:"):
+            c["trash"] += 1
+        else:
+            c["keep"] += 1
+        for u in scope_users(rules, r.current, r.name):
+            before[u] += 1
+        if not r.target.startswith("trash-duplicate-of:"):
+            dest = r.target[7:] if r.target.startswith("folder:") else r.current
+            for u in scope_users(rules, dest, r.name):
+                after[u] += 1
+    return c, before, after, metas
+
+
+def summary_lines(rows, audit):
+    rules, planned = scope_rules()
+    c, before, after, _ = summary_counts(rows, audit, rules)
+    out = [f"{c['move']} moves, {c['trash']} duplicates to the trash, {c['rename']} folder renames, "
+           f"{c['delete']} empty folders deleted, {c['keep']} items stay"]
+    for u in sorted(rules):
+        out.append(f"{u}: {before[u]} -> {after[u]} items in scope" + (" (planned scopes)" if planned else ""))
+    return out
+
+
+def cmd_plan(argv):
+    rules_file, force, i = str(CONF_ROOT / "vault-org" / "rules.tsv"), False, 0
+    while i < len(argv):
+        if argv[i] == "--rules" and i + 1 < len(argv):
+            rules_file, i = argv[i + 1], i + 2
+        elif argv[i] == "--force":
+            force, i = True, i + 1
+        else:
+            raise Fail("usage: vault-audit plan [--rules FILE] [--force]", 2)
+    m = vbw()
+    audit = load_audit(m)
+    if has_manual_edits() and not force:
+        raise Fail(f"{PLAN} has manual edits or reviewed rows: --force replaces it (the old one is kept as .bak)", 4)
+    rules, note = load_rules(rules_file)
+    rows = propose(audit, rules)
+    header = {"version": 1, "audit": audit["created"], "items": len(audit["items"]), "generated": now_iso()}
+    problems = validate_plan(header, rows, audit)
+    if problems:
+        raise Fail("the generated plan is invalid:\n  " + "\n  ".join(problems), 1)
+    if PLAN.exists():
+        atomic_write(PLAN.with_suffix(".tsv.bak"), PLAN.read_text())
+    text = format_plan(header, rows)
+    atomic_write(PLAN, text)
+    write_meta({"audit": audit["created"], "sha": sha(text), "reviewed": [],
+                "proposal": {r.id: [r.target, r.note] for r in rows}})
+    if note:
+        print(note)
+    print(f"plan written: {PLAN}")
+    for line in summary_lines(rows, audit):
+        print("  " + line)
+    return 0
+
+
+def cmd_check(argv):
+    """Validate the plan file (what apply checks first); exit 4 with one line per problem."""
+    allow = False
+    for a in argv:
+        if a == "--allow-tool-folders":
+            allow = True
+        else:
+            raise Fail("usage: vault-audit check [--allow-tool-folders]", 2)
+    header, rows = load_plan()
+    try:
+        audit = json.loads(audit_path(vbw()).read_text())
+    except (OSError, ValueError):
+        audit = None
+    problems = validate_plan(header, rows, audit, allow)
+    if problems:
+        raise Fail("\n".join(problems), 4)
+    print(f"plan ok: {len(rows)} rows")
+    return 0
+
+
+# ───────────────────────────── review (fzf-menu) ─────────────────────────────
+
+# NORMAL-mode letter -> action; Alt key -> action. vimfzf keeps j k g G q i a I A / c x p J K v for itself.
+NORMAL_KEYS = [("f", "folder"), ("n", "keep"), ("d", "dup"), ("D", "dupall"), ("u", "undo"), ("r", "reset"), ("t", "filter"),
+               ("e", "edit"), ("s", "summary"), ("R", "rename")]
+ALT_KEYS = {"alt-f": "folder", "alt-n": "keep", "alt-d": "dup", "alt-D": "dupall", "alt-u": "undo", "alt-r": "reset",
+            "alt-t": "filter", "alt-e": "edit", "alt-s": "summary", "alt-R": "rename"}
+FILTERS = ["all", "changes", "notes", "duplicates", "folders"]
+SELF = Path(__file__).resolve()
+
+
+def mark_of(r, reviewed):
+    a = "·"
+    if r.target.startswith("folder:") or r.target.startswith("rename:"):
+        a = "→"
+    elif r.target.startswith("trash-duplicate-of:") or r.target == "delete-if-empty":
+        a = "✗"
+    b = "✓" if r.id in reviewed else ("!" if r.note else " ")
+    return a + b
+
+
+def cell(s, w):
+    s = clean(s)
+    return (s[:w - 1] + "…" if len(s) > w else s).ljust(w)
+
+
+def row_text(r, reviewed, rules):
+    if r.kind == "folder":
+        left = f"{mark_of(r, reviewed)} [folder] {cell(r.name, 28)}"
+        right = "" if r.target == "keep" else f" → {r.target}"
+        return f"{left}{right}   {r.note}"
+    dest = r.target[7:] if r.target.startswith("folder:") else r.current
+    who = "" if r.target.startswith("trash-duplicate-of:") else " ".join(scope_users(rules, dest, r.name))
+    cur = r.current or "-"
+    tgt = "" if r.target == "keep" else f" → {r.target.replace('folder:', '')}"
+    return f"{mark_of(r, reviewed)} {cell(r.name, 30)} {cell(cur, 16)}{tgt}   [{who}]   {r.note}"
+
+
+def visible(rows, filt, audit):
+    ingroup = {i for g in audit["groups"] for i in g["members"]}
+    out = []
+    for r in rows:
+        if filt == "all" or (filt == "changes" and r.target != "keep") or (filt == "notes" and r.note) \
+                or (filt == "duplicates" and r.kind == "item" and (r.id in ingroup or r.target.startswith("trash-duplicate-of:"))) \
+                or (filt == "folders" and r.kind == "folder"):
+            out.append(r)
+    return out
+
+
+def cmd_preview(argv):
+    """fzf preview: metadata of one row from the audit file and the plan; never a value."""
+    if not argv:
+        return 2
+    ident = argv[0]
+    m = vbw()
+    audit = load_audit(m)
+    header, rows = load_plan()
+    row = next((r for r in rows if r.id == ident), None)
+    if row is None:
+        return 0
+    rules, planned = scope_rules()
+    if row.kind == "folder":
+        f = next((x for x in audit["folders"] if x["id"] == ident), None)
+        print(f"Folder {row.name}\n{f['items'] if f else '?'} items\nplan: {row.target}\n{row.note}")
+        return 0
+    it = next((x for x in audit["items"] if x["id"] == ident), None)
+    if it:
+        print(f"{it['name']}\ntype      {it['type']}\nfolder    {it['folder'] or '(none)'}\nhosts     {', '.join(it['hosts']) or '-'}")
+        print(f"username  {'yes' if it['user'] else 'no'}\ntotp      {'yes' if it['totp'] else 'no'}\n"
+              f"notes     {'yes' if it['notes'] else 'no'}\nfields    {it['fields']}\nfiles     {it['attachments']}\n"
+              f"revision  {it['revision']}")
+    g = next((g for g in audit["groups"] if ident in g["members"]), None)
+    if g:
+        by = {x["id"]: x for x in audit["items"]}
+        print(f"\ngroup {g['id']} ({g['class']}) differs: {', '.join(g['differs']) or '-'}")
+        for i in g["members"]:
+            print(f"  {'*' if i == g['keep'] else ' '} {i}  {by[i]['name']}  rev {by[i]['revision'][:10]}  {g['rel'].get(i, '')}")
+    print(f"\nplan: {row.target}\nnote: {row.note or '-'}")
+    dest = row.target[7:] if row.target.startswith("folder:") else row.current
+    if not row.target.startswith("trash-duplicate-of:"):
+        print("shared with: " + (", ".join(scope_users(rules, dest, row.name)) or "nobody") + (" (planned scopes)" if planned else ""))
+    return 0
+
+
+def run_menu(lines, header, pos):
+    me = f"python3 -I {shlex.quote(str(SELF))}"
+    binds = "\n".join(f'{k}:become(printf "%s\\n%s\\n%s\\n" {{q}} {a} {{1}})' for k, a in NORMAL_KEYS)
+    cmd = ["fzf-menu", "--here", "-p", "reorg", "--delimiter=\t", "--with-nth=2..", "--tabstop=4", "--print-query",
+           "--expect=" + ",".join(ALT_KEYS), f"--bind=load:pos({max(1, pos)})",
+           f"--preview={me} _preview {{1}}", "--preview-window=right,45%,wrap,border-left", f"--header={header}"]
+    env = dict(os.environ, FZF_MENU_NORMAL_BINDS=binds)
+    p = subprocess.run(cmd, input="\n".join(lines) + "\n", stdout=subprocess.PIPE, text=True, env=env)
+    out = p.stdout.split("\n")
+    key = out[1] if len(out) > 1 else ""
+    ident = (out[2] if len(out) > 2 else "").split("\t")[0]
+    return p.returncode, key, ident
+
+
+def pick(lines, prompt, header="", print_query=False):
+    cmd = ["fzf-menu", "--here", "-p", prompt, "--delimiter=\t", "--with-nth=2..", "--tabstop=4"]
+    if header:
+        cmd.append(f"--header={header}")
+    if print_query:
+        cmd.append("--print-query")
+    p = subprocess.run(cmd, input="\n".join(lines) + "\n", stdout=subprocess.PIPE, text=True)
+    out = p.stdout.split("\n")
+    if print_query:
+        return (out[1] if len(out) > 1 and p.returncode == 0 else ""), out[0]
+    return out[0] if p.returncode == 0 else ""
+
+
+class Review:
+    def __init__(self, m, audit, header, rows):
+        self.m, self.audit, self.header, self.rows = m, audit, header, rows
+        self.meta = read_meta()
+        self.reviewed = set(self.meta.get("reviewed", []))
+        self.rules, self.planned = scope_rules()
+        self.filt = "all"
+        self.pos = 1
+        self.stack = []
+        self.msg = ""
+        self.by = {i["id"]: i for i in audit["items"]}
+        self.group = {}
+        for g in audit["groups"]:
+            for i in g["members"]:
+                self.group[i] = g
+
+    def row(self, ident):
+        return next((r for r in self.rows if r.id == ident), None)
+
+    def snapshot(self):
+        self.stack.append(([r.copy() for r in self.rows], set(self.reviewed)))
+        del self.stack[:-50]
+
+    def save(self):
+        text = format_plan(self.header, self.rows)
+        atomic_write(PLAN, text)
+        self.meta.update(sha=sha(text), reviewed=sorted(self.reviewed))
+        write_meta(self.meta)
+
+    def folder_choices(self):
+        names = {f["name"] for f in self.audit["folders"]} | {r.target[7:] for r in self.rows if r.target.startswith("folder:")}
+        names |= {r.target[7:] for r in self.rows if r.target.startswith("rename:")}
+        try:
+            names |= {t for _k, _p, t in load_rules(CONF_ROOT / "vault-org" / "rules.tsv")[0]}
+        except Fail:
+            pass
+        return sorted(names - {""}, key=str.casefold)
+
+    def act(self, action, ident):
+        r = self.row(ident) if ident else None
+        if action == "filter":
+            self.filt = FILTERS[(FILTERS.index(self.filt) + 1) % len(FILTERS)]
+            self.pos = 1
+            return
+        if action == "summary":
+            lines = summary_lines(self.rows, self.audit)
+            pick([f"-\t{x}" for x in lines], "summary", "Esc: back")
+            return
+        if action == "undo":
+            if self.stack:
+                self.rows, self.reviewed = self.stack.pop()
+                self.save()
+            else:
+                self.msg = "nothing to undo"
+            return
+        if action == "edit":
+            self.edit_plan()
+            return
+        if r is None:
+            return
+        self.snapshot()
+        if action == "keep":
+            r.target, r.note = "keep", ""
+        elif action == "reset":
+            prop = self.meta.get("proposal", {}).get(r.id)
+            if prop:
+                r.target, r.note = prop
+            self.reviewed.discard(r.id)
+        elif action == "folder" and r.kind == "item":
+            dest = self.pick_folder()
+            if dest is None:
+                self.stack.pop()
+                return
+            r.target = "keep" if dest == r.current else f"folder:{dest}"
+            if r.target == "keep":
+                r.note = ""
+        elif action == "dup" and r.kind == "item":
+            keep = self.pick_dup(r)
+            if keep is None:
+                self.stack.pop()
+                return
+            g = self.group.get(r.id)
+            same = g is not None and keep in g["members"]
+            r.target = f"trash-duplicate-of:{keep}"
+            r.note = f"{g['id']} {g['class']}" if same else "manual"
+        elif action == "dupall" and r.kind == "item":
+            g = self.group.get(r.id)
+            if not g:
+                self.msg = "this item is in no duplicate group"
+                self.stack.pop()
+                return
+            r.target = "keep"
+            for i in g["members"]:
+                o = self.row(i)
+                if o and i != r.id:
+                    o.target, o.note = f"trash-duplicate-of:{r.id}", f"{g['id']} {g['class']}"
+        elif action == "rename" and r.kind == "folder":
+            try:
+                new = input(f"New name for folder {r.name!r} (empty = cancel): ").strip()
+            except EOFError:
+                new = ""
+            bad = folder_problem(new) if new else None
+            if not new or bad:
+                self.msg = bad or ""
+                self.stack.pop()
+                return
+            r.target = f"rename:{new}"
+        else:
+            self.stack.pop()
+            return
+        self.save()
+
+    def pick_folder(self):
+        rows = ["__new__\tNew folder..."] + [f"{n}\t{n}" for n in self.folder_choices()]
+        got = pick(rows, "folder", "Enter: move the item there")
+        if not got:
+            return None
+        if got == "__new__":
+            try:
+                name = input("New folder name (Parent/Child, empty = cancel): ").strip()
+            except EOFError:
+                return None
+            if not name:
+                return None
+            bad = folder_problem(name)
+            if bad:
+                self.msg = f"{name!r}: {bad}"
+                return None
+            return name
+        return got.split("\t")[0]
+
+    def pick_dup(self, r):
+        me = self.by.get(r.id)
+        cands = [x for x in self.audit["items"] if x["id"] != r.id]
+        cands.sort(key=lambda x: (not (me and x["type"] == me["type"] and set(x["hosts"]) & set(me["hosts"])),
+                                  x["name"].casefold()))
+        rows = [f"{x['id']}\t{x['name']}   {','.join(x['hosts'])}   rev {x['revision'][:10]}" for x in cands]
+        got = pick(rows, "duplicate of", "Enter: this item is a duplicate of the chosen keep")
+        return got.split("\t")[0] if got else None
+
+    def edit_plan(self):
+        d = self.m.RUN / "org"
+        d.mkdir(parents=True, exist_ok=True)
+        tmp = d / "plan-edit.tsv"
+        atomic_write(tmp, format_plan(self.header, self.rows))
+        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or ("nvim" if shutil.which("nvim") else "vi")
+        cmd = [editor] + (["-n", "-i", "NONE", "-u", "NONE"] if os.path.basename(editor) == "nvim" else []) + [str(tmp)]
+        while True:
+            subprocess.run(cmd)
+            header, rows, problems = parse_plan(tmp.read_text())
+            if not problems:
+                problems = validate_plan(header, rows, self.audit)
+            if not problems:
+                self.snapshot()
+                self.header, self.rows = header, rows
+                self.save()
+                break
+            print("\n".join(problems))
+            try:
+                ans = input("[e]dit again or [d]iscard? ").strip().lower()
+            except EOFError:
+                ans = "d"
+            if ans.startswith("d"):
+                break
+        tmp.unlink(missing_ok=True)
+
+    def header_text(self):
+        n_ch = sum(1 for r in self.rows if r.target != "keep")
+        keys = "f folder  n keep  d dup-of  D trash group  u undo  r reset  t filter  e edit  s summary  R rename  Enter reviewed"
+        return (f"Reorganise  filter {self.filt}  rows {len(visible(self.rows, self.filt, self.audit))}/{len(self.rows)}  "
+                f"changes {n_ch}  reviewed {len(self.reviewed)}" + (f"  [{self.msg}]" if self.msg else "") + f"\n{keys}")
+
+
+def cmd_review(argv):
+    if argv:
+        raise Fail("usage: vault-audit review", 2)
+    if not shutil.which("fzf-menu"):
+        raise Fail("fzf-menu is not installed (~/.local/bin/fzf-menu)", 1)
+    m = vbw()
+    audit = load_audit(m)
+    header, rows = load_plan()
+    rv = Review(m, audit, header, rows)
+    problems = validate_plan(header, rows, audit)
+    if problems:
+        print("the plan has problems (fix them with e):\n  " + "\n  ".join(problems[:10]))
+    while True:
+        vis = visible(rv.rows, rv.filt, audit)
+        lines = [f"{r.id}\t{row_text(r, rv.reviewed, rv.rules)}" for r in vis]
+        if not lines:
+            lines = ["-\t(nothing in this filter: t changes it)"]
+        rc, key, ident = run_menu(lines, rv.header_text(), rv.pos)
+        rv.msg = ""
+        if rc != 0 and not key and not ident:
+            break
+        action = ALT_KEYS.get(key, key) if key else ""
+        ids = [r.id for r in vis]
+        if ident in ids:
+            rv.pos = ids.index(ident) + 1
+        if not action:                      # Enter: mark reviewed, next row
+            if ident in ids:
+                rv.snapshot()
+                rv.reviewed.add(ident)
+                rv.save()
+                rv.pos = min(len(ids), rv.pos + 1)
+            continue
+        rv.act(action, ident)
+        if action == "filter":
+            rv.pos = 1
+    return 0
+
+
 # ───────────────────────────── main ─────────────────────────────
 
-COMMANDS = {"audit": cmd_audit}
+COMMANDS = {"audit": cmd_audit, "plan": cmd_plan, "check": cmd_check, "review": cmd_review, "_preview": cmd_preview}
 
 
 def main(argv):
@@ -486,7 +1237,7 @@ def main(argv):
     cmd, rest = (argv[0], argv[1:]) if argv and not argv[0].startswith("-") else ("audit", argv)
     fn = COMMANDS.get(cmd)
     if fn is None:
-        print(f"unknown command {cmd} (audit, plan, review, apply)", file=sys.stderr)
+        print(f"unknown command {cmd} (audit, plan, check, review, apply)", file=sys.stderr)
         return 2
     try:
         return fn(rest) or 0

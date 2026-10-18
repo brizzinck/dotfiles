@@ -1,0 +1,12 @@
+# vault-audit plan rules. Copy to ~/.config/vault-org/rules.tsv (0600, not in the repo) and edit; every host and name below is
+# invented. Format: kind<TAB>pattern<TAB>target-folder. First matching line wins; no match = keep the item where it is.
+#   host    fnmatch on the item's URI hosts (lower case, no www., no port):  host  *.acme-corp.test  Work/Acme
+#   name    fnmatch on the item name, case-insensitive
+#   folder  fnmatch on the item's CURRENT folder name
+#   type    login | note | card | identity | ssh
+# Tool folders (Linux, MCP, Env/*) are never touched whatever the rules say.
+host	*.example-mail.test	Mail
+host	portal.acme-corp.test	Work/Acme
+host	*.pixelcraft.example	Design
+name	wi-fi*	Home
+type	card	Finance

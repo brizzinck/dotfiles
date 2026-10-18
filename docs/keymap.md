@@ -17,7 +17,7 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Desktop | [System, power, bar](#system-power-bar) | 12 |
 | Desktop | [Pointer from the keyboard](#pointer-from-the-keyboard) | 21 |
 | Desktop | [Other Hyprland binds](#other-hyprland-binds) | 16 |
-| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 175 |
+| Desktop | [Leader menu (SUPER+;)](#leader-menu-super) | 176 |
 | Terminal | [tmux: this setup](#tmux-this-setup) | 58 |
 | Terminal | [tmux: stock prefix keys](#tmux-stock-prefix-keys) | 80 |
 | Terminal | [Terminal: ghostty](#terminal-ghostty) | 13 |
@@ -37,7 +37,7 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Editor | [Neovim: files and misc](#neovim-files-and-misc) | 17 |
 | Editor | [Neovim: moving and editing](#neovim-moving-and-editing) | 62 |
 | Menus and bar | [Menus: list grammar](#menus-list-grammar) | 19 |
-| Menus and bar | [Menus: keys of each menu](#menus-keys-of-each-menu) | 123 |
+| Menus and bar | [Menus: keys of each menu](#menus-keys-of-each-menu) | 134 |
 | Menus and bar | [TUIs and viewers](#tuis-and-viewers) | 4 |
 | Menus and bar | [Dev tools: lazysql, posting, gh-dash, glab-tui](#dev-tools-lazysql-posting-gh-dash-glab-tui) | 16 |
 | Menus and bar | [Bar (waybar)](#bar-waybar) | 48 |
@@ -396,6 +396,7 @@ One-shot which-key popup generated from the hub rows: press SUPER+; then the gro
 | `Super+; v n` | Vault: New login |
 | `Super+; v o` | Vault: 2FA codes |
 | `Super+; v p` | Vault: Passwords |
+| `Super+; v r` | Vault: Reorganise |
 | `Super+; v s` | Vault: Sync |
 | `Super+; v u` | Vault: User password |
 | `Super+; t b` | Theme: Black |
@@ -1154,6 +1155,17 @@ Menu-specific keys keep the Alt+ form (works in both modes) and get a NORMAL let
 | `n` / `Alt+N` | New item: login, card, identity, note or SSH key | Vault browser (SUPER+CTRL+SHIFT+P) |
 | `d` / `Alt+D` | Move to the trash (in the Trash: delete for good, asks first) | Vault browser (SUPER+CTRL+SHIFT+P) |
 | `r` / `Alt+R` | Restore from the trash | Vault browser (SUPER+CTRL+SHIFT+P) |
+| `f` / `Alt+F` | Pick the target folder of the row (New folder... asks a name) | Vault reorganisation (vault-audit review) |
+| `n` / `Alt+N` | Keep the row as it is (no change) | Vault reorganisation (vault-audit review) |
+| `d` / `Alt+D` | Mark the row as a duplicate of another item (picker) | Vault reorganisation (vault-audit review) |
+| `D` / `Alt+Shift+D` | Trash every other member of this row's duplicate group as a duplicate of this row | Vault reorganisation (vault-audit review) |
+| `u` / `Alt+U` | Undo the last change | Vault reorganisation (vault-audit review) |
+| `r` / `Alt+R` | Reset the row to the generated proposal | Vault reorganisation (vault-audit review) |
+| `t` / `Alt+T` | Cycle the filter: all, changes, notes, duplicates, folders | Vault reorganisation (vault-audit review) |
+| `e` / `Alt+E` | Edit the whole plan in the editor (validated, re-edit or discard) | Vault reorganisation (vault-audit review) |
+| `s` / `Alt+S` | Summary: moves, trash, renames and the scope impact per user | Vault reorganisation (vault-audit review) |
+| `R` / `Alt+Shift+R` | Rename the folder (folder rows) | Vault reorganisation (vault-audit review) |
+| `Enter` | Mark the row reviewed and go to the next | Vault reorganisation (vault-audit review) |
 | `h` / `Alt+H` | Password history (Enter copies an old password) | Vault browser (SUPER+CTRL+SHIFT+P) |
 | `F` / `Alt+A` | Attachments: download or upload | Vault browser (SUPER+CTRL+SHIFT+P) |
 | `w` / `Alt+W` | Password and passphrase generator | Vault browser (SUPER+CTRL+SHIFT+P) |

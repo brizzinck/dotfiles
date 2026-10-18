@@ -1,0 +1,35 @@
+# vault-org plan v1 audit=AUDIT items=23 generated=GEN
+# id	name	current	target	revision	note
+i-04	Acme Portal	Work	folder:Work/Acme	2026-09-10T08:00:00.000Z	g2 same-login: keep; rule host portal.acme-corp.test
+i-05	Acme Portal old	Work	folder:Work/Acme	2026-02-10T08:00:00.000Z	g2 same-login: password differs, older revision; rule host portal.acme-corp.test
+i-21	deploy-key	Work	keep	2026-09-01T10:00:00.000Z	
+i-15	dev	Env/demo	keep	2026-09-01T10:00:00.000Z	tool folder
+i-16	dev	Env/demo	keep	2026-09-01T10:00:00.000Z	tool folder
+i-23	Docs Portal	Mail	keep	2026-09-01T10:00:00.000Z	
+i-01	Example Mail	-	folder:Mail	2026-09-30T08:00:00.000Z	g1 identical: keep; rule host *.example-mail.test
+i-02	Example Mail	-	trash-duplicate-of:i-01	2026-06-01T08:00:00.000Z	g1 identical
+i-03	Example Mail	Old Stuff	trash-duplicate-of:i-01	2026-03-01T08:00:00.000Z	g1 identical
+i-14	ghost-user	Linux	keep	2026-09-01T10:00:00.000Z	tool folder
+i-17	oops	Env/demo	keep	2026-09-01T10:00:00.000Z	tool folder
+i-10	Pixelcraft	Work	folder:Design	2026-09-01T10:00:00.000Z	rule host *.pixelcraft.example
+i-11	pixelcraft.test	Work	keep	2026-09-01T10:00:00.000Z	
+i-06	Shop	Work	keep	2026-08-01T08:00:00.000Z	g3 no-user: keep
+i-07	Shop (no user)	-	trash-duplicate-of:i-06	2026-05-01T08:00:00.000Z	g3 no-user: identical
+i-08	Shop guest	-	keep	2026-04-01T08:00:00.000Z	g3 no-user: password differs, older revision, no username
+i-09	Shop old	-	trash-duplicate-of:i-06	2026-01-01T08:00:00.000Z	g3 no-user: subset
+i-12	skalse	Linux	keep	2026-09-01T10:00:00.000Z	tool folder
+i-13	td	Linux	keep	2026-09-01T10:00:00.000Z	tool folder
+i-18	telegram-mcp	MCP	keep	2026-09-01T10:00:00.000Z	tool folder
+i-22	Totp Site	Work	keep	2026-09-01T10:00:00.000Z	
+i-19	Visa travel	Work	folder:Finance	2026-09-01T10:00:00.000Z	rule type card
+i-20	Wi-Fi home	-	folder:Home	2026-09-01T10:00:00.000Z	rule name wi-fi*
+@folder	f-arch	Archive	delete-if-empty	-	empty
+@folder	f-empty	Empty	delete-if-empty	-	empty
+@folder	f-envp	Env	keep	-	tool folder
+@folder	f-env	Env/demo	keep	-	tool folder
+@folder	f-linux	Linux	keep	-	tool folder
+@folder	f-mail	Mail	keep	-	
+@folder	f-mcp	MCP	keep	-	tool folder
+@folder	f-old	Old Stuff	keep	-	
+@folder	f-old2	old-stuff	delete-if-empty	-	empty
+@folder	f-work	Work	keep	-	

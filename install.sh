@@ -233,6 +233,8 @@ cd "$DOTFILES"
 mkdir -p "$HOME/.config/gtk-3.0" "$HOME/.config/gtk-4.0"
 # envs global scope: global.toml is linked, global.local.toml (machine-local secret names and connections) must never land in the repo
 mkdir -p -m 700 "$HOME/.config/envs"
+# vault reorganisation rules and the vault-share overlay (company folder names): machine-local, never in the repo
+mkdir -p -m 700 "$HOME/.config/vault-org" "$HOME/.config/vault-share"
 # dev tools (DEV-d): these write their own state next to the linked theme/config files (posting history and scratch collection,
 # glab-tui config + cache, gh-dash), so their directories stay real and only single files are linked
 mkdir -p "$HOME/.local/share/posting/themes" "$HOME/.config/posting" "$HOME/.config/glab-tui/themes" "$HOME/.config/gh-dash"
