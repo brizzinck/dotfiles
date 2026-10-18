@@ -57,10 +57,22 @@ class Masking(unittest.TestCase):
         self.assertEqual(b"[secret TOKEN]", output)
 
     def test_serializer_portability_refusal(self):
-        for value in ("fixture$dollar", "fixture\rreturn"):
+        for value in ("fixture$dollar", "fixture\rreturn", "fixture\\slash", "fixture'\"quotes"):
+
             with self.assertRaises(r.RuntimeProblem):
                 r.dotenv_literal(value)
-        self.assertEqual('"fixture\\nline"', r.dotenv_literal("fixture\nline"))
+        self.assertEqual('"fixture\nline"', r.dotenv_literal("fixture\nline"))
+
+    def test_envs_transfer_dialect_is_lossless_for_nonportable_values(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("literal_core", SOURCE.with_name("secrets.py"))
+        core = importlib.util.module_from_spec(spec)
+        __import__('sys').modules[spec.name] = core; spec.loader.exec_module(core)
+        for value in ("fixture$dollar", "fixture\\backslash", "both'\"quotes", "fixture\r\nline\tend", "fixture`backtick"):
+            encoded = r.envs_literal(value)
+            self.assertEqual(value, core.DotenvDocument("KEY=" + encoded).values()["KEY"])
+        with self.assertRaises(r.RuntimeProblem):
+            r.envs_literal("fixture\x00nul")
 
     def test_progress_does_not_wait_for_max_pattern(self):
         masker = r.StreamingMasker(r.secret_patterns({"TOKEN": "X" * 4000}))

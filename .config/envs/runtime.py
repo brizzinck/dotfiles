@@ -100,18 +100,38 @@ class StreamingMasker:
 
 
 def dotenv_literal(value):
-    """Strict double-quoted dotenv encoding; never shell-source this generated consumer file."""
-    if not isinstance(value, str) or "\x00" in value or "\r" in value:
-        raise RuntimeProblem("value cannot be represented by the supported dotenv serializer")
-    # Dollar escapes are not uniformly honored by dotenv expansion libraries. Refuse instead of inventing portability.
-    if "$" in value:
-        raise RuntimeProblem("dollar-bearing values require a verified consumer-specific serializer")
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\t", "\\t") + '"'
+    """Common literal subset verified with python-dotenv and Node dotenv; never shell-source it."""
+    if (not isinstance(value, str) or any(ord(ch) < 32 and ch not in "\n\t" or 127 <= ord(ch) <= 159 for ch in value)
+            or any(ch in value for ch in ("$", "\\")) or ('"' in value and "'" in value)):
+        raise RuntimeProblem("value requires a verified consumer-specific dotenv serializer")
+    try:
+        value.encode("utf-8", "strict")
+    except UnicodeError:
+        raise RuntimeProblem("value requires a verified consumer-specific dotenv serializer") from None
+    quote = '"' if '"' not in value else "'"
+    return quote + value + quote
 
 
-def render_document(doc, values, names, omit_unselected=False):
+def envs_literal(value):
+    """Lossless transfer dialect for envs parsing only; no shell/other-loader guarantee."""
+    if not isinstance(value, str) or "\x00" in value:
+        raise RuntimeProblem("value cannot be represented by the envs transfer dialect")
+    try:
+        value.encode("utf-8", "strict")
+    except UnicodeError:
+        raise RuntimeProblem("value cannot be represented by the envs transfer dialect") from None
+    encoded = value.replace("\\", "\\\\").replace('"', '\\"')
+    for char, escape in (("\n", "\\n"), ("\r", "\\r"), ("\t", "\\t"), ("$", "\\$"), ("`", "\\`")):
+        encoded = encoded.replace(char, escape)
+    return '"' + encoded + '"'
+
+
+def render_document(doc, values, names, omit_unselected=False, dialect="portable"):
     refs = doc.references()
-    replacements = {name: dotenv_literal(value) for name, value in values.items()}
+    if dialect not in ("portable", "envs"):
+        raise RuntimeProblem("unsupported dotenv serializer dialect")
+    serializer = envs_literal if dialect == "envs" else dotenv_literal
+    replacements = {name: serializer(value) for name, value in values.items()}
     omitted = set(refs) - set(values) if omit_unselected else set()
     # A legacy name cannot silently overwrite an ordinary literal in this source.
     for record in doc.records:
