@@ -531,7 +531,7 @@ cmd_nvim_sync() {
     # shellcheck disable=SC2016
     fargs=()
     [ "$force" = 1 ] && fargs=(--force)
-    setsid -f bash -c 'log=$1; shift; exec "$@" >>"$log" 2>&1' _ "$log" "$SELF" nvim-sync --_fg "${fargs[@]}" </dev/null >/dev/null 2>&1 || true
+    setsid -f bash -c 'log=$1; shift; exec "$@" >>"$log" 2>&1' _ "$log" "$SELF" nvim-sync --_fg "${fargs[@]}" 8>&- 9>&- </dev/null >/dev/null 2>&1 || true
     note "nvim-sync runs in the background: tail -f $log"
     return 0
   fi
@@ -577,7 +577,7 @@ cmd_devtools_sync() {
   if [ "$bg" = 1 ]; then
     local fargs=()
     [ "$force" = 1 ] && fargs=(--force)
-    setsid -f bash -c 'log=$1; shift; exec "$@" >>"$log" 2>&1' _ "$log" "$SELF" devtools-sync --_fg "${fargs[@]}" </dev/null >/dev/null 2>&1 || true
+    setsid -f bash -c 'log=$1; shift; exec "$@" >>"$log" 2>&1' _ "$log" "$SELF" devtools-sync --_fg "${fargs[@]}" 8>&- 9>&- </dev/null >/dev/null 2>&1 || true
     note "devtools-sync runs in the background: tail -f $log"
     return 0
   fi
