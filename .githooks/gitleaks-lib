@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared by pre-commit and pre-push (sourced, not a hook): the gitleaks checks both hooks make before scanning.
 #   gl_init HOOK    sets top (work tree), hookrepo (repo that holds the hooks), cfg (temp file with the COMMITTED .gitleaks.toml;
 #                   the caller removes it); exits 1 with a message when gitleaks is missing or a .gitleaksignore exists
@@ -23,4 +24,42 @@ gl_load_cfg() {
   git -C "$hookrepo" show HEAD:.gitleaks.toml >"$cfg" 2>/dev/null && [ -s "$cfg" ] && return 0
   cat "$top/.gitleaks.toml" >"$cfg" 2>/dev/null && [ -s "$cfg" ] && return 0
   cat "$hookrepo/.gitleaks.toml" >"$cfg" 2>/dev/null && [ -s "$cfg" ]
+}
+
+# gl_cfg_problems FILE: print one line per way a .gitleaks.toml could silence real findings (doctor `gitleaks-history` FAILs on
+# any): default rules not extended, an allowlist by `paths` / `commits` / `stopwords`, a `regexTarget` other than "secret" (line
+# or match allowlists are wider than the exact value), or a catch-all regex (.* .+ \S+ ...). Exact value regexes are what the
+# file is meant to hold. Prints nothing for a good file; returns 0 either way.
+gl_cfg_problems() {
+  local f=$1
+  grep -Eq '^[[:space:]]*useDefault[[:space:]]*=[[:space:]]*true' "$f" || echo "the default rules are not extended (useDefault = true is missing)"
+  grep -Eq '^[[:space:]]*paths[[:space:]]*=' "$f" && echo "a paths allowlist (it hides every finding in those files; use exact value regexes)"
+  grep -Eq '^[[:space:]]*(commits|stopwords)[[:space:]]*=' "$f" && echo "a commits / stopwords allowlist (wider than an exact value)"
+  grep -E '^[[:space:]]*regexTarget[[:space:]]*=' "$f" | grep -Evq '=[[:space:]]*"secret"' && echo "a regexTarget other than \"secret\" (line / match allowlists are wider than the value)"
+  # a regex entry that is only a wildcard: '.*' '^.+$' "\\S+" '[\s\S]*' '.{1,}' (every quoted string of the file is looked at)
+  local q v re='^(\.|\\[SWsdwD]|\[[^]]*\])([*+]|\{[0-9]+,[0-9]*\})\??$'
+  while IFS= read -r q; do
+    v=${q//[\'\"]/}                       # quotes off
+    v=${v//\\\\/\\}; v=${v#\(\?i\)}; v=${v#^}; v=${v%\$}
+    if [[ $v =~ $re ]]; then echo "a catch-all regex entry ($v matches every value)"; break; fi
+  done < <(grep -oE "'''[^']*'''|\"[^\"]*\"|'[^']*'" "$f")
+  return 0
+}
+
+# gl_committed_cfg_problems REPO: gl_cfg_problems of the COMMITTED .gitleaks.toml of REPO (nothing when there is none)
+gl_committed_cfg_problems() {
+  local c; c=$(mktemp) || return 0
+  if git -C "$1" show HEAD:.gitleaks.toml >"$c" 2>/dev/null && [ -s "$c" ]; then gl_cfg_problems "$c"; fi
+  rm -f "$c"
+}
+
+# gl_history_scan REPO: scan the whole history with the COMMITTED .gitleaks.toml, never the working file (an uncommitted broad
+# allowlist must not silence it), --redact. Prints gitleaks' output; returns 0 clean, 3 findings, anything else = failed to run.
+gl_history_scan() {
+  local repo=$1 c rc
+  c=$(mktemp) || return 1
+  if ! { git -C "$repo" show HEAD:.gitleaks.toml >"$c" 2>/dev/null && [ -s "$c" ]; }; then rm -f "$c"; c=''; fi
+  gitleaks git --no-banner --redact -l error --exit-code 3 ${c:+-c "$c"} "$repo" 2>&1; rc=$?
+  [ -z "$c" ] || rm -f "$c"
+  return $rc
 }

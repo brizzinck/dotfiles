@@ -105,6 +105,34 @@ s1() {
   expect ".gitleaks.toml extends the default rules" grep -q '^useDefault = true' "$REPO/.gitleaks.toml"
   expect ".gitleaks.toml is not stowed" grep -q 'gitleaks' "$REPO/.stow-local-ignore"
   s1_push
+  s1_lint
+}
+
+# doctor `gitleaks-history` helpers in .githooks/gitleaks-lib: the committed config is linted and used for the history scan
+s1_lint() {
+  local c="$T/lint.toml" r="$T/lint-repo" out tok rc
+  mk() { printf '%s\n' 'title = "x"' '[extend]' 'useDefault = true' '[[allowlists]]' 'regexTarget = "secret"' "$@" >"$c"; }
+  lint() { bash -c ". '$REPO/.githooks/gitleaks-lib'; gl_cfg_problems '$1'"; }
+  eq "L6: the repo's committed .gitleaks.toml has no broad allowlist" "$(bash -c ". '$REPO/.githooks/gitleaks-lib'; gl_committed_cfg_problems '$REPO'")" ""
+  mk "regexes = ['''^abc123\$''']"; eq "L6: an exact value regex is fine" "$(lint "$c")" ""
+  mk "paths = ['''^docs/''']"; [[ $(lint "$c") == *"paths allowlist"* ]] && pass "L6: a paths allowlist is flagged" || fail "L6 paths"
+  mk "regexes = ['''.*''']"; [[ $(lint "$c") == *"catch-all"* ]] && pass "L6: a catch-all regex .* is flagged" || fail "L6 .*"
+  mk "regexes = [ '''^.+\$''' ]"; [[ $(lint "$c") == *"catch-all"* ]] && pass "L6: ^.+\$ is flagged" || fail "L6 .+"
+  mk 'regexes = [ "\\S+" ]'; [[ $(lint "$c") == *"catch-all"* ]] && pass "L6: \\S+ is flagged" || fail "L6 S+"
+  mk "commits = ['abc']"; [[ $(lint "$c") == *"commits"* ]] && pass "L6: a commits allowlist is flagged" || fail "L6 commits"
+  printf 'title = "x"\n[extend]\nuseDefault = false\n' >"$c"; [[ $(lint "$c") == *"default rules"* ]] && pass "L6: useDefault = false is flagged" || fail "L6 useDefault"
+  # a committed config, a leak, and an UNCOMMITTED catch-all allowlist in the working file
+  tok="ghp_$(printf '%s' 'Wq8wE5gH7jK9mN1pQ3sT5vW7yZ9bC1dE3fG5')"
+  mkdir -p "$r" && git init -q -b main "$r" && git -C "$r" config user.email t@t && git -C "$r" config user.name t && git -C "$r" config commit.gpgsign false
+  cp "$REPO/.gitleaks.toml" "$r/.gitleaks.toml"; printf 'token = "%s"\n' "$tok" >"$r/leak.txt"
+  git -C "$r" add .gitleaks.toml leak.txt; git -C "$r" commit -q --no-verify -m leak
+  printf '\n[[allowlists]]\nregexTarget = "secret"\nregexes = [ %s ]\n' "'''.*'''" >>"$r/.gitleaks.toml"
+  bash -c "cd '$r' && gitleaks git --no-banner --redact -l error --exit-code 3 -c .gitleaks.toml . >/dev/null 2>&1"; eq "L6: (control) the old doctor call with the working file is silenced by the uncommitted allowlist" "$?" 0
+  out=$(bash -c ". '$REPO/.githooks/gitleaks-lib'; gl_history_scan '$r'"); rc=$?; eq "L6: gl_history_scan (committed config) still finds the leak" "$rc" 3
+  [[ $out != *"${tok:4}"* ]] && pass "L6: the scan output never holds the value" || fail "L6 redaction"
+  git -C "$r" checkout -q -- .gitleaks.toml
+  git -C "$r" rm -q --cached leak.txt; git -C "$r" commit -q --no-verify -m rm
+  out=$(bash -c ". '$REPO/.githooks/gitleaks-lib'; gl_history_scan '$r'"); rc=$?; eq "L6: the history still holds the leak after a delete commit" "$rc" 3
 }
 
 # the pre-push hook: commits that never ran pre-commit (--no-verify, merge, cherry-pick, rebase, am, an evil merge) are caught
