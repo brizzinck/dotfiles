@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""Inert rbw race simulator: delegates ordinary reads to the existing invented fixture fake."""
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+root = Path(__file__).resolve().parents[4]
+fake = Path(os.environ["FAKE_DIR"])
+args = sys.argv[1:]
+with (fake / "boundary.jsonl").open("a") as f:
+    f.write(json.dumps({"args": args, "agent": os.environ.get("RBW_AGENT"), "prompt": os.environ.get("PINENTRY_USER_DATA")}) + "\n")
+if args == ["config", "show"] and (fake / "unsupported-wrapper").exists():
+    print(json.dumps({"pinentry": "/usr/bin/pinentry-curses"}))
+    sys.exit(0)
+mode = (fake / "race-mode").read_text().strip() if (fake / "race-mode").exists() else ""
+if args and mode.startswith(args[0] + "-"):
+    if mode.endswith("disappear"):
+        agent = os.environ.get("RBW_AGENT")
+        if agent == "/usr/bin/false":
+            subprocess.run([agent], check=False)
+        else:
+            (fake / "would-start-agent").touch()
+        (fake / "rbw-locked").touch()
+        sys.exit(1)
+    if mode.endswith("lock"):
+        (fake / "rbw-locked").touch()
+    # Exercise the real wrapper, with inert fallback pinentry and ldd first on PATH even against pre-fix code.
+    env = dict(os.environ); env["PATH"] = str(fake / "probe-bin") + ":/usr/bin:/bin"
+    subprocess.run(["/usr/bin/bash", str(root / ".local/bin/pinentry-themed")], env=env, stdin=subprocess.DEVNULL,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    sys.exit(1)
+os.execv(str(root / "infrastructure/tests/vault-browse/bin/rbw"), ["rbw", *args])

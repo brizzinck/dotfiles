@@ -7,6 +7,12 @@ VIEW="$FAKE_DIR/rbw-view.json"
 [[ -f $VIEW ]] || cp "$FAKE_DIR/vault.json" "$VIEW"
 locked() { [[ -f $FAKE_DIR/rbw-locked ]]; }
 case ${1:-} in
+  config)
+    [[ ${2:-} == show ]] || exit 2
+    # Invented local metadata only; the broker requires the supported wrapper before reads.
+    wrapper="$(cd "$(dirname "$0")/../../../.." && pwd)/.local/bin/pinentry-themed"
+    jq -n --arg pinentry "$wrapper" '{pinentry: $pinentry}'
+    exit 0 ;;
   unlocked) locked && exit 1; exit 0 ;;
   lock) touch "$FAKE_DIR/rbw-locked"; exit 0 ;;
   stop-agent) exit 0 ;;

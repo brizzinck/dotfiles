@@ -5,11 +5,16 @@
 #   pinentry-curses / pinentry  when there is no display (ssh, tty)
 # A candidate is skipped when it is missing or a shared library is missing (the packaged pinentry-qt needs the
 # kwindowsystem package), so the prompt keeps working while the package set catches up.
+# rbw forwards this request marker to its configured wrapper. Refuse before probing or executing any pinentry binary.
+[[ ${PINENTRY_USER_DATA:-} == vault-share:no-prompt ]] && exit 77
 export QT_QPA_PLATFORMTHEME=qt6ct
 
 runnable() { [[ -x $1 ]] && ! ldd "$1" 2>/dev/null | grep -q 'not found'; }
 
-if [[ -n ${WAYLAND_DISPLAY:-}${DISPLAY:-} ]]; then
+# Keep tty fallback when a forwarded Wayland name has no usable socket (ssh/managed-user sessions).
+wayland_socket=${WAYLAND_DISPLAY:-}
+[[ $wayland_socket == /* ]] || wayland_socket="${XDG_RUNTIME_DIR:-/nonexistent}/${wayland_socket:-none}"
+if [[ -n ${DISPLAY:-} || ( -n ${WAYLAND_DISPLAY:-} && -w $wayland_socket ) ]]; then
   if runnable /usr/bin/pinentry-qt; then exec /usr/bin/pinentry-qt "$@"; fi
   if runnable /usr/bin/pinentry-gtk; then GTK_THEME=Adwaita:dark exec /usr/bin/pinentry-gtk "$@"; fi
 fi

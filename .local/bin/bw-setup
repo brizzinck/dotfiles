@@ -42,17 +42,12 @@ fi
 command -v rbw >/dev/null || { echo "rbw is not installed. Run: sudo ~/dotfiles/apply-system.sh --only install" >&2; exit 1; }
 
 self_dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
-# No usable Wayland socket (a managed user such as yc, ssh, a bare tty): a terminal pinentry, the themed one needs a window
-wl=${WAYLAND_DISPLAY:-}
-[[ $wl == /* ]] || wl="${XDG_RUNTIME_DIR:-/nonexistent}/${wl:-none}"
-pinentry=
-if [[ -z ${WAYLAND_DISPLAY:-} || ! -w $wl ]]; then
-  pinentry=$(command -v pinentry-curses 2>/dev/null || command -v pinentry-tty 2>/dev/null || true)
-  [[ -z $pinentry ]] || echo "No graphical session: the master password is asked in this terminal ($pinentry)."
-fi
-[[ -n $pinentry ]] || pinentry=$(command -v pinentry-themed 2>/dev/null || true)
-[[ -n $pinentry ]] || pinentry="$self_dir/pinentry-themed"
-[[ -x $pinentry ]] || pinentry=$(command -v pinentry)
+# Always keep the marker-aware wrapper, including on a tty: it chooses curses itself and suppresses broker prompts.
+pinentry="$self_dir/pinentry-themed"
+[[ -x $pinentry ]] && grep -q 'vault-share:no-prompt' "$pinentry" || {
+  echo "The supported pinentry-themed wrapper is missing; update/stow the dotfiles first." >&2
+  exit 1
+}
 # vault-bw.py lives next to this script's repo (the owner's ~/dotfiles, /srv/dotfiles for managed users: the cli profile links
 # envs, bw-setup and fzf-menu, not .config/hypr)
 vbw_py="$self_dir/../../.config/hypr/scripts/vault-bw.py"
@@ -83,6 +78,10 @@ repo_owner=$(stat -c %U "$self_dir/../.." 2>/dev/null || true)
 if [[ -z ${BW_SETUP_FAKE_OWNER:-} && ( -z $repo_owner || $repo_owner == "$(id -un)" ) ]]; then lock_timeout=31536000; else lock_timeout=3600; fi
 rbw config set lock_timeout "$lock_timeout"
 rbw config set pinentry "$pinentry"
+[[ $(rbw config show | jq -r '.pinentry // empty') == "$pinentry" ]] || {
+  echo "rbw did not keep the supported pinentry wrapper." >&2
+  exit 1
+}
 echo "rbw configured (pinentry: $pinentry)."
 
 echo "Logging in: pinentry asks for the master password."

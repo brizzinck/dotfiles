@@ -38,7 +38,7 @@ bad_request unavailable internal. not_found is the same answer for an item outsi
 Every request is one journald line (op, user, uid, pid, comm, id, field names, result, ms), never a value or an item name.
 
 CLIENT (td, yc):  vault-share status | list [--folder F] [--json] | copy ITEM [--field F] | code ITEM [--print] | get ITEM --field F
-OWNER:            vault-share status | report [--names] | selftest | check-scopes | render-scopes | serve
+OWNER:            vault-share status | report [--names] | selftest | check-rbw | check-scopes | render-scopes | serve
 Exit codes: 0 ok, 1 error, 2 usage, 3 locked, 4 refused / policy / agent / no clipboard, 5 rate limited, 6 broker unavailable.
 Test mode (every VAULT_SHARE_* hook is ignored outside it): VAULT_SHARE_TEST_DIR below <repo>/infrastructure/tests/, VAULT_SHARE_SOCK /
 _SCOPES / _RUNTIME below one VAULT_SHARE_SCRATCH that is not a real location, RBW_BIN below <repo>/infrastructure/tests/.
@@ -577,7 +577,8 @@ class Broker:
 
     # rbw ----------------------------------------------------------------------------------------
     async def rbw(self, *args, timeout=10):
-        env = {"PATH": "/usr/bin", "LANG": os.environ.get("LANG", "C.UTF-8"), "HOME": str(Path.home())}
+        env = {"PATH": "/usr/bin", "LANG": os.environ.get("LANG", "C.UTF-8"), "HOME": str(Path.home()),
+               "RBW_AGENT": "/usr/bin/false", "PINENTRY_USER_DATA": "vault-share:no-prompt"}
         for k in ("XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"):
             if os.environ.get(k):
                 env[k] = os.environ[k]
@@ -596,6 +597,7 @@ class Broker:
                 proc.kill()
             except ProcessLookupError:
                 pass
+            await proc.communicate()       # reap the killed child and drain its pipes before returning
             raise Err("unavailable", "rbw did not answer in time")
         except OSError:
             raise Err("unavailable", "rbw is not installed")
@@ -608,6 +610,8 @@ class Broker:
         this unit's cgroup: kill it and say so."""
         try:
             rel = Path("/proc/self/cgroup").read_text().strip().split("::", 1)[1]
+            if not rel.endswith("/vault-share.service"):
+                return       # metadata-only CLI checks must never sweep the caller's session cgroup
             procs = Path("/sys/fs/cgroup" + rel + "/cgroup.procs").read_text().split()
         except (OSError, IndexError):
             return
@@ -618,6 +622,26 @@ class Broker:
                     log(f"killed an rbw-agent (pid {p}) that started inside this unit")
             except (OSError, ValueError):
                 pass
+
+    async def prompt_guard(self):
+        # rbw-agent reloads the configured pinentry for each prompt; require our marker-aware wrapper before any read/sync.
+        # config show is local metadata only and cannot start/unlock an agent. Never echo the config (email/server).
+        rc, out = await self.rbw("config", "show", timeout=5)
+        try:
+            configured = json.loads(out).get("pinentry") if rc == 0 else None
+            expected = REPO / ".local/bin/pinentry-themed"
+            supported = isinstance(configured, str) and Path(configured).is_absolute() and Path(configured).resolve() == expected.resolve()
+            supported = supported and os.access(expected, os.X_OK)
+        except (ValueError, AttributeError, OSError, RuntimeError):
+            supported = False
+        if not supported:
+            raise Err("unavailable", "rbw needs the supported pinentry-themed wrapper; the owner runs bw-setup")
+
+    async def read_failed(self):
+        # A lock/agent-exit race after unlocked is locked, while absent/out-of-scope items remain indistinguishable.
+        if not await self.unlocked():
+            raise Err("locked", MESSAGES["locked"])
+        raise Err("not_found", MESSAGES["not_found"])
 
     async def unlocked(self):
         try:
@@ -640,7 +664,7 @@ class Broker:
     async def rbw_json(self, *args):
         rc, out = await self.rbw(*args)
         if rc != 0:
-            raise Err("not_found", MESSAGES["not_found"])
+            await self.read_failed()
         try:
             return json.loads(out or "null")
         except ValueError:
@@ -674,6 +698,8 @@ class Broker:
                 raise Err("ambiguous", f"{len(hits)} items called {nm} in {folder}: use the id (vault-share list)")
             ident = hits[0]["id"]
         rc, out = await self.rbw("get", "--raw", ident)
+        if rc != 0:
+            await self.read_failed()
         try:
             rec = json.loads(out) if rc == 0 else None
         except ValueError:
@@ -823,6 +849,7 @@ class Broker:
             if not self.rates.notified(f"locked:{name}", 600):
                 notify(f"{name} is waiting for the vault (locked)", "vault-share: unlock it with any vault action")
             raise Err("locked", MESSAGES["locked"])
+        await self.prompt_guard()
         await self.ensure_fresh()
         fn = {"list": self.op_list, "describe": self.op_describe, "get": self.op_get, "totp": self.op_totp}[op]
         return await fn(msg, name)
@@ -1293,6 +1320,19 @@ def cmd_report(argv):
     return 0
 
 
+def cmd_check_rbw(argv):
+    if argv:
+        return 2
+    try:
+        # Only local config metadata; do not load scopes or runtime rate state for this doctor check.
+        asyncio.run(Broker.__new__(Broker).prompt_guard())
+    except Err as e:
+        print(e.message, file=sys.stderr)
+        return 1
+    print("rbw pinentry-themed wrapper supports broker no-prompt requests")
+    return 0
+
+
 def cmd_selftest(argv):
     """Connect as the owner: the broker must answer `refused` and echo the REAL uid (a user namespace would show 65534)."""
     try:
@@ -1317,7 +1357,7 @@ def main(argv):
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
         return 0
-    fn = COMMANDS.get(argv[0])
+    fn = cmd_check_rbw if argv[0] == "check-rbw" else COMMANDS.get(argv[0])
     if fn is None:
         print(f"unknown command {argv[0]}", file=sys.stderr)
         return 2

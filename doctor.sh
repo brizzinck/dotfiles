@@ -426,6 +426,12 @@ vs_py="$DOTFILES/.config/hypr/scripts/vault-share.py"
 vs_file=/etc/vault-share/scopes.tsv
 if [ -r "$vs_py" ]; then
   if [ -e "$vs_file" ]; then
+    if vs_guard="$(python3 -I -B "$vs_py" check-rbw 2>&1)"; then
+      ok vault-share-rbw "supported pinentry-themed wrapper; broker requests cannot prompt or start an rbw agent"
+    else
+      bad vault-share-rbw "${vs_guard:-cannot validate rbw pinentry}; owner fix: rbw config set pinentry \"$DOTFILES/.local/bin/pinentry-themed\""
+    fi
+
     vs_bad="" vs_grp="$(id -gn)" vs_me="$(id -un)"
     [ "$(stat -c '%U:%G %a' "$vs_file" 2>/dev/null)" = "root:$vs_grp 640" ] || vs_bad="$vs_file is '$(stat -c '%U:%G %a' "$vs_file" 2>/dev/null)', want 'root:$vs_grp 640'"
     python3 -I -B "$vs_py" check-scopes "$vs_file" --owner "$vs_me" >/dev/null 2>&1 || vs_bad="$vs_bad; $vs_file fails check-scopes"

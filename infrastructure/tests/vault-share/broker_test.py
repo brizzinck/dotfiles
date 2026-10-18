@@ -58,7 +58,11 @@ class Lab:
         shutil.copy(os.path.join(HERE, "fixture.json"), os.path.join(self.fake, "vault.json"))
         for f in os.listdir(self.fake):
             if f not in ("vault.json",):
-                os.unlink(os.path.join(self.fake, f))
+                path = os.path.join(self.fake, f)
+                if os.path.isdir(path):
+                    shutil.rmtree(path)
+                else:
+                    os.unlink(path)
         open(os.path.join(self.fake, "argv.log"), "w").close()
         shutil.copy(os.path.join(HERE, "scopes.tsv"), self.scopes)
         os.chmod(self.scopes, 0o644)
@@ -185,6 +189,10 @@ def run(lab):
     lab.start()
     check("4.0 the broker starts and listens (direct bind, test mode)", lab.proc.poll() is None and os.path.exists(lab.sock))
 
+    guard = subprocess.run([sys.executable, "-I", "-B", SCRIPT, "check-rbw"], env=lab.env(), capture_output=True, text=True)
+    check("4.0 doctor check-rbw accepts the supported wrapper without any vault read", guard.returncode == 0 and "wrapper" in guard.stdout
+          and "rbw get" not in lab.argv() and "rbw list" not in lab.argv())
+
     # 4.1 whoami
     td = lab.ask({"v": 1, "op": "whoami"}, "td")
     yc = lab.ask({"v": 1, "op": "whoami"}, "yc")
@@ -286,6 +294,41 @@ def run(lab):
     w = lab.ask({"v": 1, "op": "whoami"}, "td")
     check("4.7 whoami still answers while locked and says so", w.get("ok") and w["vault"] == "locked")
     os.unlink(os.path.join(lab.fake, "rbw-locked"))
+
+    # 4.7b command-boundary races: no replacement agent or actual pinentry can start.
+    for mode in ("get-disappear", "get-lock", "list-lock", "get-reprompt", "list-reprompt"):
+        lab.stop(); lab.reset()
+        probe = os.path.join(lab.fake, "probe-bin")
+        os.makedirs(probe, exist_ok=True)
+        for binary, body in (("ldd", "echo 'inert library => not found'\n"),
+                             ("pinentry", 'touch "$FAKE_DIR/prompt-invoked"\nexit 1\n')):
+            path = os.path.join(probe, binary)
+            with open(path, "w") as f:
+                f.write("#!/usr/bin/env bash\n" + body)
+            os.chmod(path, 0o755)
+        with open(os.path.join(lab.fake, "race-mode"), "w") as f:
+            f.write(mode)
+        lab.start(RBW_BIN=os.path.join(HERE, "bin/rbw-race"))
+        op = "list" if mode.startswith("list") else "get"
+        msg = {"v": 1, "op": op, "id": "s-wifi", "fields": ["password"]}
+        r = lab.ask(msg)
+        expected = "not_found" if mode.endswith("reprompt") else "locked"
+        check(f"4.7b {mode}: {expected} response", r.get("error") == expected, str(r))
+        records = [json.loads(line) for line in open(os.path.join(lab.fake, "boundary.jsonl"))]
+        check(f"4.7b {mode}: startup veto and no-prompt marker reach every child",
+              bool(records) and all(x["agent"] == "/usr/bin/false" and x["prompt"] == "vault-share:no-prompt" for x in records))
+        check(f"4.7b {mode}: no agent startup and no pinentry binary ran",
+              not os.path.exists(os.path.join(lab.fake, "would-start-agent")) and not os.path.exists(os.path.join(lab.fake, "prompt-invoked")))
+    lab.stop(); lab.reset()
+    open(os.path.join(lab.fake, "unsupported-wrapper"), "w").close()
+    lab.start(RBW_BIN=os.path.join(HERE, "bin/rbw-race"))
+    r = lab.ask({"v": 1, "op": "get", "id": "s-wifi", "fields": ["password"]})
+    guard = subprocess.run([sys.executable, "-I", "-B", SCRIPT, "check-rbw"],
+                           env=lab.env(RBW_BIN=os.path.join(HERE, "bin/rbw-race")), capture_output=True, text=True)
+    check("4.7b doctor check-rbw refuses unsupported wrapper", guard.returncode == 1 and "bw-setup" in guard.stderr)
+    check("4.7b unsupported pinentry configuration: unavailable before sync/list/get", r.get("error") == "unavailable"
+          and "rbw get" not in lab.argv() and "rbw list" not in lab.argv() and "rbw sync" not in lab.argv(), str(r))
+    lab.stop(); lab.reset(); lab.start()
 
     # 4.9 refused identities
     for who, word in (("owner", "owner"), ("root", "uid 0"), ("aimcp", "no vault scope"), ("nobody-here", "no vault scope")):
@@ -581,7 +624,7 @@ def run(lab):
         ts.append((time.perf_counter() - t0) * 1000)
         assert r.get("ok"), r
     p50 = statistics.median(ts)
-    print(f"      timing: get p50 {p50:.0f} ms, max {max(ts):.0f} ms (bash fake rbw: two processes per get)")
+    print(f"      timing: get p50 {p50:.0f} ms, max {max(ts):.0f} ms (bash fake rbw: three processes per get)")
     check("4.21 p50 of 20 get round trips with the bash fake is under 300 ms (target 150)", p50 < 300, f"{p50:.0f} ms")
 
 

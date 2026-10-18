@@ -68,6 +68,8 @@ section4() {
   ((rc == 0)) || { FAILS=$((FAILS + 1)); echo "FAIL  broker_test.py exit $rc"; grep -v -E '^(ok|FAIL)' <<<"$out" | tail -15; }
 }
 
+check "broker subprocess timeout drains pipes and reaps child" python3 -I -B "$HERE/process_test.py"
+
 want 2 && section2
 want 4 && section4
 

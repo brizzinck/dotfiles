@@ -286,7 +286,7 @@ print(m.REPO, m.VAULT_BW.exists())
 PY
 )"
 expect "envs resolves its repo and vault-bw.py inside the published tree" "$T/srv True" "$out"
-# bw-setup without a Wayland socket asks pinentry in the terminal (pinentry-curses), with one it keeps the themed pinentry
+# bw-setup always configures the absolute marker-aware wrapper; the wrapper selects graphical/curses itself.
 mkdir -p "$T/fakebin"
 printf '#!/bin/sh\nexit 0\n' >"$T/fakebin/pinentry-curses"
 printf '#!/bin/sh\nexit 0\n' >"$T/fakebin/pinentry-themed"
@@ -294,18 +294,21 @@ cat >"$T/fakebin/rbw" <<'RBW'
 #!/bin/sh
 [ "$1" = config ] && [ "$2" = set ] && [ "$3" = pinentry ] && echo "$4" >>"$FAKE_PIN_LOG"
 [ "$1" = config ] && [ "$2" = set ] && [ "$3" = lock_timeout ] && echo "$4" >>"$FAKE_PIN_LOG.lock"
+if [ "$1" = config ] && [ "$2" = show ]; then
+  jq -n --arg pinentry "$(tail -1 "$FAKE_PIN_LOG" 2>/dev/null)" '{pinentry: $pinentry}'
+fi
 [ "$1" = login ] && exit 1
 exit 0
 RBW
 chmod +x "$T/fakebin"/*
 : >"$T/pin.log"
 (FAKE_PIN_LOG="$T/pin.log" PATH="$T/fakebin:$PATH" WAYLAND_DISPLAY="" XDG_RUNTIME_DIR="$T/run" "$REPO/.local/bin/bw-setup" --url https://v.example.invalid --email t@example.invalid </dev/null >/dev/null 2>&1)
-expect "bw-setup without a Wayland display uses pinentry-curses" "$T/fakebin/pinentry-curses" "$(tail -1 "$T/pin.log")"
+expect "bw-setup without a Wayland display keeps the supported wrapper" "$REPO/.local/bin/pinentry-themed" "$(tail -1 "$T/pin.log")"
 mkdir -p "$T/run"; : >"$T/run/wayland-fake"
 (FAKE_PIN_LOG="$T/pin.log" PATH="$T/fakebin:$PATH" WAYLAND_DISPLAY=wayland-fake XDG_RUNTIME_DIR="$T/run" "$REPO/.local/bin/bw-setup" --url https://v.example.invalid --email t@example.invalid </dev/null >/dev/null 2>&1)
-expect "bw-setup with a writable Wayland socket keeps pinentry-themed" "$T/fakebin/pinentry-themed" "$(tail -1 "$T/pin.log")"
+expect "bw-setup with a writable Wayland socket keeps the supported wrapper" "$REPO/.local/bin/pinentry-themed" "$(tail -1 "$T/pin.log")"
 (FAKE_PIN_LOG="$T/pin.log" PATH="$T/fakebin:$PATH" WAYLAND_DISPLAY=wayland-nosuch XDG_RUNTIME_DIR="$T/run" "$REPO/.local/bin/bw-setup" --url https://v.example.invalid --email t@example.invalid </dev/null >/dev/null 2>&1)
-expect "bw-setup with a Wayland socket that is not writable falls back to the terminal" "$T/fakebin/pinentry-curses" "$(tail -1 "$T/pin.log")"
+expect "bw-setup with an unusable Wayland socket keeps the supported wrapper" "$REPO/.local/bin/pinentry-themed" "$(tail -1 "$T/pin.log")"
 # FIX-DEVb: the owner keeps the one-year lock timeout, a managed user (the checkout belongs to someone else) gets one hour
 : >"$T/pin.log.lock"
 (FAKE_PIN_LOG="$T/pin.log" PATH="$T/fakebin:$PATH" WAYLAND_DISPLAY="" XDG_RUNTIME_DIR="$T/run" "$REPO/.local/bin/bw-setup" --url https://v.example.invalid --email t@example.invalid </dev/null >/dev/null 2>&1)
@@ -319,8 +322,16 @@ expect "... and without the hook the owner still gets one year" "31536000" "$(ta
 # FIX5 (review 15): the first `bw` sync of bw-setup reports a failure (it used to vanish silently: output to /dev/null, no else)
 BT="$T/bwtree"; mkdir -p "$BT/.local/bin" "$BT/.config/hypr/scripts" "$BT/fb"
 cp "$REPO/.local/bin/bw-setup" "$BT/.local/bin/bw-setup"
+cp "$REPO/.local/bin/pinentry-themed" "$BT/.local/bin/pinentry-themed"
 printf '#!/usr/bin/env python3\nimport os, sys\nsys.exit(int(os.environ.get("FAKE_SYNC_RC", "0")) if sys.argv[1] == "sync" else 0)\n' >"$BT/.config/hypr/scripts/vault-bw.py"
-printf '#!/bin/sh\nexit 0\n' >"$BT/fb/rbw"; printf '#!/bin/sh\nexit 0\n' >"$BT/fb/pinentry-curses"
+cat >"$BT/fb/rbw" <<'RBW_SYNC'
+#!/bin/sh
+if [ "$1" = config ] && [ "$2" = show ]; then
+  jq -n --arg pinentry "$(cd "$(dirname "$0")/../.local/bin" && pwd)/pinentry-themed" '{pinentry: $pinentry}'
+fi
+exit 0
+RBW_SYNC
+printf '#!/bin/sh\nexit 0\n' >"$BT/fb/pinentry-curses"
 cat >"$BT/fb/bw" <<'BW'
 #!/bin/sh
 case "$1" in
