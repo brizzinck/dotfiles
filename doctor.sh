@@ -2,8 +2,9 @@
 # dotfiles doctor: asserts that the approved workstation state stays in place. Read-only, no sudo.
 #   ./doctor.sh              print PASS/FAIL lines and a summary (exit 1 when anything failed)
 #   ./doctor.sh --fails      print only the failures
-#   ./doctor.sh --live       also run the checks that touch the real hardware (audio-ee-signal records 1.5 s from the
-#                            microphone, which lights the privacy indicator and forces a Bluetooth headset into HFP); DOCTOR_LIVE=1 does the same
+#   ./doctor.sh --live       also run the checks that touch the real hardware: audio-mic and audio-ee-signal each record 1.5 s from
+#                            the microphone (statistics only, nothing is kept), which lights the privacy indicator; a Bluetooth
+#                            default source is never probed (no HFP switch). Without --live both are INFO. DOCTOR_LIVE=1 does the same
 # Repo-only (listed in .stow-local-ignore). Declined items (restic, keyring, ...) are intentionally not checked.
 set -u
 
@@ -28,6 +29,7 @@ if [ -z "${DOCTOR_SELF:-}" ]; then
     trap '_dsig HUP' HUP
     env --default-signal=INT,QUIT bash "$_dtmp/doctor.sh" "$@" <&0 &   # an async child would ignore SIGINT otherwise
     _dpid=$!
+    [ -z "$_dgot" ] || kill "-$_dgot" "$_dpid" 2>/dev/null || true   # a signal that arrived before the pid was known (between the fork and this line)
     while :; do
       _drc=0
       wait "$_dpid" || _drc=$?
@@ -355,10 +357,10 @@ else
 fi
 # U8: SUPER+CTRL+U types the Linux password of the user the focused window asks for (vault.sh user-pass + vault-who.py)
 if [ -x "$DOTFILES/.config/hypr/scripts/vault.sh" ] && [ -r "$DOTFILES/.config/hypr/scripts/vault-who.py" ]; then
-  if python3 -I "$DOTFILES/.config/hypr/scripts/vault-who.py" --pid "$$" --class doctor | jq -e '.kind == "other" and (.user | length > 0)' >/dev/null 2>&1; then
+  if python3 -I -B "$DOTFILES/.config/hypr/scripts/vault-who.py" --pid "$$" --class doctor | jq -e '.kind == "other" and (.user | length > 0)' >/dev/null 2>&1; then
     ok vault-userpass "vault-who.py answers (offline probe on this shell)"
   else
-    bad vault-userpass "vault-who.py does not answer (python3 -I .config/hypr/scripts/vault-who.py --pid \$\$ --class doctor)"
+    bad vault-userpass "vault-who.py does not answer (python3 -I -B .config/hypr/scripts/vault-who.py --pid \$\$ --class doctor)"
   fi
   if [ -n "${binds_json:-}" ]; then
     if printf '%s' "$binds_json" | jq -e 'any(.[]; .submap == "" and .modmask == 68 and (.key | ascii_downcase) == "u" and .has_description)' >/dev/null 2>&1; then
@@ -408,7 +410,7 @@ if [ -S "$bw_run/bw.sock" ]; then
   [ "$bw_dir" = "700 $(id -un)" ] || bw_bad="$bw_bad; $bw_run is '$bw_dir', want '700 $(id -un)'"
   for bw_u in $(awk -F'\t' '!/^[[:space:]]*#/ && NF {print $1}' "$DOTFILES/infrastructure/users/managed.tsv" 2>/dev/null) tgconfirm aimcp greeter; do
     id -u "$bw_u" >/dev/null 2>&1 || continue
-    bw_reach="$(python3 -I "$DOTFILES/infrastructure/users/acl-reach.py" "$(id -u "$bw_u")" "$(dirname "$bw_run")" 2>/dev/null | grep 'vault/bw.sock' | head -1)"
+    bw_reach="$(python3 -I -B "$DOTFILES/infrastructure/users/acl-reach.py" "$(id -u "$bw_u")" "$(dirname "$bw_run")" 2>/dev/null | grep 'vault/bw.sock' | head -1)"
     [ -n "$bw_reach" ] && bw_bad="$bw_bad; $bw_u can reach it ($bw_reach)"
   done
   if [ -n "$bw_bad" ]; then bad vault-bw-serve "${bw_bad#; }"; else ok vault-bw-serve "bw serve on $bw_run/bw.sock: socket 600, dir 700, no TCP listener, no other user can reach it"; fi
@@ -420,8 +422,21 @@ fi
 # FIX3 F5: the bw processes that hold the session key run non-dumpable (a crash must not put the environment into the journal):
 # the LD_PRELOAD library is built per boot in $XDG_RUNTIME_DIR/vault and probed once; INFO when it cannot be (no cc, failed probe)
 if [ -r "$DOTFILES/.config/hypr/scripts/vault-bw.py" ]; then
+  # nodump-status is read-only (it never compiles; the first bw call that holds a session key builds the library); the running bw
+  # processes are looked at too: a non-dumpable process has /proc/PID/environ owned by root
   nd_out="$(python3 -I -B "$DOTFILES/.config/hypr/scripts/vault-bw.py" nodump-status 2>&1)"
-  if [ "$nd_out" = yes ]; then ok vault-nodump "bw processes that hold the session key are non-dumpable (library probed this boot)"; else info vault-nodump "bw processes non-dumpable: $nd_out; a crashing bw can log its environment (COREDUMP_ENVIRON)"; fi
+  nd_open=0 nd_all=0
+  for nd_p in $(pgrep -u "$(id -u)" -x bw 2>/dev/null); do
+    nd_all=$((nd_all + 1))
+    [ "$(stat -c %U "/proc/$nd_p/environ" 2>/dev/null)" = root ] || nd_open=$((nd_open + 1))
+  done
+  if [ "$nd_out" = yes ] && [ "$nd_open" = 0 ]; then
+    ok vault-nodump "bw processes that hold the session key are non-dumpable (library there and probed; $nd_all running bw process(es) all protected)"
+  elif [ "$nd_out" = yes ]; then
+    info vault-nodump "library present, but $nd_open of $nd_all running bw process(es) are still dumpable (started before it was built; vault-bw.py serve-stop, the next bw action restarts them)"
+  else
+    info vault-nodump "bw processes non-dumpable: $nd_out; a crashing bw can log its environment (COREDUMP_ENVIRON)"
+  fi
 fi
 # FIX3 F6: dead tmux socket files (kill-server leaves them; every test suite and tool now removes its own)
 tm_dir="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
@@ -574,12 +589,12 @@ if [ -x "$HOME/.local/bin/mcp-gateway" ]; then
     if getent passwd tgconfirm >/dev/null; then
       getfacl -p "$HOME" 2>/dev/null | grep -q 'tgconfirm' && snd_bad="$snd_bad; tgconfirm has an ACL entry on $HOME"
       # everything tgconfirm can reach in the runtime dir, by the kernel's rules (named ACL entry, else the OTHER bits): only the Wayland socket
-      snd_acl="$(python3 -I "$DOTFILES/infrastructure/users/acl-reach.py" "$(id -u tgconfirm)" "/run/user/$(id -u)" --allow "$(basename "${WAYLAND_DISPLAY:-wayland-1}")" 2>&1 | head -4 | paste -sd';')"
+      snd_acl="$(python3 -I -B "$DOTFILES/infrastructure/users/acl-reach.py" "$(id -u tgconfirm)" "/run/user/$(id -u)" --allow "$(basename "${WAYLAND_DISPLAY:-wayland-1}")" 2>&1 | head -4 | paste -sd';')"
       [ -n "$snd_acl" ] && snd_bad="$snd_bad; tgconfirm can reach in /run/user/$(id -u) (named ACL or other bits): $snd_acl (only the Wayland socket is allowed; run: usr clipboard-acl)"
       sudo -k -n -u tgconfirm true >/dev/null 2>&1 && snd_bad="$snd_bad; the owner can reach tgconfirm without a password"
     fi
     if [ -n "${WAYLAND_DISPLAY:-}" ]; then
-      if snd_wl="$(python3 -I "$DOTFILES/infrastructure/mcp/confirm/broker.py" --check-wayland 2>&1)"; then ok mcp-send-wayland "the broker's socket check accepts the live session ($snd_wl)"
+      if snd_wl="$(python3 -I -B "$DOTFILES/infrastructure/mcp/confirm/broker.py" --check-wayland 2>&1)"; then ok mcp-send-wayland "the broker's socket check accepts the live session ($snd_wl)"
       else bad mcp-send-wayland "the broker's compositor check refuses the live session: $snd_wl"; fi
     fi
     snd_tok="$mcp_state/telegram.token" snd_restart=""
@@ -648,7 +663,7 @@ if [ -n "$sup_pid" ] && grep -qs waybar-run "/proc/$sup_pid/cmdline" 2>/dev/null
 # ── waybar (W1): config parses, state files match the mode, both bars sit where the design puts them ────────────
 bar_sh="$HOME/.config/waybar/scripts/bar.sh"
 bar_state="${XDG_STATE_HOME:-$HOME/.local/state}/waybar"
-bar_err="$(PYTHONPYCACHEPREFIX=/tmp/pycache python3 -I - "$DOTFILES/.config/waybar" "$bar_state" <<'PY' 2>&1
+bar_err="$(PYTHONPYCACHEPREFIX=/tmp/pycache python3 -I -B - "$DOTFILES/.config/waybar" "$bar_state" <<'PY' 2>&1
 import json, os, sys
 cfgdir, state = sys.argv[1:3]
 
@@ -775,9 +790,9 @@ else
   fi
   if [ -z "$cur_err" ]; then
     # roles: fill = green token, outline = accent = bg_oled token (accent = the busy cursor's pies, dark on the green disk)
-    want="$(python3 -I -c 'import json,sys; t=json.load(open(sys.argv[1]))["shared"]["tokens"]; print(t["green"].lower(), t["bg_oled"].lower())' "$DOTFILES/themes/palette/everforest.json" 2>/dev/null)"
+    want="$(python3 -I -B -c 'import json,sys; t=json.load(open(sys.argv[1]))["shared"]["tokens"]; print(t["green"].lower(), t["bg_oled"].lower())' "$DOTFILES/themes/palette/everforest.json" 2>/dev/null)"
     want_fill="${want% *}"; want_line="${want#* }"
-    got="$(python3 -I -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["fill"].lower(), p["outline"].lower(), p["accent"].lower())' "$DOTFILES/themes/generated/black/pointer.json" 2>/dev/null)"
+    got="$(python3 -I -B -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["fill"].lower(), p["outline"].lower(), p["accent"].lower())' "$DOTFILES/themes/generated/black/pointer.json" 2>/dev/null)"
     [ "$got" = "$want_fill $want_line $want_line" ] || cur_err="pointer.json is '$got', the palette wants fill=$want_fill (green) outline=accent=$want_line (bg_oled); rerun themes/palette/render.py"
   fi
   if [ -z "$cur_err" ]; then
@@ -811,7 +826,9 @@ if grep -q 'audio-ensure --boot' "$DOTFILES/.config/hypr/hyprland.lua"; then ok 
 
 # audio-mic: the default source must deliver a varying signal (LENOVO 83HY: UCM named the unconnected ACP PDM "Mic1" and the source was a
 # constant rail; 51-hda-no-ucm.conf fixes it). 1.5 s are measured, only statistics are printed, no audio is kept.
-if command -v pactl >/dev/null 2>&1 && pactl info >/dev/null 2>&1; then
+if [ "$LIVE" != 1 ]; then
+  info audio-mic "not measured (it records 1.5 s from the real microphone and lights the privacy indicator): ./doctor.sh --live, or audio-ensure --mic"
+elif command -v pactl >/dev/null 2>&1 && pactl info >/dev/null 2>&1; then
   mic_out="$("$DOTFILES/.local/bin/audio-ensure" --mic 2>&1)"; mic_rc=$?
   case "$mic_rc" in
     0) ok audio-mic "$mic_out" ;;
@@ -922,7 +939,7 @@ stray="$(git -C "$DOTFILES" grep -IiE "$old_hex" -- .config ':!.config/nvim' ':!
 if [ -z "$stray" ]; then ok theme-stray "no old-palette hex in the tracked configs"; else bad theme-stray "$(printf '%s' "$stray" | head -1)"; fi
 nvim_ls="$(nvim --headless -u NONE --cmd "set rtp^=$DOTFILES/.config/nvim" +'lua assert(type(require("configs.layout_switch").setup) == "function")' +qa 2>&1)"
 if [ -z "$nvim_ls" ]; then ok nvim-layout "nvim layout autoswitch module loads"; else bad nvim-layout "$(printf '%s' "$nvim_ls" | head -1)"; fi
-lit="$(PYTHONPYCACHEPREFIX=/tmp/pycache python3 -I - "$DOTFILES" <<'PY' 2>&1
+lit="$(PYTHONPYCACHEPREFIX=/tmp/pycache python3 -I -B - "$DOTFILES" <<'PY' 2>&1
 import json, re, sys
 root = sys.argv[1]
 tokens = set()
@@ -1185,6 +1202,8 @@ else
 fi
 if o1_out="$("$DOTFILES/infrastructure/tests/o1/run.sh" 2>&1)"; then ok o1-tests "desktop helpers (displays, zoom, brightness, restart, lock, media, transcode): $(printf '%s' "$o1_out" | tail -1)"; else bad o1-tests "$(printf '%s' "$o1_out" | grep -m1 '^FAIL') (infrastructure/tests/o1/run.sh)"; fi
 if sc_copy_out="$("$DOTFILES/infrastructure/tests/selfcopy/run.sh" 2>&1)"; then ok selfcopy-tests "doctor/apply-system private copy: removed on Ctrl+C and SIGTERM, /tmp as root: $(printf '%s' "$sc_copy_out" | tail -1)"; else bad selfcopy-tests "$(printf '%s' "$sc_copy_out" | grep -m1 '^FAIL') (infrastructure/tests/selfcopy/run.sh)"; fi
+# FIX5: the suites must not leave Python bytecode in the repo (python3 -I ignores PYTHONPYCACHEPREFIX; -B / PYTHONDONTWRITEBYTECODE do not)
+if hy_out="$("$DOTFILES/infrastructure/tests/hygiene/run.sh" --quick 2>&1)"; then ok hygiene-tests "test suites leave no __pycache__ in the repo: $(printf '%s' "$hy_out" | tail -1)"; else bad hygiene-tests "$(printf '%s' "$hy_out" | grep -m1 '^FAIL') (infrastructure/tests/hygiene/run.sh)"; fi
 if edit_out="$("$DOTFILES/infrastructure/tests/edit/run.sh" 2>&1)"; then ok edit-tests "edit anywhere (SUPER+CTRL+E): $(printf '%s' "$edit_out" | tail -1)"; else bad edit-tests "$(printf '%s' "$edit_out" | grep -m1 '^FAIL') (infrastructure/tests/edit/run.sh)"; fi
 # DEV-a: gitleaks pre-commit hook, atuin (local history), carapace gap filler, difftastic, long-command toast
 da_hp="$(git -C "$DOTFILES" config --get core.hooksPath 2>/dev/null)"
