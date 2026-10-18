@@ -146,6 +146,7 @@ expect "project env: the run succeeds" test "$rc" = 0
 expect "project env: mise undid its environment, once, from \$HOME, as a forced bash hook-env" bash -c "[ \$(grep -c '^\[hook-env\]' '$FAKE_LOG') = 1 ] && grep -q '^\[hook-env\] $T/home|hook-env -s bash --force' '$FAKE_LOG'"
 expect "project env: go install sees the original GOBIN, not the project's" bash -c "grep '^\[go install\]' '$FAKE_LOG' | grep -q 'GOBIN=$T/real/gobin '"
 expect "project env: npm -g sees no NPM_CONFIG_PREFIX and keeps unrelated variables" bash -c "grep '^\[npm\] -g update' '$FAKE_LOG' | grep -q 'PREFIX=unset KEEPME=mine'"
+expect "REVIEW-DEV-d #16: npm -g update runs with --ignore-scripts (the pinned install of gitlab-ci-local had it, the update did not)" grep -q '^\[npm\] -g update --ignore-scripts' "$FAKE_LOG"
 expect "project env: the project's _.path entry is out of PATH for go and npm, and its go/npm never ran" bash -c "! grep -E '^\[(npm|go install)\]' '$FAKE_LOG' | grep -q '$T/projbin' && [ ! -e '$T/project-tool-ran' ]"
 expect "project env: mise's install dirs and shims are out of PATH too" bash -c "! grep '^\[' '$FAKE_LOG' | grep -q 'mise/installs\|mise/shims'"
 expect "project env: mise upgrade runs with __MISE_* gone and the project's GOBIN undone" bash -c "grep '^\[env\] upgrade' '$FAKE_LOG' | grep -q 'GOBIN=$T/real/gobin NPM_CONFIG_PREFIX=unset SESSION=unset'"
@@ -183,6 +184,14 @@ PROJ_UNSET=()
 expect "5a: an [env] HOME of the project does not decide where hook-env runs (the passwd home does)" bash -c "[ $rc = 0 ] && grep -q '^\[hook-env\] $PWHOME|' '$FAKE_LOG' && ! grep -q 'evilhome' '$FAKE_LOG'"
 expect "5c: hook-env runs with MISE_EXPERIMENTAL=0" grep -q '^\[hook-env-env\] EXP=0' "$FAKE_LOG"
 expect "5b: sudo -v runs AFTER the project environment is undone (original GOBIN, no project PATH entry)" bash -c "grep '^\[fake sudo\] -v' '$FAKE_LOG' | head -1 | grep -q 'GOBIN=$T/real/gobin ' && ! grep '^\[fake sudo\] -v' '$FAKE_LOG' | head -1 | grep -q '$T/projbin'"
+# REVIEW-DEV-d #11: a project's [env] sets BOTH XDG_STATE_HOME and SYSUP_TEST_HOME (a directory inside the project, or anywhere that is
+# not a scratch root): the hook must not count, or the undo would run inside the project again (5a)
+EVIL=$(mktemp -d "/run/user/$(id -u)/sysup-evil.XXXXXX")   # a directory of ours that is not below a scratch root
+: >"$FAKE_LOG"; rm -f "$T/project-tool-ran"
+PROJ_UNSET=()
+out=$(projrun SYSUP_MISE="$FAKEMISE" SYSUP_TEST_HOME="$EVIL"); rc=$?
+expect "11: SYSUP_TEST_HOME outside /tmp, /var/tmp and /dev/shm is ignored: hook-env runs in the passwd home, not in that directory" bash -c "[ $rc = 0 ] && grep -q '^\[hook-env\] $PWHOME|' '$FAKE_LOG' && ! grep -q '$EVIL' '$FAKE_LOG'"
+rm -rf "$EVIL"
 if [[ ! -x /usr/bin/mise ]]; then
   # a `mise` earlier on PATH than /usr/bin (a project's `_.path` entry) must not be run for the undo
   mkdir -p "$T/evilbin"; printf '#!/bin/sh\necho EVIL-MISE >>"%s/project-tool-ran"\n' "$T" >"$T/evilbin/mise"; chmod +x "$T/evilbin/mise"

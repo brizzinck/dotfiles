@@ -26,11 +26,15 @@ set -u
 
 # HOME is the account's home from the password database, never the environment's: a project's mise [env] can set HOME, and
 # the undo below (cd "$HOME" + hook-env) would then run inside the project. SYSUP_TEST_HOME is the test hook; it counts only
-# when XDG_STATE_HOME points away from the real state directory (a scratch state dir is what every test sets).
+# when XDG_STATE_HOME points away from the real state directory (a scratch state dir is what every test sets) AND the directory
+# is one of our own below a fixed scratch root (/tmp, /var/tmp, /dev/shm): a project's [env] can set both variables, but it
+# cannot make a directory inside the project count (REVIEW-DEV-d #11, which would have reopened REVIEW-ENVS-FINAL #5a).
 _pw_home=$(getent passwd "$(id -u)" | cut -d: -f6)
 HOME=${_pw_home:-$HOME}
-if [[ -n ${SYSUP_TEST_HOME:-} && -n ${XDG_STATE_HOME:-} && $XDG_STATE_HOME != "$HOME/.local/state" ]]; then
-  HOME=$SYSUP_TEST_HOME
+if [[ -n ${SYSUP_TEST_HOME:-} && -n ${XDG_STATE_HOME:-} && $XDG_STATE_HOME != "$HOME/.local/state" && -d $SYSUP_TEST_HOME && -O $SYSUP_TEST_HOME ]]; then
+  _th=$(readlink -f "$SYSUP_TEST_HOME")
+  case "$_th" in /tmp/* | /var/tmp/* | /dev/shm/*) HOME=$_th ;; esac
+  unset _th
 fi
 export HOME
 unset _pw_home
@@ -225,12 +229,13 @@ step_rust() {
 step_npm() {
   have npm || { echo "npm is not installed"; return 0; }
   # global packages live in the user prefix (~/.npm-global): Codex, Gemini CLI, claude-agent-acp, MCP helpers
-  npm -g update
+  npm -g update --ignore-scripts
 }
 
 step_pipx() {
   local ran=0
-  have pipx && { pipx upgrade-all; ran=1; }
+  # posting is pinned with a hash lock (infrastructure/dev/posting-requirements.txt): it moves only by bumping the pin there
+  have pipx && { pipx upgrade-all --skip posting; ran=1; }
   have uv && { uv tool upgrade --all; ran=1; }
   ((ran)) || echo "no pipx / uv tools here"
   return 0
