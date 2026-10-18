@@ -36,6 +36,7 @@ if [ -z "${APPLY_SYSTEM_SELF:-}" ]; then
     trap '_asig HUP' HUP
     env --default-signal=INT,QUIT bash "$_atmp/apply-system.sh" "$@" <&0 &   # an async child would ignore SIGINT otherwise
     _apid=$!
+    [ -z "$_agot" ] || kill "-$_agot" "$_apid" 2>/dev/null || true   # a signal that arrived before the pid was known (between the fork and this line)
     while :; do
       _arc=0
       wait "$_apid" || _arc=$?

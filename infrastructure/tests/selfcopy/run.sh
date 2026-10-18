@@ -41,6 +41,7 @@ for _ in range(100):
     if glob.glob(tmp + "/*/*.sh") and os.path.exists(log):
         break
     time.sleep(0.05)
+time.sleep(0.3)   # the wrapper is in its wait loop
 os.killpg(p.pid, sig)
 try:
     rc = p.wait(10)
@@ -63,6 +64,7 @@ for _ in range(100):
     if glob.glob(tmp + "/*/*.sh") and os.path.exists(log):
         break
     time.sleep(0.05)
+time.sleep(0.3)   # the wrapper has assigned the copy's pid and is in its wait loop (under load the copy can write its log first)
 kids = subprocess.run(["pgrep", "-P", str(p.pid)], capture_output=True, text=True).stdout.split()
 t = time.time()
 os.kill(p.pid, sig)
@@ -76,6 +78,33 @@ alive = int(any(os.path.exists(f"/proc/{k}") and b"Z" != open(f"/proc/{k}/stat")
 print(f"rc={rc} secs={secs} leftovers={len(os.listdir(tmp))} copy_alive={alive}")
 PY
 }
+# runrace SCRIPT: a signal that arrives BEFORE the wrapper knows the copy's pid (between the fork and `_dpid=$!`). Deterministic: a DEBUG
+# trap in $BASH_ENV sends SIGTERM to the wrapper just before it runs that assignment (the trap handler then runs first). The old
+# wrapper stored the signal but could not forward it and waited for the copy (30 s). Prints "rc=<rc> secs=<n> leftovers=<n>".
+runrace() {
+  cat >"$SCRATCH/race.env" <<'RACE'
+trap 'case "$BASH_COMMAND" in "_dpid=\$!"|"_apid=\$!") kill -TERM $$ ;; esac' DEBUG
+RACE
+  python3 -I -B - "$1" "$SCRATCH/tmp" "$SCRATCH/log" "$SCRATCH/race.env" <<'PY'
+import os, signal, subprocess, sys, time
+script, tmp, log, benv = sys.argv[1:5]
+os.makedirs(tmp, exist_ok=True)
+env = dict(os.environ, TMPDIR=tmp, SELFCOPY_LOG=log, SELFCOPY_SLEEP="30", BASH_ENV=benv)
+t = time.time()
+p = subprocess.Popen(["bash", script], env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+try:
+    rc = p.wait(8)
+except subprocess.TimeoutExpired:
+    os.killpg(p.pid, signal.SIGKILL); rc = "hung"
+time.sleep(0.3)
+print(f"rc={rc} secs={round(time.time() - t)} leftovers={len(os.listdir(tmp))}")
+PY
+}
+for s in doctor.sh apply-system.sh; do
+  rm -rf "$SCRATCH/tmp" "$SCRATCH/log"
+  out=$(runrace "$SCRATCH/s/$s")
+  check "$s: a SIGTERM that arrives before the copy's pid is known is forwarded after all (old code: waited for the copy; got: $out)" bash -c 'grep -q "secs=[0-4] leftovers=0" <<<"$1" && grep -qE "rc=-15 " <<<"$1"' _ "$out"
+done
 for s in doctor.sh apply-system.sh; do
   for sig in SIGTERM SIGHUP; do   # (SIGINT alone: a bash copy waiting for a foreground child only exits after it; Ctrl+C reaches both, see below)
     rm -rf "$SCRATCH/tmp" "$SCRATCH/log"
