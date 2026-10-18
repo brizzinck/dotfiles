@@ -6,10 +6,13 @@
 #   ee-ctl ns on|off|toggle    noise suppression on/off = bypass of the rnnoise plugin (session only: every start reloads
 #                              the preset = on); one replacing notification, then the waybar toggles are refreshed
 #   ee-ctl ns status [--quiet] exit 0 = on (EE answers, rnnoise active, global bypass off), 1 = off or unknown
-#   ee-ctl status [--json]     unit, pid, socket, preset, ns, rc keys, default source, source pin, live input links
+#   ee-ctl status [--json]     unit, pid, socket, preset, ns, rc keys, default source, source pin, live input links, capture
+#                              streams that skip EasyEffects (linked straight to a hardware microphone; voxtype is meant to)
 #   ee-ctl auto [--notify]     forget a manual default-source choice (pw-metadata -d default.configured.audio.source), so the
 #                              WirePlumber priorities (52-mic-priority.conf: USB > Bluetooth > built-in) decide again
 #   ee-ctl start|restart       systemctl --user reset-failed + start|restart easyeffects
+#   ee-ctl quit-stray          an EasyEffects that runs outside easyeffects.service (started from the launcher after a tray Quit)
+#                              is asked to quit (quit_app, then SIGTERM after 5 s); the unit runs this before `prepare`
 # 
 # Why a socket client and no D-Bus/CLI: EasyEffects 8 listens on a QLocalServer ("EasyEffectsServer", newline-terminated text
 # commands, one reply line for getters). Qt wants a runtime dir that is 0700, and /run/user/1000 is 0710 here (the usr
@@ -18,7 +21,7 @@
 # State is managed, not hand-edited: the preset lives in the repo (~/.config/audio/easyeffects-mic.json, linked as
 # ~/.local/share/easyeffects/input/mic-clean.json), EasyEffects' own rc is local state that `prepare` rewrites (only the
 # managed keys) before every start. Output side keys are never written.
-# Test hooks: EE_SOCKET, EE_TMP_ROOT, EE_CONFIG_DIR, EE_DATA_DIR, EE_PRESET_SRC, EE_KWRITECONFIG, EE_BACKUP_DIR, EE_NO_NOTIFY, EE_PROC_NAME.
+# Test hooks: EE_SOCKET, EE_TMP_ROOT, EE_CONFIG_DIR, EE_DATA_DIR, EE_PRESET_SRC, EE_KWRITECONFIG, EE_BACKUP_DIR, EE_NO_NOTIFY, EE_PROC_NAME, EE_UNIT_NAME, EE_QUIT_WAIT.
 import configparser
 import json
 import os
@@ -332,6 +335,37 @@ def live_inputs(objs):
     return res
 
 
+# capture clients that are meant to hear the raw microphone: the dictation daemon (CLAUDE.md "Audio") and audio-ensure's own probe
+RAW_OK = ("voxtype", "pw-record")
+
+
+def raw_streams(objs):
+    """Capture streams linked straight to a hardware microphone (they bypass EasyEffects): ["app -> source"], voxtype and the
+    probes left out. Typical causes: an app pinned to a device that is not EasyEffects' input, or a node.dont-move stream."""
+    props = {o["id"]: o.get("info", {}).get("props", {}) for o in objs if o.get("type") == "PipeWire:Interface:Node"}
+    res = []
+    for o in objs:
+        if o.get("type") != "PipeWire:Interface:Link":
+            continue
+        i = o.get("info", {})
+        src, dst = props.get(i.get("output-node-id")), props.get(i.get("input-node-id"))
+        if not src or not dst:
+            continue
+        sname, dname = src.get("node.name", ""), dst.get("node.name", "")
+        if src.get("media.class") != "Audio/Source" or sname.startswith(("ee_", "easyeffects")):
+            continue
+        if not str(dst.get("media.class", "")).startswith("Stream/Input/Audio") or dname.startswith(("ee_", "easyeffects")):
+            continue
+        app = dst.get("application.name") or dname
+        ident = " ".join(str(x) for x in (app, dst.get("application.process.binary"), dname)).lower()
+        if any(k in ident for k in RAW_OK) or ident.startswith("easyeffects"):
+            continue
+        item = "%s -> %s" % (app, sname)
+        if item not in res:
+            res.append(item)
+    return res
+
+
 def cmd_auto(args):
     say = print
     if "--notify" in args:
@@ -395,6 +429,7 @@ def cmd_status(args):
         "default_source": run(["pactl", "get-default-source"])[1].strip() or None,
         "source_pin": meta.get("default.configured.audio.source"),
         "input_links": live_inputs(objs),
+        "raw_streams": raw_streams(objs),
     }
     if "--json" in args:
         print(json.dumps(st, indent=2))
@@ -408,6 +443,42 @@ def cmd_status(args):
     print("default source: %s" % (st["default_source"] or "-"))
     print("source pin:     %s" % (st["source_pin"] or "none (automatic)"))
     print("input links:    %s" % (", ".join(st["input_links"]) or "none (idle: EasyEffects only links while an app records)"))
+    print("raw capture:    %s" % (", ".join(st["raw_streams"]) or "none"))
+    return 0
+
+
+def in_unit(pid):
+    """True when the process belongs to the cgroup of easyeffects.service."""
+    try:
+        with open("/proc/%d/cgroup" % pid) as f:
+            return env("EE_UNIT_NAME", "easyeffects.service") in f.read()
+    except OSError:
+        return False
+
+
+def cmd_quit_stray(args):
+    stray = [p for p in ee_pids() if not in_unit(p)]
+    if not stray:
+        return 0
+    wait = float(env("EE_QUIT_WAIT", "5"))
+    print("ee-ctl: EasyEffects runs outside the unit (pid %s), asking it to quit" % " ".join(map(str, stray)), file=sys.stderr)
+    send("quit_app")
+    end = time.monotonic() + wait
+    while time.monotonic() < end and any(p in ee_pids() for p in stray):
+        time.sleep(0.1)
+    left = [p for p in stray if p in ee_pids()]
+    if left:
+        for p in left:
+            try:
+                os.kill(p, 15)
+            except OSError:
+                pass
+        end = time.monotonic() + 3
+        while time.monotonic() < end and any(p in ee_pids() for p in left):
+            time.sleep(0.1)
+    if any(p in ee_pids() for p in stray):
+        print("ee-ctl: the stray EasyEffects did not quit", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -443,7 +514,9 @@ def main(argv):
         return cmd_auto(rest)
     if c in ("start", "restart"):
         return cmd_unit(c)
-    print("usage: ee-ctl socket|prepare|load|ns|status|auto|start|restart (-h)", file=sys.stderr)
+    if c == "quit-stray":
+        return cmd_quit_stray(rest)
+    print("usage: ee-ctl socket|prepare|load|ns|status|auto|start|restart|quit-stray (-h)", file=sys.stderr)
     return 2
 
 

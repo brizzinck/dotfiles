@@ -11,6 +11,8 @@ StartLimitBurst=5
 [Service]
 # a logout removes the Wayland socket: EasyEffects exits and must not crash-loop
 ExecCondition=/bin/sh -c 'test -n "$WAYLAND_DISPLAY" && test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"'
+# an EasyEffects started by hand (launcher, after a tray Quit) would make `prepare` refuse and the unit crash-loop to failed
+ExecStartPre=%h/.local/bin/ee-ctl quit-stray
 ExecStartPre=%h/.local/bin/ee-ctl prepare
 ExecStart=/usr/bin/easyeffects --service-mode --hide-window
 ExecStartPost=%h/.local/bin/ee-ctl load --wait 15

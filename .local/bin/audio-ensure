@@ -104,6 +104,10 @@ ee_problems() {
   esac
   pin="$(jq -r '.source_pin // empty' <<<"$st")"
   [ -z "$pin" ] || printf 'I\tmicrophone is pinned by a manual choice (%s); Automatic in the input picker or ee-ctl auto undoes it\n' "$pin"
+  # capture streams that skip EasyEffects (explicit device that is not its input, node.dont-move); voxtype is meant to be raw
+  while IFS= read -r v; do
+    [ -n "$v" ] && printf 'I\tcapture stream %s is linked straight to the hardware microphone and bypasses EasyEffects\n' "$v"
+  done < <(jq -r '.raw_streams[]?' <<<"$st")
   links="$(jq -r '.input_links | join(" ")' <<<"$st")"
   if [ -n "$links" ] && [ -n "$defsrc" ] && [ "$defsrc" != easyeffects_source ]; then
     case " $links " in *" $defsrc "*) ;; *) printf 'I\tEasyEffects reads from %s, not from the default source %s\n' "$links" "$defsrc" ;; esac

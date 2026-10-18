@@ -515,6 +515,42 @@ X
   grep -q 'try-restart easyeffects' "$F/log" && fail "13 A3: no restart of EasyEffects when wireplumber was left alone" || pass "13 A3: no restart of EasyEffects when wireplumber was left alone"
   rm -f "$T/state/wireplumber/default-profile"
 
+  # A4: capture streams linked straight to a hardware microphone are listed (voxtype and the probes are meant to be raw)
+  ae_fixture
+  node() { printf '{"id":%s,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"%s","node.name":"%s","application.name":"%s"}}}' "$1" "$2" "$3" "$4"; }
+  link() { printf '{"id":%s,"type":"PipeWire:Interface:Link","info":{"output-node-id":%s,"input-node-id":%s}}' "$1" "$2" "$3"; }
+  echo "[$(node 1 Audio/Source "$HWSRC" ""),$(node 2 Stream/Input/Audio "Chromium input" "Google Chrome"),$(node 3 Stream/Input/Audio "alsa_capture.voxtype" "voxtype"),$(node 4 Stream/Input/Audio pw-record "pw-record"),$(node 5 Stream/Input/Audio "ee_sie_rnnoise#0" ""),$(link 10 1 2),$(link 11 1 3),$(link 12 1 4),$(link 13 1 5)]" >"$F/pw-dump.json"
+  ee_stop; ee_start --preset mic-clean; ee_wait
+  out=$(ae --ee); rc=$?
+  [ $rc -eq 0 ] && grep -q "^note: capture stream Google Chrome -> $HWSRC is linked straight to the hardware microphone" <<<"$out" && pass "13 A4: --ee lists a capture stream that skips EasyEffects (info, exit 0)" || fail "13 A4 --ee (rc $rc: $out)"
+  grep -qi 'voxtype\|pw-record\|ee_sie' <<<"$out" && fail "13 A4: voxtype, the probes and EasyEffects' own nodes are not listed" || pass "13 A4: voxtype, the probes and EasyEffects' own nodes are not listed"
+  "$EE" status | grep -q "^raw capture:    Google Chrome -> $HWSRC\$" && [ "$("$EE" status --json | jq -c .raw_streams)" = "[\"Google Chrome -> $HWSRC\"]" ] && pass "13 A4: ee-ctl status shows the raw capture streams (text and json)" || fail "13 A4 status ($("$EE" status | grep raw))"
+  ee_stop
+
+  # A5: an EasyEffects outside the unit is asked to quit before prepare/start
+  rm -f "$F/ee-log" "$F/ee-log.ready"
+  ( exec -a "$EE_PROC_NAME" python3 -I "$HERE/fake-ee.py" "$EE_SOCKET" "$F/ee-log" ) &
+  STRAY=$!; FAKEPIDS+=("$STRAY"); ee_wait
+  EE_QUIT_WAIT=3 "$EE" quit-stray 2>/dev/null; rc=$?
+  sleep 0.2
+  [ $rc -eq 0 ] && logged quit_app "$F/ee-log" && ! kill -0 "$STRAY" 2>/dev/null && pass "13 A5: quit-stray sends quit_app to an EasyEffects outside the unit and it exits" || fail "13 A5 quit-stray (rc $rc)"
+  rm -f "$EE_SOCKET"
+  ( exec -a "$EE_PROC_NAME" python3 -I "$HERE/fake-ee.py" "$EE_SOCKET" "$F/ee-log" ) &
+  STRAY=$!; FAKEPIDS+=("$STRAY"); ee_wait
+  unitname=$(sed -n '$s|.*/||p' /proc/self/cgroup)
+  EE_UNIT_NAME="$unitname" EE_QUIT_WAIT=1 "$EE" quit-stray 2>/dev/null
+  kill -0 "$STRAY" 2>/dev/null && pass "13 A5: an EasyEffects inside the unit's cgroup is left alone" || fail "13 A5 in-unit"
+  kill "$STRAY" 2>/dev/null; wait "$STRAY" 2>/dev/null; rm -f "$EE_SOCKET"
+  ( exec -a "$EE_PROC_NAME" sleep 30 ) &   # does not listen at all: quit_app is not heard, SIGTERM ends it
+  STRAY=$!; FAKEPIDS+=("$STRAY"); sleep 0.3
+  EE_QUIT_WAIT=0.5 "$EE" quit-stray 2>/dev/null; rc=$?
+  sleep 0.2
+  [ $rc -eq 0 ] && ! kill -0 "$STRAY" 2>/dev/null && pass "13 A5: a stray that ignores quit_app gets SIGTERM after the wait" || fail "13 A5 sigterm (rc $rc)"
+  "$EE" quit-stray && pass "13 A5: nothing running = exit 0" || fail "13 A5 idle"
+  U="$REPO/.config/systemd/user/easyeffects.service"
+  q=$(grep -n '^ExecStartPre=.*ee-ctl quit-stray' "$U" | head -1 | cut -d: -f1); pr=$(grep -n '^ExecStartPre=.*ee-ctl prepare' "$U" | head -1 | cut -d: -f1)
+  [ -n "$q" ] && [ -n "$pr" ] && [ "$q" -lt "$pr" ] && pass "13 A5: the unit runs quit-stray before prepare" || fail "13 A5 unit order"
+
 fi
 
 # ── 11. static files ──
