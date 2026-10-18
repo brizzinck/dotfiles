@@ -2,13 +2,15 @@
 (`<repo>/.config/devtools/devtools.py`), never run. Python 3 stdlib only; envs (`<repo>/.local/bin/envs`) is imported as a module
 for root discovery, TOML reading, the agent check, tool paths and the test-mode rules (no copy of that code).
 
-What lives here: the envs module, tool lookup (envs' safe directories plus the user-level install directories, test fakes first
-in verified test mode), per-run directories on tmpfs, the keyboard-layout switch before a TUI starts, small TOML/YAML escapes.
+What lives here: the envs module, tool lookup (envs' safe directories plus the user-level install directories and, for a managed
+user, the shared tree /srv/devtools/bin when it is trustworthy; test fakes first in verified test mode), per-run directories on tmpfs, the keyboard-layout switch before a TUI starts, small TOML/YAML escapes.
 """
 import importlib.machinery
 import importlib.util
 import os
+import pwd
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -58,7 +60,8 @@ USER_BIN = [".local/bin", "go/bin", ".cargo/bin", ".npm-global/bin"]
 
 def tool(name, required=True, hint=None):
     """Absolute path of an external tool: envs' lookup (test fakes first in verified test mode, then /usr/bin, /usr/local/bin,
-    ~/.local/bin), then the user-level install directories. Missing = a message with the install hint, exit 127."""
+    ~/.local/bin), then the user-level install directories, then (a managed user only, tree trusted) /srv/devtools/bin. Missing =
+    a message with the install hint, exit 127."""
     e = envs()
     p = e.tool(name, required=False)
     if p:
@@ -68,13 +71,101 @@ def tool(name, required=True, hint=None):
             c = home() / d / name
             if c.is_file() and os.access(c, os.X_OK):
                 return str(c)
+        c = _shared_tool(name)
+        if c:
+            return c
     if required:
         fail(f"{name} is not installed" + (f" ({hint})" if hint else ""), 127)
     return None
 
 
-USER_TOOLS_HINT = "run ~/dotfiles/infrastructure/dev/user-tools.sh"
-REPO_PKG_HINT = "sudo ~/dotfiles/apply-system.sh --only install"
+# the shared tool tree of the managed users (td, yc): /srv/devtools, filled by `infrastructure/dev/user-tools.sh --shared`
+SHARED_ROOT = "/srv/devtools"
+
+
+def _ww(st):
+    return bool(st.st_mode & 0o022)
+
+
+def shared_bin(root=None, me=None):
+    """`<root>/bin` of the shared tool tree when it may be trusted, else None. Same rule as .config/zsh/devtools.zsh: a real
+    directory with a real `bin/`, owned by root or by the account named in `<root>/.owner` (that file owned by the same account),
+    neither directory nor `.owner` writable by group/other, `bin/` owned like the root, /srv itself root's and not writable by
+    group/other (the real tree only), and the caller is NOT that owner (the owner keeps his own installs; a tree the caller can
+    write is never trusted). ROOT / ME (uid) are for tests; the environment hooks DEVTOOLS_SHARED_ROOT / DEVTOOLS_TEST_UID count
+    only in verified envs test mode and only below one of its tool directories or its scratch runtime / state directory."""
+    e = envs()
+    test_root = False
+    if root is None:
+        root = SHARED_ROOT
+        v = os.environ.get("DEVTOOLS_SHARED_ROOT")
+        scratch = [d for d in (os.environ.get("XDG_RUNTIME_DIR"), os.environ.get("XDG_STATE_HOME")) if d]   # not the real ones in test mode
+        if v and e.TEST_DIRS and os.path.isabs(v) and any(e._under(v, d) for d in list(e.TEST_DIRS) + scratch):
+            root, test_root = v, True
+        u = os.environ.get("DEVTOOLS_TEST_UID")
+        if u and e.TEST_DIRS and u.isdigit() and me is None:
+            me = int(u)
+    else:
+        test_root = True
+    me = os.getuid() if me is None else me
+    try:
+        r = os.lstat(root)
+        b = os.lstat(os.path.join(root, "bin"))
+        if not (stat.S_ISDIR(r.st_mode) and stat.S_ISDIR(b.st_mode)) or _ww(r) or _ww(b) or b.st_uid != r.st_uid:
+            return None
+        owner = r.st_uid
+        if owner != 0:
+            o = os.lstat(os.path.join(root, ".owner"))
+            if not stat.S_ISREG(o.st_mode) or o.st_uid != owner or _ww(o):
+                return None
+            with open(os.path.join(root, ".owner"), "rb") as f:
+                named = f.read(256).decode("utf-8", "replace").strip()
+            try:
+                if pwd.getpwnam(named).pw_uid != owner:
+                    return None
+            except KeyError:
+                return None
+        if owner == me:
+            return None
+        if not test_root:
+            p = os.lstat(os.path.dirname(root))
+            if p.st_uid != 0 or _ww(p):
+                return None
+    except (OSError, ValueError):
+        return None
+    return os.path.join(root, "bin")
+
+
+def _shared_tool(name):
+    """`<shared bin>/NAME` when the tree is trusted and the file it really is sits inside the tree: owned like the tree and
+    neither it nor any directory above it (up to the tree root) writable by group/other."""
+    sb = shared_bin()
+    if not sb:
+        return None
+    c = os.path.join(sb, name)
+    root = os.path.realpath(os.path.dirname(sb))
+    rp = os.path.realpath(c)
+    if not rp.startswith(root + os.sep) or not os.path.isfile(rp) or not os.access(rp, os.X_OK):
+        return None
+    owner = os.lstat(root).st_uid
+    cur = rp
+    while cur != root:
+        st = os.lstat(cur)
+        if st.st_uid != owner or _ww(st):
+            return None
+        cur = os.path.dirname(cur)
+    return c
+
+
+def managed_account():
+    """True for a managed user's account: the launchers run from the published copy (/srv/dotfiles), not from the owner's home."""
+    return not str(REPO).startswith(str(home()) + os.sep)
+
+
+USER_TOOLS_HINT = ("the owner installs it: infrastructure/dev/user-tools.sh --shared (it fills /srv/devtools)" if managed_account()
+                   else "run ~/dotfiles/infrastructure/dev/user-tools.sh")
+REPO_PKG_HINT = ("the owner installs the package: sudo ~/dotfiles/apply-system.sh --only install" if managed_account()
+                 else "sudo ~/dotfiles/apply-system.sh --only install")
 
 
 def runtime_base():

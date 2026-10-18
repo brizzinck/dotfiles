@@ -156,7 +156,8 @@ def run_gitlab(root, inner=False):
     stub.mkdir(mode=0o700)
     D.write_private(stub / "gh", "#!/bin/sh\necho 'gh is disabled for glab-tui (forge): self-update is off' >&2\nexit 1\n")
     os.chmod(stub / "gh", 0o700)
-    env["PATH"] = ":".join([str(stub)] + E.SAFE_DIRS + [str(E.HOME / ".cargo/bin"), str(E.HOME / ".local/bin")])
+    sb = D.shared_bin()                                        # a managed user's glab-tui (and what it starts) may live in /srv/devtools
+    env["PATH"] = ":".join([str(stub)] + E.SAFE_DIRS + [str(E.HOME / ".cargo/bin"), str(E.HOME / ".local/bin")] + ([sb] if sb else []))
     start = run                                                # glab-tui merges <git root>/.glab-tui/config.toml (shell commands)
     if root:
         oh = origin_host(root)

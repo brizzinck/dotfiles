@@ -24,6 +24,8 @@ export ZSH="$HOME/.oh-my-zsh"
 export PATH="$PATH:$HOME/go/bin"
 export PATH="$HOME/.local/bin:$PATH"
 export PATH="$HOME/.cargo/bin:$PATH"
+# managed users (td, yc): the pinned dev tools of /srv/devtools at the end of PATH while that tree is trustworthy (see the file)
+[[ -r ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/devtools.zsh ]] && source ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/devtools.zsh
 
 # Everforest variant (black | night): ghostty, tmux, fzf, delta and nvim read ~/.local/state/theme/current, which the
 # `theme` command flips. Recreate the default (black) when the link is missing, e.g. on a fresh machine.

@@ -1066,6 +1066,35 @@ printf 'info  db menu first frame: %d ms (includes the tmux start and the pollin
 check "16: the db menu draws its first frame within 800 ms" test "$ms" -lt 800
 }
 
+sections_17() {
+section "17 USERS-SYNC: the shared tool tree /srv/devtools in the launchers' lookup (hooks only in verified test mode)"
+reset
+local ST="$XDG_STATE_HOME/shared-devtools" me; me=$(id -un)
+mkdir -p "$ST/bin"; printf '%s\n' "$me" >"$ST/.owner"; chmod 755 "$ST" "$ST/bin"; chmod 644 "$ST/.owner"
+printf '#!/bin/sh\necho shared-tool-ran\n' >"$ST/bin/sharedonly-tool"; chmod 755 "$ST/bin/sharedonly-tool"
+local py='import sys; sys.path.insert(0, sys.argv[1]); import devtools as D; print(D.tool("sharedonly-tool", required=False)); print(D.shared_bin())'
+local out
+out=$(DEVTOOLS_SHARED_ROOT="$ST" DEVTOOLS_TEST_UID=$(( $(id -u) + 4242 )) python3 -I -B -c "$py" "$REPO/.config/devtools" 2>&1)
+check "17: a managed uid finds a tool that exists only in the trusted shared tree" test "$out" = "$ST/bin/sharedonly-tool
+$ST/bin"
+out=$(DEVTOOLS_SHARED_ROOT="$ST" python3 -I -B -c "$py" "$REPO/.config/devtools" 2>&1)
+check "17: the tree's own owner does not use it (unchanged for the owner)" test "$out" = "None
+None"
+chmod g+w "$ST"
+out=$(DEVTOOLS_SHARED_ROOT="$ST" DEVTOOLS_TEST_UID=$(( $(id -u) + 4242 )) python3 -I -B -c "$py" "$REPO/.config/devtools" 2>&1)
+check "17: a group-writable tree is not trusted" test "$out" = "None
+None"
+chmod g-w "$ST"
+out=$(env -u ENVS_TOOL_PATH DEVTOOLS_SHARED_ROOT="$ST" DEVTOOLS_TEST_UID=$(( $(id -u) + 4242 )) python3 -I -B -c "$py" "$REPO/.config/devtools" 2>&1)
+check "17: the hooks do nothing outside verified test mode (no ENVS_TOOL_PATH)" test "$out" = "None
+None"
+out=$(DEVTOOLS_SHARED_ROOT=/tmp DEVTOOLS_TEST_UID=$(( $(id -u) + 4242 )) python3 -I -B -c "$py" "$REPO/.config/devtools" 2>&1)
+check "17: a hook root outside the scratch directories is ignored" test "$out" = "None
+None"
+local before; before=$(DEVTOOLS_SHARED_ROOT="$ST" DEVTOOLS_TEST_UID=$(( $(id -u) + 4242 )) python3 -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import devtools as D; print(D.tool("lazysql"))' "$REPO/.config/devtools" 2>&1)
+check "17: a tool that is in the fakes still wins over the shared tree" test "$before" = "$HERE/bin/lazysql"
+}
+
 run_section() { [[ -z $ONLY || $ONLY == "$1" ]] && "$2"; }
 run_section 1 sections_1
 run_section 2 sections_2_3
@@ -1082,6 +1111,7 @@ run_section 13u sections_13u
 run_section 15a sections_15a
 run_section 15b sections_15b
 run_section 15c sections_15c
+run_section 17 sections_17
 ((QUICK)) || run_section 13 tmux_menu_section
 ((QUICK)) || run_section 16 timing_section
 ((QUICK)) && { [[ -z $ONLY ]] && printf '\n(--quick: the private-tmux menu sections 13 and 14 are skipped)\n'; }

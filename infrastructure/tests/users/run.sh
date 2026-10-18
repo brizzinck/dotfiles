@@ -403,6 +403,74 @@ for _ in $(seq 40); do grep -q -- "--prefix $T/dtsync\$" "$FAKE_UT_LOG" && break
 grep -qx "user-tools --shared --prefix $T/dtsync" "$FAKE_UT_LOG" && ok || bad "usr sync did not start devtools-sync in the background ($(cat "$FAKE_UT_LOG"))"
 unset FAKE_UT_LOG USR_DEVTOOLS_SCRIPT
 
+# ── USERS-SYNC C3: /srv/devtools/bin on a managed user's PATH and in the launchers' lookup, only while the tree is trusted ─────
+# mk NAME: a fake shared tree owned by the owner (this user), .owner naming him; the "managed user" is a name / uid that is not him
+mk_tree() { local d="$T/dtree-$1"; mkdir -p "$d/bin"; printf '%s\n' "$ME" >"$d/.owner"; chmod 755 "$d" "$d/bin"; chmod 644 "$d/.owner"; printf '#!/bin/sh\n' >"$d/bin/lazysql"; chmod 755 "$d/bin/lazysql"; echo "$d"; }
+zpath() { # zpath ROOT USER -> position of ROOT/bin in PATH (0 = not there) as zsh sees it
+  DF_DEVTOOLS_TEST=1 DF_DEVTOOLS_ROOT="$1" DF_DEVTOOLS_ME="$2" zsh -f -c "source '$REPO/.config/zsh/devtools.zsh'; print -r -- \${path[(Ie)$1/bin]}"
+}
+d="$(mk_tree a)"
+[ "$(zpath "$d" td)" -gt 0 ] && ok || bad "zsh: a managed user does not get the trusted tree on PATH"
+expect "zsh: the owner's PATH is unchanged" 0 "$(zpath "$d" "$ME")"
+out="$(DF_DEVTOOLS_TEST=1 DF_DEVTOOLS_ROOT="$d" DF_DEVTOOLS_ME=td zsh -f -c "path=(/usr/bin /bin); source '$REPO/.config/zsh/devtools.zsh'; print -r -- \$path[-1]")"
+expect "zsh: the tree is appended (the user's own installs win)" "$d/bin" "$out"
+d="$(mk_tree b)"; chmod g+w "$d"; expect "zsh: group-writable root refused" 0 "$(zpath "$d" td)"
+d="$(mk_tree c)"; chmod o+w "$d/bin"; expect "zsh: other-writable bin refused" 0 "$(zpath "$d" td)"
+d="$(mk_tree d)"; echo nobody-else >"$d/.owner"; expect "zsh: .owner naming someone else refused" 0 "$(zpath "$d" td)"
+d="$(mk_tree e)"; mv "$d/.owner" "$d/.owner.gone"; expect "zsh: no .owner refused" 0 "$(zpath "$d" td)"
+d="$(mk_tree f)"; chmod 666 "$d/.owner"; expect "zsh: writable .owner refused" 0 "$(zpath "$d" td)"
+d="$(mk_tree g)"; ln -s "$d" "$T/dtree-link"; expect "zsh: a symlinked root refused" 0 "$(zpath "$T/dtree-link" td)"
+d="$(mk_tree h)"; mv "$d/bin" "$d/bin-x"; ln -s bin-x "$d/bin"; expect "zsh: a symlinked bin refused" 0 "$(zpath "$d" td)"
+d="$(mk_tree i)"
+expect "zsh: the hooks do nothing without DF_DEVTOOLS_TEST=1" 0 "$(DF_DEVTOOLS_ROOT="$d" DF_DEVTOOLS_ME=td zsh -f -c "source '$REPO/.config/zsh/devtools.zsh'; print -r -- \${path[(Ie)$d/bin]}")"
+expect "zsh: the real /srv/devtools is not used while it is absent" 0 "$(zsh -f -c "source '$REPO/.config/zsh/devtools.zsh'; print -r -- \${path[(Ie)/srv/devtools/bin]}")"
+grep -q 'zsh/devtools.zsh' "$REPO/.zshrc" && ok || bad ".zshrc does not source zsh/devtools.zsh"
+# the launchers' lookup (devtools.py): the same rule, in Python
+out="$(python3 -I -B - "$REPO/.config/devtools" "$T" "$ME" <<'PY' 2>&1
+import os, sys, stat
+sys.path.insert(0, sys.argv[1])
+import devtools as D
+T, me = sys.argv[2], sys.argv[3]
+mine = os.getuid()
+def tree(n):
+    d = f"{T}/pytree-{n}"; os.makedirs(f"{d}/bin"); os.chmod(d, 0o755); os.chmod(f"{d}/bin", 0o755)
+    open(f"{d}/.owner", "w").write(me + "\n"); os.chmod(f"{d}/.owner", 0o644)
+    open(f"{d}/bin/lazysql", "w").write("#!/bin/sh\n"); os.chmod(f"{d}/bin/lazysql", 0o755)
+    return d
+def r(label, got, want):
+    print(f"{label}|{'ok' if got == want else f'FAIL got {got!r} want {want!r}'}")
+d = tree("a")
+r("py managed user gets the tree", D.shared_bin(d, me=mine + 12345), d + "/bin")
+r("py owner does not", D.shared_bin(d, me=mine), None)
+d = tree("b"); os.chmod(d, 0o775); r("py group-writable root", D.shared_bin(d, me=mine + 1), None)
+d = tree("c"); os.chmod(d + "/bin", 0o757); r("py other-writable bin", D.shared_bin(d, me=mine + 1), None)
+d = tree("d"); open(d + "/.owner", "w").write("root\n"); r("py .owner naming another account", D.shared_bin(d, me=mine + 1), None)
+d = tree("e"); open(d + "/.owner", "w").write("no-such-account-xyz\n"); r("py .owner naming an unknown account", D.shared_bin(d, me=mine + 1), None)
+d = tree("f"); os.rename(d + "/.owner", d + "/.owner.gone"); r("py no .owner", D.shared_bin(d, me=mine + 1), None)
+d = tree("g"); os.chmod(d + "/.owner", 0o666); r("py writable .owner", D.shared_bin(d, me=mine + 1), None)
+d = tree("h"); os.symlink(d, f"{T}/pylink"); r("py symlinked root", D.shared_bin(f"{T}/pylink", me=mine + 1), None)
+d = tree("i"); os.rename(d + "/bin", d + "/bin-x"); os.symlink("bin-x", d + "/bin"); r("py symlinked bin", D.shared_bin(d, me=mine + 1), None)
+r("py a missing root", D.shared_bin(f"{T}/pytree-none", me=mine + 1), None)
+# _shared_tool: the file must really sit inside the tree and neither it nor its directories may be group/other-writable
+d = tree("j")
+D.shared_bin = lambda root=None, me=None, _d=d: _d + "/bin"
+r("py tool inside the tree", D._shared_tool("lazysql"), d + "/bin/lazysql")
+os.chmod(d + "/bin/lazysql", 0o775); r("py group-writable tool refused", D._shared_tool("lazysql"), None); os.chmod(d + "/bin/lazysql", 0o755)
+open(f"{T}/outside-tool", "w").write("#!/bin/sh\n"); os.chmod(f"{T}/outside-tool", 0o755)
+os.symlink(f"{T}/outside-tool", d + "/bin/evil"); r("py link leaving the tree refused", D._shared_tool("evil"), None)
+os.makedirs(d + "/sub"); os.chmod(d + "/sub", 0o777); open(d + "/sub/t", "w").write("#!/bin/sh\n"); os.chmod(d + "/sub/t", 0o755); os.symlink("../sub/t", d + "/bin/viasub")
+r("py tool below a writable directory refused", D._shared_tool("viasub"), None)
+r("py a missing tool", D._shared_tool("nothing-here"), None)
+PY
+)"
+while IFS='|' read -r label res; do
+  [ -n "$label" ] || continue
+  [ "$res" = ok ] && ok || bad "$label: $res"
+done <<<"$out"
+case "$out" in *"py tool inside the tree|ok"*) ;; *) bad "devtools.py harness did not run: $out" ;; esac
+# the hints of a missing tool name the owner step for a managed account
+grep -q 'managed_account' "$REPO/.config/devtools/devtools.py" && ok || bad "devtools.py has no managed_account()"
+
 # ── nvim: which plugin/Mason root is chosen ─────────────────────────────────────
 if [ "$QUICK" = 0 ] && command -v nvim >/dev/null 2>&1; then
   mkdir -p "$T/shared/lazy"
