@@ -67,7 +67,10 @@ chmod +x "$T/fakebin/getent"
 mkdir -p "$T/dryhome/skel"
 setfacl -d -m g::r-x,o::r-x,m::r-x "$T/dryhome/skel" 2>/dev/null
 printf 'echo hi\n' >"$T/dryhome/leak.sh"
-dry="$(PATH="$T/fakebin:$PATH" FAKE_PASSWD_OWNER="$ME" USERS_ACL_ROOT="$T/dryhome" "$REPO/apply-system.sh" --dry-run --only users 2>&1)"
+# BW-ORG: the owner's real overlay (company folder names) must never reach a test: VAULT_SHARE_LOCAL_SCOPES points at an invented one
+printf 'td\tWork/Acme/**\nyc\tWork/Globex/**\n' >"$T/vs-local.tsv"
+chmod 600 "$T/vs-local.tsv"
+dry="$(PATH="$T/fakebin:$PATH" FAKE_PASSWD_OWNER="$ME" USERS_ACL_ROOT="$T/dryhome" VAULT_SHARE_LOCAL_SCOPES="$T/vs-local.tsv" "$REPO/apply-system.sh" --dry-run --only users 2>&1)"
 case "$dry" in *"Runas_Alias USR_MANAGED = td, yc"*) ok ;; *) bad "sudoers Runas list is not td, yc" ;; esac
 case "$dry" in *"var managed = [\"td\", \"yc\"];"*) ok ;; *) bad "polkit list is not td, yc" ;; esac
 sudoers_rules="$(printf '%s\n' "$dry" | sed -n '/rendered .*50-usr-managed (mode/,/install -Dm440/p' | grep -E '\| (Runas_Alias|[a-z]+ ALL =)')"
@@ -82,6 +85,49 @@ if printf '%s\n' "$dry" | grep -E '^\[dry-run\] useradd .* (td|yc)$' >/dev/null;
 case "$dry" in *"install -d -o $ME -g "*" -m 755 /srv/devtools"* | *"unchanged: /srv/devtools ($ME:"*" 755)"*) ok ;; *) bad "dry run does not create /srv/devtools (owner:owner 755)" ;; esac
 case "$dry" in *"/dev/stdin /srv/devtools/.owner"* | *"unchanged: /srv/devtools/.owner ($ME)"*) ok ;; *) bad "dry run does not write /srv/devtools/.owner" ;; esac
 grep -q '/srv/devtools' "$REPO/infrastructure/users/rollback.sh" && bad "rollback.sh must not name /srv/devtools (it is data, never removed)" || ok
+# BW-ORG C5: /run/vault-share (tmpfiles) and /etc/vault-share/scopes.tsv (rendered as the owner from the repo file + the overlay)
+vsdry() { PATH="$T/fakebin:$PATH" FAKE_PASSWD_OWNER="$ME" USERS_ACL_ROOT="$T/dryhome" VAULT_SHARE_LOCAL_SCOPES="$1" "$REPO/apply-system.sh" --dry-run --only users 2>&1; }
+vs_rules() { printf '%s\n' "$1" | sed -n '/rendered \/etc\/vault-share\/scopes.tsv/,/install -Dm640/p' | grep -P '^\s+\| [a-z]'; }
+case "$dry" in *"| d /run/vault-share 0755 $ME "*" -"*) ok ;; *) bad "5.1 dry run does not render the tmpfiles rule d /run/vault-share 0755 OWNER GROUP" ;; esac
+case "$dry" in *"systemd-tmpfiles --create /etc/tmpfiles.d/vault-share.conf"*) ok ;; *) bad "5.1 dry run does not run systemd-tmpfiles --create" ;; esac
+vsr="$(vs_rules "$dry")"
+for want in "td	Shared/**" "td	Users/td/**" "yc	Shared/**" "yc	Users/yc/**"; do
+  case "$vsr" in *"| $want"*) ok ;; *) bad "5.2 rendered scopes lack: $want" ;; esac
+done
+case "$vsr" in *aimcp* | *tgconfirm* | *Linux*) bad "5.2 rendered scopes name a service user or Linux/..." ;; *) ok ;; esac
+case "$vsr" in *"| td	Work/Acme/**"*"| yc	Work/Globex/**"*) ok ;; *) bad "5.3 the overlay rows (td Work/Acme/**, yc Work/Globex/**) are not in the scopes" ;; esac
+case "$vsr" in *"| td	Work/Globex"* | *"| yc	Work/Acme"*) bad "5.3 an overlay row leaked to the other user" ;; *) ok ;; esac
+case "$dry" in *"install -d -o root -g root -m 755 /etc/vault-share"*) ok ;; *) bad "5.2 dry run does not create /etc/vault-share (root:root 755)" ;; esac
+# 5.4 an overlay that is group-writable or a symlink is ignored with a warning
+cp "$T/vs-local.tsv" "$T/vs-gw.tsv"
+chmod 660 "$T/vs-gw.tsv"
+o="$(vsdry "$T/vs-gw.tsv")"
+case "$o" in *"ignored: group- or other-writable"*) ok ;; *) bad "5.4 a group-writable overlay is not reported as ignored" ;; esac
+case "$(vs_rules "$o")" in *Work/Acme*) bad "5.4 a group-writable overlay was still used" ;; *) ok ;; esac
+ln -sf "$T/vs-local.tsv" "$T/vs-link.tsv"
+o="$(vsdry "$T/vs-link.tsv")"
+case "$(vs_rules "$o")" in *Work/Acme*) bad "5.4 a symlinked overlay was still used" ;; *) ok ;; esac
+# 5.5 an invalid overlay row: the renderer prints nothing, the old file stays (no install of scopes.tsv)
+printf 'td\t**\n' >"$T/vs-bad.tsv"
+chmod 600 "$T/vs-bad.tsv"
+o="$(vsdry "$T/vs-bad.tsv")"
+case "$o" in *"install -Dm640"*"/etc/vault-share/scopes.tsv"*) bad "5.5 an invalid overlay still installs scopes.tsv" ;; *) ok ;; esac
+case "$o" in *"vault-share/scopes.tsv failed its syntax check"* | *"scopes.tsv failed"*) ok ;; *) bad "5.5 an invalid overlay is not reported (the old file stays)" ;; esac
+# 5.6 the real repo scopes.tsv renders and passes check-scopes
+rendered="$(python3 -I -B "$REPO/.config/hypr/scripts/vault-share.py" render-scopes --repo "$REPO/infrastructure/vault-share/scopes.tsv" --managed "td yc" --owner "$ME" 2>&1)"
+printf '%s\n' "$rendered" >"$T/real-scopes.tsv"
+if python3 -I -B "$REPO/.config/hypr/scripts/vault-share.py" check-scopes "$T/real-scopes.tsv" --owner "$ME" >/dev/null 2>&1; then ok; else bad "5.6 the rendered repo scopes.tsv fails check-scopes"; fi
+grep -q 'Work/' "$REPO/infrastructure/vault-share/scopes.tsv" && bad "5.6 the repo scopes.tsv names a company folder (they belong in the owner's local overlay)" || ok
+# 5.7 rollback.sh removes the three vault-share paths and stops the socket (scratch tree, ROLLBACK_TEST)
+mkdir -p "$T/rb7/etc/vault-share" "$T/rb7/etc/tmpfiles.d" "$T/rb7/run/vault-share" "$T/st7"
+: >"$T/rb7/etc/vault-share/scopes.tsv"
+: >"$T/rb7/etc/tmpfiles.d/vault-share.conf"
+rb7="$(PATH="$T/fakebin:$PATH" FAKE_PASSWD_OWNER="$ME" FAKE_PASSWD_HOME="$T/dryhome" ROLLBACK_TEST=1 ROLLBACK_OWNER="$ME" ROLLBACK_STATE="$T/st7" ROLLBACK_ETC="$T/rb7" ROLLBACK_SRV="$T/rb7" "$REPO/infrastructure/users/rollback.sh" 2>&1)"
+for want in "etc/tmpfiles.d/vault-share.conf" "etc/vault-share" "run/vault-share"; do
+  case "$rb7" in *"removed $T/rb7/$want"*) ok ;; *) bad "5.7 rollback.sh did not remove /$want: $rb7" ;; esac
+done
+[ -e "$T/rb7/etc/vault-share" ] && bad "5.7 /etc/vault-share still exists after rollback" || ok
+
 # render the real templates for the owner and check them with the real parsers
 sed -e "s|@OWNER@|$ME|g" -e 's|@MANAGED@|td, yc|' "$REPO/infrastructure/users/sudoers/50-usr-managed.in" >"$T/sudoers"
 if visudo -c -f "$T/sudoers" >/dev/null 2>&1; then ok; else bad "visudo rejects the rendered sudoers drop-in"; fi

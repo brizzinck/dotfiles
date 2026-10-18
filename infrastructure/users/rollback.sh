@@ -2,6 +2,8 @@
 # Rollback of `sudo ./apply-system.sh --only users` (root). Idempotent, prints every step.
 #   sudo infrastructure/users/rollback.sh            remove the sudoers drop-in and the polkit rule; give every managed user its ACL
 #                                                    entries on the owner's home back (recursively, rwx on directories, rwX on files)
+#                                                    and the vault-share broker's parts: /etc/vault-share, /etc/tmpfiles.d/vault-share.conf,
+#                                                    /run/vault-share (the owner's vault-share.socket is stopped)
 #   sudo infrastructure/users/rollback.sh --srv      also remove /srv/dotfiles and /srv/nvim-shared
 #   sudo infrastructure/users/rollback.sh --home-acl also drop the owner's ACL from managed homes that had none before (yc)
 #   sudo infrastructure/users/rollback.sh --home-acl-cleanup
@@ -22,7 +24,7 @@ for a in "$@"; do
     --srv) DO_SRV=1 ;;
     --home-acl) DO_HOME=1 ;;
     --home-acl-cleanup) DO_CLEAN=1 ;;
-    -h | --help) sed -n '2,19p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h | --help) sed -n '2,21p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "unknown argument: $a" >&2; exit 2 ;;
   esac
 done
@@ -52,6 +54,18 @@ fi
 
 for f in "$ETC"/etc/sudoers.d/50-usr-managed "$ETC"/etc/polkit-1/rules.d/50-usr-managed.rules; do
   if [ -e "$f" ]; then rm -f -- "$f"; echo "removed $f"; else echo "absent: $f"; fi
+done
+
+# vault-share (BW-ORG): the owner's socket stops, then the tmpfiles rule, the scope file and the socket directory go
+if [ -z "${ROLLBACK_TEST:-}" ] && [ -S "/run/user/$(id -u "$OWNER")/bus" ]; then
+  sudo -u "$OWNER" -H env XDG_RUNTIME_DIR="/run/user/$(id -u "$OWNER")" systemctl --user disable --now vault-share.socket vault-share.service \
+    >/dev/null 2>&1 && echo "stopped and disabled vault-share.socket for $OWNER" || echo "vault-share.socket: nothing to stop"
+fi
+for f in "$ETC"/etc/tmpfiles.d/vault-share.conf; do
+  if [ -e "$f" ]; then rm -f -- "$f"; echo "removed $f"; else echo "absent: $f"; fi
+done
+for d in "$ETC"/etc/vault-share "$ETC"/run/vault-share; do
+  if [ -e "$d" ]; then rm -rf -- "$d"; echo "removed $d"; else echo "absent: $d"; fi
 done
 
 for u in $(managed_users); do

@@ -1,0 +1,3 @@
+# vault-share broker socket directory (BW-ORG): owner-owned and traversable by td / yc, who can connect to the 0666 socket in it
+# but create nothing. A user manager cannot create a directory below /run, so systemd-tmpfiles does. Rendered by apply-system.sh.
+d /run/vault-share 0755 @OWNER@ @GROUP@ -

@@ -1235,6 +1235,76 @@ users_home_acl() {
   changed "$h: ACL u:$OWNER:rwx + default ACL (existing tree normalised once, .ssh/.gnupg skipped)"
 }
 
+# --- vault-share (BW-ORG): /run/vault-share and /etc/vault-share/scopes.tsv ----------------------------------------------------
+# td and yc read their part of the owner's vault through the broker in his user manager (.config/hypr/scripts/vault-share.py).
+# Root only prepares the two things a user manager cannot: the socket directory (systemd-tmpfiles: owner-owned 0755) and the scope
+# file /etc/vault-share/scopes.tsv (root:OWNERGROUP 0640) the broker trusts. The scopes are rendered AS THE OWNER (root never
+# runs repo code and never reads the owner's overlay itself) from infrastructure/vault-share/scopes.tsv (generic rows) and the
+# owner's ~/.config/vault-share/scopes.local.tsv (company folder rows, not in the repo; used only when it is his, not a symlink
+# and not group/other-writable). VAULT_SHARE_LOCAL_SCOPES replaces that path (test hook, like USERS_ACL_ROOT).
+USERS_VS_RUN=/run/vault-share
+USERS_VS_ETC=/etc/vault-share
+USERS_VS_TMPFILES=/etc/tmpfiles.d/vault-share.conf
+users_render_vs_tmpfiles() {
+  sed -e "s|@OWNER@|$OWNER|g" -e "s|@GROUP@|$(id -gn "$OWNER")|g" "$INFRA/vault-share/tmpfiles.conf.in"
+}
+users_check_vs_tmpfiles() { grep -qE "^d $USERS_VS_RUN 0755 $OWNER [^ ]+ -$" "$1"; }
+users_render_vs_scopes() {
+  local local_f="${VAULT_SHARE_LOCAL_SCOPES:-$OWNER_HOME/.config/vault-share/scopes.local.tsv}" pre=()
+  [ "$(id -un)" = "$OWNER" ] || pre=(sudo -u "$OWNER" -H)
+  "${pre[@]}" /usr/bin/python3 -I "$REPO/.config/hypr/scripts/vault-share.py" render-scopes \
+    --repo "$INFRA/vault-share/scopes.tsv" --local "$local_f" --managed "$(managed_users interactive | paste -sd' ' -)" --owner "$OWNER"
+}
+# a render failure leaves the temp file empty (the renderer prints nothing unless every rule is valid): then the old file stays
+users_check_vs_scopes() {
+  [ -s "$1" ] && ! grep -vE $'^(#.*|[a-z_][a-z0-9_-]{0,30}\t[^\t]+)$' "$1" | grep -q .
+}
+users_vault_share() {
+  local grp tmp_run_changed=0 uid
+  grp="$(id -gn "$OWNER")"
+  # 1. the socket directory
+  if [ -d "$USERS_VS_RUN" ] && [ "$(stat -c '%U:%G %a' "$USERS_VS_RUN")" = "$OWNER:$grp 755" ]; then
+    log "unchanged: $USERS_VS_RUN ($OWNER:$grp 755)"
+  else
+    tmp_run_changed=1
+  fi
+  users_install_rendered users_render_vs_tmpfiles "$USERS_VS_TMPFILES" 644 users_check_vs_tmpfiles || true
+  if [ "$tmp_run_changed" -eq 1 ]; then
+    run systemd-tmpfiles --create "$USERS_VS_TMPFILES"
+    changed "$USERS_VS_RUN created/fixed ($OWNER:$grp 755: td and yc may connect to the socket in it, not create anything)"
+  fi
+  # 2. the scope file: root:OWNERGROUP 0640 in a root-owned 0755 directory
+  if [ -d "$USERS_VS_ETC" ] && [ "$(stat -c '%U:%G %a' "$USERS_VS_ETC")" = "root:root 755" ]; then
+    log "unchanged: $USERS_VS_ETC (root:root 755)"
+  else
+    run install -d -o root -g root -m 755 "$USERS_VS_ETC"
+    changed "$USERS_VS_ETC created/fixed (root:root 755)"
+  fi
+  users_install_rendered users_render_vs_scopes "$USERS_VS_ETC/scopes.tsv" 640 users_check_vs_scopes || true
+  if [ -e "$USERS_VS_ETC/scopes.tsv" ] && [ "$(stat -c '%U:%G %a' "$USERS_VS_ETC/scopes.tsv")" != "root:$grp 640" ]; then
+    run chown "root:$grp" "$USERS_VS_ETC/scopes.tsv"
+    run chmod 640 "$USERS_VS_ETC/scopes.tsv"
+    changed "$USERS_VS_ETC/scopes.tsv is root:$grp 640 (the broker, running as $OWNER, reads it through the group; td and yc cannot)"
+  fi
+  # 3. the owner's socket unit (his manager must run for that; install.sh enables it at the first login otherwise)
+  uid="$(id -u "$OWNER")"
+  if [ -S "/run/user/$uid/bus" ] && [ "$DRY_RUN" -eq 0 ]; then
+    if sudo -u "$OWNER" -H env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user is-enabled vault-share.socket >/dev/null 2>&1; then
+      if [ "$tmp_run_changed" -eq 1 ] || ! sudo -u "$OWNER" -H env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user is-active vault-share.socket >/dev/null 2>&1; then
+        run_as_owner env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user restart vault-share.socket ||
+          warn "users: vault-share.socket did not start (journalctl --user -u vault-share.socket)"
+        changed "vault-share.socket (re)started in the user manager of $OWNER"
+      fi
+    else
+      followup "vault-share: as $OWNER run: systemctl --user enable --now vault-share.socket   # install.sh does it at the next run"
+    fi
+  elif [ "$DRY_RUN" -eq 1 ]; then
+    log "[dry-run] systemctl --user restart vault-share.socket (as $OWNER, only when the directory changed or the socket is down)"
+  else
+    followup "vault-share: log in once, then: systemctl --user enable --now vault-share.socket   # install.sh does it too"
+  fi
+}
+
 section_users() {
   header "users"
   local lib="$USERS_DIR/lib.sh" u problems usr_cmd grp nvim_mode has_profile_user
@@ -1297,6 +1367,9 @@ section_users() {
     run install -m 644 -o "$OWNER" -g "$grp" /dev/stdin "$USERS_SRV_DEVTOOLS/.owner" <<<"$OWNER"
     changed "$USERS_SRV_DEVTOOLS/.owner names $OWNER (user-tools.sh --shared fills the tree as $OWNER)"
   fi
+
+  # 4c. vault-share: the socket directory and the scope file the broker in the owner's session trusts (td / yc get no vault of their own)
+  users_vault_share
 
   # 5. passwordless become for the owner: sudoers + polkit, validated before they are installed
   if [ -n "$(managed_users become)" ]; then

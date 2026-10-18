@@ -307,6 +307,9 @@ log "Local LLM: token, on-demand socket, default model (1.3 GB, resumable, sha25
 systemctl --user daemon-reload 2>/dev/null || true
 systemctl --user enable --now llm.socket 2>/dev/null \
   || later "enable the local LLM socket once logged in: systemctl --user enable --now llm.socket"
+# vault-share (BW-ORG): the broker socket for td / yc; /run/vault-share comes from `sudo ./apply-system.sh --only users`, until then the socket fails to start
+systemctl --user enable --now vault-share.socket 2>/dev/null \
+  || later "enable the vault-share broker socket (after sudo ./apply-system.sh --only users): systemctl --user enable --now vault-share.socket"
 "$HOME/.local/bin/llm" models fetch --default \
   || later "download the local LLM model: llm models fetch --default   (then: llm status)"
 
