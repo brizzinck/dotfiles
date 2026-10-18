@@ -147,3 +147,4 @@ audit	=TUIs: btop, yazi, lazygit, lazydocker, wiremix, bluetui, pacseek, pik	the
 audit	=Rofi app launcher (SUPER+Space)	Ctrl+J / Ctrl+K, Ctrl+D / Ctrl+U, Esc (ua/ru twins generated)	list keys only, no modes	rofi has no modal editing; every other menu is the modal fzf list
 audit	=Waybar modules	every click action also exists as a hub row or leader item (SUPER+M, SUPER+;)	pointer only	waybar takes no keyboard focus; the keyboard route is the hub and the leader menu
 audit	=GRUB menu and the text console login (before the greeter)	Arrow keys, Enter; Ctrl+Alt+F1..F6 switch consoles	no vim keys	firmware and boot loader level, no configurable keymap
+zsh-helpers	git leaks	Secret scan of the staged changes with gitleaks (the pre-commit hook runs the same rules; values redacted)

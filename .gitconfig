@@ -47,6 +47,8 @@
 	lg = log --graph --oneline --decorate --all
 	st = status -sb
 	undo = reset --soft HEAD~1
+	# secret scan of the staged changes (the dotfiles pre-commit hook runs the same rules; values redacted)
+	leaks = !gitleaks git --staged --no-banner --redact -v
 [filter "lfs"]
 	process = git-lfs filter-process
 	required = true

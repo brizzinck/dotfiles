@@ -1,0 +1,2 @@
+# DEV-a: secret scan, shell history, long-command notification. Format: see the header of ~/.config/hub/hub.
+secrets-scan	Fix	Secrets scan of the dotfiles (gitleaks, whole history)	-	tui	+pause cd ~/dotfiles && gitleaks git --no-banner --redact -v --exit-code 3 -c .gitleaks.toml . && echo "no secrets found"	-	gitleaks	Runs the same rules as the pre-commit hook over every commit of the public dotfiles repo (values redacted). The hook itself only scans what you stage; bypass it only deliberately with git commit --no-verify.	f g;Secrets scan

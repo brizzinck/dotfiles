@@ -1,0 +1,17 @@
+# gitleaks config of this public repo: the default rules plus exact allowlists for known false positives.
+# Used by .githooks/pre-commit (staged changes; the COMMITTED version of this file) and doctor `gitleaks` (whole history).
+# A new false positive: add an exact `regexes` entry (prefer it over `paths`), commit this file ALONE, then the change.
+# Never allowlist a real secret: remove and rotate it.
+title = "dotfiles"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Fake values in tests and prose (full-history scan 2026-10-18)"
+regexTarget = "secret"
+regexes = [
+  '''^Bitwarden/Vaultwarden$''',             # CLAUDE.md "Passwords and 2FA: Bitwarden/Vaultwarden" (generic-api-key)
+  '''^abcdef0123456789$''',                  # infrastructure/tests/mcp/bin/dunstctl fake notification
+  '''^0123456789abcdef0123456789abcdef$''',  # infrastructure/tests/mcp/run.sh fake api_hash
+]

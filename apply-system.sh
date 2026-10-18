@@ -266,6 +266,8 @@ REPO_PACKAGES=(
   # cli tools (shellcheck comes from the AUR as shellcheck-bin, see AUR_PACKAGES)
   bat eza git-delta github-cli trash-cli dust duf watchexec just go-yq xh shfmt direnv
   dive hyperfine
+  # DEV-a: gitleaks = secret scan of the pre-commit hook of the public dotfiles repo (.githooks/pre-commit)
+  gitleaks
   # phase 2: OCR (rus+eng), QR/barcodes, monitor brightness over DDC/CI, ports, calculator, GIF, cleanup, timers, network
   tesseract tesseract-data-eng tesseract-data-rus zbar qrencode ddcutil pik
   libqalculate chafa gifski kondo lostfiles termdown bandwhich lsof

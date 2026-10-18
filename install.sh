@@ -60,6 +60,7 @@ packages=(
   xorg-xcursorgen librsvg                                                           # build deps of the local everforest-cursor-theme package (infrastructure/cursor)
   rofimoji wtype udiskie                                                            # polkit agent, clipboard, OSD, screenshots, picker, emoji (rofimoji = the emoji data of emoji.sh), automount
   bat eza git-delta github-cli trash-cli dust duf watchexec just go-yq xh shfmt direnv dive hyperfine
+  gitleaks                                                                          # secret scan of the dotfiles pre-commit hook (.githooks/pre-commit, doctor gitleaks-history)
   tesseract tesseract-data-eng tesseract-data-rus zbar qrencode ddcutil pik                       # OCR (rus+eng), QR, DDC/CI monitor brightness, ports
   libqalculate chafa gifski kondo lostfiles termdown bandwhich lsof                           # calculator, image previews (chafa: kitty graphics in fzf-menu), GIF, cleanup, timer, network, open files
   tlp-pd                                                                                          # TLP profiles daemon (tlpctl), conflicts with power-profiles-daemon
@@ -238,8 +239,10 @@ done < <(cd "$DOTFILES" && find . -mindepth 1 -maxdepth 2 \
               -o -path './browsers*' -o -path './docs*' -o -name 'doctor.sh' \) -prune -o -print \
          | sed 's|^\./||' | awk -F/ 'NF<=2')
 stow --restow .
-# commit hook: every commit/merge/rewrite publishes the committed state to /srv/dotfiles for the managed users (usr sync)
+# commit hooks: pre-commit scans the staged changes for secrets (gitleaks, this repo is public); post-commit/merge/rewrite
+# publish the committed state to /srv/dotfiles for the managed users (usr sync). The public nvim submodule uses the same hooks.
 git -C "$DOTFILES" config core.hooksPath .githooks
+[ -e "$DOTFILES/.config/nvim/.git" ] && git -C "$DOTFILES/.config/nvim" config core.hooksPath "$DOTFILES/.githooks"
 # private submodule (secrets, machine-local configs) — stowed separately, skipped if not cloned
 if [ -d "$DOTFILES/private" ] && [ -n "$(ls -A "$DOTFILES/private" 2>/dev/null)" ]; then
   (cd "$DOTFILES/private" && stow --restow .)
