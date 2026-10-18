@@ -74,7 +74,8 @@ e() { # args...
 etty() { # INPUT args...: run through a pty (script), INPUT is typed
   local input=$1; shift
   N=$((N + 1))
-  (cd "${EDIR:-$PROJ}" && printf '%b' "$input" | script -qec "$(printf '%q ' "$ENVS" "$@")" /dev/null >"$CAP/$N.out" 2>"$CAP/$N.err"); RC=$?
+  (cd "${EDIR:-$PROJ}" && { sleep "${ETTY_DELAY:-0}"; if [[ -n ${ETTY_DELAY:-} ]]; then   # a hidden prompt flushes pending input: one line at a time
+      while IFS= read -r l; do printf '%s\n' "$l"; sleep 0.5; done < <(printf '%b' "$input"); else printf '%b' "$input"; fi; } | script -qec "$(printf '%q ' "$ENVS" "$@")" /dev/null >"$CAP/$N.out" 2>"$CAP/$N.err"); RC=$?
   OUT="$CAP/$N.out" ERR="$CAP/$N.err"
 }
 epipe() { # INPUT args...: INPUT on stdin (no terminal)
@@ -154,7 +155,12 @@ check "the exit status of the command is kept (exec)" test $RC = 7
 ( cd "$PROJ" && "$ENVS" run -- sleep 2 >/dev/null 2>&1 ) &
 SLP=$!
 sleep 0.8
-ps -eo args >"$CAP/ps-run.txt"
+descendants() { # pids below the given one (the test shell): a ps of the whole machine would include unrelated command lines
+  local p kids=$1 all=""
+  while [[ -n $kids ]]; do all="$all $kids"; kids=$(for p in $kids; do pgrep -P "$p"; done | tr '\n' ' '); done
+  echo "$all"
+}
+ps -o args= -p "$(descendants $$ | tr -s ' ' ',' | sed 's/^,//;s/,$//')" >"$CAP/ps-run.txt" 2>/dev/null
 wait $SLP
 check "ps while the child sleeps lists it and holds no value" bash -c "grep -q 'sleep 2' '$CAP/ps-run.txt'"
 scan "section 3"
@@ -279,6 +285,176 @@ M=$(zsh_marker "$PROJ/sub/dir")
 check "a subdirectory of the project shows the marker" test "$M" = '[%F{1}%B[prod]%b%f ]'
 check "no secret in the environment of a shell that sourced it" bash -c "! (cd '$PROJ' && zsh -f -c \"source '$ZS'; env\") | grep -q 'SECRET'"
 scan "section 9"
+
+# ───────────── 2 dotenv parser
+section "2 .env parser"
+check "dotenv parser: quotes, export, multi-line, inline comments, \${VAR}, bad lines reported without content" python3 -I "$HERE/dotenv_test.py" "$ENVS"
+
+# ───────────── 10 set / unset / rename / plain
+section "10 set, unset, rename, plain variables"
+reset; bind_proj
+epipe $'NEWVAL-set-1\n' set DATABASE_URL -e stage --stdin
+check "set --stdin writes a hidden field into the stage item" bash -c "[ $RC = 0 ] && [ \"\$(jq -r '.items[]|select(.id==\"e-stage\")|.fields[]|select(.name==\"DATABASE_URL\")|.type' '$FAKE_DIR/vault.json')\" = 1 ]"
+check "the value landed in the item (read from the fake vault file)" test "$(vault_field e-stage DATABASE_URL)" = NEWVAL-set-1
+check "rbw sees it after the sync that follows a write" bash -c "rbw get --raw e-stage | jq -e '.fields[]|select(.value==\"NEWVAL-set-1\")'"
+epipe $'NEWVAL-set-2\n' set STRIPE_SECRET_KEY --stdin
+check "without -e the default environment (dev) is written" test "$(vault_field e-dev STRIPE_SECRET_KEY)" = NEWVAL-set-2
+e set DATABASE_URL=oops -e stage
+check "a NAME=value argument is refused (history and ps would see it)" bash -c "[ $RC = 2 ] && grep -q 'values never go on the command line' '$ERR'"
+e set DATABASE_URL oops
+check "a value after the name is refused" test $RC = 2
+e set 1BAD --stdin
+check "invalid variable name refused" test $RC = 2
+e set PATH --stdin
+check "reserved name refused" test $RC = 2
+epipe $'NEWVAL-all-3\n' set NEW_TOKEN --all --stdin --description "a token"
+check "--all writes every environment item incl. prod and declares the name with its description" bash -c "[ $RC = 0 ] && for i in e-dev e-stage e-prod; do [ \"\$(jq -r --arg i \$i '.items[]|select(.id==\$i)|.fields[]|select(.name==\"NEW_TOKEN\")|.value' '$FAKE_DIR/vault.json')\" = NEWVAL-all-3 ] || exit 1; done; grep -q 'NEW_TOKEN = \"a token\"' '$PROJ/.envs.toml'"
+ETTY_DELAY=0.7 etty $'NEWVAL-set-1\nNEWVAL-set-1\n' set DATABASE_URL -e stage
+check "hidden prompt, asked twice" bash -c "[ $RC = 0 ] && [ \"\$(jq -r '.items[]|select(.id==\"e-stage\")|.fields[]|select(.name==\"DATABASE_URL\")|.value' '$FAKE_DIR/vault.json')\" = NEWVAL-set-1 ]"
+ETTY_DELAY=0.7 etty $'NEWVAL-set-1\nNEWVAL-set-2\n' set DATABASE_URL -e stage
+check "the two entries differ: nothing is written" bash -c "[ $RC = 1 ] && [ \"\$(jq -r '.items[]|select(.id==\"e-stage\")|.fields[]|select(.name==\"DATABASE_URL\")|.value' '$FAKE_DIR/vault.json')\" = NEWVAL-set-1 ]"
+e unset NEW_TOKEN -e stage
+check "unset -e removes it from that environment only" bash -c "[ $RC = 0 ] && [ -z \"\$(jq -r '.items[]|select(.id==\"e-stage\")|.fields[]?|select(.name==\"NEW_TOKEN\")|.value' '$FAKE_DIR/vault.json')\" ] && [ -n \"\$(jq -r '.items[]|select(.id==\"e-dev\")|.fields[]?|select(.name==\"NEW_TOKEN\")|.value' '$FAKE_DIR/vault.json')\" ]"
+e unset NEW_TOKEN --all --undeclare
+check "unset --all --undeclare removes it everywhere and from .envs.toml" bash -c "[ $RC = 0 ] && ! grep -q NEW_TOKEN '$PROJ/.envs.toml' && ! grep -q NEW_TOKEN '$FAKE_DIR/vault.json'"
+e rename STRIPE_SECRET_KEY STRIPE_KEY
+check "rename: the field in every item, the declaration (with its description line kept)" bash -c "[ $RC = 0 ] && grep -q '^STRIPE_KEY = ' '$PROJ/.envs.toml' && ! grep -q STRIPE_SECRET_KEY '$PROJ/.envs.toml' && [ \"\$(jq -r '[.items[]|select(.folderId==\"f-billing\")|.fields[]?|select(.name==\"STRIPE_SECRET_KEY\")]|length' '$FAKE_DIR/vault.json')\" = 0 ] && [ \"\$(jq -r '.items[]|select(.id==\"o-dev\")|.fields[]|select(.name==\"STRIPE_SECRET_KEY\")|.value' '$FAKE_DIR/vault.json')\" = SECRET-other-dev-stripe ] && grep -q 'DATABASE_URL = \"Postgres DSN of the API\"' '$PROJ/.envs.toml'"
+e rename DATABASE_URL STRIPE_KEY
+check "rename onto an existing name is refused" test $RC = 1
+e status
+check "status after the rename lists the new name" bash -c "grep -q 'names    DATABASE_URL, STRIPE_KEY' '$OUT'"
+epipe $'plain-value\n' set LOG_LEVEL --plain --stdin
+check "--plain goes to .mise.toml [env] and keeps the other tables" bash -c "[ $RC = 0 ] && grep -q '^LOG_LEVEL = \"plain-value\"' '$PROJ/.mise.toml' && grep -q '^\[tools\]' '$PROJ/.mise.toml' && grep -q '^\[env\]' '$PROJ/.mise.toml'"
+epipe $'stage-value\n' set LOG_LEVEL --plain --stdin -e stage
+check "--plain -e stage goes to .mise.stage.toml" grep -q '^LOG_LEVEL = "stage-value"' "$PROJ/.mise.stage.toml"
+epipe $'x\n' set DATABASE_URL --plain --stdin
+check "a declared secret cannot also be set as plain" test $RC = 1
+epipe $'x\n' set LOG_LEVEL --stdin
+check "a plain variable cannot be set as a secret" test $RC = 1
+e rename LOG_LEVEL APP_LOG_LEVEL
+check "rename of a plain variable renames it in the mise files" bash -c "[ $RC = 0 ] && grep -q '^APP_LOG_LEVEL = ' '$PROJ/.mise.toml' && grep -q '^APP_LOG_LEVEL = ' '$PROJ/.mise.stage.toml'"
+e unset APP_LOG_LEVEL -e stage
+check "unset of a plain variable removes it from the file of that environment" bash -c "[ $RC = 0 ] && ! grep -q APP_LOG_LEVEL '$PROJ/.mise.stage.toml' && grep -q APP_LOG_LEVEL '$PROJ/.mise.toml'"
+scan "section 10"
+
+# ───────────── 11 copy, diff, check
+section "11 copy, diff, check"
+reset; bind_proj
+e copy dev stage
+check "copy: only names missing in the destination" bash -c "[ $RC = 0 ] && [ \"\$(jq -r '.items[]|select(.id==\"e-stage\")|.fields[]|select(.name==\"STRIPE_SECRET_KEY\")|.value' '$FAKE_DIR/vault.json')\" = SECRET-billing-dev-stripe ] && [ \"\$(jq -r '.items[]|select(.id==\"e-stage\")|.fields[]|select(.name==\"DATABASE_URL\")|.value' '$FAKE_DIR/vault.json')\" = SECRET-billing-stage-db ] && grep -q 'kept' '$OUT'"
+e diff dev stage
+check "diff: differs for DATABASE_URL, same for STRIPE_SECRET_KEY, no values printed" bash -c "grep -q 'DATABASE_URL *differs' '$OUT' && grep -q 'STRIPE_SECRET_KEY *same' '$OUT'"
+e copy dev stage --overwrite
+check "copy --overwrite replaces" bash -c "[ \"\$(jq -r '.items[]|select(.id==\"e-stage\")|.fields[]|select(.name==\"DATABASE_URL\")|.value' '$FAKE_DIR/vault.json')\" = SECRET-billing-dev-db ]"
+e diff dev stage
+check "diff after the copy: same" bash -c "grep -q 'DATABASE_URL *same' '$OUT'"
+e copy dev prod
+check "copy into prod without --prod (no terminal): refused" test $RC = 4
+e copy dev prod --prod --overwrite
+check "copy into prod with --prod works" test $RC = 0
+e diff
+check "diff with no arguments lists every pair" bash -c "grep -q '^dev vs stage' '$OUT' && grep -q '^dev vs prod' '$OUT' && grep -q '^stage vs prod' '$OUT'"
+reset; bind_proj
+e check
+check "check: set/missing per environment, undeclared fields named, no values" bash -c "grep -q 'stage: 1 set, missing: STRIPE_SECRET_KEY' '$OUT' && grep -q 'dev: undeclared fields (never injected): EXTRA_FIELD' '$OUT' && grep -q 'binding: bound' '$OUT'"
+printf 'NEWVAL-import-4\n' >"$PROJ/.env.local"
+e check
+check "an untracked env file gets the import hint" grep -q '.env.local is a plain env file' "$OUT"
+printf 'KEY=NEWVAL-import-5\n' >"$PROJ/.env"
+(cd "$PROJ" && git add .env >/dev/null 2>&1)
+e check
+check "a tracked .env is an error (exit 1) that says to rotate" bash -c "[ $RC = 1 ] && grep -q '.env is tracked in git' '$OUT'"
+e check --all
+check "check --all lists the bound root" grep -q "$PROJ" "$OUT"
+touch "$FAKE_DIR/rbw-locked"
+e check
+check "a locked vault is reported, not unlocked by check" grep -q 'vault locked' "$OUT"
+scan "section 11"
+
+# ───────────── 12 import
+section "12 import"
+reset; bind_proj
+write_env() {
+  cat >"$PROJ/.env" <<'ENV'
+# comment
+export DATABASE_URL="postgres://u:NEWVAL-import-4@db/app"
+STRIPE_SECRET_KEY='NEWVAL-import-5'
+LOG_LEVEL=debug # inline
+MULTI="line1
+line2"
+BAD LINE WITH SECRET-work-login
+ESC="a\tb\"c\\d"
+REF=${HOME}/x
+ENV
+}
+write_env
+e import .env -e stage --secrets DATABASE_URL,STRIPE_SECRET_KEY --plain LOG_LEVEL,MULTI,ESC,REF --keep
+check "import: new secret written, the already-set one skipped without --overwrite" bash -c "[ $RC = 0 ] && [ \"\$(jq -r '.items[]|select(.id==\"e-stage\")|.fields[]|select(.name==\"STRIPE_SECRET_KEY\")|.value' '$FAKE_DIR/vault.json')\" = NEWVAL-import-5 ] && [ \"\$(jq -r '.items[]|select(.id==\"e-stage\")|.fields[]|select(.name==\"DATABASE_URL\")|.value' '$FAKE_DIR/vault.json')\" = SECRET-billing-stage-db ] && grep -q 'skipped (already set): DATABASE_URL' '$OUT'"
+check "plain variables go to .mise.stage.toml with exact values (inline comment cut, escapes, multi-line, \${VAR} literal)" python3 - "$PROJ/.mise.stage.toml" <<'PY'
+import sys, tomllib
+e = tomllib.load(open(sys.argv[1], "rb"))["env"]
+assert e["LOG_LEVEL"] == "debug" and e["MULTI"] == "line1\nline2" and e["ESC"] == 'a\tb"c\\d' and e["REF"] == "${HOME}/x", e
+PY
+check "the bad line is reported by number, its content never" bash -c "grep -q 'line 7: not KEY=value' '$ERR' && ! grep -q 'WITH SECRET' '$ERR' '$OUT'"
+check "the \${VAR} warning" grep -q 'REF: contains' "$ERR"
+check "--keep leaves the file" test -f "$PROJ/.env"
+check "new secret names are declared in .envs.toml" bash -c "grep -q '^STRIPE_SECRET_KEY' '$PROJ/.envs.toml'"
+e import .env -e stage --secrets DATABASE_URL --overwrite --keep
+check "--overwrite replaces the existing field" test "$(vault_field e-stage DATABASE_URL)" = "postgres://u:NEWVAL-import-4@db/app"
+e import .env --plain LOG_LEVEL --keep
+check "without -e: the default environment (dev) -> .mise.toml" bash -c "[ $RC = 0 ] && grep -q '^LOG_LEVEL = \"debug\"' '$PROJ/.mise.toml'"
+e import .env --keep
+check "no terminal and no --secrets/--plain: usage error" test $RC = 2
+e import .env -e stage --secrets STRIPE_SECRET_KEY
+check "no terminal, no --keep: the file is kept with a message" bash -c "[ $RC = 0 ] && test -f '$PROJ/.env' && grep -q 'kept' '$OUT'"
+etty 'y\n' import .env -e stage --secrets STRIPE_SECRET_KEY --overwrite
+check "terminal: 'Shred .env now? [Y/n]' y shreds the untracked file" bash -c "[ $RC = 0 ] && [ ! -e '$PROJ/.env' ]"
+write_env
+(cd "$PROJ" && git add .env >/dev/null 2>&1 && git commit -qm env >/dev/null 2>&1)
+e import .env -e stage --secrets STRIPE_SECRET_KEY --overwrite
+check "a file tracked by git is kept with the rotate warning" bash -c "[ $RC = 0 ] && test -f '$PROJ/.env' && grep -q 'tracked in git' '$OUT'"
+scan "section 12"
+
+# ───────────── 13 export-example
+section "13 export-example"
+reset; bind_proj
+printf '[env]\nLOG_LEVEL = "debug"\n' >"$PROJ/.mise.toml"
+e export-example
+check "names only: secrets with their description, plain names under 'set by mise'" bash -c "[ $RC = 0 ] && head -1 '$PROJ/.env.example' | grep -q '^# generated by envs export-example' && grep -qx 'DATABASE_URL=' '$PROJ/.env.example' && grep -qx '# Postgres DSN of the API' '$PROJ/.env.example' && grep -qx 'LOG_LEVEL=' '$PROJ/.env.example' && ! grep -q 'debug' '$PROJ/.env.example'"
+e export-example
+check "a file written by envs is overwritten" test $RC = 0
+printf 'MINE=1\n' >"$PROJ/.env.example"
+e export-example
+check "a foreign .env.example is refused" bash -c "[ $RC = 1 ] && grep -q 'MINE=1' '$PROJ/.env.example'"
+e export-example --force -o "$T/ex.env"
+check "-o and --force" test -s "$T/ex.env"
+e copy-value DATABASE_URL
+check "copy-value: wl-copy --sensitive got it, nothing printed" bash -c "[ $RC = 0 ] && [ \"\$(cat '$FAKE_DIR/clip.txt')\" = SECRET-billing-dev-db ] && grep -q 'wl-copy --sensitive' '$FAKE_DIR/argv.log' && ! grep -q SECRET '$OUT' '$ERR'"
+scan "section 13"
+
+# ───────────── 14 env / project management
+section "14 environments and projects"
+reset; bind_proj
+e env new qa
+check "env new: an empty item in the folder and the list entry" bash -c "[ $RC = 0 ] && [ \"\$(jq -r '[.items[]|select(.name==\"qa\" and .folderId==\"f-billing\")]|length' '$FAKE_DIR/vault.json')\" = 1 ] && grep -q '\"qa\"' '$PROJ/.envs.toml'"
+printf '[env]\nQA_ONLY = "1"\n' >"$PROJ/.mise.qa.toml"
+e env rename qa test
+check "env rename: item, list, per-environment mise file" bash -c "[ $RC = 0 ] && [ \"\$(jq -r '[.items[]|select(.name==\"test\" and .folderId==\"f-billing\")]|length' '$FAKE_DIR/vault.json')\" = 1 ] && grep -q '\"test\"' '$PROJ/.envs.toml' && [ -f '$PROJ/.mise.test.toml' ] && [ ! -e '$PROJ/.mise.qa.toml' ]"
+etty 'wrong\n' env delete test
+check "env delete: a wrong confirmation changes nothing" bash -c "[ $RC != 0 ] && [ \"\$(jq -r '[.items[]|select(.name==\"test\" and .deletedDate==null)]|length' '$FAKE_DIR/vault.json')\" = 1 ]"
+etty 'test\n' env delete test
+check "env delete: typed name -> the item is in the trash, the list entry is gone" bash -c "[ $RC = 0 ] && [ \"\$(jq -r '[.items[]|select(.name==\"test\" and .deletedDate!=null)]|length' '$FAKE_DIR/vault.json')\" = 1 ] && ! grep -q '\"test\"' '$PROJ/.envs.toml'"
+e env delete dev
+check "the default environment cannot be deleted" test $RC = 1
+e project rename billing2
+check "project rename: folder renamed through PUT /object/folder, .envs.toml and the binding follow" bash -c "[ $RC = 0 ] && grep -q '^bw-serve PUT /object/folder/f-billing' '$FAKE_DIR/argv.log' && [ \"\$(jq -r '.folders[]|select(.id==\"f-billing\")|.name' '$FAKE_DIR/vault.json')\" = Env/billing2 ] && grep -q '^project = \"billing2\"' '$PROJ/.envs.toml' && grep -q billing2 '$XDG_STATE_HOME/envs/bindings.tsv'"
+e status
+check "status after the rename: bound, vault items found under the new folder" bash -c "grep -q 'binding  bound' '$OUT' && grep -q 'dev: 2 set' '$OUT'"
+etty 'billing2\n' project delete
+check "project delete: items in the trash, folder gone (DELETE /object/folder), binding removed" bash -c "[ $RC = 0 ] && grep -q '^bw-serve DELETE /object/folder/f-billing' '$FAKE_DIR/argv.log' && [ \"\$(jq -r '[.items[]|select(.folderId==\"f-billing\" and .deletedDate==null)]|length' '$FAKE_DIR/vault.json')\" = 0 ] && [ \"\$(jq -r '[.folders[]|select(.id==\"f-billing\")]|length' '$FAKE_DIR/vault.json')\" = 0 ] && ! grep -q billing2 '$XDG_STATE_HOME/envs/bindings.tsv'"
+e project delete
+check "project delete without a terminal is refused" test $RC != 0
+scan "section 14"
 
 printf '\nenvs test: %d passed, %d failed\n' "$PASS" "$FAILS"
 exit $((FAILS > 0))

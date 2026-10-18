@@ -311,12 +311,19 @@ def binding_state(root, project):
     return ("bound" if b[1] == project else "changed"), key, b[1]
 
 
-def bind_write(root, project):
+def bind_write(root, project, locked=False):
+    """Record the binding; LOCKED = the caller already holds write_lock (flock on a second descriptor would deadlock)."""
     key = binding_key(root)
-    with write_lock():
+
+    def write():
         rows = [r for r in bindings().values() if r[0] != key]
         rows.append([key, project, time.strftime("%Y-%m-%dT%H:%M:%S%z")])
         write_tsv(state_dir() / "bindings.tsv", rows)
+    if locked:
+        write()
+    else:
+        with write_lock():
+            write()
 
 
 # ───────────────────────────── .envs.toml and mise files ─────────────────────────────
@@ -1279,6 +1286,461 @@ def cmd_rename(a):
     say(f"{a.old} -> {a.new}: {', '.join(done) or 'declaration only'}")
 
 
+# copy, diff ---------------------------------------------------------------------------------------------------------
+
+def need_env(cfg, name):
+    if name not in cfg.envs:
+        fail(f"unknown environment {name!r} (have: {', '.join(cfg.envs)})", 2)
+    return name
+
+
+def cmd_copy(a):
+    refuse_agent("copy")
+    cfg = load_cfg()
+    require_bound(cfg)
+    src, dst = need_env(cfg, a.src), need_env(cfg, a.dst)
+    if src == dst:
+        fail("source and destination are the same environment", 2)
+    guard_protected(cfg, dst, a.prod, "copy into")
+    ensure_rbw()
+    sfields = env_fields(cfg.project, src)
+    if sfields is None:
+        fail(f"{src} has no item in {cfg.folder}", 1)
+    names = [n for n in cfg.secrets if sfields.get(n, "") != ""]
+    copied, kept = [], []
+    with write_lock():
+        m = bw_open()
+        item = bw_env_item(m, cfg.project, dst, create=True)
+        have = set(item_field_names(item))
+        for n in names:
+            if n in have and not a.overwrite:
+                kept.append(n)
+                continue
+            item_set_field(item, n, sfields[n])
+            copied.append(n)
+        if copied:
+            bw_save(m, item)
+            m.refresh_rbw()
+    sfields = None
+    say(f"{src} -> {dst}: copied {', '.join(copied) or 'nothing'}" + (f"; kept (already set, use --overwrite): {', '.join(kept)}" if kept else ""))
+
+
+def cmd_diff(a):
+    cfg = load_cfg()
+    if bool(a.a) != bool(a.b):
+        fail("diff takes two environments or none", 2)
+    matrix = vault_matrix(cfg)
+    if matrix is None:
+        fail("vault is locked: unlock it (any vault action, e.g. SUPER+CTRL+P) and run again", 3)
+    for e, f in matrix.items():
+        if isinstance(f, Fail):
+            fail(f"{e}: {f.msg}")
+    pairs = [(need_env(cfg, a.a), need_env(cfg, a.b))] if a.a else \
+        [(x, y) for i, x in enumerate(cfg.envs) for y in cfg.envs[i + 1:]]
+    for x, y in pairs:
+        fx, fy = matrix[x] or {}, matrix[y] or {}
+        say(f"{x} vs {y}")
+        for n in cfg.secrets:
+            vx, vy = fx.get(n, ""), fy.get(n, "")
+            if vx and vy:
+                verdict = "same" if vx == vy else "differs"
+            elif vx:
+                verdict = f"only in {x}"
+            elif vy:
+                verdict = f"only in {y}"
+            else:
+                verdict = "missing in both"
+            say(f"  {n:<28} {verdict}")
+
+
+# environments and projects -------------------------------------------------------------------------------------------
+
+def cfg_set_envs(cfg, envs, default=None, protected=None):
+    def fn(ed):
+        ed.set(None, "environments", toml_list(envs))
+        if default is not None:
+            ed.set(None, "default", toml_str(default))
+        if protected is not None:
+            ed.set(None, "protected", toml_list(protected))
+    return edit_cfg(cfg, fn)
+
+
+def declared_protected(cfg):
+    return [e for e in cfg.data.get("protected", [])]
+
+
+def cmd_env(a):
+    refuse_agent("env")
+    cfg = load_cfg()
+    require_bound(cfg)
+    if a.action == "new":
+        n = a.names[0]
+        if not ENV_RE.match(n) or n in cfg.envs:
+            fail(f"{n!r} is not a valid new environment name", 2)
+        with write_lock():
+            m = bw_open()
+            bw_env_item(m, cfg.project, n, create=True)
+            cfg = cfg_set_envs(cfg, cfg.envs + [n])
+            m.refresh_rbw()
+        say(f"environment {n} created (an empty item in {cfg.folder}); fill it with `envs copy` or `envs set -e {n}`")
+    elif a.action == "rename":
+        if len(a.names) != 2:
+            fail("env rename OLD NEW", 2)
+        old, new = need_env(cfg, a.names[0]), a.names[1]
+        if not ENV_RE.match(new) or new in cfg.envs:
+            fail(f"{new!r} is not a valid new environment name", 2)
+        with write_lock():
+            m = bw_open()
+            item = bw_env_item(m, cfg.project, old)
+            if item is not None:
+                item["name"] = new
+                item["notes"] = (item.get("notes") or "").replace(f"environment {old}", f"environment {new}")
+                bw_save(m, item)
+            envs = [new if e == old else e for e in cfg.envs]
+            prot = [new if e == old else e for e in declared_protected(cfg)]
+            cfg = cfg_set_envs(cfg, envs, new if cfg.default == old else None, prot)
+            m.refresh_rbw()
+        for p, env in mise_files(cfg.root):
+            if env == old:
+                p.rename(p.with_name(p.name.replace(f".{old}.", f".{new}.")))
+        with write_lock():
+            act = active_get(cfg.root)
+            if act and act[0] == old:
+                active_set(cfg.root, new, act[1], act[2])
+        say(f"environment {old} -> {new}")
+    elif a.action == "delete":
+        n = need_env(cfg, a.names[0])
+        if n == cfg.default or len(cfg.envs) == 1:
+            fail("the default environment cannot be deleted: change `default` first", 1)
+        if not typed_confirm(n, f"Delete environment {n}: its Bitwarden item goes to the trash and it leaves .envs.toml."):
+            fail("not confirmed" + ("" if tty() else ": a terminal is needed"), 4 if not tty() else 130)
+        with write_lock():
+            m = bw_open()
+            item = bw_env_item(m, cfg.project, n)
+            if item is not None:
+                p = m.bw("delete", "item", item["id"])
+                if p.returncode != 0:
+                    fail("bw delete failed: " + m.first_line(p.stderr or p.stdout))
+            cfg = cfg_set_envs(cfg, [e for e in cfg.envs if e != n], None, [e for e in declared_protected(cfg) if e != n])
+            if (active_get(cfg.root) or ("",))[0] == n:
+                active_set(cfg.root, None)
+            m.refresh_rbw()
+        say(f"environment {n} deleted (the item is in the Bitwarden trash)")
+
+
+def cmd_project(a):
+    refuse_agent("project")
+    cfg = load_cfg()
+    require_bound(cfg)
+    if a.action == "rename":
+        new = a.new
+        if not new or not PROJECT_RE.match(new):
+            fail("project rename NEW: the name must match ^[a-z0-9][a-z0-9._-]{0,62}$", 2)
+        with write_lock():
+            m = bw_open()
+            fid = m.folder_id(cfg.folder, create=False)
+            if m.folder_id(f"Env/{new}", create=False):
+                fail(f"the folder Env/{new} exists already")
+            if fid:
+                p = m.bw("edit", "folder", fid, stdin=m.b64({"name": f"Env/{new}"}))
+                if p.returncode != 0:
+                    fail("bw edit folder failed: " + m.first_line(p.stderr or p.stdout))
+            edit_cfg(cfg, lambda ed: ed.set(None, "project", toml_str(new)))
+            bind_write(cfg.root, new, locked=True)
+            m.refresh_rbw()
+        say(f"project {cfg.project} -> {new}; other checkouts of it need `envs bind` once")
+    elif a.action == "delete":
+        if not typed_confirm(cfg.project, f"Delete project {cfg.project}: every item of {cfg.folder} goes to the Bitwarden "
+                                          "trash and the folder is removed (.envs.toml stays)."):
+            fail("not confirmed" + ("" if tty() else ": a terminal is needed"), 4 if not tty() else 130)
+        with write_lock():
+            m = bw_open()
+            fid = m.folder_id(cfg.folder, create=False)
+            if fid:
+                for it in m.bw_json("list", "items", "--folderid", fid):
+                    m.bw("delete", "item", it["id"])
+                p = m.bw("delete", "folder", fid)
+                if p.returncode != 0:
+                    fail("bw delete folder failed: " + m.first_line(p.stderr or p.stdout))
+            key = binding_key(cfg.root)
+            write_tsv(state_dir() / "bindings.tsv", [r for r in bindings().values() if r[0] != key])
+            m.refresh_rbw()
+        say(f"project {cfg.project} deleted from Bitwarden (items are in the trash); {TOML} is still in the repository")
+
+
+# import, export-example, copy-value ------------------------------------------------------------------------------------
+
+DOTENV_KEY = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$")
+
+
+def parse_dotenv(text):
+    """(values dict in file order, warnings, errors); messages carry line numbers and names, never values."""
+    lines = text.split("\n")
+    vals, warns, errs = {}, [], []
+    i = 0
+    while i < len(lines):
+        raw, no = lines[i], i + 1
+        i += 1
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = DOTENV_KEY.match(line)
+        if not m:
+            errs.append(f"line {no}: not KEY=value")
+            continue
+        key, rest = m.group(1), m.group(2).lstrip()
+        if rest[:1] in ('"', "'"):
+            q = rest[0]
+            body, tail, buf = [], None, rest[1:]
+            start = no
+            while True:
+                j, esc = 0, False
+                out = []
+                while j < len(buf):
+                    c = buf[j]
+                    if q == '"' and esc:
+                        out.append({"n": "\n", "t": "\t", '"': '"', "\\": "\\"}.get(c, "\\" + c))
+                        esc = False
+                    elif q == '"' and c == "\\":
+                        esc = True
+                    elif c == q:
+                        tail = buf[j + 1:]
+                        break
+                    else:
+                        out.append(c)
+                    j += 1
+                body.append("".join(out))
+                if tail is not None:
+                    break
+                if i >= len(lines):
+                    errs.append(f"line {start}: unterminated quote")
+                    break
+                buf = lines[i]
+                i += 1
+                body.append("\n")
+            if tail is None:
+                continue
+            t = tail.strip()
+            if t and not t.startswith("#"):
+                errs.append(f"line {start}: text after the closing quote")
+                continue
+            value = "".join(body)
+        else:
+            value = re.split(r"\s#", rest, maxsplit=1)[0].rstrip()
+        if "${" in value:
+            warns.append(f"{key}: contains ${{...}}, kept literally (no variable expansion)")
+        if key in vals:
+            warns.append(f"{key}: defined twice, the later one wins")
+        vals[key] = value
+    return vals, warns, errs
+
+
+def looks_secret(name, value):
+    return bool(SECRET_HINT.search(name)) or bool(re.search(r"://[^/\s:@]+:[^@/\s]+@", value))
+
+
+def find_env_files(root):
+    out = []
+    base = len(root.parts)
+    for d, dirs, files in os.walk(root):
+        dirs[:] = [x for x in dirs if x not in (".git", "node_modules", ".venv", "vendor", "target") and len(Path(d).parts) - base < 4]
+        for f in files:
+            if re.fullmatch(r"\.env(\..+)?", f) and not f.endswith(".example"):
+                out.append(Path(d) / f)
+    return sorted(out)
+
+
+def pick_multi(rows, prompt, preselect, header=""):
+    """Rows chosen in a multi-select fzf-menu (preselected indexes marked); None = cancelled, no menu = the preselection."""
+    fm = tool("fzf-menu", required=False)
+    if fm and (tty() or os.environ.get("WAYLAND_DISPLAY")):
+        start = "+".join(f"pos({i + 1})+select" for i in preselect) + ("+first" if preselect else "")
+        cmd = [fm, "--here", "--multi", "-p", prompt, "--bind", f"start:{start}" if start else "start:first"]
+        if header:
+            cmd += ["--header", header]
+        p = subprocess.run(cmd, input="\n".join(rows) + "\n", capture_output=True, text=True)
+        if p.returncode != 0:
+            return None
+        return [r for r in p.stdout.split("\n") if r]
+    return [rows[i] for i in preselect]
+
+
+def tracked_in_git(root, path):
+    git = tool("git", required=False)
+    if not git or not (root / ".git").exists():
+        return False
+    return subprocess.run([git, "-C", str(root), "ls-files", "--error-unmatch", "--", str(path)], capture_output=True,
+                          stdin=subprocess.DEVNULL).returncode == 0
+
+
+def cmd_import(a):
+    refuse_agent("import")
+    cfg = load_cfg()
+    require_bound(cfg)
+    if a.file:
+        path = Path(a.file).resolve()
+    else:
+        files = find_env_files(cfg.root)
+        if (cfg.root / ".env") in files:
+            path = cfg.root / ".env"
+        elif len(files) == 1:
+            path = files[0]
+        elif files:
+            got = pick([str(f.relative_to(cfg.root)) for f in files], ".env file")
+            if not got:
+                fail("no file chosen", 130)
+            path = cfg.root / got
+        else:
+            fail("no .env file found (up to 4 levels below the project root)", 1)
+    try:
+        text = path.read_text()
+    except OSError as e:
+        fail(f"cannot read {path}: {e.strerror}")
+    vals, warns, errs = parse_dotenv(text)
+    for w in warns:
+        warn(w)
+    for er in errs:
+        warn(er)
+    if not vals:
+        fail("nothing to import" + (" (the file has errors)" if errs else ""), 1)
+    env = a.env
+    if not env:
+        got = None if not tty() else pick([e + ("  (default)" if e == cfg.default else "") for e in cfg.envs],
+                                          "import into environment")
+        env = got.split()[0] if got else (None if tty() else cfg.default)
+        if not env:
+            fail("no environment chosen", 130)
+    need_env(cfg, env)
+    guard_protected(cfg, env, a.prod, "import into")
+    names = list(vals)
+    secrets, plain = [], []
+    if a.secrets is not None or a.plain is not None:
+        secrets = [n for n in (a.secrets or "").split(",") if n]
+        plain = [n for n in (a.plain or "").split(",") if n]
+        for n in secrets + plain:
+            if n not in vals:
+                fail(f"{n} is not in {path.name}", 2)
+        if set(secrets) & set(plain):
+            fail("a name cannot be both secret and plain", 2)
+        left = [n for n in names if n not in secrets and n not in plain]
+        if left:
+            warn(f"not imported (neither --secrets nor --plain): {', '.join(left)}")
+    elif tty():
+        rows = [f"{n}  {'secret' if looks_secret(n, vals[n]) else 'plain'}" for n in names]
+        pre = [i for i, n in enumerate(names) if looks_secret(n, vals[n])]
+        chosen = pick_multi(rows, "secrets (selected = secret)", pre, "Tab toggles, Enter imports: selected rows go to Bitwarden, "
+                            "the others to mise [env] (committed in plain text)")
+        if chosen is None:
+            fail("cancelled", 130)
+        secrets = [r.split()[0] for r in chosen]
+        plain = [n for n in names if n not in secrets]
+    else:
+        fail("no terminal to classify the variables: pass --secrets A,B and --plain C,D", 2)
+    for n in secrets + plain:
+        why = bad_var_name(n)
+        if why:
+            warn(f"{n} {why}: skipped")
+    secrets = [n for n in secrets if not bad_var_name(n)]
+    plain = [n for n in plain if not bad_var_name(n)]
+    # conflicts: a name that is already set where it would go
+    target = mise_target(cfg.root, env, cfg.default)
+    existing_plain = {}
+    try:
+        existing_plain = (tomllib.loads(target.read_text()).get("env") or {}) if target.exists() else {}
+    except (OSError, ValueError):
+        pass
+    for n in list(plain):
+        if n in cfg.secrets:
+            warn(f"{n} is declared as a secret: skipped as plain")
+            plain.remove(n)
+    for n in list(secrets):
+        if n in mise_env_keys(cfg.root):
+            warn(f"{n} is a plain variable in mise [env]: skipped as secret")
+            secrets.remove(n)
+    n_sec = n_plain = 0
+    skipped = []
+    with write_lock():
+        if secrets:
+            m = bw_open()
+            item = bw_env_item(m, cfg.project, env, create=True)
+            have = set(item_field_names(item))
+            for n in secrets:
+                if n in have and not a.overwrite and not (tty() and confirm(f"{n} is already set in {env}. Overwrite?")):
+                    skipped.append(n)
+                    continue
+                item_set_field(item, n, vals[n])
+                n_sec += 1
+            if n_sec:
+                bw_save(m, item)
+            newdecl = [n for n in secrets if n not in cfg.secrets and n not in skipped]
+            if newdecl:
+                def decl(ed):
+                    for n in newdecl:
+                        ed.set("secrets", n, '""')
+                cfg = edit_cfg(cfg, decl)
+            m.refresh_rbw()
+        for n in plain:
+            if n in existing_plain and not a.overwrite and not (tty() and confirm(f"{n} is already in {target.name}. Overwrite?")):
+                skipped.append(n)
+                continue
+            edit_mise(target, lambda ed, n=n: ed.set("env", n, toml_str(vals[n])))
+            n_plain += 1
+    vals = None
+    say(f"imported {n_sec} secret(s) into {cfg.folder}/{env} and {n_plain} plain variable(s) into {target.name}"
+        + (f"; skipped (already set): {', '.join(skipped)}" if skipped else ""))
+    if tracked_in_git(cfg.root, path):
+        say(f"{path.name} is tracked in git: the values are in the history; rotate them and `git rm --cached {path.name}`")
+    elif a.keep:
+        say(f"{path.name} kept (--keep)")
+    elif not tty():
+        say(f"{path.name} kept (no terminal to confirm): `shred -u {path.name}` when you are sure")
+    elif confirm(f"Shred {path.name} now?", default=True):
+        sh = tool("shred", required=False)
+        if sh and subprocess.run([sh, "-u", str(path)]).returncode == 0:
+            say(f"{path.name} shredded (best effort on SSDs: rotate secrets that were ever committed or synced)")
+        else:
+            path.unlink(missing_ok=True)
+            say(f"{path.name} removed")
+
+
+EXAMPLE_HEAD = "# generated by envs export-example; values: envs run (secrets) / .mise.toml (plain)"
+
+
+def cmd_export_example(a):
+    cfg = load_cfg()
+    out = Path(a.output) if a.output else cfg.root / ".env.example"
+    if out.exists() and not a.force and not out.read_text().startswith(EXAMPLE_HEAD):
+        fail(f"{out} was not written by envs export-example: pass --force to overwrite it", 1)
+    lines = [EXAMPLE_HEAD]
+    for n, desc in cfg.secrets.items():
+        if desc:
+            lines.append(f"# {desc}")
+        lines.append(f"{n}=")
+    plain = [k for k in mise_env_keys(cfg.root) if k not in cfg.secrets]
+    if plain:
+        lines.append("# set by mise")
+        lines += [f"{k}=" for k in plain]
+    out.write_text("\n".join(lines) + "\n")
+    say(f"wrote {out} ({len(cfg.secrets)} secret names, {len(plain)} plain names; no values)")
+
+
+def cmd_copy_value(a):
+    refuse_agent("copy-value")
+    cfg = load_cfg()
+    require_bound(cfg)
+    if a.name not in cfg.secrets:
+        fail(f"{a.name} is not a declared secret", 2)
+    env = choose_env(cfg, a.env)
+    guard_protected(cfg, env, a.prod, "copy from")
+    ensure_rbw()
+    fields = env_fields(cfg.project, env) or {}
+    if fields.get(a.name, "") == "":
+        fail(f"{a.name} is not set in {env}", 1)
+    vbw().copy(fields[a.name], True)
+    fields = None
+    say(f"{a.name} ({env}) copied: it is cleared from the clipboard after 30 seconds")
+
+
 # check ---------------------------------------------------------------------------------------------------------------
 
 def check_root(cfg, out):
@@ -1402,13 +1864,44 @@ def build_parser():
     p = sub.add_parser("rename")
     p.add_argument("old")
     p.add_argument("new")
+    p = sub.add_parser("copy")
+    p.add_argument("src")
+    p.add_argument("dst")
+    p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--prod", action="store_true")
+    p = sub.add_parser("diff")
+    p.add_argument("a", nargs="?")
+    p.add_argument("b", nargs="?")
+    p = sub.add_parser("env")
+    p.add_argument("action", choices=["new", "rename", "delete"])
+    p.add_argument("names", nargs="+")
+    p = sub.add_parser("project")
+    p.add_argument("action", choices=["rename", "delete"])
+    p.add_argument("new", nargs="?")
+    p = sub.add_parser("import")
+    p.add_argument("file", nargs="?")
+    p.add_argument("-e", "--env")
+    p.add_argument("--secrets")
+    p.add_argument("--plain")
+    p.add_argument("--keep", action="store_true")
+    p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--prod", action="store_true")
+    p = sub.add_parser("export-example")
+    p.add_argument("-o", "--output")
+    p.add_argument("--force", action="store_true")
+    p = sub.add_parser("copy-value")
+    p.add_argument("name")
+    p.add_argument("-e", "--env")
+    p.add_argument("--prod", action="store_true")
     p = sub.add_parser("check")
     p.add_argument("--all", action="store_true")
     return ap
 
 
 HANDLERS = {"init": cmd_init, "bind": cmd_bind, "status": cmd_status, "use": cmd_use, "set": cmd_set, "unset": cmd_unset,
-            "rename": cmd_rename, "check": cmd_check}
+            "rename": cmd_rename, "check": cmd_check, "copy": cmd_copy, "diff": cmd_diff, "env": cmd_env,
+            "project": cmd_project, "import": cmd_import, "export-example": cmd_export_example,
+            "copy-value": cmd_copy_value}
 
 
 class RunArgs:
@@ -1468,6 +1961,8 @@ def main(argv):
         warn(e.msg)
         return e.code
     except (KeyboardInterrupt, EOFError):
+        if os.environ.get("ENVS_TRACE"):
+            raise
         print(file=sys.stderr)
         return 130
     except SystemExit as e:
