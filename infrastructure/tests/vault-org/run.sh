@@ -314,7 +314,8 @@ section3() {
   # 3.5 idempotent
   mark; A apply --yes >"$ROOT/apply2.txt" 2>&1; rc=$?
   check "3.5 a second apply: exit 0 and zero write requests" bash -c '[ "$1" = 0 ] && [ "$2" = 0 ]' _ "$rc" "$(writes_since)"
-  # 3.6 resume after a kill in the middle
+  # 3.6 resume after a kill in the middle (the full run only: two applies with a slowed-down server)
+  if ((! QUICK)); then
   fresh_plan; rm -rf "$ROOT/data/vault-backups"
   FAKE_BW_REQ_DELAY=0.3 python3 -I -B "$SCRIPTS/vault-org.py" apply --yes >"$ROOT/apply3.txt" 2>&1 & local pid=$!
   local i; for ((i = 0; i < 100; i++)); do [[ $(grep -c '^bw-serve PUT' "$FAKE/argv.log") -ge 3 ]] && break; sleep 0.1; done
@@ -333,7 +334,9 @@ section3() {
     [ "$(grep -c "^bw export" "$1")" = 1 ] && [ -z "$(grep "^bw-serve PUT" "$1" | sort | uniq -d)" ]' _ "$FAKE/argv.log"
   check "3.6 --resume with another plan is refused (exit 4) unless --new-journal" bash -c '
     A() { python3 -I -B "$1" "${@:2}"; }; echo "# x" >>"$2"; sed -i "s/^i-20\t\(.*\)\tfolder:Home\t/i-20\t\1\tkeep\t/" "$2"; A "$3" apply --yes --resume >/dev/null 2>&1; [ $? = 4 ]' _ "$SCRIPTS/vault-org.py" "$(PLANF)" "$SCRIPTS/vault-org.py"
-  # 3.7 a revision that changed after the audit: the trash is skipped
+  fi
+  # 3.7 / 3.8 a revision or a username that changed after the audit: the trash is skipped (full run only)
+  if ((! QUICK)); then
   fresh_plan; rm -rf "$ROOT/data/vault-backups"
   jq '(.items[]|select(.id=="i-02")|.revisionDate)="2026-10-18T00:00:00.000Z"' "$FAKE/vault.json" >"$FAKE/v.tmp" && mv "$FAKE/v.tmp" "$FAKE/vault.json"
   out=$(A apply --yes 2>&1); rc=$?
@@ -349,6 +352,7 @@ section3() {
   jq '(.items[]|select(.id=="i-02")|.login.password)="PW-changed-later"' "$FAKE/vault.json" >"$FAKE/v.tmp" && mv "$FAKE/v.tmp" "$FAKE/vault.json"
   out=$(A apply --yes 2>&1); rc=$?
   check "3.8 a changed password of an 'identical' duplicate: skipped, never trashed" bash -c '[ "$1" = 5 ] && grep -q "i-02 Example Mail: skipped (no longer a duplicate" <<<"$2"' _ "$rc" "$out"
+  fi
   # 3.9 / 3.10 / 3.11 refusals before anything happens
   fresh_plan; rm -rf "$ROOT/data/vault-backups"; mark
   variant d 's/^\(i-12\t[^\t]*\t[^\t]*\t\)keep/\1folder:Personal/'
