@@ -240,5 +240,66 @@ class Engine(unittest.TestCase):
         self.assertEqual(len(self.backend.records[result['id']]['fields']), 512)
         self.assertEqual(self.backend.calls.count('edit'), 1)
 
+    def legacy_pending(self):
+        def fail_create(document): raise m.WriteError()
+        create = self.backend.create
+        self.backend.create = fail_create
+        with self.assertRaises(m.WriteError): self.run_write()
+        self.backend.create = create
+        path = next(p for p in self.engine.directory.glob('*.json') if not p.name.startswith('done-'))
+        row = json.loads(path.read_text()); row.pop('phase')
+        path.write_text(json.dumps(row))
+        return path, row
+
+    def test_legacy_pending_explicit_same_request_resume_preserves_identity(self):
+        path, old = self.legacy_pending()
+        calls = list(self.backend.calls)
+        with self.assertRaises(m.WriteError): self.run_write()
+        self.assertEqual(calls, self.backend.calls[:len(calls)])
+        result = self.run_write(dict(self.msg, resume_pending=True))
+        self.assertTrue(result['verified'])
+        current = json.loads(path.read_text())
+        for key in ('request', 'mac', 'created', 'uid', 'project', 'env'): self.assertEqual(current[key], old[key])
+        self.assertEqual(current['phase'], 'item-dispatch'); self.assertTrue(current['recovery'])
+        self.assertEqual(self.backend.calls.count('create'), 1)
+
+    def test_resume_payload_overwrite_flag_and_missing_request_refuse(self):
+        with self.assertRaises(m.WriteError): self.run_write(dict(self.msg, resume_pending=True))
+        path, old = self.legacy_pending()
+        for change in ({'values': {'TOKEN': 'invented-changed'}}, {'overwrite': True}, {'request_id': str(uuid.uuid4())}):
+            with self.assertRaises(m.WriteError): self.run_write(dict(self.msg, resume_pending=True, **change))
+        self.assertEqual(json.loads(path.read_text()), old)
+        for value in (False, 1, 'true', None):
+            with self.assertRaises(m.WriteError): m.request_data(dict(self.msg, resume_pending=value))
+
+    def test_resume_item_dispatch_absence_and_existing_edit_refuse(self):
+        path, old = self.legacy_pending()
+        old['phase'] = 'item-dispatch'; path.write_text(json.dumps(old))
+        with self.assertRaises(m.WriteError): self.run_write(dict(self.msg, resume_pending=True))
+        self.assertNotIn('create', self.backend.calls)
+        old.pop('phase'); old['id'] = 'invented-existing-id'; path.write_text(json.dumps(old))
+        with self.assertRaises(m.WriteError): self.run_write(dict(self.msg, resume_pending=True))
+        self.assertNotIn('create', self.backend.calls)
+
+    def test_interrupted_explicit_resume_records_dispatch_and_never_replays(self):
+        path, old = self.legacy_pending()
+        attempts = []
+        def fail_create(document): attempts.append('item'); raise m.WriteError()
+        self.backend.create = fail_create
+        with self.assertRaises(m.WriteError): self.run_write(dict(self.msg, resume_pending=True))
+        self.assertEqual(json.loads(path.read_text())['phase'], 'item-dispatch')
+        calls = list(self.backend.calls)
+        with self.assertRaises(m.WriteError): self.run_write(dict(self.msg, resume_pending=True))
+        self.assertEqual(calls, self.backend.calls[:len(calls)])
+        self.assertEqual(attempts, ['item'])
+
+    def test_resume_exact_note_reconciles_without_second_create(self):
+        self.backend.fail_after_create = True
+        with self.assertRaises(m.WriteError): self.run_write()
+        self.backend.fail_after_create = False
+        result = self.run_write(dict(self.msg, resume_pending=True))
+        self.assertTrue(result['verified'])
+        self.assertEqual(self.backend.calls.count('create'), 1)
+
 
 if __name__ == '__main__': unittest.main()

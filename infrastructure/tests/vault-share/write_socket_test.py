@@ -11,6 +11,7 @@ import tempfile
 import time
 import unittest
 import uuid
+import threading
 
 _isolation_spec = importlib.util.spec_from_file_location('write_test_isolation', Path(__file__).with_name('write_isolation.py'))
 _isolation = importlib.util.module_from_spec(_isolation_spec); _isolation_spec.loader.exec_module(_isolation)
@@ -67,9 +68,35 @@ class Socket(unittest.TestCase):
         (self.root / 'stale').touch()
         result = self.request(self.msg)
         self.assertFalse(result['ok']); self.assertEqual(result['error'], 'pending')
+        self.assertEqual(result['stage'], 'read-visibility')
         (self.root / 'stale').unlink()
         (self.root / 'etc/env-write.tsv').write_text('# vault-share env-write v1\n')
         self.assertEqual(self.request(self.msg)['error'], 'policy')
+
+    def test_client_preserves_only_fixed_code_stage_and_refuses_poison(self):
+        script = HERE.parents[2] / '.config/hypr/scripts/vault-share.py'
+        spec = importlib.util.spec_from_file_location('diagnostic_client', script)
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        (self.root / 'etc/env-write.tsv').write_text('# vault-share env-write v1\n')
+        with self.assertRaises(module.Policy) as caught:
+            module.Client(self.root / 'run/sock', allow_self=True).request(self.msg)
+        self.assertEqual(caught.exception.extra, {'code': 'policy', 'stage': 'policy'})
+        path = self.root / 'poison.sock'
+        server = socket.socket(socket.AF_UNIX); server.bind(str(path)); server.listen(1)
+        def poison():
+            connection, _ = server.accept()
+            with connection:
+                connection.recv(65536)
+                connection.sendall(json.dumps({'ok': False, 'error': [], 'stage': {},
+                    'message': 'invented-poison-secret\x1b[31m'}).encode() + b'\n')
+        thread = threading.Thread(target=poison); thread.start()
+        try:
+            with self.assertRaises(module.ShareError) as caught:
+                module.Client(path, allow_self=True).request(self.msg)
+            self.assertEqual(caught.exception.extra, {'code': 'unknown', 'stage': 'unknown'})
+            self.assertNotIn('invented-poison', str(caught.exception))
+        finally:
+            thread.join(2); server.close()
 
     def test_pending_and_key_survive_broker_and_runtime_restart(self):
         (self.root / 'lose-reply').touch()

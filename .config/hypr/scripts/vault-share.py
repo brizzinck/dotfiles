@@ -232,6 +232,10 @@ SOCK_PATH = SOCK_DIR / "sock"
 SCOPES_PATH = Path("/etc/vault-share/scopes.tsv")
 MAX_REQUEST = 4096
 MAX_WRITE_REQUEST = 256 * 1024
+WRITE_STAGES = frozenset(('request', 'policy', 'storage', 'backend-prepare', 'backend-sync', 'folder-list',
+                         'item-resolve', 'preflight', 'recovery', 'folder-create', 'folder-receipt', 'folder-visible',
+                         'item-create', 'item-edit', 'item-verify', 'read-visibility', 'complete', 'capacity'))
+WRITE_CODES = frozenset(('locked', 'unavailable', 'policy', 'bad_request', 'rate_limited', 'conflict', 'pending', 'internal', 'refused'))
 MARKER = "vault-share"
 
 
@@ -590,7 +594,7 @@ class Broker:
         try:
             module.request_data(msg)
             if not self.write_policy.allows(uid, name):
-                raise module.WriteError('policy')
+                raise module.WriteError('policy', 'policy')
             wait = self.rates.take(uid, 'write')
             if wait is not None:
                 raise Err('rate_limited', 'too many writes', retry_after=int(wait) + 1)
@@ -602,14 +606,14 @@ class Broker:
                         future.result(timeout=max(0.01, deadline - time.monotonic()))
                     except BaseException:
                         future.cancel()
-                        raise module.WriteError('pending') from None
+                        raise module.WriteError('pending', 'read-visibility') from None
                 # Pending operations and spent UUIDs survive broker/session restarts and reboots.
                 state = Path(os.environ.get('XDG_STATE_HOME') or (Path.home() / '.local/state'))
                 engine = module.Writer(state / 'vault-share/env-write', self.write_policy.allows, verify=verify)
                 body = await asyncio.to_thread(engine.run, msg, uid, name)
                 return body, body['id'], ','.join(body['names'])
         except module.WriteError as error:
-            raise Err(error.code, 'env write ' + error.code) from None
+            raise Err(error.code, 'env write ' + error.code + ' (stage=' + error.stage + ')', stage=error.stage) from None
 
     # identity -----------------------------------------------------------------------------------
     def identity(self, writer):
@@ -1166,6 +1170,11 @@ class Client:
             raise Unavailable("the broker answered something unexpected")
         if not resp.get("ok"):
             extra = {k: resp[k] for k in ("retry_after",) if k in resp}
+            if writing:
+                code, stage = resp.get('error'), resp.get('stage')
+                extra['code'] = code if isinstance(code, str) and code in WRITE_CODES else 'unknown'
+                extra['stage'] = stage if isinstance(stage, str) and stage in WRITE_STAGES else 'unknown'
+                raise ERRORS.get(extra['code'], ShareError)('env write ' + extra['code'] + ' (stage=' + extra['stage'] + ')', **extra)
             raise ERRORS.get(resp.get("error"), ShareError)(resp.get("message") or "error", **extra)
         return resp
 

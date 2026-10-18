@@ -72,6 +72,7 @@ check "broker subprocess timeout drains pipes and reaps child" python3 -I -B "$H
 check "broker idle preserves inherited activation socket and cleans standalone socket" python3 -I -B "$HERE/socket_idle_test.py" "$SCRIPTS/vault-share.py"
 check "td self-write capability policy metadata and rendering" python3 -I -B "$HERE/write_policy_test.py"
 check "bounded owner UNIX backend without CLI fallback" python3 -I -B "$HERE/write_backend_test.py"
+check "actual HTTP folder visibility, receipt identity and no mutation retry" python3 -I -B "$HERE/write_http_test.py"
 check "serialized self-write batch and recovery engine" python3 -I -B "$HERE/write_engine_test.py"
 check "actual broker self-write socket and scoped read visibility" python3 -I -B "$HERE/write_socket_test.py"
 

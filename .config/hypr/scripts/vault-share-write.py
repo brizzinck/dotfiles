@@ -28,7 +28,9 @@ def identifier(value):
 
 
 def request_data(msg):
-    if (set(msg) != {'v', 'op', 'project', 'env', 'values', 'overwrite', 'request_id'}
+    keys = {'v', 'op', 'project', 'env', 'values', 'overwrite', 'request_id'}
+    if ((set(msg) != keys and set(msg) != keys | {'resume_pending'})
+            or ('resume_pending' in msg and msg['resume_pending'] is not True)
             or type(msg['v']) is not int or msg['v'] != 1 or msg['op'] != 'env-put'
             or not isinstance(msg['project'], str) or not re.fullmatch(r'[a-z0-9][a-z0-9._-]{0,62}', msg['project'])
             or not isinstance(msg['env'], str) or not re.fullmatch(r'[a-z][a-z0-9_-]{0,31}', msg['env'])
@@ -57,6 +59,10 @@ def request_data(msg):
     return values
 
 POLICY_HEADER = '# vault-share env-write v1'
+STAGES = frozenset(('request', 'policy', 'storage', 'backend-prepare', 'backend-sync', 'folder-list',
+                    'item-resolve', 'preflight', 'recovery', 'folder-create', 'folder-receipt', 'folder-visible',
+                    'item-create', 'item-edit', 'item-verify', 'read-visibility', 'complete', 'capacity'))
+_WRITE_STAGE = threading.local()
 
 
 class WritePolicy:
@@ -117,8 +123,10 @@ class WritePolicy:
 
 
 class WriteError(Exception):
-    def __init__(self, code='unavailable'):
+    def __init__(self, code='unavailable', stage=None):
         self.code = code
+        stage = stage or getattr(_WRITE_STAGE, 'value', 'request')
+        self.stage = stage if stage in STAGES else 'request'
         super().__init__(code)      # fixed category only, never backend output
 
 
@@ -297,6 +305,7 @@ class Writer:
     """Synchronous engine called off-loop under a broker lock. Journal entries contain metadata only."""
     MAX_COMPLETED = 4096
     MAX_RECORDS = 8192
+    FOLDER_WAIT = 5.0
     def __init__(self, directory, authorize, backend_factory=OwnerServer, verify=None):
         self.directory = Path(directory)
         self.authorize = authorize
@@ -305,7 +314,33 @@ class Writer:
 
     def permit(self, uid, name):
         if not self.authorize(uid, name):
-            raise WriteError('policy')
+            raise WriteError('policy', 'policy')
+
+    def visible_folder(self, backend, name, ident, deadline):
+        """The CLI decrypts a cached observable asynchronously after create's successful receipt."""
+        _WRITE_STAGE.value = 'folder-visible'
+        until = min(deadline, time.monotonic() + self.FOLDER_WAIT)
+        previous_deadline = getattr(backend, 'deadline', None)
+        if previous_deadline is not None:
+            backend.deadline = min(previous_deadline, until)
+        try:
+            while True:
+                if time.monotonic() >= until:
+                    raise WriteError('pending')
+                found = self.folders(backend)
+                if name in found:
+                    if found[name] != ident:
+                        raise WriteError('conflict')
+                    return found
+                if ident in found.values():
+                    raise WriteError('conflict')
+                remaining = until - time.monotonic()
+                if remaining <= 0:
+                    raise WriteError('pending')
+                time.sleep(min(0.05, remaining))
+        finally:
+            if previous_deadline is not None:
+                backend.deadline = previous_deadline
 
     def private_directory(self):
         """Create descendants through held no-follow parents; never traverse a planted link."""
@@ -316,7 +351,10 @@ class Writer:
                 try:
                     child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
                 except FileNotFoundError:
-                    os.mkdir(part, mode=0o700, dir_fd=fd)
+                    try:
+                        os.mkdir(part, mode=0o700, dir_fd=fd)
+                    except FileExistsError:
+                        pass  # a concurrent writer created it; the checked no-follow open below decides
                     child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
                 os.close(fd); fd = child
                 st = os.fstat(fd)
@@ -445,12 +483,16 @@ class Writer:
             if len(key) != 32: raise WriteError()
         finally:
             os.close(fd)
-        raw = json.dumps(msg, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+        bound = dict(msg)
+        bound.pop('resume_pending', None)  # explicit recovery transport intent; original request remains bound verbatim
+        raw = json.dumps(bound, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
         return hmac.new(key, raw, hashlib.sha256).hexdigest()
 
     def run(self, msg, uid, name):
+        _WRITE_STAGE.value = 'request'
         values = request_data(msg)
         self.permit(uid, name)
+        _WRITE_STAGE.value = 'storage'
         self.private_directory()
         try:
             lock = os.open(self.directory / 'writer.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -473,8 +515,10 @@ class Writer:
             result = self.execute(msg, uid, name, values, deadline)
             if self.verify is None:
                 raise WriteError()
+            _WRITE_STAGE.value = 'read-visibility'
             self.verify(result['id'], uid, name, msg, deadline)
             self.permit(uid, name)
+            _WRITE_STAGE.value = 'complete'
             self.complete(*result.pop('_journal'))
             return result
         except WriteError:
@@ -485,6 +529,7 @@ class Writer:
             os.close(lock)
 
     def execute(self, msg, uid, name, values, deadline):
+        _WRITE_STAGE.value = 'storage'
         project, env, request = msg['project'], msg['env'], msg['request_id']
         request_mac = self.request_mac(msg)
         folder_name = 'Users/' + name + '/Env/' + project
@@ -501,44 +546,66 @@ class Writer:
                     raise WriteError()
                 prior = json.loads(os.read(fd, 4097))
                 if (not isinstance(prior, dict) or prior.get('uid') != uid or prior.get('project') != project
-                        or prior.get('env') != env or prior.get('state') not in ('pending', 'complete')):
+                        or prior.get('env') != env or prior.get('state') not in ('pending', 'complete')
+                        or type(prior.get('v')) is not int or prior['v'] != 1 or 'id' not in prior
+                        or (prior['id'] is not None and not identifier(prior['id']))
+                        or not isinstance(prior.get('mac'), str) or not re.fullmatch('[a-f0-9]{64}', prior['mac'])):
                     raise WriteError()
             finally:
                 os.close(fd)
+        _WRITE_STAGE.value = 'recovery'
         if prior and prior['state'] == 'pending' and prior.get('request') != request:
             raise WriteError('pending')
         if prior and prior.get('request') == request and not hmac.compare_digest(prior.get('mac', ''), request_mac):
             raise WriteError('pending' if prior['state'] == 'pending' else 'conflict')
+        if msg.get('resume_pending') and (prior is None or prior.get('request') != request or prior['state'] != 'pending'):
+            raise WriteError('pending')
         # A completed UUID is retained separately, so an old request can never be replayed.
         receipt_path = self.directory / ('done-' + request + '.json')
         if receipt_path.exists() and (not prior or prior.get('request') != request):
             raise WriteError('conflict')
         if not prior or prior.get('request') != request:
+            _WRITE_STAGE.value = 'capacity'
             # Never evict spent IDs or uncertain work. At capacity new operations fail closed.
             records = list(self.directory.glob('*.json'))
             if sum(path.name.startswith('done-') for path in records) >= self.MAX_COMPLETED or (prior is None and len(records) >= self.MAX_RECORDS):
                 raise WriteError('pending')
         backend = self.backend_factory(deadline)
+        _WRITE_STAGE.value = 'backend-prepare'
         backend.prepare()
+        _WRITE_STAGE.value = 'backend-sync'
         backend.sync()
         self.permit(uid, name)
+        _WRITE_STAGE.value = 'folder-list'
         folders = self.folders(backend)
         folder = folders.get(folder_name)
+        _WRITE_STAGE.value = 'item-resolve'
         rec = self.target(backend, folder, env) if folder else None
         created = self.inspect(rec, uid, project, env, folder) if rec else request
         current = {field['name']: field['value'] for field in rec['fields']} if rec else {}
+        _WRITE_STAGE.value = 'preflight'
         if len(set(current) | set(values)) > 512:
             raise WriteError('policy')
         exact = rec is not None and all(current.get(key) == value for key, value in values.items())
+        resumed = None
         if prior and prior.get('request') == request:
+            _WRITE_STAGE.value = 'recovery'
             if (not exact or (prior.get('id') and rec['id'] != prior['id'])
                     or (not prior.get('id') and created != request)):
-                raise WriteError('pending' if prior['state'] == 'pending' else 'conflict')
-            return self.receipt(rec['id'], project, env, values, target, prior)
+                if (msg.get('resume_pending') is True and prior['state'] == 'pending' and 'id' in prior
+                        and prior['id'] is None and rec is None
+                        and ('phase' not in prior or prior['phase'] in ('folders', 'pre-item'))):
+                    resumed = dict(prior, phase='pre-item', recovery=True)
+                    self.save(target, resumed)
+                else:
+                    raise WriteError('pending' if prior['state'] == 'pending' else 'conflict')
+            else:
+                return self.receipt(rec['id'], project, env, values, target, prior)
         if not msg['overwrite'] and any(key in current and current[key] != value for key, value in values.items()):
             raise WriteError('conflict')
-        row = {'v': 1, 'uid': uid, 'project': project, 'env': env, 'request': request, 'id': rec['id'] if rec else None,
-               'state': 'pending', 'created': int(time.time()), 'mac': request_mac}
+        row = resumed or {'v': 1, 'uid': uid, 'project': project, 'env': env, 'request': request, 'id': rec['id'] if rec else None,
+                          'state': 'pending', 'created': int(time.time()), 'mac': request_mac, 'phase': 'folders'}
+        _WRITE_STAGE.value = 'storage'
         self.save(target, row)
         if not exact:
             # Folder creation is also an uncertain mutation: the pending record already exists.
@@ -547,14 +614,14 @@ class Writer:
                 path = '/'.join(pieces[:index])
                 if path not in folders:
                     self.permit(uid, name)
+                    _WRITE_STAGE.value = 'folder-create'
                     reply = backend.create_folder(path)
+                    _WRITE_STAGE.value = 'folder-receipt'
                     if not isinstance(reply, dict) or not identifier(reply.get('id')) or reply.get('name') != path:
                         raise WriteError('pending')
-                    refreshed = self.folders(backend)
-                    if refreshed.get(path) != reply['id']:
-                        raise WriteError('pending')
-                    folders = refreshed
+                    folders = self.visible_folder(backend, path, reply['id'], deadline)
             folder = folders[folder_name]
+            _WRITE_STAGE.value = 'item-resolve'
             fresh = self.target(backend, folder, env)
             if rec:
                 self.inspect(fresh, uid, project, env, folder, rec['id'])
@@ -572,7 +639,14 @@ class Writer:
                             'notes': self.marker(uid, project, env, request), 'secureNote': {'type': 0},
                             'reprompt': 0, 'fields': [{'name': key, 'value': value, 'type': 1} for key, value in values.items()]}
             self.permit(uid, name)
+            # Durable before dispatch: absence of this phase in legacy v1 never proves no item mutation.
+            row = dict(row, phase='item-dispatch')
+            _WRITE_STAGE.value = 'storage'
+            self.save(target, row)
+            self.permit(uid, name)
+            _WRITE_STAGE.value = 'item-edit' if rec else 'item-create'
             reply = backend.edit(rec['id'], document) if rec else backend.create(document)
+            _WRITE_STAGE.value = 'item-verify'
             reply_created = self.inspect(reply, uid, project, env, folder, rec['id'] if rec else None)
             if reply_created != created:
                 raise WriteError('pending')
