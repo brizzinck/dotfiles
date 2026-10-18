@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# fake logger: the journald line goes to $FAKE_DIR/logger.log (tests check it holds no values)
+printf '%s\n' "$*" >>"${FAKE_DIR:?}/logger.log"

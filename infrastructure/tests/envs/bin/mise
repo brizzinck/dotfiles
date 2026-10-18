@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Fake mise for tests (never the real tool). Logs "cwd|argv" (no env values) to $FAKE_MISE_LOG when set.
+#   FAKE_MISE_MISSING=FILE   `ls --current --missing` prints the file; `install` removes it
+#   FAKE_MISE_UNTRUSTED=1    `ls` fails like mise does for an untrusted config
+#   FAKE_MISE_INSTALL_RC=N   exit status of `install`
+log() { [[ -n ${FAKE_MISE_LOG:-} ]] && printf '%s|%s\n' "$PWD" "$*" >>"$FAKE_MISE_LOG"; return 0; }
+log "$@"
+case "${1:-}" in
+  --version|-V) echo "2026.10.12 linux-x64 (fake)" ;;
+  activate)
+    cat <<'ACT'
+export MISE_SHELL=zsh
+_mise_hook() { :; }
+_mise_hook_precmd() { :; }
+_mise_hook_chpwd() { :; }
+typeset -ag precmd_functions
+precmd_functions=( _mise_hook_precmd ${precmd_functions[@]} )
+typeset -ag chpwd_functions
+chpwd_functions=( _mise_hook_chpwd ${chpwd_functions[@]} )
+ACT
+    ;;
+  hook-env) : ;;
+  completion) echo "#compdef mise" ;;
+  ls)
+    [[ ${FAKE_MISE_UNTRUSTED:-} == 1 ]] && { echo "mise ERROR config not trusted" >&2; exit 1; }
+    [[ -n ${FAKE_MISE_MISSING:-} && -s $FAKE_MISE_MISSING ]] && cat "$FAKE_MISE_MISSING"
+    ;;
+  install)
+    [[ -n ${FAKE_MISE_MISSING:-} ]] && rm -f "$FAKE_MISE_MISSING"
+    exit "${FAKE_MISE_INSTALL_RC:-0}" ;;
+  exec)
+    shift; [[ ${1:-} == -- ]] && shift
+    export FAKE_MISE_EXEC=1
+    exec "$@" ;;
+  trust|upgrade|prune|plugins|plugin|settings|doctor) : ;;
+  *) echo "fake mise: unknown command $1" >&2; exit 2 ;;
+esac

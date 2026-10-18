@@ -74,11 +74,12 @@ source $ZSH/oh-my-zsh.sh
 autoload -Uz add-zsh-hook
 _df_git_info() { _DF_GIT_INFO=$(git_prompt_info) }
 add-zsh-hook precmd _df_git_info
-PROMPT='%(?:%F{2}%B%1{➜%}%b:%F{1}%B%1{➜%}%b) %F{4}%c%f ${_DF_GIT_INFO}'
+PROMPT='%(?:%F{2}%B%1{➜%}%b:%F{1}%B%1{➜%}%b) %F{4}%c%f ${_ENVS_PROMPT}${_DF_GIT_INFO}'
 ZSH_THEME_GIT_PROMPT_PREFIX='%F{8}git:(%F{5}'
 ZSH_THEME_GIT_PROMPT_SUFFIX='%f '
 ZSH_THEME_GIT_PROMPT_DIRTY='%F{8}) %F{3}%1{✗%}'
 ZSH_THEME_GIT_PROMPT_CLEAN='%F{8})'
+[[ -r ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/envs.zsh ]] && source ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/envs.zsh   # [stage] / [prod] marker (envs use)
 # zsh-syntax-highlighting paints comments black+bold = ANSI 0, which is the near-invisible `select` surface
 ZSH_HIGHLIGHT_STYLES[comment]='fg=8'
 # dircolors defaults put blue on green (ow), black on green (tw) and white on blue (st): invisible or loud
@@ -199,6 +200,12 @@ of() {
     mv "$file.formatted" "$file"
   done
 }
+
+# Project secrets (envs, DEV-b): they live in Bitwarden and reach ONLY the command, never this shell. Aliases/functions such as
+# `grun` cannot be wrapped (envs execs a real program): use the real command, or `er go run .`.
+er() { envs run -- "$@" }                                  # run a command with the project's secrets of the active environment
+ere() { local e=$1; shift; envs run -e "$e" -- "$@" }       # run a command with the project's secrets of environment ENV
+ert() { envs run -- mise run "$@" }                        # run a mise task with the project's secrets
 
 # was rg(): shadowed ripgrep (false "no matches" for agents via the shell snapshot)
 grun() {

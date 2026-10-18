@@ -1,0 +1,30 @@
+{
+  "folders": [
+    {"id": "f-env", "name": "Env"},
+    {"id": "f-billing", "name": "Env/billing"},
+    {"id": "f-other", "name": "Env/other"},
+    {"id": "f-work", "name": "Work"}
+  ],
+  "items": [
+    {"id": "e-dev", "type": 2, "name": "dev", "folderId": "f-billing", "notes": "envs: project billing, environment dev.",
+     "secureNote": {"type": 0}, "login": null,
+     "fields": [{"name": "DATABASE_URL", "value": "SECRET-billing-dev-db", "type": 1},
+                {"name": "STRIPE_SECRET_KEY", "value": "SECRET-billing-dev-stripe", "type": 1},
+                {"name": "EXTRA_FIELD", "value": "SECRET-billing-dev-extra", "type": 1}],
+     "attachments": [], "passwordHistory": [], "deletedDate": null},
+    {"id": "e-stage", "type": 2, "name": "stage", "folderId": "f-billing", "notes": null, "secureNote": {"type": 0}, "login": null,
+     "fields": [{"name": "DATABASE_URL", "value": "SECRET-billing-stage-db", "type": 1}],
+     "attachments": [], "passwordHistory": [], "deletedDate": null},
+    {"id": "e-prod", "type": 2, "name": "prod", "folderId": "f-billing", "notes": null, "secureNote": {"type": 0}, "login": null,
+     "fields": [{"name": "DATABASE_URL", "value": "SECRET-billing-prod-db", "type": 1},
+                {"name": "STRIPE_SECRET_KEY", "value": "SECRET-billing-prod-stripe", "type": 1}],
+     "attachments": [], "passwordHistory": [], "deletedDate": null},
+    {"id": "o-dev", "type": 2, "name": "dev", "folderId": "f-other", "notes": null, "secureNote": {"type": 0}, "login": null,
+     "fields": [{"name": "DATABASE_URL", "value": "SECRET-other-dev-db", "type": 1},
+                {"name": "STRIPE_SECRET_KEY", "value": "SECRET-other-dev-stripe", "type": 1}],
+     "attachments": [], "passwordHistory": [], "deletedDate": null},
+    {"id": "w-dev", "type": 1, "name": "dev", "folderId": "f-work", "notes": null,
+     "login": {"username": "decoy", "password": "SECRET-work-login", "totp": null, "uris": []},
+     "fields": [], "attachments": [], "passwordHistory": [], "deletedDate": null}
+  ]
+}

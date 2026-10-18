@@ -1,0 +1,1479 @@
+#!/usr/bin/env -S python3 -I
+"""envs: per-project environments with secrets from Bitwarden (DEV-b). Python 3 stdlib only; run as `python3 -I`.
+
+  envs                          the TUI: projects -> environments -> variables
+  envs init [--project NAME] [--envs dev,stage,prod] [--default dev]
+                                write .envs.toml in the git top-level (or cwd), add .env* to .gitignore, mise trust, bind
+  envs bind                     confirm the root -> Env/<project> binding (+ mise trust); needs a terminal
+  envs status [--json]          project, root, binding, active env, declared names; with an unlocked vault per env: set /
+                                missing / extra (no values)
+  envs use [ENV] [--prod] [--for 60m]   select the active env of this root (picker without ENV); the default env clears it
+  envs run [-e ENV] [--prod] [--sync] [--no-mise] [--allow-missing] -- CMD [ARGS...]
+                                run CMD with the declared secrets of the env in ITS environment only (exec, nothing stays)
+  envs set NAME [-e ENV | --all] [--plain] [--stdin] [--description TEXT]
+                                secret: value from a hidden prompt (asked twice) or --stdin, into the env item(s); --plain:
+                                into .mise.toml [env] (or .mise.ENV.toml with -e). A value on the command line is refused
+  envs unset NAME [-e ENV | --all] [--undeclare]
+  envs rename OLD NEW           the field in every env item + the declaration (+ mise files when plain)
+  envs copy SRC DST [--overwrite]   copy secret values between envs (default: only names missing in DST)
+  envs diff [A B]               per name: set/missing in each, same/differs (compared in memory, never printed)
+  envs env new|rename|delete ...    manage environments (item + .envs.toml list; delete = Bitwarden trash, typed confirmation)
+  envs project rename NEW | delete  folder rename / items to the trash + folder delete, typed confirmation
+  envs import [FILE] [-e ENV] [--secrets A,B] [--plain C,D] [--keep]   move a .env file into Bitwarden / .mise.toml
+  envs export-example [-o .env.example]   names only
+  envs copy-value NAME [-e ENV] copy one value (wl-copy --sensitive, cleared after 30 s); no command prints a value
+  envs check [--all]            the project (or every bound root): toml, names, binding, conflicts with mise [env], untracked
+                                .env* files, tracked .env, mise trust and tools, and with an unlocked vault: items, duplicates,
+                                missing and undeclared fields
+
+Files. `.envs.toml` (committed, names only): project, environments, default, protected, [secrets] NAME = "description".
+Values: Bitwarden folder `Env/<project>`, one Secure Note per environment named exactly like it, one hidden custom field per
+secret. Non-secret variables: mise [env] (`.mise.toml`, `.mise.ENV.toml`). State: ~/.local/state/envs/{active,bindings}.tsv.
+Secrets go ONLY into the command (`envs run`); nothing here prints a value, puts one in argv, a log or a file. Agents (claude,
+codex, gemini, ... as an ancestor process, or $CLAUDECODE) get names-only commands and nothing else. `prod`/`production` and
+`protected = [...]` need --prod (or a typed confirmation) and are logged to the journal (no values).
+Exit codes: 0 ok, 1 error, 2 usage, 3 vault locked and no tty, 4 refused (agent, protected without --prod, unbound), 130 cancel.
+Test hooks: ENVS_TOOL_PATH (directory with fake tools; also makes ENVS_TEST_ROOT_PID, ENVS_TEST_YES work), RBW_BIN, BW_BIN,
+PINENTRY_BIN, ENVS_NO_JOURNAL.
+"""
+import contextlib
+import fcntl
+import json
+import os
+import re
+import select
+import shutil
+import subprocess
+import sys
+import time
+import tomllib
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+os.umask(0o077)
+
+SELF = Path(__file__).resolve()
+REPO = SELF.parents[2]               # ~/dotfiles for the owner, /srv/dotfiles for managed users
+VAULT_BW = REPO / ".config/hypr/scripts/vault-bw.py"
+HOME = Path.home()
+TEST_DIR = os.environ.get("ENVS_TOOL_PATH") or ""      # test hook: a directory of fake tools
+SAFE_DIRS = ["/usr/bin", "/usr/local/bin", str(HOME / ".local/bin")]
+TOML = ".envs.toml"
+MASK = "•" * 8
+
+NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+PROJECT_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
+ENV_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+RESERVED = {"PATH", "HOME", "USER", "SHELL", "PWD", "TERM", "LANG", "IFS", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT",
+            "PYTHONPATH", "PYTHONSTARTUP", "NODE_OPTIONS", "BW_SESSION", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "WAYLAND_DISPLAY"}
+RESERVED_PREFIX = ("MISE_", "ENVS_", "__MISE")
+ALWAYS_PROTECTED = {"prod", "production"}
+AGENTS = {"claude", "codex", "gemini", "claude-agent-ac", "claude-agent-acp", "codex-acp"}   # comm is cut at 15 characters
+AGENT_RUNNERS = {"node", "bun", "python3", "python", "deno"}                                 # a script run by an interpreter
+MISE_BASE = [".mise.toml", "mise.toml", ".config/mise.toml", "mise/config.toml"]
+MISE_MARKERS = MISE_BASE + [".tool-versions", ".nvmrc", ".node-version", ".python-version", ".mise/config.toml"]
+FIELD_LIMIT = 4000
+SECRET_HINT = re.compile(r"KEY|SECRET|TOKEN|PASS|PWD|PRIVATE|CREDENTIAL|AUTH|DSN|API", re.I)
+
+
+class Fail(Exception):
+    def __init__(self, msg, code=1):
+        super().__init__(msg)
+        self.msg, self.code = msg, code
+
+
+def fail(msg, code=1):
+    raise Fail(msg, code)
+
+
+def say(msg=""):
+    print(msg)
+
+
+def warn(msg):
+    print(f"envs: {msg}", file=sys.stderr)
+
+
+def tty():
+    return sys.stdin.isatty() and sys.stderr.isatty()
+
+
+def test_mode():
+    return bool(TEST_DIR)
+
+
+# ───────────────────────────── tools and agent check ─────────────────────────────
+
+def tool(name, env=None, required=True):
+    """Absolute path of an external tool, from /usr/bin:/usr/local/bin:~/.local/bin only (a trusted project's [env] can
+    prepend PATH); tests point ENVS_TOOL_PATH at fakes. An absolute RBW_BIN / BW_BIN / PINENTRY_BIN override wins."""
+    if env:
+        v = os.environ.get(env)
+        if v and os.path.isabs(v) and os.access(v, os.X_OK):
+            return v
+        if v and not os.path.isabs(v):
+            name = os.path.basename(v)
+    dirs = [d for d in TEST_DIR.split(":") if d] + SAFE_DIRS
+    for d in dirs:
+        p = os.path.join(d, name)
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    if required:
+        fail(f"{name} is not installed", 1)
+    return None
+
+
+def proc_comm(pid):
+    try:
+        return Path(f"/proc/{pid}/comm").read_text().strip()
+    except OSError:
+        return ""
+
+
+def proc_ppid(pid):
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        return int(stat.rsplit(")", 1)[1].split()[1])
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def proc_argv(pid):
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return []
+
+
+def agent_context():
+    """The name of the agent this process runs under (an ancestor's /proc comm up to pid 1, or an interpreter running an agent
+    script), or $CLAUDECODE. Tests stop the walk at ENVS_TEST_ROOT_PID (only with ENVS_TOOL_PATH)."""
+    if os.environ.get("CLAUDECODE"):
+        return "claude (CLAUDECODE)"
+    stop = 0
+    if test_mode():
+        try:
+            stop = int(os.environ.get("ENVS_TEST_ROOT_PID", "0"))
+        except ValueError:
+            stop = 0
+    pid, seen = os.getpid(), 0
+    while pid > 1 and seen < 64:
+        if pid == stop:
+            break
+        comm = proc_comm(pid)
+        if comm in AGENTS:
+            return comm
+        if comm in AGENT_RUNNERS:
+            for a in proc_argv(pid)[1:3]:
+                base = os.path.basename(a.decode("utf-8", "replace"))
+                if base in AGENTS or base.removesuffix(".js") in AGENTS or base.removesuffix(".mjs") in AGENTS:
+                    return base
+        pid = proc_ppid(pid)
+        seen += 1
+    return None
+
+
+def refuse_agent(what):
+    a = agent_context()
+    if a:
+        fail(f"{what} is refused inside an agent ({a}): secrets are never handed to agents; names-only commands "
+             "(status, check, diff, export-example) still work", 4)
+
+
+# ───────────────────────────── state and locks ─────────────────────────────
+
+def state_dir():
+    d = Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local/state") / "envs"
+    d.mkdir(parents=True, exist_ok=True)
+    os.chmod(d, 0o700)
+    return d
+
+
+def run_dir():
+    base = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+    d = base / "envs"
+    d.mkdir(parents=True, exist_ok=True)
+    os.chmod(d, 0o700)
+    return d
+
+
+@contextlib.contextmanager
+def write_lock():
+    fd = os.open(run_dir() / "write.lock", os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def read_tsv(path):
+    try:
+        text = Path(path).read_text()
+    except OSError:
+        return []
+    return [line.split("\t") for line in text.splitlines() if line.strip()]
+
+
+def atomic_write(path, text):
+    path = Path(path)
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def write_tsv(path, rows):
+    atomic_write(path, "".join("\t".join(r) + "\n" for r in rows))
+
+
+def active_rows(now=None):
+    now = now if now is not None else time.time()
+    out = []
+    for r in read_tsv(state_dir() / "active.tsv"):
+        if len(r) >= 4:
+            try:
+                until = int(r[2])
+            except ValueError:
+                continue
+            if until == 0 or until > now:
+                out.append(r[:4])
+    return out
+
+
+def active_get(root):
+    """(env, until, kind) of the unexpired selection of this root, else None."""
+    for r in active_rows():
+        if r[0] == str(root):
+            return r[1], int(r[2]), r[3]
+    return None
+
+
+def active_set(root, env, until=0, kind="-"):
+    rows = [r for r in active_rows() if r[0] != str(root)]
+    if env is not None:
+        rows.append([str(root), env, str(int(until)), kind])
+    write_tsv(state_dir() / "active.tsv", rows)
+
+
+def git_common_dir(root):
+    """Realpath of the git common dir of ROOT (shared by every worktree of a repo), read from .git without a process; git is
+    the fallback for anything unusual."""
+    d = Path(root).resolve()
+    for cand in [d, *d.parents]:
+        g = cand / ".git"
+        try:
+            if g.is_dir():
+                return os.path.realpath(g)
+            if g.is_file():
+                line = g.read_text().strip()
+                if line.startswith("gitdir:"):
+                    gd = Path(line[7:].strip())
+                    gd = gd if gd.is_absolute() else (cand / gd)
+                    cd = gd / "commondir"
+                    if cd.is_file():
+                        c = Path(cd.read_text().strip())
+                        return os.path.realpath(c if c.is_absolute() else gd / c)
+                    return os.path.realpath(gd)
+        except OSError:
+            break
+    git = tool("git", required=False)
+    if git:
+        try:
+            p = subprocess.run([git, "-C", str(root), "rev-parse", "--git-common-dir"], capture_output=True, text=True,
+                               timeout=10, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if p.returncode == 0 and p.stdout.strip():
+            return os.path.realpath(os.path.join(root, p.stdout.strip()))
+    return None
+
+
+def binding_key(root):
+    return git_common_dir(root) or os.path.realpath(root)
+
+
+def key_root(key):
+    return os.path.dirname(key) if os.path.basename(key) == ".git" else key
+
+
+def bindings():
+    return {r[0]: r for r in read_tsv(state_dir() / "bindings.tsv") if len(r) >= 3}
+
+
+def binding_state(root, project):
+    """('bound'|'unbound'|'changed', key, old project)"""
+    key = binding_key(root)
+    b = bindings().get(key)
+    if not b:
+        return "unbound", key, None
+    return ("bound" if b[1] == project else "changed"), key, b[1]
+
+
+def bind_write(root, project):
+    key = binding_key(root)
+    with write_lock():
+        rows = [r for r in bindings().values() if r[0] != key]
+        rows.append([key, project, time.strftime("%Y-%m-%dT%H:%M:%S%z")])
+        write_tsv(state_dir() / "bindings.tsv", rows)
+
+
+# ───────────────────────────── .envs.toml and mise files ─────────────────────────────
+
+def bad_var_name(n):
+    if not isinstance(n, str) or not NAME_RE.match(n):
+        return "is not a valid variable name"
+    if n in RESERVED or n.startswith(RESERVED_PREFIX):
+        return "is a reserved name (PATH, HOME, LD_*, MISE_*, ENVS_*, BW_SESSION ...)"
+    return None
+
+
+def find_root(start=None):
+    d = Path(start or os.getcwd()).resolve()
+    while True:
+        if (d / TOML).is_file():
+            return d
+        if d.parent == d:
+            fail(f"no {TOML} here or above: run `envs init` in the project", 1)
+        d = d.parent
+
+
+def mise_files(root):
+    """Existing mise config files of the root: [(path, env or None)]."""
+    out = []
+    for rel in MISE_BASE:
+        if (root / rel).is_file():
+            out.append((root / rel, None))
+    for p in sorted(root.glob(".mise.*.toml")) + sorted(root.glob("mise.*.toml")):
+        m = re.match(r"^\.?mise\.([a-z][a-z0-9_-]*)\.toml$", p.name)
+        if m and p.name not in ("mise.local.toml",) and m.group(1) != "local":
+            out.append((p, m.group(1)))
+    return out
+
+
+def mise_env_keys(root):
+    """{variable: [file names]} of the [env] tables of the mise files (the `_` directive table is not a variable)."""
+    keys = {}
+    for p, _env in mise_files(root):
+        try:
+            doc = tomllib.loads(p.read_text())
+        except (OSError, ValueError):
+            continue
+        env = doc.get("env")
+        if isinstance(env, dict):
+            for k in env:
+                if k != "_":
+                    keys.setdefault(k, []).append(p.name)
+    return keys
+
+
+def has_mise_config(root):
+    return any((root / m).exists() for m in MISE_MARKERS) or bool(mise_files(root))
+
+
+def mise_target(root, env=None, default=None):
+    """The file plain variables of ENV go to: the existing base file (or .mise.toml) for the default env / every env,
+    .mise.ENV.toml for another one."""
+    if env is None or env == default:
+        for rel in MISE_BASE:
+            if (root / rel).is_file():
+                return root / rel
+        return root / ".mise.toml"
+    return root / f".mise.{env}.toml"
+
+
+class Cfg:
+    def __init__(self, root, data, text, problems):
+        self.root, self.data, self.text, self.problems = Path(root), data, text, problems
+        self.path = self.root / TOML
+        self.project = data.get("project", "")
+        self.envs = list(data.get("environments", []))
+        self.default = data.get("default", "")
+        self.protected = set(data.get("protected", [])) | ALWAYS_PROTECTED
+        self.secrets = dict(data.get("secrets", {}))
+
+    def is_protected(self, env):
+        return env in self.protected
+
+    @property
+    def folder(self):
+        return f"Env/{self.project}"
+
+
+def validate(data, root=None):
+    p = []
+    known = {"project", "environments", "default", "protected", "secrets"}
+    for k in data:
+        if k not in known:
+            p.append(f"unknown key {k!r} (allowed: project, environments, default, protected, [secrets])")
+    proj = data.get("project")
+    if not isinstance(proj, str) or not PROJECT_RE.match(proj):
+        p.append("project must match ^[a-z0-9][a-z0-9._-]{0,62}$")
+    envs = data.get("environments")
+    if not isinstance(envs, list) or not envs or not all(isinstance(e, str) for e in envs):
+        p.append("environments must be a non-empty list of names")
+        envs = []
+    else:
+        for e in envs:
+            if not ENV_RE.match(e):
+                p.append(f"environment {e!r} must match ^[a-z][a-z0-9_-]{{0,31}}$")
+        if len(set(envs)) != len(envs):
+            p.append("environments must be unique")
+    default = data.get("default")
+    if envs and default not in envs:
+        p.append("default must be one of the environments")
+    prot = data.get("protected", [])
+    if not isinstance(prot, list) or not all(isinstance(e, str) for e in prot):
+        p.append("protected must be a list of environment names")
+    else:
+        for e in prot:
+            if envs and e not in envs:
+                p.append(f"protected environment {e!r} is not in environments")
+    sec = data.get("secrets", {})
+    if not isinstance(sec, dict):
+        p.append("[secrets] must be a table of NAME = \"description\"")
+        sec = {}
+    for n, d in sec.items():
+        why = bad_var_name(n)
+        if why:
+            p.append(f"secret {n!r} {why}")
+        if not isinstance(d, str):
+            p.append(f"secret {n}: the description must be a string (may be empty)")
+    if root is not None:
+        keys = mise_env_keys(root)
+        for n in sec:
+            if n in keys:
+                p.append(f"{n} is a secret and also a key of mise [env] ({', '.join(keys[n])}): it can be only one")
+    return p
+
+
+def load_cfg(root=None, strict=True):
+    root = Path(root) if root else find_root()
+    path = root / TOML
+    try:
+        text = path.read_text()
+    except OSError as e:
+        fail(f"cannot read {path}: {e}")
+    try:
+        data = tomllib.loads(text)
+    except ValueError as e:
+        if strict:
+            fail(f"{path}: {e}")
+        return Cfg(root, {}, text, [f"toml: {e}"])
+    problems = validate(data, root)
+    if problems and strict:
+        fail(f"{path}:\n  " + "\n  ".join(problems))
+    return Cfg(root, data, text, problems)
+
+
+# the line editor: top-level keys and keys inside one table, comments and order kept ------------------------------------
+
+def toml_str(s):
+    out = ['"']
+    for ch in s:
+        o = ord(ch)
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch == '"':
+            out.append('\\"')
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\t":
+            out.append("\\t")
+        elif ch == "\r":
+            out.append("\\r")
+        elif o < 0x20 or o == 0x7F:
+            out.append(f"\\u{o:04x}")
+        else:
+            out.append(ch)
+    out.append('"')
+    return "".join(out)
+
+
+def toml_list(items):
+    return "[" + ", ".join(toml_str(i) for i in items) + "]"
+
+
+KEY_LINE = re.compile(r"^(\s*)([A-Za-z0-9_-]+)(\s*=\s*)(.*)$")
+QUOTED_KEY_LINE = re.compile(r"""^\s*["'][^"']*["']\s*=""")
+
+
+def split_comment(value):
+    """(value, comment) of the right-hand side of a key line; # inside quotes does not start a comment."""
+    q = None
+    i = 0
+    while i < len(value):
+        c = value[i]
+        if q:
+            if q == '"' and c == "\\":
+                i += 2
+                continue
+            if c == q:
+                q = None
+        elif c in "\"'":
+            q = c
+        elif c == "#":
+            head = value[:i].rstrip()
+            return head, value[len(head):]
+        i += 1
+    return value.rstrip(), ""
+
+
+def multiline_value(rhs):
+    rhs = rhs.strip()
+    if rhs.startswith(('"""', "'''")):
+        return True
+    return rhs.startswith("[") and rhs.count("[") != rhs.count("]")
+
+
+class TomlText:
+    """Edit a TOML file as lines: set/replace/remove/rename a key at top level (table=None) or inside [table]."""
+
+    def __init__(self, text):
+        self.lines = text.split("\n")
+
+    def text(self):
+        t = "\n".join(self.lines)
+        return t if t.endswith("\n") else t + "\n"
+
+    def _range(self, table):
+        if table is None:
+            end = next((i for i, l in enumerate(self.lines) if re.match(r"^\s*\[", l)), len(self.lines))
+            return -1, end
+        hdr = re.compile(r"^\s*\[\s*" + re.escape(table) + r"\s*\]\s*(#.*)?$")
+        start = next((i for i, l in enumerate(self.lines) if hdr.match(l)), None)
+        if start is None:
+            return None
+        end = next((j for j in range(start + 1, len(self.lines)) if re.match(r"^\s*\[", self.lines[j])), len(self.lines))
+        return start, end
+
+    def _find(self, table, key):
+        r = self._range(table)
+        if r is None:
+            return None, None
+        for i in range(r[0] + 1, r[1]):
+            line = self.lines[i]
+            if line.lstrip().startswith("#"):
+                continue
+            if QUOTED_KEY_LINE.match(line):
+                fail(f"{TOML or 'file'}: quoted keys cannot be edited here; edit the file by hand", 1)
+            m = KEY_LINE.match(line)
+            if m and m.group(2) == key:
+                if multiline_value(m.group(4)):
+                    fail(f"the value of {key} spans several lines: edit the file by hand", 1)
+                return i, m
+        return r, None
+
+    def has(self, table, key):
+        i, m = self._find(table, key)
+        return m is not None
+
+    def get_line(self, table, key):
+        i, m = self._find(table, key)
+        return m
+
+    def set(self, table, key, literal):
+        loc, m = self._find(table, key)
+        if m is not None:
+            value, comment = split_comment(m.group(4))
+            self.lines[loc] = f"{m.group(1)}{key}{m.group(3)}{literal}{comment}"
+            return
+        if loc is None:                           # table missing: append it
+            while self.lines and self.lines[-1].strip() == "":
+                self.lines.pop()
+            if self.lines:
+                self.lines.append("")
+            self.lines += [f"[{table}]", f"{key} = {literal}", ""]
+            return
+        start, end = loc
+        last = start
+        for j in range(start + 1, end):
+            if self.lines[j].strip() and not self.lines[j].lstrip().startswith("#") and KEY_LINE.match(self.lines[j]):
+                last = j
+        if table is None and last == -1:           # no top-level key yet: before the first table, after leading comments
+            last = max([j for j in range(0, end) if self.lines[j].strip()] or [-1])
+        self.lines.insert(last + 1, f"{key} = {literal}")
+
+    def remove(self, table, key):
+        loc, m = self._find(table, key)
+        if m is None:
+            return False
+        del self.lines[loc]
+        return True
+
+    def rename(self, table, old, new):
+        loc, m = self._find(table, old)
+        if m is None:
+            return False
+        self.lines[loc] = f"{m.group(1)}{new}{m.group(3)}{m.group(4)}"
+        return True
+
+
+def write_text(path, text):
+    path = Path(path)
+    mode = (path.stat().st_mode & 0o777) if path.exists() else 0o644
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
+def edit_cfg(cfg, fn):
+    """Apply fn(TomlText) to .envs.toml, validate the result and write it (atomically)."""
+    ed = TomlText(cfg.path.read_text())
+    fn(ed)
+    new = ed.text()
+    try:
+        data = tomllib.loads(new)
+    except ValueError as e:
+        fail(f"the edit would break {TOML}: {e}")
+    prob = validate(data, cfg.root)
+    if prob:
+        fail("the edit would make .envs.toml invalid:\n  " + "\n  ".join(prob))
+    write_text(cfg.path, new)
+    return load_cfg(cfg.root)
+
+
+def edit_mise(path, fn):
+    path = Path(path)
+    ed = TomlText(path.read_text() if path.exists() else "")
+    fn(ed)
+    try:
+        tomllib.loads(ed.text())
+    except ValueError as e:
+        fail(f"the edit would break {path.name}: {e}")
+    write_text(path, ed.text())
+
+
+# ───────────────────────────── rbw (read) and bw (write) ─────────────────────────────
+
+def rbw_run(*args, timeout=15):
+    try:
+        return subprocess.run([tool("rbw", "RBW_BIN"), *args], capture_output=True, text=True, timeout=timeout,
+                              stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        fail(f"rbw {args[0]} timed out", 1)
+    except OSError as e:
+        fail(f"rbw: {e}", 1)
+
+
+def rbw_unlocked():
+    return rbw_run("unlocked", timeout=10).returncode == 0
+
+
+def ensure_rbw(sync=False):
+    if not rbw_unlocked():
+        if not tty():
+            fail("vault is locked: unlock it (any vault action, e.g. SUPER+CTRL+P) and run again", 3)
+        try:
+            p = subprocess.run([tool("rbw", "RBW_BIN"), "unlock"], timeout=120)
+        except subprocess.TimeoutExpired:
+            fail("rbw unlock timed out", 3)
+        if p.returncode != 0 or not rbw_unlocked():
+            fail("the vault is still locked", 3)
+    if sync:
+        p = rbw_run("sync", timeout=60)
+        if p.returncode != 0:
+            warn("rbw sync failed: using the local copy")
+
+
+def rbw_list():
+    p = rbw_run("list", "--raw", timeout=15)
+    if p.returncode != 0:
+        fail("rbw list failed: " + (p.stderr.strip().splitlines() or ["no details"])[0][:200])
+    try:
+        return json.loads(p.stdout)
+    except ValueError:
+        fail("rbw list --raw did not return JSON")
+
+
+def rbw_env_items(items, project, env):
+    return [i for i in items if i.get("folder") == f"Env/{project}" and i.get("name") == env
+            and str(i.get("type", "")).lower() in ("securenote", "secure note", "note", "2")]
+
+
+def rbw_fields(item_id):
+    """{field name: value} of one item (rbw get --raw); duplicate names are an error."""
+    p = rbw_run("get", "--raw", item_id, timeout=15)
+    if p.returncode != 0:
+        fail("rbw get failed: " + (p.stderr.strip().splitlines() or ["no details"])[0][:200])
+    try:
+        doc = json.loads(p.stdout)
+    except ValueError:
+        fail("rbw get --raw did not return JSON")
+    out = {}
+    for f in doc.get("fields") or []:
+        n = f.get("name")
+        if n in out:
+            fail(f"two fields called {n} in one item: fix it in the vault browser (SUPER+CTRL+SHIFT+P)")
+        out[n] = f.get("value") or ""
+    return out
+
+
+def env_fields(project, env, items=None):
+    """None when the env has no item, else {name: value}. Two items = error."""
+    items = items if items is not None else rbw_list()
+    m = rbw_env_items(items, project, env)
+    if len(m) > 1:
+        fail(f"{len(m)} items called {env} in Env/{project}: fix it in the vault browser (SUPER+CTRL+SHIFT+P)")
+    if not m:
+        return None
+    return rbw_fields(m[0]["id"])
+
+
+_vbw = None
+
+
+def vbw():
+    """vault-bw.py as a library, made safe for a CLI: no notifications, no 'press Enter', errors raise Fail."""
+    global _vbw
+    if _vbw is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("vault_bw", VAULT_BW)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        m.notify = lambda *a, **k: None
+        m.interactive = lambda: False
+
+        def die(msg, code=1):
+            raise Fail(msg, code)
+        m.die = die
+        m.BW = tool("bw", "BW_BIN", required=False) or m.BW
+        m.RBW = tool("rbw", "RBW_BIN", required=False) or m.RBW
+        if not os.environ.get("WAYLAND_DISPLAY"):
+            m.TERMINAL_UNLOCK = True
+        elif not os.access(Path(os.environ.get("XDG_RUNTIME_DIR", "/x")) / os.environ["WAYLAND_DISPLAY"], os.W_OK):
+            m.TERMINAL_UNLOCK = True
+        _vbw = m
+    return _vbw
+
+
+def bw_open():
+    """vault-bw.py with an unlocked bw session (pinentry once per login); bw not set up = a clear message."""
+    m = vbw()
+    st = m.state()
+    if st == "missing":
+        fail("bw is not installed (sudo ~/dotfiles/apply-system.sh --only install)")
+    if st == "unconfigured":
+        fail("bw is not logged in: run bw-setup in a terminal first")
+    if st != "unlocked":
+        try:
+            m.ensure()
+        except SystemExit:
+            fail("cancelled", 130)
+    return m
+
+
+def new_item(folder_id, env, project):
+    return {"type": 2, "name": env, "folderId": folder_id, "favorite": False, "reprompt": 0,
+            "notes": f"envs: project {project}, environment {env}. Values are the hidden custom fields; names are declared "
+                     "in .envs.toml.",
+            "secureNote": {"type": 0}, "login": None, "card": None, "identity": None, "fields": []}
+
+
+def bw_env_item(m, project, env, create=False):
+    """The (full, current) bw item of an environment: None when missing and not created."""
+    fid = m.folder_id(f"Env/{project}", create=False)
+    items = m.bw_json("list", "items", "--folderid", fid) if fid else []
+    hits = [i for i in items if i.get("name") == env and i.get("type") == 2]
+    if len(hits) > 1:
+        fail(f"{len(hits)} items called {env} in Env/{project}: fix it in the vault browser (SUPER+CTRL+SHIFT+P)")
+    if hits:
+        return m.bw_json("get", "item", hits[0]["id"])
+    if not create:
+        return None
+    m.folder_id("Env", create=True)
+    fid = m.folder_id(f"Env/{project}", create=True)
+    return m.bw_json("create", "item", stdin=m.b64(new_item(fid, env, project)))
+
+
+def item_field_names(item):
+    names = [f.get("name") for f in item.get("fields") or []]
+    for n in names:
+        if names.count(n) > 1:
+            fail(f"two fields called {n} in the item {item.get('name')}: fix it in the vault browser")
+    return names
+
+
+def item_set_field(item, name, value):
+    item_field_names(item)
+    fields = item.setdefault("fields", [])
+    for f in fields:
+        if f.get("name") == name:
+            f["value"], f["type"] = value, 1
+            return
+    fields.append({"name": name, "value": value, "type": 1, "linkedId": None})
+
+
+def item_drop_field(item, name):
+    before = len(item.get("fields") or [])
+    item["fields"] = [f for f in item.get("fields") or [] if f.get("name") != name]
+    return len(item["fields"]) != before
+
+
+def bw_save(m, item):
+    m.bw_json("edit", "item", item["id"], stdin=m.b64(item))
+
+
+# ───────────────────────────── prompts ─────────────────────────────
+
+def confirm(question, default=False, timeout=60):
+    """[y/N] on the terminal; no terminal = False. ENVS_TEST_YES only in test mode (no terminal there)."""
+    if test_mode() and os.environ.get("ENVS_TEST_YES") == "1":
+        return True
+    if not tty():
+        return False
+    sys.stderr.write(f"{question} [{'Y/n' if default else 'y/N'}] ")
+    sys.stderr.flush()
+    r, _, _ = select.select([sys.stdin], [], [], timeout)
+    if not r:
+        sys.stderr.write("\n")
+        return False
+    ans = sys.stdin.readline().strip().lower()
+    return default if not ans else ans.startswith("y")
+
+
+def typed_confirm(word, what):
+    if not tty():
+        return False
+    sys.stderr.write(f"{what}\nType {word} to confirm: ")
+    sys.stderr.flush()
+    return sys.stdin.readline().strip() == word
+
+
+def pick(rows, prompt, header=""):
+    """One of ROWS (strings) through the modal fzf menu, else a numbered prompt; None = cancelled."""
+    fm = tool("fzf-menu", required=False)
+    if fm and (tty() or os.environ.get("WAYLAND_DISPLAY")):
+        cmd = [fm, "--here", "-p", prompt] + (["--header", header] if header else [])
+        p = subprocess.run(cmd, input="\n".join(rows) + "\n", capture_output=True, text=True)
+        return p.stdout.strip("\n") if p.returncode == 0 and p.stdout.strip() else None
+    if not tty():
+        return None
+    for n, r in enumerate(rows, 1):
+        sys.stderr.write(f"  {n}) {r}\n")
+    sys.stderr.write(f"{prompt}: ")
+    sys.stderr.flush()
+    ans = sys.stdin.readline().strip()
+    if ans.isdigit() and 1 <= int(ans) <= len(rows):
+        return rows[int(ans) - 1]
+    return ans if ans in rows else None
+
+
+def read_value(name, stdin_flag):
+    if stdin_flag:
+        data = sys.stdin.read()
+        if data.endswith("\n"):
+            data = data[:-1]
+        if not data:
+            fail("empty value on stdin", 2)
+        return data
+    if not tty():
+        fail("no terminal for the hidden prompt: pipe the value with --stdin", 2)
+    import getpass
+    a = getpass.getpass(f"Value of {name} (hidden): ")
+    b = getpass.getpass("Again: ")
+    if a != b:
+        fail("the two entries differ", 1)
+    if not a:
+        fail("empty value", 1)
+    return a
+
+
+# ───────────────────────────── bind, guards, environment choice ─────────────────────────────
+
+def mise_trust(root):
+    mise = tool("mise", required=False)
+    if mise and has_mise_config(root):
+        subprocess.run([mise, "trust"], cwd=str(root), stdin=subprocess.DEVNULL, capture_output=True)
+        return True
+    return False
+
+
+def require_bound(cfg):
+    st, key, old = binding_state(cfg.root, cfg.project)
+    if st == "bound":
+        return
+    if st == "changed":
+        fail(f"project name changed: this checkout was bound to Env/{old}, .envs.toml now says Env/{cfg.project}; "
+             "run `envs bind` to confirm the change (a cloned repo must not pull another project's secrets)", 4)
+    if not tty() and not (test_mode() and os.environ.get("ENVS_TEST_YES") == "1"):
+        fail(f"{cfg.root} is not bound to Bitwarden folder {cfg.folder}: run `envs bind` in a terminal", 4)
+    if not confirm(f"Bind {cfg.root} to Bitwarden folder {cfg.folder}?"):
+        fail("not bound", 4)
+    bind_write(cfg.root, cfg.project)
+    mise_trust(cfg.root)
+
+
+def choose_env(cfg, explicit=None):
+    if explicit:
+        if explicit not in cfg.envs:
+            fail(f"unknown environment {explicit!r} (have: {', '.join(cfg.envs)})", 2)
+        return explicit
+    a = active_get(cfg.root)
+    if a and a[0] in cfg.envs:
+        return a[0]
+    return cfg.default
+
+
+def guard_protected(cfg, env, prod_flag, verb="run"):
+    if not cfg.is_protected(env):
+        return
+    if prod_flag:
+        return
+    if tty() and confirm(f"{env} is a protected environment. {verb.capitalize()} in {env}?"):
+        return
+    fail(f"{env} is protected: pass --prod to {verb} in it", 4)
+
+
+def parse_duration(s):
+    m = re.fullmatch(r"(\d+)([mh])", s or "")
+    if not m:
+        fail("--for takes a duration like 30m or 2h", 2)
+    secs = int(m.group(1)) * (60 if m.group(2) == "m" else 3600)
+    if secs <= 0 or secs > 8 * 3600:
+        fail("--for must be between 1m and 8h", 2)
+    return secs
+
+
+def journal(msg):
+    if os.environ.get("ENVS_NO_JOURNAL"):
+        return
+    lg = tool("logger", required=False)
+    if lg:
+        subprocess.run([lg, "-t", "envs", "--", msg], stdin=subprocess.DEVNULL, capture_output=True)
+
+
+# ───────────────────────────── commands ─────────────────────────────
+
+def slug(name):
+    s = re.sub(r"[^a-z0-9._-]+", "-", name.lower()).strip("-._")
+    return s[:63] or "project"
+
+
+def cmd_init(a):
+    refuse_agent("init")
+    top = None
+    git = tool("git", required=False)
+    if git:
+        p = subprocess.run([git, "rev-parse", "--show-toplevel"], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        if p.returncode == 0:
+            top = Path(p.stdout.strip())
+    root = top or Path.cwd()
+    path = root / TOML
+    if path.exists():
+        fail(f"{path} exists already")
+    project = a.project or slug(root.name)
+    envs = [e.strip() for e in a.envs.split(",") if e.strip()]
+    default = a.default or envs[0]
+    prot = [e for e in envs if e in ALWAYS_PROTECTED]
+    data = {"project": project, "environments": envs, "default": default, "protected": prot}
+    prob = validate(data)
+    if prob:
+        fail("\n".join(prob), 2)
+    text = (f"# Project environments for `envs` (~/dotfiles/CLAUDE.md \"Dev environments\"). Names only: the values live in "
+            f"Bitwarden, folder\n# \"Env/<project>\", one Secure Note per environment, one hidden custom field per secret. "
+            f"Non-secret variables go to .mise.toml\n# [env] (every environment) or .mise.<env>.toml [env] (one environment).\n"
+            f"project = {toml_str(project)}\nenvironments = {toml_list(envs)}\ndefault = {toml_str(default)}\n"
+            f"protected = {toml_list(prot)}\n\n[secrets]\n")
+    write_text(path, text)
+    say(f"wrote {path}")
+    gi = root / ".gitignore"
+    want = [".env", ".env.*", "!.env.example"]
+    have = gi.read_text().splitlines() if gi.exists() else []
+    missing = [w for w in want if w not in have]
+    if missing and (not tty() or confirm(f"Add {', '.join(missing)} to .gitignore?", default=True)):
+        body = gi.read_text() if gi.exists() else ""
+        if body and not body.endswith("\n"):
+            body += "\n"
+        write_text(gi, body + "\n".join(missing) + "\n")
+        say(f"added {', '.join(missing)} to .gitignore")
+    if mise_trust(root):
+        say("mise trust: done")
+    bind_write(root, project)
+    say(f"bound {root} to Bitwarden folder Env/{project}")
+
+
+def cmd_bind(a):
+    refuse_agent("bind")
+    if a.yes and test_mode():
+        os.environ["ENVS_TEST_YES"] = "1"
+    cfg = load_cfg()
+    st, key, old = binding_state(cfg.root, cfg.project)
+    if st == "bound":
+        mise_trust(cfg.root)
+        say(f"already bound: {cfg.root} -> {cfg.folder}")
+        return
+    note = f" (was Env/{old})" if st == "changed" else ""
+    if not confirm(f"Bind {cfg.root} to Bitwarden folder {cfg.folder}{note}?"):
+        fail("not bound" + ("" if tty() else ": a terminal is needed to confirm"), 4)
+    bind_write(cfg.root, cfg.project)
+    mise_trust(cfg.root)
+    say(f"bound {cfg.root} -> {cfg.folder}")
+
+
+def vault_matrix(cfg):
+    """{env: (fields dict or None)} when rbw is unlocked, else None. Values stay in memory."""
+    try:
+        if not rbw_unlocked():
+            return None
+        items = rbw_list()
+    except Fail:
+        return None
+    out = {}
+    for e in cfg.envs:
+        try:
+            out[e] = env_fields(cfg.project, e, items)
+        except Fail as ex:
+            out[e] = ex
+    return out
+
+
+def classify(cfg, fields):
+    """(set, missing, extra) name lists of one env item."""
+    if not isinstance(fields, dict):
+        return [], list(cfg.secrets), []
+    return ([n for n in cfg.secrets if n in fields and fields[n] != ""], [n for n in cfg.secrets if n not in fields or fields[n] == ""],
+            [n for n in fields if n not in cfg.secrets])
+
+
+def cmd_status(a):
+    cfg = load_cfg(strict=False)
+    st, key, old = binding_state(cfg.root, cfg.project)
+    act = active_get(cfg.root)
+    env = choose_env(cfg) if not cfg.problems else None
+    left = max(0, int((act[1] - time.time()) / 60)) if act and act[1] else None
+    matrix = vault_matrix(cfg) if not cfg.problems else None
+    doc = {"project": cfg.project, "root": str(cfg.root), "binding": st, "environments": cfg.envs, "default": cfg.default,
+           "protected": sorted(cfg.protected & set(cfg.envs)), "active": env, "active_minutes_left": left,
+           "names": list(cfg.secrets), "vault": "unlocked" if matrix is not None else "locked", "problems": cfg.problems, "env": {}}
+    if matrix is not None:
+        for e, f in matrix.items():
+            if isinstance(f, Fail):
+                doc["env"][e] = {"error": f.msg}
+            elif f is None:
+                doc["env"][e] = {"item": False, "set": [], "missing": list(cfg.secrets), "extra": []}
+            else:
+                s, m, x = classify(cfg, f)
+                doc["env"][e] = {"item": True, "set": s, "missing": m, "extra": x}
+    if a.json:
+        say(json.dumps(doc, indent=1))
+        return
+    say(f"project  {cfg.project}")
+    say(f"root     {cfg.root}")
+    say(f"binding  {st}" + (f" (was Env/{old})" if st == "changed" else ""))
+    if env:
+        extra = f" (active selection, {left} min left)" if act and left is not None and act[1] else \
+            (" (active selection)" if act else " (default)")
+        say(f"env      {env}{extra}" + ("  [protected]" if cfg.is_protected(env) else ""))
+    say(f"names    {', '.join(cfg.secrets) or '-'}")
+    for p in cfg.problems:
+        say(f"problem  {p}")
+    say(f"vault    {doc['vault']}")
+    for e, d in doc["env"].items():
+        if "error" in d:
+            say(f"  {e}: error: {d['error']}")
+        elif not d["item"]:
+            say(f"  {e}: no item")
+        else:
+            say(f"  {e}: {len(d['set'])} set, missing: {', '.join(d['missing']) or '-'}, extra: {', '.join(d['extra']) or '-'}")
+
+
+def cmd_use(a):
+    refuse_agent("use")
+    cfg = load_cfg()
+    env = a.env
+    if not env:
+        rows = [f"{e}{'  [protected]' if cfg.is_protected(e) else ''}" for e in cfg.envs]
+        got = pick(rows, "environment")
+        if not got:
+            fail("no environment chosen", 2 if not tty() else 130)
+        env = got.split()[0]
+    if env not in cfg.envs:
+        fail(f"unknown environment {env!r} (have: {', '.join(cfg.envs)})", 2)
+    with write_lock():
+        if env == cfg.default:
+            active_set(cfg.root, None)
+            say(f"{cfg.root.name}: back to the default environment ({env})")
+            return
+        prot = cfg.is_protected(env)
+        if prot and not a.prod:
+            if not typed_confirm(env, f"{env} is a protected environment: commands will run against it for the next hour."):
+                fail(f"{env} is protected: pass --prod to use it", 4)
+        secs = parse_duration(a.for_) if a.for_ else (3600 if prot else 0)
+        until = time.time() + secs if secs else 0
+        active_set(cfg.root, env, until, "p" if prot else "-")
+    say(f"{cfg.root.name}: using {env}" + (f" for {secs // 60} min" if secs else ""))
+
+
+def mise_cmd(cfg, cmd, env):
+    mise = tool("mise", required=False)
+    if mise and has_mise_config(cfg.root):
+        return [mise, "exec", "--", *cmd], True
+    return list(cmd), False
+
+
+def cmd_run(a, cmd):
+    refuse_agent("run")
+    cfg = load_cfg()
+    require_bound(cfg)
+    env = choose_env(cfg, a.env)
+    guard_protected(cfg, env, a.prod)
+    values = {}
+    if cfg.secrets:
+        ensure_rbw(a.sync)
+        fields = env_fields(cfg.project, env)
+        fields = fields or {}
+        missing = [n for n in cfg.secrets if fields.get(n, "") == ""]
+        if missing and not a.allow_missing:
+            fail(f"{env}: missing {', '.join(missing)}: set them with `envs set NAME -e {env}` "
+                 "(or run with --allow-missing)", 1)
+        values = {n: fields[n] for n in cfg.secrets if fields.get(n, "") != ""}
+        fields = None
+    use_mise = not a.no_mise
+    argv, mised = mise_cmd(cfg, cmd, env) if use_mise else (list(cmd), False)
+    child = dict(os.environ)
+    child.update(values)
+    child["ENVS_PROJECT"], child["ENVS_ENV"] = cfg.project, env
+    if mised:
+        child["MISE_ENV"] = env
+    if cfg.is_protected(env):
+        journal(f"run project={cfg.project} env={env} cmd={os.path.basename(cmd[0])} vars={len(values)}")
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        os.execvpe(argv[0], argv, child)
+    except OSError as e:
+        fail(f"cannot run {argv[0]}: {e.strerror}", 127)
+
+
+def targets(cfg, a):
+    if getattr(a, "all", False):
+        return list(cfg.envs)
+    return [choose_env(cfg, a.env)]
+
+
+def cmd_set(a):
+    refuse_agent("set")
+    cfg = load_cfg()
+    if "=" in a.name or a.extra:
+        fail("values never go on the command line: history and ps would see them. Use the hidden prompt or --stdin", 2)
+    why = bad_var_name(a.name)
+    if why:
+        fail(f"{a.name} {why}", 2)
+    if a.plain:
+        return set_plain(cfg, a)
+    require_bound(cfg)
+    envs = targets(cfg, a)
+    if a.name in mise_env_keys(cfg.root):
+        fail(f"{a.name} is a plain variable in mise [env]: `envs set --plain` or remove it there first", 1)
+    value = read_value(a.name, a.stdin)
+    if len(value) > FIELD_LIMIT:
+        warn(f"the value is {len(value)} characters; Bitwarden fields stop working at about 5000 (use an attachment)")
+    with write_lock():
+        m = bw_open()
+        for e in envs:
+            item = bw_env_item(m, cfg.project, e, create=True)
+            item_set_field(item, a.name, value)
+            bw_save(m, item)
+        value = None
+        if a.name not in cfg.secrets or a.description is not None:
+            def decl(ed):
+                ed.set("secrets", a.name, toml_str(a.description if a.description is not None
+                                                   else cfg.secrets.get(a.name, "")))
+            cfg = edit_cfg(cfg, decl)
+        m.refresh_rbw()
+    say(f"{a.name}: set in {', '.join(envs)}")
+
+
+def set_plain(cfg, a):
+    if a.name in cfg.secrets:
+        fail(f"{a.name} is declared as a secret: `envs unset {a.name} --all --undeclare` first", 1)
+    env = None if a.all else (a.env or None)
+    if env and env not in cfg.envs:
+        fail(f"unknown environment {env!r}", 2)
+    if a.stdin:
+        value = read_value(a.name, True)
+    elif tty():
+        value = input(f"Value of {a.name}: ")
+    else:
+        fail("no terminal: pipe the value with --stdin", 2)
+    path = mise_target(cfg.root, env, cfg.default)
+    edit_mise(path, lambda ed: ed.set("env", a.name, toml_str(value)))
+    say(f"{a.name}: set in {path.name} [env] (plain, committed)")
+
+
+def cmd_unset(a):
+    refuse_agent("unset")
+    cfg = load_cfg()
+    require_bound(cfg)
+    removed = []
+    if a.name in cfg.secrets:
+        with write_lock():
+            m = bw_open()
+            for e in targets(cfg, a):
+                item = bw_env_item(m, cfg.project, e)
+                if item is not None and item_drop_field(item, a.name):
+                    bw_save(m, item)
+                    removed.append(e)
+            m.refresh_rbw()
+        if a.undeclare:
+            edit_cfg(cfg, lambda ed: ed.remove("secrets", a.name))
+            say(f"{a.name}: no longer declared")
+    else:                                         # a plain variable: the mise file(s) of the chosen scope
+        want = None if a.all else mise_target(cfg.root, a.env, cfg.default)
+        for p, _env in mise_files(cfg.root):
+            if want is not None and p != want:
+                continue
+            try:
+                has = a.name in (tomllib.loads(p.read_text()).get("env") or {})
+            except (OSError, ValueError):
+                has = False
+            if has:
+                edit_mise(p, lambda ed: ed.remove("env", a.name))
+                removed.append(p.name)
+    say(f"{a.name}: removed from {', '.join(removed) or 'nothing (it was not set)'}")
+
+
+def cmd_rename(a):
+    refuse_agent("rename")
+    cfg = load_cfg()
+    require_bound(cfg)
+    for n in (a.old, a.new):
+        why = bad_var_name(n)
+        if why:
+            fail(f"{n} {why}", 2)
+    if a.new in cfg.secrets or a.new in mise_env_keys(cfg.root):
+        fail(f"{a.new} exists already", 1)
+    done = []
+    if a.old in cfg.secrets:
+        with write_lock():
+            m = bw_open()
+            for e in cfg.envs:
+                item = bw_env_item(m, cfg.project, e)
+                if item is None:
+                    continue
+                names = item_field_names(item)
+                if a.old in names:
+                    if a.new in names:
+                        fail(f"{e}: the item has a field {a.new} already", 1)
+                    for f in item["fields"]:
+                        if f.get("name") == a.old:
+                            f["name"] = a.new
+                    bw_save(m, item)
+                    done.append(e)
+            m.refresh_rbw()
+        edit_cfg(cfg, lambda ed: ed.rename("secrets", a.old, a.new))
+    for p, _env in mise_files(cfg.root):
+        try:
+            if a.old in (tomllib.loads(p.read_text()).get("env") or {}):
+                edit_mise(p, lambda ed: ed.rename("env", a.old, a.new))
+                done.append(p.name)
+        except (OSError, ValueError):
+            pass
+    if not done and a.old not in cfg.secrets:
+        fail(f"{a.old} is neither a declared secret nor a mise [env] variable", 1)
+    say(f"{a.old} -> {a.new}: {', '.join(done) or 'declaration only'}")
+
+
+# check ---------------------------------------------------------------------------------------------------------------
+
+def check_root(cfg, out):
+    def add(level, msg):
+        out.append((level, msg))
+    for p in cfg.problems:
+        add("error", p)
+    if cfg.problems:
+        return
+    st, key, old = binding_state(cfg.root, cfg.project)
+    add("ok" if st == "bound" else "warn", f"binding: {st}" + (f" (was Env/{old})" if old and st == "changed" else "")
+        + ("" if st == "bound" else "; run `envs bind`"))
+    git = tool("git", required=False)
+    if git and (cfg.root / ".git").exists():
+        tracked = subprocess.run([git, "-C", str(cfg.root), "ls-files", "--", ".env", ".env.*"], capture_output=True, text=True,
+                                 stdin=subprocess.DEVNULL).stdout.split()
+        for t in tracked:
+            if t != ".env.example":
+                add("error", f"{t} is tracked in git: its values are in the history; rotate them and `git rm --cached {t}`")
+    for f in sorted(cfg.root.glob(".env*")):
+        if f.is_file() and f.name != ".env.example" and not f.name.endswith(".example"):
+            add("warn", f"{f.name} is a plain env file: `envs import` moves it into Bitwarden")
+    mise = tool("mise", required=False)
+    if has_mise_config(cfg.root):
+        if not mise:
+            add("warn", "a mise config exists but mise is not installed")
+        else:
+            p = subprocess.run([mise, "ls", "--current", "--missing"], cwd=str(cfg.root), capture_output=True, text=True,
+                               stdin=subprocess.DEVNULL)
+            if p.returncode != 0:
+                add("warn", "mise does not trust this config (run `envs bind` or `mise trust`) or reports an error")
+            elif p.stdout.strip():
+                add("warn", f"mise tools are missing: {len(p.stdout.strip().splitlines())} (run `mise install`)")
+            else:
+                add("ok", "mise: trusted, no tools missing")
+    matrix = vault_matrix(cfg)
+    if matrix is None:
+        add("info", "vault locked: items and fields not checked (unlock it and run again)")
+        return
+    for e, f in matrix.items():
+        if isinstance(f, Fail):
+            add("error", f"{e}: {f.msg}")
+        elif f is None:
+            add("warn", f"{e}: no item {cfg.folder}/{e} (created by the first `envs set NAME -e {e}`)")
+        else:
+            s, m, x = classify(cfg, f)
+            add("ok" if not m else "warn", f"{e}: {len(s)} set" + (f", missing: {', '.join(m)}" if m else ""))
+            if x:
+                add("warn", f"{e}: undeclared fields (never injected): {', '.join(x)}")
+            for n, v in f.items():
+                if len(v) > FIELD_LIMIT:
+                    add("warn", f"{e}: {n} is {len(v)} characters (Bitwarden fields fail above about 5000)")
+
+
+def cmd_check(a):
+    roots = []
+    if a.all:
+        for key in bindings():
+            r = Path(key_root(key))
+            if (r / TOML).is_file() and r not in roots:
+                roots.append(r)
+        try:
+            here = find_root()
+            if here not in roots:
+                roots.insert(0, here)
+        except Fail:
+            pass
+        if not roots:
+            say("no bound projects yet")
+            return
+    else:
+        roots = [find_root()]
+    bad = 0
+    for r in roots:
+        out = []
+        check_root(load_cfg(r, strict=False), out)
+        say(f"{r}")
+        for level, msg in out:
+            say(f"  {level:5} {msg}")
+            bad += level == "error"
+    if bad:
+        raise Fail(f"{bad} error(s)", 1)
+
+
+# ───────────────────────────── main ─────────────────────────────
+
+def build_parser():
+    import argparse
+    ap = argparse.ArgumentParser(prog="envs", add_help=True, description="project environments and secrets (see the header of this file)")
+    sub = ap.add_subparsers(dest="cmd")
+    p = sub.add_parser("init")
+    p.add_argument("--project")
+    p.add_argument("--envs", default="dev,stage,prod")
+    p.add_argument("--default")
+    sub.add_parser("bind").add_argument("--yes", action="store_true")
+    p = sub.add_parser("status")
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("use")
+    p.add_argument("env", nargs="?")
+    p.add_argument("--prod", action="store_true")
+    p.add_argument("--for", dest="for_")
+    p = sub.add_parser("run")
+    p.add_argument("-e", "--env")
+    p.add_argument("--prod", action="store_true")
+    p.add_argument("--sync", action="store_true")
+    p.add_argument("--no-mise", action="store_true")
+    p.add_argument("--allow-missing", action="store_true")
+    p = sub.add_parser("set")
+    p.add_argument("name")
+    p.add_argument("extra", nargs="*")
+    p.add_argument("-e", "--env")
+    p.add_argument("--all", action="store_true")
+    p.add_argument("--plain", action="store_true")
+    p.add_argument("--stdin", action="store_true")
+    p.add_argument("--description")
+    p = sub.add_parser("unset")
+    p.add_argument("name")
+    p.add_argument("-e", "--env")
+    p.add_argument("--all", action="store_true")
+    p.add_argument("--undeclare", action="store_true")
+    p = sub.add_parser("rename")
+    p.add_argument("old")
+    p.add_argument("new")
+    p = sub.add_parser("check")
+    p.add_argument("--all", action="store_true")
+    return ap
+
+
+HANDLERS = {"init": cmd_init, "bind": cmd_bind, "status": cmd_status, "use": cmd_use, "set": cmd_set, "unset": cmd_unset,
+            "rename": cmd_rename, "check": cmd_check}
+
+
+class RunArgs:
+    env, prod, sync, no_mise, allow_missing = None, False, False, False, False
+
+
+def usage_error(msg):
+    print(f"envs: {msg}\nusage: envs run [-e ENV] [--prod] [--sync] [--no-mise] [--allow-missing] -- CMD [ARGS...]", file=sys.stderr)
+    return 2
+
+
+def run_main(argv):
+    """`envs run` is parsed by hand: argparse costs about 7 ms of imports, and this is the path every command of a project takes."""
+    if "--" not in argv:
+        return usage_error("run needs `--` before the command")
+    i = argv.index("--")
+    opts, cmd = argv[:i], argv[i + 1:]
+    if not cmd:
+        return usage_error("no command after --")
+    a, k = RunArgs(), 0
+    while k < len(opts):
+        o = opts[k]
+        if o in ("-e", "--env") and k + 1 < len(opts):
+            a.env = opts[k + 1]
+            k += 1
+        elif o.startswith("--env="):
+            a.env = o[6:]
+        elif o == "--prod":
+            a.prod = True
+        elif o == "--sync":
+            a.sync = True
+        elif o == "--no-mise":
+            a.no_mise = True
+        elif o == "--allow-missing":
+            a.allow_missing = True
+        else:
+            return usage_error(f"unknown option {o}")
+        k += 1
+    try:
+        return cmd_run(a, cmd) or 0
+    except Fail as e:
+        warn(e.msg)
+        return e.code
+
+
+def main(argv):
+    if argv[:1] == ["run"]:
+        return run_main(argv[1:])
+    ap = build_parser()
+    a = ap.parse_args(argv)
+    if not a.cmd:
+        ap.print_help()
+        return 2
+    try:
+        HANDLERS[a.cmd](a)
+    except Fail as e:
+        warn(e.msg)
+        return e.code
+    except (KeyboardInterrupt, EOFError):
+        print(file=sys.stderr)
+        return 130
+    except SystemExit as e:
+        return e.code if isinstance(e.code, int) else 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
