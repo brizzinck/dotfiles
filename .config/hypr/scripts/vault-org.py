@@ -15,6 +15,8 @@ Run through `vault-audit` (.local/bin/vault-audit); `vault-audit --help` is this
                       encrypted backup first, then folders, moves, soft-trash of confirmed duplicates (journalled)
   vault-audit apply --backup-only [--dry-run]
                       verify and retain an encrypted backup bundle, without confirmation, journal or vault mutations
+  vault-audit apply --personal-only [--dry-run] [--backup-only] [--resume] [--new-journal]
+                      move personal items only from the unchanged plan; organization items stay unchanged
 
 Secrets: the audit compares secrets only as HMAC-SHA256 under a key that exists for this process alone (so "same password"
 is known, the password and its hash are not kept anywhere); usernames are compared the same way. Nothing secret reaches
@@ -60,6 +62,10 @@ class Fail(Exception):
     def __init__(self, msg, code=1):
         super().__init__(msg)
         self.msg, self.code = msg, code
+
+
+class PersonalFail(Fail):
+    """Fixed local scoped failures are safe to journal; backend exceptions are not."""
 
 
 # ───────────────────────────── helpers ─────────────────────────────
@@ -1277,31 +1283,39 @@ class Journal:
     """~/.local/state/vault/org-journal.tsv: `# plan-sha256=...` then time<TAB>step<TAB>id<TAB>result, one line per finished step,
     appended and flushed at once so an interrupt leaves a consistent file."""
 
-    def __init__(self, plan_sha, resume=False, new_journal=False):
+    def __init__(self, plan_sha, resume=False, new_journal=False, personal=None):
         self.sha, self.done = plan_sha, set()
+        self.path = STATE / "org-personal-journal.tsv" if personal is not None else JOURNAL
+        self.header = (f"# scope=personal-only-v1 source-plan-sha256={plan_sha} effective-sha256={personal}"
+                       if personal is not None else f"# plan-sha256={plan_sha}")
         STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if JOURNAL.exists():
-            head = JOURNAL.read_text().splitlines()[:1]
-            same = bool(head) and head[0] == f"# plan-sha256={plan_sha}"
+        if self.path.exists():
+            head = self.path.read_text().splitlines()[:1]
+            same = bool(head) and head[0] == self.header
             if resume and not same and not new_journal:
                 raise Fail("the journal belongs to another plan: --new-journal archives it and starts over", 4)
             if resume and same:
-                for line in JOURNAL.read_text().splitlines()[1:]:
+                for line in self.path.read_text().splitlines()[1:]:
                     c = line.split("\t")
                     if len(c) == 4 and c[3].startswith("ok"):
                         self.done.add((c[1], c[2]))
             else:
-                os.replace(JOURNAL, JOURNAL.with_name(JOURNAL.name + ".prev"))
-        if not JOURNAL.exists():
-            fd = os.open(JOURNAL, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            os.write(fd, f"# plan-sha256={plan_sha}\n".encode())
+                if personal is not None:
+                    fd, archive = tempfile.mkstemp(prefix=self.path.name + ".prev-", dir=self.path.parent)
+                    os.close(fd)
+                    os.replace(self.path, archive)
+                else:
+                    os.replace(self.path, self.path.with_name(self.path.name + ".prev"))
+        if not self.path.exists():
+            fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            os.write(fd, (self.header + "\n").encode())
             os.close(fd)
 
     def seen(self, step, ident):
         return (step, ident) in self.done
 
     def log(self, step, ident, result):
-        fd = os.open(JOURNAL, os.O_WRONLY | os.O_APPEND, 0o600)
+        fd = os.open(self.path, os.O_WRONLY | os.O_APPEND, 0o600)
         try:
             os.write(fd, f"{now_iso()}\t{step}\t{ident}\t{clean(result)}\n".encode())
             os.fsync(fd)
@@ -1400,7 +1414,7 @@ def real_folder_inventory(records):
     return folders
 
 
-def backup_snapshot(m, cli=True, phase="initial"):
+def backup_snapshot(m, cli=True, phase="initial", personal=False):
     """Metadata only in the returned snapshot; full CLI records never reach disk or diagnostics."""
     def listing(kind):
         try:
@@ -1416,19 +1430,27 @@ def backup_snapshot(m, cli=True, phase="initial"):
         folders = real_folder_inventory(listing("folders"))
     except ValueError:
         backup_refused("invalid folder inventory")
-    items = {}
+    items, names = {}, {}
     for i in listing("items"):
         if not isinstance(i, dict) or not backup_id(i.get("id")) or i["id"] in items:
             backup_refused("invalid item inventory")
         if i.get("deletedDate"):
             backup_refused("inventory unexpectedly contains trash")
+        if personal and not isinstance(i.get("name"), str):
+            backup_refused("personal scope requires valid item names")
+        # Official CipherExport omits nullish organizationId/folderId; JSON null and omission are equivalent.
         org, folder, revision = i.get("organizationId"), i.get("folderId"), i.get("revisionDate")
         if ((org is not None and not backup_id(org)) or (folder is not None and folder not in folders)
                 or type(i.get("type")) is not int or i["type"] not in BW_TYPE
                 or not isinstance(revision, str) or not revision or len(revision) > 128):
             backup_refused("invalid item metadata")
         items[i["id"]] = {"organizationId": org, "folderId": folder, "revisionDate": revision, "type": i["type"]}
-    return {"items": items, "folders": folders}
+        if personal:
+            names[i["id"]] = i["name"]
+    snapshot = {"items": items, "folders": folders}
+    if personal:
+        snapshot["names"] = names     # fresh names only in memory, never the backup manifest or journal
+    return snapshot
 
 
 def backup_directory():
@@ -1506,31 +1528,40 @@ def backup_artifact(m, bundle, filename, org, expected, folder_ids, inventory):
         os.close(fd)
 
 
-def backup_export(m, plan_sha):
+def backup_export(m, plan_sha, personal=None):
     """Fresh coherent encrypted bundle before every apply/resume; a journal row alone never proves coverage.
     Account-bound exports preserve supported export data, not attachments or a full restore guarantee."""
     bundle = None
     try:
         backup_cli(m, "sync", stage="initial-sync")
-        initial = backup_snapshot(m)
+        initial = backup_snapshot(m, personal=personal is not None)
+        if personal is not None and initial != personal["snapshot"]:
+            backup_refused("personal classification changed before backup")
         root = backup_directory()
         bundle = Path(tempfile.mkdtemp(prefix=".pending-", dir=root))
         os.chmod(bundle, 0o700)
         partitions = {None: set()}
         for ident, item in initial["items"].items():
-            partitions.setdefault(item["organizationId"], set()).add(ident)
+            if personal is None or item["organizationId"] is None:
+                partitions.setdefault(item["organizationId"], set()).add(ident)
         exports = []
         for n, org in enumerate(sorted(partitions, key=lambda o: o or "")):
             filename = "personal.json" if org is None else f"organization-{n}.json"
             exports.append(backup_artifact(m, bundle, filename, org, partitions[org], set(initial["folders"]), initial["items"]))
         backup_cli(m, "sync", stage="verify-sync")
-        if backup_snapshot(m, phase="verify") != initial:
+        if backup_snapshot(m, phase="verify", personal=personal is not None) != initial:
             backup_refused("CLI inventory changed during backup")
         backup_cli(m, "sync", stage="service-sync", cli=False)
-        if backup_snapshot(m, cli=False) != initial:
+        if backup_snapshot(m, cli=False, personal=personal is not None) != initial:
             backup_refused("CLI and service inventories differ")
         manifest = {"version": 1, "complete": True, "planSha256": plan_sha, "created": now_iso(),
-                    "items": initial["items"], "folderIds": sorted(initial["folders"]), "exports": exports}
+                    "items": {i: data for i, data in initial["items"].items()
+                              if personal is None or data["organizationId"] is None},
+                    "folderIds": sorted(initial["folders"]), "exports": exports}
+        if personal is not None:
+            manifest.update(scope="personal-only-v1", sourcePlanSha256=plan_sha,
+                            effectivePlanSha256=personal["effective"],
+                            organizationItemsUnchanged=sum(i["organizationId"] is not None for i in initial["items"].values()))
         fd = os.open(bundle / "manifest.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "w") as f:
             json.dump(manifest, f, sort_keys=True)
@@ -1601,8 +1632,69 @@ def confirm(summary):
     return input("Apply this plan? [y/N] ").strip().lower() == "y"
 
 
+def personal_supported(rows):
+    if any((r.kind == "folder" and r.target != "keep") or
+           (r.kind == "item" and r.target != "keep" and not r.target.startswith("folder:")) for r in rows):
+        raise Fail("--personal-only accepts item folder moves only; folder renames, folder deletions and trash are refused", 4)
+
+
+def personal_projection(rows, snapshot, source_sha):
+    """Fresh metadata determines ownership and scope counts; only approved personal targets can change."""
+    original = {r.id: r for r in rows if r.kind == "item"}
+    if any(r.target != "keep" and r.id not in snapshot["items"] for r in original.values()):
+        raise Fail("a planned move is missing from the fresh inventory; personal apply is refused", 4)
+    effective = [r.copy() for r in rows if r.kind == "folder"]
+    order = list(original) + sorted(set(snapshot["items"]) - set(original))
+    for ident in order:
+        if ident not in snapshot["items"]:
+            continue
+        meta = snapshot["items"][ident]
+        old = original.get(ident)
+        target = old.target if old and meta["organizationId"] is None else "keep"
+        if target.startswith("folder:"):
+            dest = unicodedata.normalize("NFC", target[7:])
+            target = "folder:" + dest
+            Applier.ordinary_folder(snapshot["folders"].get(meta["folderId"]))
+            Applier.ordinary_folder(dest)
+            if sum(unicodedata.normalize("NFC", n) == dest for n in snapshot["folders"].values()) > 1:
+                raise Fail("personal target folder is ambiguous; nothing was changed", 4)
+        current = snapshot["folders"].get(meta["folderId"])
+        row = Row("item", ident, snapshot["names"][ident], unicodedata.normalize("NFC", current) if current is not None else None,
+                  target, meta["revisionDate"])
+        row.name = snapshot["names"][ident]   # exact fresh name for item-specific scope rules, never persisted
+        effective.append(row)
+    moves = sorted([r.id, original[r.id].target] for r in effective if r.kind == "item" and r.target.startswith("folder:"))
+    digest = sha(json.dumps({"scope": "personal-only-v1", "sourcePlanSha256": source_sha, "moves": moves},
+                           sort_keys=True, separators=(",", ":")))
+    return effective, {"snapshot": snapshot, "effective": digest}
+
+
+def personal_summary(rows, snapshot, original):
+    selected = [r for r in rows if r.kind == "item" and r.target.startswith("folder:")]
+    already = sum(r.current == r.target[7:] for r in selected)
+    want = {p for r in selected if r.current != r.target[7:] for p in folder_parents(r.target[7:])}
+    new = want - {unicodedata.normalize("NFC", n) for n in snapshot["folders"].values()}
+    org_proposals = sum(r.kind == "item" and r.target.startswith("folder:") and r.id in snapshot["items"]
+                        and snapshot["items"][r.id]["organizationId"] is not None for r in original)
+    org_total = sum(i["organizationId"] is not None for i in snapshot["items"].values())
+    lines = [f"Personal-only: {len(selected) - already} personal moves needed, {already} already at target, "
+             f"{len(new)} new destination folders required; {org_proposals} organization move proposals left unchanged "
+             f"({org_total} organization items unchanged)."]
+    lines += ["  effective projection: " + x for x in summary_lines(rows, None)]
+    return lines
+
+
+def personal_plan_unchanged(source_text):
+    try:
+        same = PLAN.read_bytes() == source_text.encode("utf-8")
+    except OSError:
+        same = False
+    if not same:
+        raise Fail("the source plan changed during personal apply; nothing further was changed", 4)
+
+
 def apply_plan(argv):
-    dry = resume = new_journal = yes = backup_only = False
+    dry = resume = new_journal = yes = backup_only = personal_only = False
     for a in argv:
         if a == "--dry-run":
             dry = True
@@ -1614,14 +1706,26 @@ def apply_plan(argv):
             yes = True
         elif a == "--backup-only":
             backup_only = True
+        elif a == "--personal-only":
+            personal_only = True
         else:
-            raise Fail("usage: vault-audit apply [--dry-run] [--resume] [--new-journal] [--yes] | --backup-only [--dry-run]", 2)
+            raise Fail("usage: vault-audit apply [--personal-only] [--dry-run] [--resume] [--new-journal] [--yes] | --backup-only [--personal-only] [--dry-run]", 2)
     if backup_only and (resume or new_journal or yes):
         raise Fail("--backup-only cannot be combined with --resume, --new-journal or --yes", 2)
     if yes and not envs_lib().test_mode():
         raise Fail("--yes is only honoured in the tests", 4)
     m = vbw()
-    header, rows = load_plan()
+    if personal_only:
+        try:
+            source_text = PLAN.read_bytes().decode("utf-8")
+        except (OSError, UnicodeError):
+            raise Fail("cannot read the source plan for personal apply", 4) from None
+        header, rows, problems = parse_plan(source_text)
+        if problems:
+            raise Fail("the source plan is invalid", 4)
+        personal_supported(rows)
+    else:
+        header, rows = load_plan()
     try:
         audit = json.loads(audit_path(m).read_text())
     except (OSError, ValueError):
@@ -1630,7 +1734,10 @@ def apply_plan(argv):
     if problems:
         raise Fail("the plan is invalid:\n  " + "\n  ".join(problems), 4)
     if dry:
-        if backup_only:
+        if personal_only:
+            print("would classify fresh ownership and verify a personal encrypted backup; organizations stay unchanged")
+            print("effective personal move and scope counts require the owner's live run; no backend or journal work was performed")
+        elif backup_only:
             print("would verify and retain an encrypted backup bundle; no journal, folders or items would be changed")
         else:
             print("\n".join(would(rows, audit)))
@@ -1638,9 +1745,9 @@ def apply_plan(argv):
     a = agent()
     if a:
         raise Fail(f"apply is refused under an agent ({a}): the owner runs vault-audit apply himself", 4)
-    plan_sha = sha(PLAN.read_text())
+    plan_sha = sha(source_text) if personal_only else sha(PLAN.read_text())
     changes = [r for r in rows if r.target != "keep"]
-    if not changes and not backup_only:
+    if not changes and not backup_only and not personal_only:
         print("nothing to do: the plan changes nothing")
         return 0
     import fcntl
@@ -1652,6 +1759,34 @@ def apply_plan(argv):
         except OSError:
             raise Fail("another vault-audit apply is running", 4)
         opened_bw(m)
+        if personal_only:
+            backup_cli(m, "sync", stage="initial-sync")
+            snapshot = backup_snapshot(m, personal=True)
+            original = rows
+            rows, personal = personal_projection(rows, snapshot, plan_sha)
+            summary = personal_summary(rows, snapshot, original)
+            expected_header = f"# scope=personal-only-v1 source-plan-sha256={plan_sha} effective-sha256={personal['effective']}"
+            personal_journal = STATE / "org-personal-journal.tsv"
+            if resume and not new_journal and personal_journal.exists():
+                if personal_journal.read_text().splitlines()[:1] != [expected_header]:
+                    raise Fail("the personal journal belongs to another scope or effective plan", 4)
+            if not backup_only and not any(r.kind == "item" and r.target.startswith("folder:") for r in rows):
+                print("\n".join(summary))
+                print("no eligible personal moves; organization proposals were not applied")
+                return 0
+            if not backup_only and not (yes or confirm(summary)):
+                print("cancelled")
+                return 130
+            personal_plan_unchanged(source_text)
+            path = backup_export(m, plan_sha, personal=personal)
+            personal_plan_unchanged(source_text)
+            if backup_only:
+                print(f"personal backup verified and retained: {path}; organization items unchanged; no journal or vault mutations")
+                return 0
+            personal["backup"] = path
+            personal["summary"] = summary
+            journal = Journal(plan_sha, resume, new_journal, personal=personal["effective"])
+            return Applier(m, rows, journal, audit, personal=personal).run()
         if backup_only:
             path = backup_export(m, plan_sha)
             print(f"backup verified and retained: {path}; no journal, folders or items were changed")
@@ -1665,8 +1800,9 @@ def apply_plan(argv):
 
 
 class Applier:
-    def __init__(self, m, rows, journal, audit):
+    def __init__(self, m, rows, journal, audit, personal=None):
         self.m, self.rows, self.j, self.audit = m, rows, journal, audit
+        self.personal = personal
         self.counts = {"moved": 0, "trashed": 0, "renamed": 0, "created": 0, "deleted": 0, "already": 0}
         self.skipped = []
         self.wrote = 0
@@ -1674,7 +1810,8 @@ class Applier:
     def live_folders(self):
         """Fresh id -> name snapshot. Plan display columns and earlier snapshots are never mutation authority."""
         try:
-            folders = real_folder_inventory(get_json(self.m, "list", "folders"))
+            data = self.personal_request("list", "folders") if self.personal is not None else get_json(self.m, "list", "folders")
+            folders = real_folder_inventory(data)
         except ValueError:
             raise Fail("cannot verify the live folders; audit and review again") from None
         return {ident: unicodedata.normalize("NFC", name) for ident, name in folders.items()}
@@ -1716,8 +1853,9 @@ class Applier:
         try:
             res = fn()
         except Fail as e:
-            self.j.log(step, ident, "failed: " + e.msg)
-            self.skipped.append(f"{ident} {label}: {e.msg}")
+            message = e.msg if self.personal is None or isinstance(e, PersonalFail) else "personal step refused; backend output suppressed"
+            self.j.log(step, ident, "failed: " + message)
+            self.skipped.append(f"{ident} {label}: {message}")
             return
         self.j.log(step, ident, res)
         if res.startswith("skipped"):
@@ -1726,17 +1864,22 @@ class Applier:
     def run(self):
         m = self.m
         try:
-            path = backup_export(m, self.j.sha)
+            path = self.personal["backup"] if self.personal is not None else backup_export(m, self.j.sha)
             self.j.log("backup", "-", f"ok {path}")
             print(f"backup: {path}")
-            self.renames()
+            if self.personal is not None:
+                print("personal-only: organization items remain unchanged")
+            else:
+                self.renames()
             self.creates()
             self.moves()
-            self.trash()
-            self.empty_folders()
+            if self.personal is None:
+                self.trash()
+                self.empty_folders()
             self.finish()
         except KeyboardInterrupt:
-            print("\ninterrupted: the journal is consistent, vault-audit apply --resume continues", file=sys.stderr)
+            command = "vault-audit apply --personal-only --resume" if self.personal is not None else "vault-audit apply --resume"
+            print(f"\ninterrupted: the journal is consistent, {command} continues", file=sys.stderr)
             return 130
         return self.summary()
 
@@ -1765,13 +1908,25 @@ class Applier:
     def creates(self):
         m = self.m
         want = sorted({p for r in self.rows if r.kind == "item" and r.target.startswith("folder:")
+                       and (self.personal is None or r.current != r.target[7:])
                        for p in folder_parents(r.target[7:])}, key=lambda x: (x.count("/"), x))
         for name in want:
             def go(name=name):
-                if name in self.fmap():
-                    return "ok (already)"
-                if m.folder_id(name, create=True) is None:
-                    raise Fail("could not create the folder")
+                if self.personal is not None:
+                    self.ordinary_folder(name)
+                    found = [fid for fid, n in self.live_folders().items() if n == name]
+                    if len(found) > 1:
+                        raise PersonalFail("personal folder is ambiguous", 4)
+                    if found:
+                        return "ok (already)"
+                    back = self.personal_request("create", "folder", stdin=m.b64({"name": name}))
+                    if not isinstance(back, dict) or not backup_id(back.get("id")) or back.get("name") != name:
+                        raise PersonalFail("personal folder creation could not be verified", 4)
+                else:
+                    if name in self.fmap():
+                        return "ok (already)"
+                    if m.folder_id(name, create=True) is None:
+                        raise Fail("could not create the folder")
                 self.counts["created"] += 1
                 self.wrote += 1
                 return "ok created"
@@ -1786,6 +1941,8 @@ class Applier:
             dest = r.target[7:]
 
             def go(r=r, dest=dest):
+                if self.personal is not None:
+                    return self.personal_move(r, dest)
                 item = get_json(m, "get", "item", r.id)
                 if not item:
                     raise Fail("the item does not exist any more")
@@ -1817,7 +1974,45 @@ class Applier:
                 self.wrote += 1
                 return "ok moved"
 
-            self.step("move", r.id, r.name, go)
+            self.step("move", r.id, clean(r.name) if self.personal is not None else r.name, go)
+
+    def personal_move(self, row, dest):
+        # Resolve folders first, then fetch the item at the write boundary. Backend errors never reach logs.
+        folders = self.live_folders()
+        self.ordinary_folder(dest)
+        targets = [fid for fid, name in folders.items() if name == dest]
+        if len(targets) != 1:
+            raise PersonalFail("personal target folder missing or ambiguous", 4)
+        fid = targets[0]
+        item = self.personal_request("get", "item", row.id)
+        backed = self.personal["snapshot"]["items"].get(row.id)
+        if (not isinstance(item, dict) or item.get("id") != row.id
+                or item.get("organizationId") is not None or item.get("deletedDate") or not backed
+                or backed["organizationId"] is not None
+                or type(item.get("type")) is not int
+                or any(item.get(k) != backed[k] for k in ("type", "revisionDate", "folderId"))):
+            raise PersonalFail("personal item ownership or backed metadata changed; item was not written", 4)
+        self.ordinary_folder(self.item_folder(item, folders))
+        if item.get("folderId") == fid:
+            self.counts["already"] += 1
+            return "ok (already)"
+        item["folderId"] = fid
+        back = self.personal_request("edit", "item", row.id, stdin=self.m.b64(item))
+        if (not isinstance(back, dict) or back.get("id") != row.id
+                or back.get("organizationId") is not None or back.get("folderId") != fid):
+            raise PersonalFail("personal move failed or receipt ownership could not be verified", 4)
+        self.counts["moved"] += 1
+        self.wrote += 1
+        return "ok moved"
+
+    def personal_request(self, *args, stdin=None):
+        try:
+            p = self.m.bw(*args, stdin=stdin) if stdin is not None else self.m.bw(*args)
+            if p.returncode == 0:
+                return json.loads(p.stdout)
+        except Exception:
+            pass
+        raise PersonalFail("personal request failed; backend output suppressed", 4)
 
     def trash(self):
         m = self.m
@@ -1893,11 +2088,20 @@ class Applier:
 
     def finish(self):
         m = self.m
-        m.bw("sync")
-        m.refresh_rbw()
+        if self.personal is not None:
+            try:
+                if m.bw("sync").returncode != 0:
+                    raise ValueError
+                m.refresh_rbw()
+            except Exception:
+                raise PersonalFail("personal cache refresh failed; backend output suppressed", 4) from None
+        else:
+            m.bw("sync")
+            m.refresh_rbw()
         for f in ("browse-index.json", "browse-index.tmp"):
             (m.RUN / f).unlink(missing_ok=True)
-        audit_path(m).unlink(missing_ok=True)       # the inventory is stale now
+        if self.personal is None:
+            audit_path(m).unlink(missing_ok=True)       # the full inventory is stale now
         self.j.log("sync", "-", "ok")
 
     def summary(self):
@@ -1905,7 +2109,8 @@ class Applier:
         print(f"applied: {c['moved']} moved, {c['trashed']} to the trash, {c['renamed']} folders renamed, "
               f"{c['created']} folders created, {c['deleted']} empty folders deleted"
               + (f", {c['already']} steps were already done" if c["already"] else ""))
-        for line in summary_lines(self.rows, self.audit or {"groups": [], "items": []}):
+        lines = self.personal["summary"] if self.personal is not None else summary_lines(self.rows, self.audit or {"groups": [], "items": []})
+        for line in lines:
             print("  " + line)
         if self.skipped:
             print(f"{len(self.skipped)} skipped or failed:")

@@ -376,6 +376,55 @@ section3() {
   ONLY_REST=1
 }
 
+fresh_personal_plan() {
+  fresh_plan
+  jq '(.items[] | .organizationId) = null | (.items[] | select(.id=="i-10") | .organizationId) = "org-denied"' \
+    "$FAKE/vault.json" >"$FAKE/v.tmp"
+  mv "$FAKE/v.tmp" "$FAKE/vault.json"
+  awk 'BEGIN {FS=OFS="\t"} /^#/ {print; next} { $4=($1=="i-04" ? "folder:Work/Acme" : ($1=="i-10" ? "folder:Design" : "keep")); print }' \
+    "$(PLANF)" >"$ROOT/personal-plan.tmp"
+  mv "$ROOT/personal-plan.tmp" "$(PLANF)"
+  chmod 600 "$(PLANF)"
+}
+
+section4() {
+  local rc out
+  fresh_personal_plan
+  mark; out=$(FAKE_BW_ORG_EXPORT_FAIL=1 A apply --yes 2>&1); rc=$?
+  check "4.1 full mode refuses denied organization export, no auto fallback or writes" bash -c \
+    '[ "$1" = 1 ] && [ "$2" = 0 ] && grep -q "stage=organization-export rc=1" <<<"$3" && grep -q -- --organizationid "$4"' \
+    _ "$rc" "$(writes_since)" "$out" "$FAKE/argv.log"
+  fresh_personal_plan
+  printf 'invented preserved full journal\n' >"$(JOURNALF)"
+  cp "$(PLANF)" "$ROOT/original-plan"; cp "$(META)" "$ROOT/original-meta"
+  cp "$(JOURNALF)" "$ROOT/original-journal"; cp "$(AJ)" "$ROOT/original-audit"
+  jq -cS '.items[] | select(.organizationId != null)' "$FAKE/vault.json" >"$ROOT/original-org"
+  : >"$FAKE/argv.log"
+  out=$(FAKE_BW_ORG_EXPORT_FAIL=1 A apply --personal-only --backup-only 2>&1); rc=$?
+  check "4.2 personal backup-only verifies exact scope with no org export or journal" bash -c \
+    '[ "$1" = 0 ] && grep -q "personal backup verified" <<<"$2" && ! grep -q -- --organizationid "$3" && [ ! -e "$4" ]' \
+    _ "$rc" "$out" "$FAKE/argv.log" "$ROOT/state/vault/org-personal-journal.tsv"
+  # The real terminal confirmation path, using an isolated pty and invented backend only.
+  export FAKE_BW_ORG_EXPORT_FAIL=1
+  python3 -I -B "$HERE/personal_pty.py" "$SCRIPTS/vault-org.py" >"$ROOT/personal-out.txt" 2>&1; rc=$?
+  unset FAKE_BW_ORG_EXPORT_FAIL
+  check "4.3 personal CLI confirms once, moves personal item, keeps org target excluded" bash -c \
+    '[ "$1" = 0 ] && [ "$(grep -o "Apply this plan?" "$2" | wc -l)" = 1 ] && grep -q "1 personal moves needed" "$2" && grep -q "1 organization move proposals left unchanged" "$2" && grep -q "yc: 0 -> 0" "$2"' \
+    _ "$rc" "$ROOT/personal-out.txt"
+  check "4.3 only personal item edited, organization JSON unchanged, source files preserved" bash -c \
+    'jq -cS ".items[] | select(.organizationId != null)" "$1" >"$2/current-org"; cmp -s "$2/original-org" "$2/current-org" && cmp -s "$2/original-plan" "$3" && cmp -s "$2/original-meta" "$4" && cmp -s "$2/original-journal" "$5" && cmp -s "$2/original-audit" "$6" && ! grep -q -- --organizationid "$7" && ! grep -qE "(PUT /object/item/i-10|DELETE|edit item i-10)" "$7" && grep -q "PUT /object/item/i-04" "$7"' \
+    _ "$FAKE/vault.json" "$ROOT" "$(PLANF)" "$(META)" "$(JOURNALF)" "$(AJ)" "$FAKE/argv.log"
+  check "4.3 scoped manifest covers every personal item/all folders and declares personal scope" bash -c \
+    'for f in "$1"/vault-*/manifest.json; do jq -e '\''.scope=="personal-only-v1" and (.items|length)==22 and (.folderIds|length)==10 and (.exports|length)==1 and .exports[0].expected==22 and (.effectivePlanSha256|length)==64'\'' "$f" >/dev/null || exit 1; done' \
+    _ "$ROOT/data/vault-backups"
+  out=$(FAKE_BW_ORG_EXPORT_FAIL=1 A apply --personal-only --resume --yes 2>&1); rc=$?
+  check "4.4 personal resume makes fresh scoped backup without editing org or original journal" bash -c \
+    '[ "$1" = 0 ] && cmp -s "$2" "$3" && ! grep -q -- --organizationid "$4" && [ "$(grep -c "PUT /object/item/i-04" "$4")" = 1 ] && [ "$(grep -c "^bw export" "$4")" = 3 ]' \
+    _ "$rc" "$ROOT/original-journal" "$(JOURNALF)" "$FAKE/argv.log"
+  check "4.5 personal outputs/journal/backup/argv contain no invented secret" no_sentinel \
+    "$ROOT/personal-out.txt" "$ROOT/state/vault/org-personal-journal.tsv" "$ROOT"/data/vault-backups/vault-*/*.json "$FAKE/argv.log"
+}
+
 check "security: encrypted backup ownership, exact coverage, coherence and resume" python3 -I -B "$HERE/backup_test.py" "$SCRIPTS/vault-org.py"
 
 check "security: complete duplicate preservation and live mutation guards" python3 -I -B "$HERE/safety_test.py" "$SCRIPTS/vault-org.py"
@@ -383,6 +432,7 @@ check "security: complete duplicate preservation and live mutation guards" pytho
 want 1 && section1
 want 2 && section2
 want 3 && section3
+want 4 && section4
 
 echo
 echo "passed $PASS, failed $FAILS"

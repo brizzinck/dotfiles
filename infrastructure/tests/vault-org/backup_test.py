@@ -83,6 +83,38 @@ class Backend:
         return types.SimpleNamespace(returncode=0, stdout=json.dumps(data), stderr='')
 
 
+class PersonalBackend(Backend):
+    def __init__(self):
+        super().__init__([item('personal-one'), item('org-one', 'org-a'), item('personal-keep')])
+        self.fail = 'org-a'    # faithful org export permission denial; personal export still succeeds
+        self.writes = []
+        self.before_get = lambda: None
+        self.receipt = lambda doc: doc
+
+    def b64(self, obj): return obj
+    def status(self): return 'unlocked'
+    def refresh_rbw(self): pass
+
+    def bw(self, *args, stdin=None):
+        if args[:2] == ('get', 'item'):
+            self.before_get()
+            data = copy.deepcopy(next((i for i in self.items if i['id'] == args[2]), None))
+        elif args[:2] == ('edit', 'item'):
+            self.writes.append(args)
+            data = copy.deepcopy(stdin)
+            data['revisionDate'] += '-moved'
+            self.items = [data if i['id'] == args[2] else i for i in self.items]
+            data = self.receipt(copy.deepcopy(data))
+        elif args[:2] == ('create', 'folder'):
+            self.writes.append(args)
+            data = {'id': 'new-' + str(len(self.folders)), 'name': stdin['name']}
+            self.folders.append(data)
+        else:
+            return super().bw(*args)
+        self.calls.append(('service', args))
+        return types.SimpleNamespace(returncode=0, stdout=json.dumps(data), stderr='')
+
+
 class Backups(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='fake-backup-')
@@ -472,6 +504,298 @@ class Backups(unittest.TestCase):
             self.assertEqual([PLAN], calls)
         finally:
             v.backup_export = old
+
+
+class Personal(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='fake-personal-')
+        self.root = Path(self.tmp.name)
+        self.b = PersonalBackend(); self.b.RUN = self.root / 'runtime'
+        self.rows = [v.Row('item', 'personal-one', 'Old personal name', 'Invented folder', 'folder:Destination'),
+                     v.Row('item', 'org-one', 'Old org name', 'Invented folder', 'folder:Org Destination'),
+                     v.Row('item', 'personal-keep', 'Old keep name', 'Invented folder', 'keep')]
+        self.header = {'version': 1, 'audit': 'FAKE-AUDIT', 'items': 3, 'generated': 'FAKE'}
+        self.plan = self.root / 'plan.tsv'; self.plan.write_text(v.format_plan(self.header, self.rows))
+        self.full = self.root / 'org-journal.tsv'; self.full.write_text('invented-original-full-journal\n')
+        self.meta = self.root / 'plan.meta.json'; self.meta.write_text('invented-original-meta')
+        self.rules = self.root / 'rules.tsv'; self.rules.write_text('invented-original-rules')
+        (self.b.RUN / 'org').mkdir(parents=True)
+        self.audit = self.b.RUN / 'org' / 'audit.json'; self.audit.write_text('{"items":[],"groups":[]}')
+        self.preserved = {p: p.read_bytes() for p in (self.plan, self.full, self.meta, self.rules, self.audit)}
+        self.stack = contextlib.ExitStack()
+        for name, value in {'PLAN': self.plan, 'JOURNAL': self.full, 'STATE': self.root,
+                            'BACKUPS': self.root / 'backups', 'vbw': lambda: self.b, 'agent': lambda: None,
+                            'scope_rules': lambda: (v.vs().parse_rules('td\tDestination/**\nyc\tOrg Destination/**\n')[0], True),
+                            'confirm': lambda lines: self.confirm(lines)}.items():
+            self.stack.enter_context(mock.patch.object(v, name, value))
+        self.confirmations = []
+
+    def tearDown(self):
+        self.stack.close(); self.tmp.cleanup()
+
+    def confirm(self, lines):
+        self.confirmations.append(lines)
+        return True
+
+    def apply(self, *args):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            rc = v.apply_plan(['--personal-only', *args])
+        return rc, output.getvalue()
+
+    def rewrite(self):
+        self.plan.write_text(v.format_plan(self.header, self.rows))
+
+    def test_mixed_scoped_apply_preserves_org_and_original_files_with_exact_personal_backup(self):
+        org = copy.deepcopy(self.b.items[1])
+        rc, output = self.apply()
+        self.assertEqual(0, rc)
+        self.assertEqual(org, self.b.items[1])
+        self.assertEqual([None], self.b.exports)
+        self.assertEqual(1, len(self.confirmations))
+        self.assertIn('1 personal moves needed, 0 already at target, 1 new destination folders required', output)
+        self.assertIn('1 organization move proposals left unchanged', output)
+        self.assertIn('yc: 0 -> 0', output)
+        self.assertEqual([('create', 'folder'), ('edit', 'item', 'personal-one')], self.b.writes)
+        manifest = json.loads(next(v.BACKUPS.glob('vault-*/manifest.json')).read_text())
+        self.assertEqual('personal-only-v1', manifest['scope'])
+        self.assertEqual({'personal-one', 'personal-keep'}, set(manifest['items']))
+        self.assertEqual(['folder-one'], manifest['folderIds'])
+        self.assertEqual(1, len(manifest['exports']))
+        for p, data in self.preserved.items(): self.assertEqual(data, p.read_bytes())
+        for path in v.BACKUPS.glob('vault-*/*'):
+            self.assertNotIn('invented-password', path.read_text())
+            self.assertNotIn('Invented private name', path.read_text())
+        self.assertTrue((self.root / 'org-personal-journal.tsv').read_text().startswith('# scope=personal-only-v1 '))
+
+    def test_unsupported_actions_refuse_before_backend(self):
+        for row in (v.Row('folder', 'folder-one', 'Invented folder', None, 'rename:Elsewhere'),
+                    v.Row('folder', 'folder-one', 'Invented folder', None, 'delete-if-empty'),
+                    v.Row('item', 'personal-one', 'Personal', None, 'trash-duplicate-of:personal-keep')):
+            self.rows.append(row); self.rewrite()
+            with self.subTest(target=row.target), self.assertRaises(v.Fail): self.apply()
+            self.assertEqual([], self.b.calls)
+            self.rows.pop()
+
+    def test_invalid_ownership_and_missing_actionable_identity_fail_closed(self):
+        for value in ('', [], False, 0, 'bad/id'):
+            b = PersonalBackend(); b.RUN = self.b.RUN
+            b.items[0]['organizationId'] = value
+            with mock.patch.object(v, 'vbw', return_value=b), self.subTest(value=value), self.assertRaises(v.Fail): self.apply()
+            self.assertEqual([], b.writes)
+        self.b.items = self.b.items[1:]
+        with self.assertRaises(v.Fail): self.apply()
+        self.assertEqual([], self.b.writes)
+
+    def test_backup_only_dry_run_and_zero_eligible_do_not_construct_journal(self):
+        with mock.patch.object(v, 'Journal', side_effect=AssertionError('no journal in backup-only')):
+            rc, output = self.apply('--backup-only')
+        self.assertEqual(0, rc); self.assertIn('personal backup verified', output)
+        self.assertEqual([], self.confirmations); self.assertEqual([], self.b.writes)
+        self.b.calls.clear()
+        self.assertEqual(0, self.apply('--dry-run')[0]); self.assertEqual([], self.b.calls)
+        for r in self.rows: r.target = 'keep'
+        self.rewrite()
+        self.assertIn('no eligible personal moves', self.apply()[1])
+        self.assertEqual([], self.confirmations)
+
+    def test_scope_summary_uses_fresh_exact_names_new_keep_items_and_already_targets(self):
+        self.b.folders.append({'id': 'destination', 'name': 'Destination'})
+        self.b.items[0]['folderId'] = 'destination'
+        self.b.items[0]['name'] = 'Fresh exact name'
+        self.b.items.append(dict(item('unplanned'), name='New keep name'))
+        with mock.patch.object(v, 'scope_rules', return_value=(v.vs().parse_rules(
+                'td\tDestination/Fresh exact name\nyc\tInvented folder/New keep name\n')[0], False)):
+            rc, output = self.apply()
+        self.assertEqual(0, rc)
+        self.assertIn('0 personal moves needed, 1 already at target, 0 new destination folders required', output)
+        self.assertIn('td: 1 -> 1', output); self.assertIn('yc: 1 -> 1', output)
+        self.assertEqual([], self.b.writes)
+
+    def test_classification_or_source_plan_change_at_confirmation_refuses_before_backup(self):
+        for key, value in (('organizationId', 'org-a'), ('id', 'wrong-id'), ('type', 2),
+                           ('revisionDate', 'changed'), ('folderId', None), ('name', 'Changed name')):
+            self.b = PersonalBackend(); self.b.RUN = self.root / 'runtime'
+            def change(lines): self.b.items[0][key] = value; return True
+            with mock.patch.object(v, 'confirm', side_effect=change), self.subTest(key=key), self.assertRaises(v.Fail): self.apply()
+            self.assertEqual([], self.b.writes); self.assertEqual([], self.b.exports)
+        with mock.patch.object(v, 'confirm', side_effect=lambda lines: self.plan.write_text('changed') or True):
+            with self.assertRaises(v.Fail): self.apply()
+        self.assertEqual([], self.b.writes)
+
+    def test_invalid_export_ownership_and_coverage_fail_before_mutation(self):
+        for change in ('ownership', 'missing', 'duplicate', 'plaintext'):
+            self.b = PersonalBackend(); self.b.RUN = self.root / 'runtime'
+            def edit(doc, org):
+                if change == 'ownership': doc['items'][0]['organizationId'] = ''
+                elif change == 'missing': doc['items'].pop()
+                elif change == 'duplicate': doc['items'].append(copy.deepcopy(doc['items'][0]))
+                else: doc['encrypted'] = False
+            self.b.edit_export = edit
+            with self.subTest(change=change), self.assertRaises(v.Fail): self.apply()
+            self.assertEqual([], self.b.writes)
+
+    def test_late_identity_ownership_type_revision_or_source_change_never_edits(self):
+        self.b.folders.append({'id': 'destination', 'name': 'Destination'})
+        for key, value in (('organizationId', 'org-a'), ('organizationId', ''), ('id', 'wrong-id'),
+                           ('type', 2), ('revisionDate', 'changed'), ('folderId', None)):
+            for at_target in (False, True):
+                self.b.items[0] = item('personal-one')
+                if at_target: self.b.items[0]['folderId'] = 'destination'
+                def change():
+                    if value == 'MISSING': self.b.items[0].pop(key, None)
+                    else: self.b.items[0][key] = value
+                self.b.before_get = change; self.b.writes.clear()
+                with self.subTest(key=key, value=value, at_target=at_target):
+                    self.assertEqual(5, self.apply()[0])
+                    self.assertEqual([], [x for x in self.b.writes if x[:2] == ('edit', 'item')])
+
+    def test_bad_receipt_and_poisoned_request_are_fixed_non_success(self):
+        for key, value in (('organizationId', 'org-a'), ('organizationId', ''), ('id', 'wrong'), ('folderId', 'wrong')):
+            self.b = PersonalBackend(); self.b.RUN = self.root / 'runtime'
+            def receipt(doc):
+                if value == 'MISSING': doc.pop(key)
+                else: doc[key] = value
+                return doc
+            self.b.receipt = receipt
+            with self.subTest(key=key, value=value):
+                rc, output = self.apply()
+                self.assertEqual(5, rc); self.assertIn('applied: 0 moved', output)
+        self.b = PersonalBackend(); self.b.RUN = self.root / 'runtime'
+        original = self.b.bw
+        def poison(*args, **kwargs):
+            if args[:2] == ('get', 'item'):
+                raise v.Fail('invented-password-sentinel\x1b]52;poison\x07')
+            return original(*args, **kwargs)
+        self.b.bw = poison
+        rc, output = self.apply()
+        self.assertEqual(5, rc); self.assertNotIn('invented-password', output); self.assertNotIn('\x1b', output)
+        self.assertNotIn('invented-password', (self.root / 'org-personal-journal.tsv').read_text())
+
+    def test_official_omitted_and_null_personal_ownership_are_equivalent(self):
+        for omitted in (False, True):
+            self.b = PersonalBackend(); self.b.RUN = self.root / 'runtime'
+            self.b.items[0]['folderId'] = None
+            if omitted:
+                for i in self.b.items:
+                    if i['organizationId'] is None: i.pop('organizationId')
+                self.b.items[0].pop('folderId')
+                def omit_export(doc, org):
+                    for i in doc['items']: i.pop('organizationId')
+                self.b.edit_export = omit_export
+            with self.subTest(omitted=omitted):
+                self.assertEqual(0, self.apply()[0])
+                self.assertIsNone(self.b.items[0].get('organizationId'))
+
+    def test_resume_identity_survives_own_move_but_refuses_population_source_and_scope_changes(self):
+        self.assertEqual(0, self.apply()[0])
+        exports = len(self.b.exports)
+        self.assertEqual(0, self.apply('--resume')[0])
+        self.assertEqual(exports + 1, len(self.b.exports))
+        self.assertEqual(1, len([w for w in self.b.writes if w[:2] == ('edit', 'item')]))
+        personal_journal = self.root / 'org-personal-journal.tsv'
+        saved = personal_journal.read_bytes()
+        self.b.items[0]['organizationId'] = 'org-a'
+        with self.assertRaises(v.Fail): self.apply('--resume')
+        self.b.items[0]['organizationId'] = None
+        self.plan.write_text(self.plan.read_text() + '# source changed\n')
+        with self.assertRaises(v.Fail): self.apply('--resume')
+        self.plan.write_bytes(self.preserved[self.plan])
+        personal_journal.write_text('# plan-sha256=' + v.sha(self.plan.read_text()) + '\n')
+        with self.assertRaises(v.Fail): self.apply('--resume')
+        personal_journal.write_bytes(saved)
+        self.assertEqual(self.preserved[self.full], self.full.read_bytes())
+
+    def test_personal_sentinels_and_duplicate_identity_validation(self):
+        for sentinel in (None, ''):
+            self.b = PersonalBackend(); self.b.RUN = self.root / 'runtime'
+            self.b.cli_folder_sentinel = {'object': 'folder', 'id': sentinel, 'name': 'No Folder'}
+            self.b.service_folder_sentinel = {'object': 'folder', 'id': '' if sentinel is None else None, 'name': 'No Folder'}
+            self.b.items[0]['folderId'] = None
+            with self.subTest(sentinel=sentinel): self.assertEqual(0, self.apply()[0])
+        self.b = PersonalBackend(); self.b.RUN = self.root / 'runtime'
+        self.b.items.append(copy.deepcopy(self.b.items[0]))
+        with self.assertRaises(v.Fail): self.apply()
+        self.assertEqual([], self.b.writes)
+
+    def test_live_protected_source_and_ambiguous_destination_refuse_before_confirmation(self):
+        self.b.folders[0]['name'] = 'Env/protected'
+        with self.assertRaises(v.Fail): self.apply()
+        self.assertEqual([], self.confirmations); self.assertEqual([], self.b.exports)
+        self.b.folders[0]['name'] = 'Invented folder'
+        self.b.folders += [{'id': 'dest-one', 'name': 'Destination'}, {'id': 'dest-two', 'name': 'Destination'}]
+        with self.assertRaises(v.Fail): self.apply()
+        self.assertEqual([], self.confirmations); self.assertEqual([], self.b.exports)
+
+    def test_personal_agent_and_production_yes_gates_make_no_backend_request(self):
+        with mock.patch.object(v, 'agent', return_value='invented-agent'):
+            with self.assertRaises(v.Fail) as caught: self.apply()
+            self.assertEqual(4, caught.exception.code)
+            self.assertEqual(0, self.apply('--dry-run')[0])
+        with mock.patch.object(v, 'envs_lib', return_value=types.SimpleNamespace(test_mode=lambda: False)):
+            with self.assertRaises(v.Fail) as caught: self.apply('--yes')
+            self.assertEqual(4, caught.exception.code)
+        self.assertEqual([], self.b.calls); self.assertEqual([], self.confirmations)
+
+    def test_full_journal_cannot_resume_personal_header_and_interrupted_personal_resume_is_fresh(self):
+        self.rows[2].target = 'folder:Destination'; self.rewrite()
+        original = self.b.bw
+        def interrupt(*args, **kwargs):
+            if args[:3] == ('get', 'item', 'personal-keep'): raise KeyboardInterrupt
+            return original(*args, **kwargs)
+        self.b.bw = interrupt
+        with contextlib.redirect_stderr(io.StringIO()) as error:
+            self.assertEqual(130, self.apply()[0])
+        self.assertIn('vault-audit apply --personal-only --resume continues', error.getvalue())
+        first = set(v.BACKUPS.glob('vault-*'))
+        self.assertEqual(1, len(first))
+        self.b.bw = original
+        self.assertEqual(0, self.apply('--resume')[0])
+        self.assertEqual(2, len(list(v.BACKUPS.glob('vault-*'))))
+        self.assertTrue(all(p.exists() for p in first))
+        self.assertEqual(2, len([w for w in self.b.writes if w[:2] == ('edit', 'item')]))
+        self.full.write_bytes((self.root / 'org-personal-journal.tsv').read_bytes())
+        with self.assertRaises(v.Fail): v.Journal(v.sha(self.plan.read_text()), resume=True)
+
+    def test_personal_post_export_names_and_service_coherence_remain_required(self):
+        self.b.edit_export = lambda doc, org: self.b.items[0].update(name='Changed after export')
+        with self.assertRaises(v.Fail): self.apply()
+        self.assertEqual([], self.b.writes)
+        self.b = PersonalBackend(); self.b.RUN = self.root / 'runtime'
+        self.b.served = [item('stale-service')]
+        with self.assertRaises(v.Fail): self.apply()
+        self.assertEqual([], self.b.writes)
+
+    def test_nfc_equivalent_source_target_and_new_folder_counts_match_execution(self):
+        for folder, target in (('Cafe\u0301', 'Café'), ('Café', 'Cafe\u0301'), ('Cafe\u0301', 'Cafe\u0301')):
+            self.b = PersonalBackend(); self.b.RUN = self.root / 'runtime'
+            self.b.folders[0]['name'] = folder
+            self.rows[0].target = 'folder:' + target; self.rewrite()
+            with self.subTest(folder=folder, target=target):
+                rc, output = self.apply()
+                self.assertEqual(0, rc)
+                self.assertIn('0 personal moves needed, 1 already at target, 0 new destination folders required', output)
+                self.assertEqual([], self.b.writes)
+        self.b = PersonalBackend(); self.b.RUN = self.root / 'runtime'
+        self.b.folders.append({'id': 'destination', 'name': 'Cafe\u0301'})
+        self.rows[0].target = 'folder:Cafe\u0301'; self.rewrite()
+        rc, output = self.apply()
+        self.assertEqual(0, rc)
+        self.assertIn('1 personal moves needed, 0 already at target, 0 new destination folders required', output)
+        self.assertEqual([('edit', 'item', 'personal-one')], self.b.writes)
+
+    def test_personal_unique_archives_preserve_every_previous_recovery_journal(self):
+        old_prev = self.root / 'org-personal-journal.tsv.prev'
+        old_prev.write_text('invented-older-recovery-journal')
+        for marker in ('a', 'b', 'c'):
+            journal = v.Journal('s' * 64, personal=marker * 64)
+            journal.log('move', marker, 'ok ' + marker)
+        archives = list(self.root.glob('org-personal-journal.tsv.prev-*'))
+        self.assertEqual(2, len(archives))
+        self.assertEqual({'a', 'b'}, {p.read_text().splitlines()[-1].split('\t')[2] for p in archives})
+        self.assertEqual('invented-older-recovery-journal', old_prev.read_text())
+        for p in archives: self.assertEqual(0o600, p.stat().st_mode & 0o777)
+        self.assertEqual(self.preserved[self.full], self.full.read_bytes())
 
 
 if __name__ == '__main__':

@@ -40,6 +40,7 @@ case $cmd in
       [[ ${!i} == --output ]] && { j=$((i + 1)); out=${!j}; }
       [[ ${!i} == --organizationid ]] && { j=$((i + 1)); org=${!j}; }
     done
+    [[ -n $org && ${FAKE_BW_ORG_EXPORT_FAIL:-} == 1 ]] && { echo "Organization export denied." >&2; exit 1; }
     [[ -n $out ]] || { echo "fake bw: export needs --output" >&2; exit 1; }
     jq -c --arg org "$org" '{encrypted: true, encKeyValidation_DO_NOT_EDIT: "2.FAKE",
             folders: (if $org == "" then [.folders[] | {id, name: ("2.ENC-" + (.name | @base64 | .[0:8]))}] else [] end),
