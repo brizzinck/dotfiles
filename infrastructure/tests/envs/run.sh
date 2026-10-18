@@ -769,6 +769,13 @@ check "19.1: control: a real linked worktree (gitdir in <common>/worktrees/) sti
 EDIR=""; rm -rf "$JOB"
 scan "19.1"
 
+# #4: auto-install of legacy tool files must not run with the secrets in the environment
+reset; bind_proj
+(cd "$PROJ" && MISE_AUTO_INSTALL=1 MISE_NOT_FOUND_AUTO_INSTALL=1 "$ENVS" run -- sh -c 'echo "${MISE_AUTO_INSTALL:-unset}/${MISE_NOT_FOUND_AUTO_INSTALL:-unset}"' >"$CAP/ai.out" 2>"$CAP/ai.err"); rc=$?
+check "19.4: mise exec runs with auto-install and not-found auto-install off, whatever the shell had" bash -c "[ $rc = 0 ] && [ \"\$(cat '$CAP/ai.out')\" = 0/0 ]"
+(cd "$PROJ" && "$ENVS" run --no-mise -- sh -c 'echo "${MISE_AUTO_INSTALL:-unset}"' >"$CAP/ai2.out" 2>/dev/null)
+check "19.4: --no-mise leaves the environment alone" test "$(cat "$CAP/ai2.out")" = unset
+
 }
 
 sections_15_16() {

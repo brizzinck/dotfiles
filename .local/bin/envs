@@ -1329,6 +1329,9 @@ def cmd_run(a, cmd):
     child["ENVS_PROJECT"], child["ENVS_ENV"] = cfg.project, env
     if mised:
         child["MISE_ENV"] = env
+        # a legacy file (.tool-versions, .nvmrc ...) needs no `mise trust`, so mise would install what it names (npm:/cargo:/
+        # pipx: lifecycle and build scripts) with the secrets already in this environment: a missing tool stops the command
+        child["MISE_AUTO_INSTALL"] = child["MISE_NOT_FOUND_AUTO_INSTALL"] = "0"
         for k in MISE_LOG_ENV:                    # mise may print or write its environment at debug/trace level
             child.pop(k, None)
         child["MISE_LOG_LEVEL"] = "warn"
