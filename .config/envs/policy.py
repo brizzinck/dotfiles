@@ -83,7 +83,9 @@ def reject(cmd, resolved, c):
 
 
 def identity_refs(context, c):
-    """Pin legacy fallback provenance with metadata; never fetch values while approving."""
+    """Pin legacy fallback provenance with metadata; never fetch values while approving. A legacy name with no field
+    anywhere stays out of the pinned refs (shared declarations such as global.toml name fields an account may lack);
+    when it appears later the refs differ, so the approval no longer matches and a human approves again."""
     E, cfg, env, specs = c.E, context["cfg"], context["env"], context["specs"]
     refs = dict(specs["refs"])
     if specs["legacy"]:
@@ -111,11 +113,15 @@ def identity_refs(context, c):
             for name in specs["legacy"]:
                 if name not in available and (fields is None or name in fields):
                     available[name] = c.D.parse_bw_ref(c.D.format_bw_ref(folder, env, name))
-        if set(specs["legacy"]) - set(available):
-            E.fail("required legacy reference is unavailable", 4)
         refs.update(available)
     identities = {name: c.ref_metadata(name, ref) for name, ref in refs.items()}
     return refs, identities
+
+
+def say_unavailable(context, refs, c):
+    missing = [name for name in context["specs"]["names"] if name not in refs]
+    if missing:
+        c.E.say("unavailable now, never injected (a field added later needs approval again): " + ", ".join(missing))
 
 
 def digest(context, allowed, c):
@@ -165,6 +171,7 @@ def command(args, cmd, c):
     c.E.say("Authorize " + shlex.join(prefix))
     c.E.say("scope: " + context["cfg"].project + "/" + context["env"] + "; names: " + ", ".join(context["specs"]["names"]))
     c.E.say("binding: " + str(context["cfg"].root))
+    say_unavailable(context, refs, c)
     if add_rule:
         c.E.say("This also records the exact prefix in " + ("global.local.toml" if cfg.is_global else ".envs.toml") + " [agents] allow")
     if not c.E.confirm("Approve this exact argv prefix and effective mapping?"):
@@ -195,6 +202,7 @@ def allow_any(context, allowed, key, c):
     c.E.say("Authorize any command (shells, environment printers, wrappers, escalation and interpreter -c/stdin stay refused)")
     c.E.say("scope: " + context["cfg"].project + "/" + context["env"] + "; names: " + ", ".join(context["specs"]["names"]))
     c.E.say("binding: " + str(context["cfg"].root))
+    say_unavailable(context, refs, c)
     c.E.say("Recorded only in private local state; no project file changes")
     if not c.E.confirm("Approve any command with this effective mapping?"):
         c.E.fail("agent policy not approved", 4)
@@ -261,7 +269,11 @@ def run(args, cmd, c):
         refs, identities = identity_refs(context, c)
         if {name: ref.canonical for name, ref in refs.items()} != row.get("refs") or identities != row.get("identities"):
             c.E.fail("agent policy changed; human approval is required", 4)
-        selected = {name: refs[name] for name in context["wanted"]}
+        # Without --only the approved mapping is injected and unavailable names are skipped; naming one with --only fails.
+        missing = [name for name in context["wanted"] if name not in refs]
+        if missing and getattr(args, "only", None):
+            c.E.fail(f"{missing[0]}: required secret unavailable", 1)
+        selected = {name: refs[name] for name in context["wanted"] if name in refs}
         specs = dict(context["specs"], refs=selected, legacy=[])
         values = c.resolve_refs(context["cfg"], context["env"], specs, context["wanted"], {"identities": identities})
         runtime = c.module("runtime")
@@ -276,7 +288,7 @@ def run(args, cmd, c):
             c.E.fail("{envfile} requires --env-file", 2)
         audited = True
         c.E.namespace["_RUN_AUDITED"] = True
-        audit(context, cmd, context["wanted"], "allow", c)
+        audit(context, cmd, list(selected), "allow", c)
         if text is not None:
             with c.private_envfile(text) as path:
                 argv = [word.replace("{envfile}", str(path)) for word in argv]

@@ -123,6 +123,26 @@ class Native(unittest.TestCase):
             self.assertIn("the owner's vault is locked",result.stderr);self.assertIn('its own rbw does not count',result.stderr)
         self.assertEqual('',self.log())
 
+    def test_agent_any_skips_unavailable_legacy_name_until_it_appears(self):
+        # A shared declaration (global.toml GITLAB_*) may name a field this account lacks: approve the rest, pin its absence.
+        (self.project/'.envs.toml').write_text('project="my-project"\nenvironments=["dev"]\ndefault="dev"\n[secrets]\nMISSING_TOKEN=""\n')
+        self.ref_file('NEW_TOKEN=fixture-native-secret\n');self.bind()
+        self.assertEqual(0,self.run_envs('import','--secrets','NEW_TOKEN').returncode);self.bind()
+        allowed=self.run_envs('agent','allow','--any');self.assertEqual(0,allowed.returncode,allowed.stderr)
+        self.assertIn('unavailable now, never injected',allowed.stdout);self.assertIn('MISSING_TOKEN',allowed.stdout)
+        agent=dict(self.env,CLAUDECODE='1')
+        child=self.project/'verify.py';child.write_text('import os,sys\nsys.exit(0 if os.environ.get("NEW_TOKEN")=="fixture-native-secret" and "MISSING_TOKEN" not in os.environ and os.environ.get("ENVS_SECRETS")=="NEW_TOKEN" else 9)\n')
+        run=self.run_envs('run','--no-mise','--','/usr/bin/python3',str(child),env=agent)
+        self.assertEqual(0,run.returncode,run.stderr);self.assertNotIn('fixture-native-secret',run.stdout+run.stderr)
+        only=self.run_envs('run','--only','MISSING_TOKEN','--no-mise','--','/usr/bin/true',env=agent)
+        self.assertEqual(1,only.returncode,only.stderr);self.assertIn('MISSING_TOKEN: required secret unavailable',only.stderr)
+        vault=json.loads((self.fake/'vault.json').read_text())
+        item=next(i for i in vault['items'] if i['name']=='dev' and any(f['name']=='NEW_TOKEN' for f in i['fields']))
+        item['fields'].append({'name':'MISSING_TOKEN','value':'fixture-late-secret','type':1});(self.fake/'vault.json').write_text(json.dumps(vault))
+        late=self.run_envs('run','--no-mise','--','/usr/bin/true',env=agent)
+        self.assertEqual(4,late.returncode,late.stderr);self.assertIn('policy changed',late.stderr)
+        self.assertEqual('',self.log())
+
     def test_set_new_and_existing_inline_without_toml_or_parent_export(self):
         self.ref_file('APP_PORT=8080\n');self.bind()
         for value in ('fixture-first-native','fixture-next-native'):
