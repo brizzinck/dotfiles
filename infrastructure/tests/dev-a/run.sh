@@ -64,8 +64,8 @@ s1() {
   cp "$REPO/.githooks/pre-commit" "$REPO/.githooks/gitleaks-lib" "$r/.githooks/"; cp "$REPO/.gitleaks.toml" "$r/.gitleaks.toml"
   expect "hook is executable" test -x "$REPO/.githooks/pre-commit"
   expect "pre-push hook is executable" test -x "$REPO/.githooks/pre-push"
-  expect "the docs do not call --no-verify the only bypass (merge, rebase, cherry-pick, am and edited hooks skip pre-commit too)" bash -c "! grep -q 'The only bypass is' '$REPO/CLAUDE.md' '$REPO/.githooks/pre-commit'"
-  expect "the docs name GitHub push protection as the backstop" grep -q 'push protection' "$REPO/CLAUDE.md"
+  expect "the docs do not call --no-verify the only bypass (merge, rebase, cherry-pick, am and edited hooks skip pre-commit too)" bash -c "! grep -q 'The only bypass is' '$REPO/CLAUDE.md' '$REPO/docs/agents/shell-git.md' '$REPO/.githooks/pre-commit'"
+  expect "the docs name GitHub push protection as the backstop" grep -q 'push protection' "$REPO/docs/agents/shell-git.md"
   git -C "$r" add .githooks/pre-commit .gitleaks.toml
   expect "first commit of the config passes (working-tree config)" git -C "$r" commit -q -m cfg
   printf 'token = "%s"\n' "$tok1" >"$r/f1.txt"; git -C "$r" add f1.txt

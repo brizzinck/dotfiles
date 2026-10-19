@@ -15,4 +15,4 @@ stow	Setup	Re-link dotfiles (stow .)	-	tui	+pause bash -c 'cd ~/dotfiles && stow
 gh-auth	Setup	GitHub login (gh auth login)	-	tui	gh auth login	-	gh	-	i g;GitHub login
 hyprland-wiki	Learn	Hyprland wiki (browser)	-	run	xdg-open https://wiki.hypr.land/	-	xdg-open	-	l h;Hyprland wiki
 arch-wiki	Learn	Arch wiki (browser)	-	run	xdg-open https://wiki.archlinux.org/	-	xdg-open	-	l a;Arch wiki
-dotfiles-guide	Learn	How this system is built (CLAUDE.md)	-	tui	less ~/dotfiles/CLAUDE.md	-	less	The architecture notes of this dotfiles repo: layout, theme, bar, hub, greeter, users.	l c;Architecture notes
+dotfiles-guide	Learn	How this system is built (CLAUDE.md)	-	tui	less ~/dotfiles/CLAUDE.md ~/dotfiles/docs/agents/*.md	-	less	The architecture notes of this dotfiles repo: layout, theme, bar, hub, greeter, users.	l c;Architecture notes
