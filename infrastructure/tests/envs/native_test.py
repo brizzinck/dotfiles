@@ -71,6 +71,8 @@ class FixtureShareError(Exception):
 class FixtureClient:
  def __init__(self,**kwargs):pass
  def request(self,msg):
+  if msg['op']!='env-put' and os.environ.get('NATIVE_FAIL')=='locked':
+   raise FixtureShareError("the owner's vault is locked",code='locked')
   if msg['op']=='env-put' and os.environ.get('NATIVE_FAIL')=='diagnostic':
    raise FixtureShareError('fixture-poison-secret-raw-error',code=os.environ.get('NATIVE_CODE'),stage=os.environ.get('NATIVE_STAGE'))
   return share(msg)
@@ -109,6 +111,16 @@ class Native(unittest.TestCase):
         run=self.run_envs('run','--no-mise','--','/usr/bin/python3','-I','-B',str(child))
         self.assertEqual(0,run.returncode,run.stderr)
         self.assertNotIn('fixture-native-secret',result.stdout+result.stderr+run.stdout+run.stderr)
+        self.assertEqual('',self.log())
+
+    def test_locked_owner_vault_is_named_even_when_own_rbw_is_unlocked(self):
+        # The broker reads the owner's rbw; an unlocked rbw agent of the managed account itself must not hide that.
+        self.ref_file('NEW_TOKEN=fixture-native-secret\n');self.bind()
+        self.assertEqual(0,self.run_envs('import','--secrets','NEW_TOKEN').returncode);self.bind()
+        for args in (('run','--no-mise','--','/usr/bin/true'),('run','--only','NEW_TOKEN','--no-mise','--','/usr/bin/true')):
+            result=self.run_envs(*args,env=dict(self.env,NATIVE_FAIL='locked'))
+            self.assertEqual(3,result.returncode,result.stderr)
+            self.assertIn("the owner's vault is locked",result.stderr);self.assertIn('its own rbw does not count',result.stderr)
         self.assertEqual('',self.log())
 
     def test_set_new_and_existing_inline_without_toml_or_parent_export(self):

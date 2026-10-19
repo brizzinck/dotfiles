@@ -279,10 +279,18 @@ def safe_owner_rbw(*args):
         E.fail("reference backend unavailable", 1)
 
 
+def vault_locked():
+    # A managed account reads the OWNER's vault through the broker; an rbw agent of its own is never consulted.
+    if E.managed_user():
+        E.fail("the owner's vault is locked (this account reads it through the vault-share broker; "
+               "its own rbw does not count); command not started", 3)
+    E.fail("vault is locked; command not started", 3)
+
+
 def owner_unlocked():
     rc, _ = safe_owner_rbw("unlocked")
     if rc:
-        E.fail("vault is locked; command not started", 3)
+        vault_locked()
 
 
 def ref_metadata(name, ref):
@@ -293,7 +301,7 @@ def ref_metadata(name, ref):
             item = E.share({"v": 1, "op": "describe", "folder": ref.folder, "name": ref.item})["item"]
         except E.Fail as error:
             if error.code == 3:
-                E.fail("vault is locked; command not started", 3)
+                vault_locked()
             if "ambiguous" in error.msg or "items called" in error.msg:
                 E.fail(f"{name}: reference is ambiguous", 4)
             E.fail(f"{name}: referenced item or field unavailable", 4)
@@ -384,8 +392,9 @@ def resolve_refs(cfg, env, specs, wanted, record):
             try:
                 result = E.share({"v": 1, "op": "get", "id": ident, "fields": fields})
             except E.Fail as error:
-                E.fail("vault is locked; command not started" if error.code == 3 else f"{entries[0][0]}: referenced item or field unavailable",
-                       3 if error.code == 3 else 4)
+                if error.code == 3:
+                    vault_locked()
+                E.fail(f"{entries[0][0]}: referenced item or field unavailable", 4)
             got = result.get("values", {})
         else:
             rc, raw = safe_owner_rbw("get", "--raw", ident)
@@ -711,7 +720,7 @@ def resolve_export(context, sync=False, agent=False):
     if legacy:
         if agent:
             if not E.rbw_unlocked():
-                E.fail("vault is locked; command not started", 3)
+                vault_locked()
         else:
             E.ensure_rbw(sync)
         fields = E.env_fields(cfg.project, env, names=legacy) or {}

@@ -11,8 +11,10 @@
   envs refs set [--file .env] [-g] NAME 'bw://Env/my-project/dev#NAME'
       Metadata-only edit, no vault access; literal credentials require human import first.
   envs agent allow|deny [-g] [-e ENV] -- EXACT_COMMAND ARGS...
+  envs agent allow|deny [-g] [-e ENV] --any
   envs agent list [-g] [-e ENV]
-      Human argv-prefix approval/revocation. Protected environments/references are never available to agents.
+      Human argv-prefix approval/revocation. --any approves every command except the forbidden families, in private
+      local state only. Protected environments/references are never available to agents.
   envs import [-g] [FILE] [-e ENV] [--secrets A,B] [--plain C] [--drop D] [--overwrite]
       Whole-document literal classification, verified remote write/readback before source redaction.
       Keep .env plain bytes and replace selected secret spans with exact refs. --plain-to-mise is explicit;
@@ -3051,6 +3053,7 @@ def build_parser():
     p.add_argument("action", choices=["allow", "deny", "list"])
     p.add_argument("-e", "--env")
     p.add_argument("-g", "--global", dest="global_", action="store_true")
+    p.add_argument("--any", action="store_true")
     p = sub.add_parser("send")
     p.add_argument("file", nargs="?")
     p.add_argument("-e", "--env")

@@ -139,23 +139,29 @@ def command(args, cmd, c):
     approved = c.read_state(APPROVALS)
     if args.action == "list":
         for row in approved.get(key, {}).get("entries", []):
-            c.E.say(shlex.join(row["prefix"]))
+            c.E.say("--any (every command except the forbidden families)" if row.get("any") else shlex.join(row["prefix"]))
         return
-    if not cmd:
-        c.E.fail("agent allow/deny needs -- COMMAND", 2)
-    prefix = words(shlex.join(cmd), c)
+    wildcard = getattr(args, "any", False)
+    if wildcard == bool(cmd):
+        c.E.fail("agent allow/deny needs -- COMMAND or --any", 2)
+    prefix = None if wildcard else words(shlex.join(cmd), c)
     if args.action == "deny":
         with c.metadata_lock():
             approved = c.read_state(APPROVALS)
             row = approved.get(key, {})
-            row["entries"] = [entry for entry in row.get("entries", []) if entry.get("prefix") != prefix]
+            row["entries"] = [entry for entry in row.get("entries", [])
+                              if not (entry.get("any") if wildcard else entry.get("prefix") == prefix)]
             approved[key] = row; c.write_state(APPROVALS, approved)
-        c.E.say("agent prefix revoked")
+        c.E.say("agent approval revoked" if wildcard else "agent prefix revoked")
         return
     context = c.prepare_export(args, agent=True)
     allowed = rules(context, c)
+    if wildcard:
+        return allow_any(context, allowed, key, c)
     add_rule = not any(prefix[:len(rule)] == rule for rule in allowed)
     resolved = executable(prefix, context, args, c)
+    # Vault metadata before the confirmation and any policy edit: a locked vault leaves no half-written rule behind.
+    refs, identities = identity_refs(context, c)
     c.E.say("Authorize " + shlex.join(prefix))
     c.E.say("scope: " + context["cfg"].project + "/" + context["env"] + "; names: " + ", ".join(context["specs"]["names"]))
     c.E.say("binding: " + str(context["cfg"].root))
@@ -177,22 +183,40 @@ def command(args, cmd, c):
         c.module("imports").publish(path, snapshot, editor.text(), c, c.private_dir(c.state_path("recovery")))
         context = c.prepare_export(args, agent=True)
         allowed = rules(context, c)
+        refs, identities = identity_refs(context, c)
+    record(context, allowed, refs, identities, key, {"prefix": prefix, "executable": resolved}, c)
+    c.E.say("agent prefix approved; no values fetched")
+
+
+def allow_any(context, allowed, key, c):
+    """One private approval for every command of this project/environment. Nothing is written to a project file; the
+    forbidden families, protected targets, digest checks, masking and audit still apply on every run."""
     refs, identities = identity_refs(context, c)
+    c.E.say("Authorize any command (shells, environment printers, wrappers, escalation and interpreter -c/stdin stay refused)")
+    c.E.say("scope: " + context["cfg"].project + "/" + context["env"] + "; names: " + ", ".join(context["specs"]["names"]))
+    c.E.say("binding: " + str(context["cfg"].root))
+    c.E.say("Recorded only in private local state; no project file changes")
+    if not c.E.confirm("Approve any command with this effective mapping?"):
+        c.E.fail("agent policy not approved", 4)
+    record(context, allowed, refs, identities, key, {"any": True}, c)
+    c.E.say("agent approved for any command; no values fetched")
+
+
+def record(context, allowed, refs, identities, key, entry, c):
     for _, snap, _ in context["specs"]["docs"]:
         snap.verify()
-    entry = {"prefix": prefix, "executable": resolved}
     with c.metadata_lock():
         approved = c.read_state(APPROVALS)
         previous = approved.get(key, {})
         current_digest = digest(context, allowed, c)
         entries = previous.get("entries", []) if previous.get("digest") == current_digest else []
-        entries = [row for row in entries if row.get("prefix") != prefix] + [entry]
+        same = (lambda row: row.get("any")) if entry.get("any") else (lambda row: row.get("prefix") == entry["prefix"])
+        entries = [row for row in entries if not same(row)] + [entry]
         approved[key] = {"digest": current_digest, "entries": entries, "names": context["specs"]["names"],
                          "refs": {name: ref.canonical for name, ref in refs.items()}, "identities": identities,
                          "root": str(context["cfg"].root), "env": context["env"], "global": context["cfg"].is_global,
                          "source_identities": {relative: list(snap.ident) for relative, snap, _ in context["specs"]["docs"]}}
         c.write_state(APPROVALS, approved)
-    c.E.say("agent prefix approved; no values fetched")
 
 
 def audit(context, cmd, names, decision, c):
@@ -224,11 +248,15 @@ def run(args, cmd, c):
             c.E.fail("agent command is not approved; ask the owner to run envs agent allow -- COMMAND", 4)
         if row.get("digest") != digest(context, allowed, c):
             c.E.fail("agent policy changed; human approval is required", 4)
-        entry = next((entry for entry in row["entries"] if cmd[:len(entry["prefix"])] == entry["prefix"]), None)
-        if entry is None or not any(cmd[:len(rule)] == rule for rule in allowed):
-            c.E.fail("agent command is not approved; ask the owner to run envs agent allow -- COMMAND", 4)
+        entry = next((entry for entry in row["entries"] if entry.get("prefix") and cmd[:len(entry["prefix"])] == entry["prefix"]), None)
+        if entry is not None and not any(cmd[:len(rule)] == rule for rule in allowed):
+            entry = None
+        # An exact prefix keeps its pinned executable; --any pins none, and executable() still refuses the forbidden families.
+        entry = entry or next((entry for entry in row["entries"] if entry.get("any")), None)
+        if entry is None:
+            c.E.fail("agent command is not approved; ask the owner to run envs agent allow -- COMMAND (or --any)", 4)
         resolved = executable(cmd, context, args, c)
-        if resolved != entry["executable"]:
+        if not entry.get("any") and resolved != entry["executable"]:
             c.E.fail("approved executable changed; run envs agent allow again", 4)
         refs, identities = identity_refs(context, c)
         if {name: ref.canonical for name, ref in refs.items()} != row.get("refs") or identities != row.get("identities"):

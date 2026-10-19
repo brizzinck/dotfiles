@@ -131,6 +131,53 @@ class Policy(unittest.TestCase):
         self.assertNotIn("[secrets]", text)
         self.assertEqual(0, self.agent("run", "--no-mise", "--", *command).returncode)
 
+    def test_owner_lock_state_gates_allow_and_run_without_policy_edit(self):
+        self.ref_file()
+        self.assertEqual(0, self.run_envs("bind", "--yes").returncode)
+        command, approvals = ["/usr/bin/true"], self.root / "state/envs/agent-approvals.json"
+        (self.fake / "rbw-locked").touch()
+        result = self.run_envs("agent", "allow", "--", *command)
+        self.assertEqual(3, result.returncode, result.stderr)
+        self.assertIn("vault is locked; command not started", result.stderr)
+        self.assertFalse((self.project / ".envs.toml").exists())
+        self.assertFalse(approvals.exists() and json.loads(approvals.read_text()))
+        (self.fake / "rbw-locked").unlink()
+        self.allow(command)
+        self.assertEqual(0, self.agent("run", "--no-mise", "--", *command).returncode)
+        (self.fake / "rbw-locked").touch()
+        result = self.agent("run", "--no-mise", "--", *command)
+        self.assertEqual(3, result.returncode, result.stderr)
+        self.assertIn("vault is locked; command not started", result.stderr)
+
+    def test_any_approval_is_private_and_keeps_forbidden_families(self):
+        self.ref_file()
+        self.script = self.project / "task.py"
+        self.script.write_text("import os\nprint(os.environ['DATABASE_URL'])\n")
+        self.assertEqual(0, self.run_envs("bind", "--yes").returncode)
+        before = (self.project / ".env").read_bytes()
+        self.assertEqual(2, self.run_envs("agent", "allow", "--any", "--", "/usr/bin/true").returncode)
+        self.assertEqual(4, self.agent("agent", "allow", "--any").returncode)
+        self.assertEqual(4, self.agent("run", "--no-mise", "--", "/usr/bin/true").returncode)
+        result = self.run_envs("agent", "allow", "--any")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertFalse((self.project / ".envs.toml").exists())
+        self.assertEqual(before, (self.project / ".env").read_bytes())
+        self.assertIn("--any", self.run_envs("agent", "list").stdout)
+        for command in (["/usr/bin/true"], ["/usr/bin/python3", str(self.script)]):
+            result = self.agent("run", "--no-mise", "--", *command)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assert_safe(result)
+        self.assertEqual("[secret DATABASE_URL]\n", result.stdout)
+        for command in (["/usr/bin/bash", "-c", "true"], ["/usr/bin/env"], ["/usr/bin/python3", "-c", "pass"]):
+            mark = len(self.log()); result = self.agent("run", "--no-mise", "--", *command)
+            self.assertEqual(4, result.returncode, result.stderr)
+            self.assertIn("forbidden", result.stderr)
+            self.assertNotIn("rbw get", self.log()[mark:])
+        self.assertEqual(0, self.run_envs("agent", "deny", "--any").returncode)
+        result = self.agent("run", "--no-mise", "--", "/usr/bin/true")
+        self.assertEqual(4, result.returncode)
+        self.assertIn("not approved", result.stderr)
+
     def test_outermost_mise_output_is_masked(self):
         self.policy(); (self.project / ".mise.toml").write_text("[tools]\n")
         self.allow()
