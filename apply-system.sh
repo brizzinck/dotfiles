@@ -1528,6 +1528,7 @@ MCP_DIR="$INFRA/mcp/telegram"
 TG_OPT=/opt/telegram-mcp
 TG_LIB=/usr/local/lib/telegram-mcp
 MODELS_DIR=/srv/models
+TG_EXPORT_DIR=/srv/telegram-export
 CREDSTORE=/etc/credstore.encrypted
 
 mcp_retire_hub() {
@@ -1541,6 +1542,29 @@ mcp_retire_hub() {
     run pkill -f 'mcp-hub --port'
     changed "stopped a running mcp-hub"
   fi
+}
+
+# The export folder of export_history / download_media (CLAUDE.md "Telegram archive (tg-archive)"): owned by aimcp (the only
+# writer, through ReadWritePaths in telegram-mcp.service), the owner gets rwx and the same default ACL, so every file aimcp
+# creates there (UMask 0077 does not apply under a default ACL) is readable and removable by tg-archive. Nobody else.
+mcp_export_dir() {
+  local d="$TG_EXPORT_DIR" acl
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "[dry-run] would create $d (aimcp:aimcp 0700) with the ACL u:$OWNER:rwx + default u:$OWNER:rwx,u:aimcp:rwx"
+    return 0
+  fi
+  [ -d "$d" ] || { install -d -m 700 -o aimcp -g aimcp "$d"; changed "created $d"; }
+  acl="$(getfacl -cp "$d" 2>/dev/null || true)"
+  if grep -qx "user:$OWNER:rwx" <<<"$acl" && grep -qx "default:user:$OWNER:rwx" <<<"$acl" \
+    && grep -qx "default:user:aimcp:rwx" <<<"$acl" && [ "$(stat -c %U:%G "$d")" = aimcp:aimcp ]; then
+    log "unchanged: $d (aimcp, ACL for $OWNER)"
+    return 0
+  fi
+  chown aimcp:aimcp "$d"
+  chmod 700 "$d"
+  try setfacl -R -m "u:$OWNER:rwx,m::rwx" "$d"
+  try find "$d" -type d -exec setfacl -d -m "u::rwx,g::-,o::-,u:aimcp:rwx,u:$OWNER:rwx,m::rwx" {} +
+  changed "$d: aimcp writes, $OWNER reads and removes (ACL)"
 }
 
 mcp_whisper_model() {
@@ -1719,9 +1743,10 @@ section_mcp() {
 
   mcp_whisper_model
   mcp_telegram_source || return 0
+  mcp_export_dir
 
   # 3. runtime scripts and units
-  for f in run serve.py creds-install login.py call_metadata.py; do
+  for f in run serve.py creds-install login.py call_metadata.py chat_export.py; do
     install_file "$MCP_DIR/$f" "$TG_LIB/$f" 755
   done
   install_file "$REPO/.config/mcp/telegram_files.py" "$TG_LIB/telegram_files.py" 644

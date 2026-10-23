@@ -27,6 +27,14 @@ good = {"TELEGRAM_EXPOSED_TOOLS": "read-only", "TELEGRAM_ALLOWED_CHAT_IDS": "-10
 check("a complete read-only environment is accepted", serve.check_env(good) == [])
 check("write tools mode refused", serve.check_env({**good, "TELEGRAM_EXPOSED_TOOLS": "all"}))
 check("read-only plus a write tool refused", serve.check_env({**good, "TELEGRAM_EXPOSED_TOOLS": "read-only+send_message"}))
+check("read-only plus the local file tools accepted",
+      serve.check_env({**good, "TELEGRAM_EXPOSED_TOOLS": "read-only+download_media,export_history"}) == []
+      and serve.check_env({**good, "TELEGRAM_EXPOSED_TOOLS": "read-only+export_history"}) == [])
+check("a Telegram write tool hidden among the file tools is refused",
+      serve.check_env({**good, "TELEGRAM_EXPOSED_TOOLS": "read-only+download_media,send_file"}))
+check("an empty '+' list and an exclusion syntax are refused",
+      serve.check_env({**good, "TELEGRAM_EXPOSED_TOOLS": "read-only+"})
+      and serve.check_env({**good, "TELEGRAM_EXPOSED_TOOLS": "read-only-get_me"}))
 check("unset mode refused", serve.check_env({k: v for k, v in good.items() if k != "TELEGRAM_EXPOSED_TOOLS"}))
 check("an empty allowlist is refused (upstream would allow every chat)", serve.check_env({**good, "TELEGRAM_ALLOWED_CHAT_IDS": ""}))
 check("a blank-only allowlist is refused", serve.check_env({**good, "TELEGRAM_ALLOWED_CHAT_IDS": " , ,"}))
@@ -276,10 +284,15 @@ if os.environ.get("RUN_REAL_SERVER") == "1":
 
     import call_metadata
     call_metadata.install()
+    import chat_export
+    chat_export.install()
 
     runtime._apply_exposed_tools_mode()
     tools = {t.name: t for t in runtime.mcp._tool_manager.list_tools()}
-    check("read-only mode exposes only readOnlyHint tools", tools and all(getattr(t.annotations, "readOnlyHint", False) for t in tools.values()))
+    local = set(serve.LOCAL_FILE_TOOLS)
+    check("read-only mode exposes only readOnlyHint tools plus the local file tools",
+          tools and all(getattr(t.annotations, "readOnlyHint", False) for n, t in tools.items() if n not in local))
+    check("both local file tools are registered", local <= set(tools))
     check("no send/edit/delete/forward/mark/draft tool is registered",
           not [n for n in tools if n.startswith(("send_", "reply_", "edit_", "delete_", "forward_", "mark_", "save_draft", "clear_draft", "upload_", "ban_", "join_", "leave_"))])
     gateway = json.load(open(os.path.join(repo, ".config/mcp/gateway.json")))
@@ -438,7 +451,8 @@ else:
         import subprocess
 
         fake = subprocess.run([os.environ["TELEGRAM_MCP_PY"], "-c", gen], capture_output=True, text=True).stdout.strip()
-        env.update(TELEGRAM_API_ID="1", TELEGRAM_API_HASH="0" * 32, TELEGRAM_SESSION_STRING=fake, TELEGRAM_EXPOSED_TOOLS="read-only",
+        env.update(TELEGRAM_API_ID="1", TELEGRAM_API_HASH="0" * 32, TELEGRAM_SESSION_STRING=fake,
+                   TELEGRAM_EXPOSED_TOOLS="read-only+download_media,export_history",
                    TELEGRAM_ALLOWED_CHAT_IDS="1", TELEGRAM_MCP_TOKEN="x", MCP_TRANSPORT="http")
         p = subprocess.run([os.environ["TELEGRAM_MCP_PY"], __file__, repo], env=env, capture_output=True, text=True)
         for line in p.stdout.splitlines():

@@ -597,8 +597,8 @@ if [ -x "$HOME/.local/bin/mcp-gateway" ]; then
   if [ -n "$mcp_addr" ] && [ -n "$mcp_listen" ] && [ "$mcp_listen" = "$mcp_addr" ]; then ok mcp-bind "gateway listens on $mcp_addr only (loopback)"
   else bad mcp-bind "gateway is not listening on a loopback-only address (config: ${mcp_addr:-none})"; fi
   if jq -e '.mcpServers | to_entries | all(.value.options.toolFilter? == null or .value.options.toolFilter.mode == "allow")' "$HOME/.config/mcp/gateway.json" >/dev/null 2>&1 \
-    && ! jq -r '.mcpServers.telegram.options.toolFilter.list[]' "$HOME/.config/mcp/gateway.json" 2>/dev/null | grep -qE '^(send|reply|edit|delete|forward|mark|save|upload|download|press|join|leave|invite|ban|unban|pin|unpin|set_|create|update|promote|demote|add_|remove|block|unblock|mute|unmute|archive|unarchive|import|export|clear|toggle|vote|subscribe|enable|disable)'; then
-    ok mcp-toolfilter "telegram toolFilter is an allow list without send/edit/delete/mark tools"
+    && ! jq -r '.mcpServers.telegram.options.toolFilter.list[]' "$HOME/.config/mcp/gateway.json" 2>/dev/null | grep -vxE 'download_media|export_history' | grep -qE '^(send|reply|edit|delete|forward|mark|save|upload|download|press|join|leave|invite|ban|unban|pin|unpin|set_|create|update|promote|demote|add_|remove|block|unblock|mute|unmute|archive|unarchive|import|export|clear|toggle|vote|subscribe|enable|disable)'; then
+    ok mcp-toolfilter "telegram toolFilter is an allow list without send/edit/delete/mark tools (local file tools: download_media, export_history)"
   else bad mcp-toolfilter "gateway.json: telegram toolFilter missing, not an allow list, or exposes a write tool"; fi
   if [ ! -e "$DOTFILES/.config/mcphub" ] && ! grep -rqiE 'mcphub\.nvim|plugins\.ai\.mcphub' "$DOTFILES/.config/nvim/lua" 2>/dev/null \
     && ! grep -qE 'mcp-hub@|37373' "$DOTFILES/install.sh" 2>/dev/null \
@@ -619,7 +619,7 @@ if [ -x "$HOME/.local/bin/mcp-gateway" ]; then
   tg_dir="$DOTFILES/infrastructure/mcp/telegram"
   if [ -x /usr/local/lib/telegram-mcp/run ] && [ -r /etc/systemd/system/telegram-mcp.service ]; then
     tg_drift=""
-    for tg_f in run serve.py creds-install login.py call_metadata.py telegram_files.py; do cmp -s "$tg_dir/$tg_f" "/usr/local/lib/telegram-mcp/$tg_f" || tg_drift="$tg_drift $tg_f"; done
+    for tg_f in run serve.py creds-install login.py call_metadata.py chat_export.py telegram_files.py; do cmp -s "$tg_dir/$tg_f" "/usr/local/lib/telegram-mcp/$tg_f" || tg_drift="$tg_drift $tg_f"; done
     for tg_f in telegram-mcp.service telegram-whisper.service telegram-whisper-proxy.service telegram-whisper-proxy.socket; do cmp -s "$tg_dir/$tg_f" "/etc/systemd/system/$tg_f" || tg_drift="$tg_drift $tg_f"; done
     if [ -z "$tg_drift" ]; then ok mcp-tg-files "telegram-mcp scripts and units match the repo"; else bad mcp-tg-files "installed files differ from the repo:$tg_drift (sudo ./apply-system.sh --only mcp)"; fi
   else
@@ -1760,6 +1760,27 @@ if [ -x "$DOTFILES/infrastructure/tests/llm/run.sh" ]; then
 else
   bad llm-tests "infrastructure/tests/llm/run.sh missing"
 fi
+
+# ── Telegram archive (tg-archive): offline suite, the export folder of the MCP service, the agent skills ──
+# CLAUDE.md "Telegram archive (tg-archive)". The folder is INFO until sudo ./apply-system.sh --only mcp created it.
+if [ -x "$DOTFILES/infrastructure/tests/tg-archive/run.sh" ]; then
+  if ta_t="$("$DOTFILES/infrastructure/tests/tg-archive/run.sh" --quick 2>&1)"; then ok tg-archive-tests "tg-archive against a fake MCP gateway: $(printf '%s' "$ta_t" | tail -1)"; else bad tg-archive-tests "$(printf '%s' "$ta_t" | grep -m1 '^FAIL') (infrastructure/tests/tg-archive/run.sh)"; fi
+else
+  bad tg-archive-tests "infrastructure/tests/tg-archive/run.sh missing"
+fi
+if [ -d /srv/telegram-export ]; then
+  ta_acl="$(getfacl -cp /srv/telegram-export 2>/dev/null || true)"
+  if [ "$(stat -c %U /srv/telegram-export)" = aimcp ] && grep -qx "user:$USER:rwx" <<<"$ta_acl" \
+    && grep -qx "default:user:$USER:rwx" <<<"$ta_acl" && grep -qx "other::---" <<<"$ta_acl"; then
+    ok tg-export "/srv/telegram-export: written by aimcp, read and emptied by you (ACL), nobody else"
+  else bad tg-export "/srv/telegram-export owner or ACL drifted (sudo ./apply-system.sh --only mcp)"; fi
+else info tg-export "no export folder yet: download_media and export_history are off (sudo ./apply-system.sh --only mcp)"; fi
+ta_miss=""
+for ta_s in tg-archive tg-ask; do
+  [ "$(readlink -f "$HOME/.claude/skills/$ta_s/SKILL.md" 2>/dev/null)" = "$DOTFILES/.config/tg-archive/skills/$ta_s/SKILL.md" ] || ta_miss="$ta_miss $ta_s"
+done
+if [ -z "$ta_miss" ]; then ok tg-skills "Claude Code skills /tg-archive and /tg-ask link to the repo"
+else info tg-skills "skill link missing:$ta_miss (ln -s ../../../.config/tg-archive/skills/NAME ~/.claude/skills/NAME)"; fi
 
 # ── stow symlinks: every tracked config file must resolve to the repo copy ──────
 broken=""

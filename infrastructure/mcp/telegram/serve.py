@@ -5,7 +5,8 @@ It wraps chigwell/telegram-mcp (source checkout in /opt/telegram-mcp/src, deps i
 upstream HTTP mode does not have:
 
   1. fail closed before anything connects: the server must be in read-only mode and the chat allowlist must be non-empty
-     (upstream treats an EMPTY allowlist as "every chat is allowed");
+     (upstream treats an EMPTY allowlist as "every chat is allowed"); the only extra tools it may expose are LOCAL_FILE_TOOLS
+     (download_media, export_history: they read Telegram and write files below TELEGRAM_EXPORT_DIR, never to Telegram);
   2. a bearer token on every HTTP request (TELEGRAM_MCP_TOKEN, a credential shared only with the gateway user), so another
      local user or a browser page cannot talk to 127.0.0.1:8765 directly;
   3. a startup report on stderr: which tools are exposed, how many chats are allowed (never their ids or any secret);
@@ -39,12 +40,19 @@ from telegram_files import MAX_REQUEST_BYTES, MAX_CAPTION, validate_attachment
 SRC = os.environ.get("TELEGRAM_MCP_SRC", "/opt/telegram-mcp/src")
 
 
+# read Telegram, write files below the export folder (outside /home); nothing is sent, edited or deleted in Telegram
+LOCAL_FILE_TOOLS = ("download_media", "export_history")
+
+
 def check_env(env=os.environ) -> list[str]:
     """Problems that must stop the service from starting (empty list = fine)."""
     problems = []
     mode = env.get("TELEGRAM_EXPOSED_TOOLS", "").strip().lower()
-    if mode != "read-only":
-        problems.append(f"TELEGRAM_EXPOSED_TOOLS must be exactly 'read-only' (got {mode!r}): no write tool may be registered")
+    base, plus, extra = mode.partition("+")
+    extras = [t for t in extra.split(",") if t]
+    if base != "read-only" or (plus and not extras) or any(t not in LOCAL_FILE_TOOLS for t in extras):
+        problems.append(f"TELEGRAM_EXPOSED_TOOLS must be 'read-only', optionally '+' a subset of {','.join(LOCAL_FILE_TOOLS)} "
+                        f"(got {mode!r}): no Telegram write tool may be registered")
     allow = [t for t in env.get("TELEGRAM_ALLOWED_CHAT_IDS", "").replace(" ", "").split(",") if t]
     if not allow:
         problems.append("TELEGRAM_ALLOWED_CHAT_IDS is empty: upstream would allow every chat, refusing to start")
@@ -460,9 +468,12 @@ def main() -> None:
 
     import call_metadata
     call_metadata.install()
+    import chat_export
+    chat_export.install()
 
     install_auth(runtime.mcp, token, send_cfg, send_reason)
-    print("telegram-mcp: read-only, allowlist of "
+    extras = os.environ["TELEGRAM_EXPOSED_TOOLS"].partition("+")[2]
+    print("telegram-mcp: read-only" + (f" + local file tools ({extras})" if extras else "") + ", allowlist of "
           f"{len([t for t in os.environ['TELEGRAM_ALLOWED_CHAT_IDS'].split(',') if t.strip()])} chat(s), bearer auth on; "
           + (f"/x-send on for {len(send_cfg['ids'])} chat(s)" if send_cfg else f"/x-send off: {send_reason}"), file=sys.stderr)
     runner.main()

@@ -28,8 +28,19 @@ if [[ -s $cred/send_token && -s $cred/send_allowlist ]]; then
   export TELEGRAM_SEND_TOKEN TELEGRAM_SEND_ALLOWLIST
 fi
 export TELEGRAM_ALLOWED_CHAT_IDS=$allow
-# read-only: upstream registers only tools annotated readOnlyHint (no send, edit, delete, forward, mark-read, drafts, admin)
-export TELEGRAM_EXPOSED_TOOLS=read-only
+# read-only: upstream registers only tools annotated readOnlyHint (no send, edit, delete, forward, mark-read, drafts, admin).
+# Plus the two local file tools when the export folder (apply-system.sh --only mcp, ReadWritePaths in the unit) is writable:
+# download_media and export_history read Telegram and write files there only. Without the folder the server stays plain
+# read-only instead of failing (upstream exits when an allowed root cannot be created).
+export_dir=${TELEGRAM_EXPORT_DIR:-/srv/telegram-export}
+if [[ -d $export_dir && -w $export_dir ]]; then
+  export TELEGRAM_EXPOSED_TOOLS=read-only+download_media,export_history
+  export TELEGRAM_EXPORT_DIR=$export_dir TELEGRAM_ALLOWED_ROOTS=$export_dir TELEGRAM_SERVER_ROOTS_ONLY=1
+else
+  export TELEGRAM_EXPOSED_TOOLS=read-only
+  unset TELEGRAM_EXPORT_DIR TELEGRAM_ALLOWED_ROOTS TELEGRAM_SERVER_ROOTS_ONLY
+  echo "telegram-mcp: $export_dir is missing or not writable, download_media and export_history are off (sudo ./apply-system.sh --only mcp)" >&2
+fi
 # voice messages: a LOCAL whisper.cpp server (telegram-whisper-proxy.socket on 127.0.0.1:8766, model /srv/models/ggml-small.bin);
 # no GROQ_API_KEY exists, so the cloud engine cannot run; engine=telegram is Telegram's own and stays inside Telegram
 export TELEGRAM_TRANSCRIBE=on-demand TELEGRAM_TRANSCRIBE_ENGINE=openai

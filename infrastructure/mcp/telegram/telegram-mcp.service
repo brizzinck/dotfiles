@@ -34,6 +34,8 @@ Environment=HOME=/var/lib/telegram-mcp
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
+# the only writable place besides the state directory: export_history / download_media (owner reads it through an ACL)
+ReadWritePaths=-/srv/telegram-export
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes

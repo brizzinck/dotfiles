@@ -88,8 +88,8 @@ check "telegram-send appears while the broker socket exists" bash -c 'python3 -c
 check "telegram-send toolFilter: exactly send_file, send_message and status" jq -e '.mcpServers["telegram-send"].options.toolFilter | .mode == "allow" and (.list | sort) == ["send_file","send_message","status"]' "$MCP_CONFIG_DIR/gateway.json"
 check "telegram-send: stdio server from the pinned venv, no secret and no URL in its entry, timeout 150s" jq -e '.mcpServers["telegram-send"] | .timeout == "150s" and (.command | endswith("/venv/bin/python")) and (.args[0] | endswith("/telegram-send.py")) and (has("env") | not) and (has("headers") | not) and (has("url") | not)' "$MCP_CONFIG_DIR/gateway.json"
 check "the effective config with the broker installed passes mcp-proxy's own check" bash -c 'p="$2"; [ -x "$p" ] || exit 0; : >"$3"; MCP_TGCONFIRM_UNIT="$3" MCP_PROXY_BIN="$p" "$1" check' _ "$GW" "$PROXY" "$SCRATCH/tgc.service"
-check "no toolFilter lists a send/edit/delete tool for telegram" bash -c '! jq -r ".mcpServers.telegram.options.toolFilter.list[]" "$1" | grep -E "^(send|reply|edit|delete|forward|mark|save|upload|download|press|join|leave|invite|ban|pin|set_|create|update|promote|demote|add_|remove|block|mute|archive|import|export)"' _ "$MCP_CONFIG_DIR/gateway.json"
-check "telegram toolFilter exposes 17 read tools including call statistics" jq -e '.mcpServers.telegram.options.toolFilter.list | length == 17 and index("get_call_statistics") != null and (map(select(test("send|post|reply|forward|edit|delete"))) | length == 0)' "$MCP_CONFIG_DIR/gateway.json"
+check "no toolFilter lists a send/edit/delete tool for telegram (download_media and export_history only write local files)" bash -c '! jq -r ".mcpServers.telegram.options.toolFilter.list[]" "$1" | grep -vxE "download_media|export_history" | grep -E "^(send|reply|edit|delete|forward|mark|save|upload|download|press|join|leave|invite|ban|pin|set_|create|update|promote|demote|add_|remove|block|mute|archive|import|export)"' _ "$MCP_CONFIG_DIR/gateway.json"
+check "telegram toolFilter exposes 17 read tools including call statistics, plus download_media and export_history" jq -e '.mcpServers.telegram.options.toolFilter.list | length == 19 and index("get_call_statistics") != null and index("download_media") != null and index("export_history") != null and (map(select(test("send|post|reply|forward|edit|delete"))) | length == 0)' "$MCP_CONFIG_DIR/gateway.json"
 check "telegram toolFilter is an allow list" jq -e '.mcpServers.telegram.options.toolFilter.mode == "allow"' "$MCP_CONFIG_DIR/gateway.json"
 
 # `run` with a fake mcp-proxy: the token reaches it through the environment only
@@ -437,9 +437,13 @@ env | grep -E '^(TELEGRAM_|MCP_|GROQ)' | sort >"$FAKE_DIR/run-env.txt"
 echo "args: $*" >>"$FAKE_DIR/run-env.txt"
 EOF
 chmod +x "$SCRATCH/fake-envpy"
-TG_RUN=(env CREDENTIALS_DIRECTORY="$CRED" TELEGRAM_MCP_PYTHON="$SCRATCH/fake-envpy" TELEGRAM_MCP_SERVE=/x/serve.py STATE_DIRECTORY="$SCRATCH/state-dir" "$TGD/run")
+TG_RUN=(env CREDENTIALS_DIRECTORY="$CRED" TELEGRAM_MCP_PYTHON="$SCRATCH/fake-envpy" TELEGRAM_MCP_SERVE=/x/serve.py STATE_DIRECTORY="$SCRATCH/state-dir" TELEGRAM_EXPORT_DIR="$SCRATCH/no-export" "$TGD/run")
 "${TG_RUN[@]}" >/dev/null 2>&1
 check "run: read-only exposure" grep -qx 'TELEGRAM_EXPOSED_TOOLS=read-only' "$FAKE_DIR/run-env.txt"
+check "run: no export folder, no file roots" bash -c '! grep -q -e TELEGRAM_ALLOWED_ROOTS -e TELEGRAM_EXPORT_DIR "$1"' _ "$FAKE_DIR/run-env.txt"
+mkdir -p "$SCRATCH/export"
+env CREDENTIALS_DIRECTORY="$CRED" TELEGRAM_MCP_PYTHON="$SCRATCH/fake-envpy" TELEGRAM_MCP_SERVE=/x/serve.py STATE_DIRECTORY="$SCRATCH/state-dir" TELEGRAM_EXPORT_DIR="$SCRATCH/export" "$TGD/run" >/dev/null 2>&1
+check "run: a writable export folder adds exactly download_media and export_history, rooted there" bash -c 'grep -qx "TELEGRAM_EXPOSED_TOOLS=read-only+download_media,export_history" "$1" && grep -qx "TELEGRAM_ALLOWED_ROOTS=$2" "$1" && grep -qx "TELEGRAM_EXPORT_DIR=$2" "$1" && grep -qx "TELEGRAM_SERVER_ROOTS_ONLY=1" "$1"' _ "$FAKE_DIR/run-env.txt" "$SCRATCH/export"
 check "run: allowlist from the credential" grep -qx 'TELEGRAM_ALLOWED_CHAT_IDS=-1001111,42' "$FAKE_DIR/run-env.txt"
 check "run: session string, api id/hash and token reach the environment" bash -c 'grep -q "^TELEGRAM_SESSION_STRING=1AAAA" "$1" && grep -qx "TELEGRAM_API_ID=12345678" "$1" && grep -qx "TELEGRAM_MCP_TOKEN=bearer-token-value" "$1"' _ "$FAKE_DIR/run-env.txt"
 check "run: HTTP on loopback only, local whisper engine, no cloud key" bash -c 'grep -qx "MCP_HOST=127.0.0.1" "$1" && grep -qx "MCP_TRANSPORT=http" "$1" && grep -qx "TELEGRAM_TRANSCRIBE_ENGINE=openai" "$1" && grep -qx "TELEGRAM_TRANSCRIBE_OPENAI_URL=http://127.0.0.1:8766" "$1" && ! grep -q GROQ "$1"' _ "$FAKE_DIR/run-env.txt"
@@ -462,6 +466,7 @@ check "run: a missing credential refuses to start (78)" bash -c '"${@}" >/dev/nu
 count_py python3 -I -B "$HERE/test_call_metadata.py" "$REPO"
 TG_PY="${TELEGRAM_MCP_PY:-/opt/telegram-mcp/venv/bin/python}"
 if [[ -x $TG_PY && -d ${TELEGRAM_MCP_SRC:-/opt/telegram-mcp/src} ]]; then
+  count_py "$TG_PY" -I -B "$HERE/test_chat_export.py" "$REPO"
   count_py env TELEGRAM_MCP_PY="$TG_PY" TELEGRAM_MCP_SRC="${TELEGRAM_MCP_SRC:-/opt/telegram-mcp/src}" python3 -I -B "$HERE/test_telegram_serve.py" "$REPO"
 else
   count_py python3 -I -B "$HERE/test_telegram_serve.py" "$REPO"
