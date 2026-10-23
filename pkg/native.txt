@@ -187,6 +187,7 @@ ueberzugpp
 ufw
 usage
 usbutils
+uv
 vim
 visidata
 vulkan-icd-loader
