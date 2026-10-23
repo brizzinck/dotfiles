@@ -339,7 +339,7 @@ EOF
 chmod +x "$T/fakes/ssh"
 rm -f "$F/.raw/asr/-1.json"
 TG_ARCHIVE_REMOTE_WHISPER=user@up TG_ARCHIVE_REMOTE_MIN=10 "$TGA" process -1009999 >"$T/remote.out" 2>&1
-check "remote whisper: a long file goes over ssh to the remote GPU, the transcript says so" bash -c 'grep -q "\"model\": \"faster-whisper-fake (remote)\"" "$1/.raw/asr/-1.json" && grep -q "ssh -o BatchMode=yes -o ConnectTimeout=10 user@up tg-whisper/run auto" "$2" && grep -q "Віддалена розшифровка" "$1/transcripts/yt-abcdefghijk.md" && grep -q "remote" "$3"' _ "$F" "$FAKE_LOG" "$T/remote.out"
+check "remote whisper: a long file goes over ssh to the remote GPU, the transcript says so" bash -c 'grep -q "\"model\": \"faster-whisper-fake (remote)\"" "$1/.raw/asr/-1.json" && grep -q "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 user@up tg-whisper/run auto" "$2" && grep -q "Віддалена розшифровка" "$1/transcripts/yt-abcdefghijk.md" && grep -q "remote" "$3"' _ "$F" "$FAKE_LOG" "$T/remote.out"
 rm -f "$F/.raw/asr/-1.json"
 TG_ARCHIVE_REMOTE_WHISPER=user@down TG_ARCHIVE_REMOTE_MIN=10 "$TGA" process -1009999 >"$T/remote-down.out" 2>&1
 check "remote whisper down: its job goes back to the local whisper" bash -c 'grep -q "goes on alone" "$2" && grep -q "\"model\": \"ggml-large-v3-turbo.bin\"" "$1/.raw/asr/-1.json"' _ "$F" "$T/remote-down.out"

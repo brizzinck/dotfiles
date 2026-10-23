@@ -807,7 +807,8 @@ def remote_all():
 
 
 def ssh(target, command, **kw):
-    return subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', target, command], capture_output=True, **kw)
+    return subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=15',
+                           '-o', 'ServerAliveCountMax=4', target, command], capture_output=True, **kw)
 
 
 def transcribe(src, out, lang, model, tmpdir, vad=None, remote=None):
@@ -1468,7 +1469,7 @@ class HtmlMd(HTMLParser):
         elif tag == 'a':
             self.href.append(safe_url(urllib.parse.urljoin(self.base, a.get('href') or '')))
             self.out.append('[')
-        elif tag == 'img' and safe_url(urllib.parse.urljoin(self.base, a.get('src') or '')):
+        elif tag == 'img' and a.get('src') and safe_url(urllib.parse.urljoin(self.base, a['src'])):
             self.out.append(f"![{md(a.get('alt') or '')}]({urllib.parse.urljoin(self.base, a['src'])})")
 
     def handle_endtag(self, tag):
