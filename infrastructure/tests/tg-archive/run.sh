@@ -69,7 +69,7 @@ ff -f lavfi -i "sine=frequency=300:duration=3" "$T/src/$C1/media/2-voice.ogg"
 ff -f lavfi -i "testsrc=size=320x240:rate=1:duration=1" -frames:v 1 "$T/src/$C1/media/3-photo.jpg"
 ff -f lavfi -i "testsrc=size=320x240:rate=10:duration=8,format=yuv420p" -f lavfi -i "color=c=blue:size=320x240:rate=10:duration=8" \
   -f lavfi -i "sine=frequency=440:duration=16" -filter_complex "[0:v][1:v]concat=n=2:v=1[v]" -map "[v]" -map 2:a -c:v libx264 \
-  -c:a aac -shortest "$T/src/$C1/media/4-lecture.mp4"
+  -c:a aac -shortest -metadata creation_time=2026-01-07T08:58:00Z "$T/src/$C1/media/4-lecture.mp4"
 printf 'секретный план релиза\n' >"$T/src/$C1/media/5-notes.txt"
 cat >"$T/src/$C1/messages.jsonl" <<'EOF'
 {"id": 1, "date": "2026-01-05T10:00:00+00:00", "text": "Привет **мир**", "views": 10}
@@ -109,7 +109,7 @@ for md in root.rglob('*.md'):
         f = (md.parent / path).resolve() if path else md
         if not f.exists():
             bad.append(f'{md.relative_to(root)} -> {target}')
-        elif anchor and f'<a id="{anchor}">' not in f.read_text():
+        elif anchor and f.suffix == '.md' and f'<a id="{anchor}">' not in f.read_text():   # #t=83 on media: a time
             bad.append(f'{md.relative_to(root)} -> {target} (anchor)')
 print('\n'.join(bad))
 sys.exit(1 if bad else 0)
@@ -151,6 +151,19 @@ check "frames: candidates at the start and at the cut, a contact sheet" bash -c 
 M1="$A/messages/2026-01.md"
 check "render: month files, text kept as Markdown" bash -c 'grep -q "Привет \*\*мир\*\*" "$1" && grep -q "февраль" "$2"' _ "$M1" "$A/messages/2026-02.md"
 check "render: short voice transcript inline" grep -q "Это расшифровка номер один" "$M1"
+check "times: a voice message was recorded right before sending (sent - duration); every paragraph links its second and says the clock time" bash -c 'grep -q "Расшифровка (записано 2026-01-05 10:04–10:05):" "$1" && grep -q "> \*\*\[0:00\](../media/2-voice.ogg#t=0) · 10:04\*\* Это расшифровка номер один" "$1"' _ "$M1"
+check "times: a video's start comes from its creation_time; the transcript page says when and how it is known" bash -c 'grep -q "^Записано: 2026-01-07 08:58 (по метаданным файла, приблизительно)" "$1/transcripts/4.md" && grep -q "^\*\*\[0:00\](../media/4-lecture.mp4#t=0) · 08:58\*\*" "$1/transcripts/4.md"' _ "$A"
+check "times: a video in the month page and the index carries the recording time and stamped paragraphs too" bash -c 'grep -q "Расшифровка (записано 2026-01-07 08:58):" "$1/messages/2026-01.md" && grep -q "> \*\*\[0:00\](../media/4-lecture.mp4#t=0) · 08:58\*\*" "$1/messages/2026-01.md" && grep -q "(transcripts/4.md) · записано 2026-01-07 08:58" "$1/index.md"' _ "$A"
+check "times: a creation_time after sending is not a start, Apple's creationdate with a zone is" python3 -I -B -c '
+import importlib.machinery as m, importlib.util as u, sys
+l = m.SourceFileLoader("t", sys.argv[1]); s = u.spec_from_loader("t", l); t = u.module_from_spec(s); l.exec_module(t)
+rec = {"date": "2026-01-07T09:00:00+00:00", "media": {"kind": "video", "duration": 60}}
+assert t.recorded(rec, ["2026-01-07T09:30:00.000000Z"]) == (None, None)
+start, how = t.recorded(rec, ["2026-01-07T10:57:00+0200", "2026-01-07T08:59:30Z"])
+assert how == "meta" and start.isoformat() == "2026-01-07T10:57:00+02:00", start
+fwd = {"date": "2026-02-01T00:00:00+00:00", "forwarded": {"date": "2026-01-01T12:00:10+00:00"}, "media": {"kind": "voice", "duration": 10}}
+assert t.recorded(fwd, [])[0].isoformat() == "2026-01-01T12:00:00+00:00"
+' "$TGA"
 check "render: code blocks get their fences on own lines (language kept)" bash -c 'grep -qx "\`\`\`" "$1" && grep -qx "\`\`\`python" "$1" && grep -qx "print(1)" "$1"' _ "$A/messages/2026-02.md"
 check "render: media without a file is just labelled, not 'not downloaded'" bash -c 'grep -qx -- "- Вложение" "$1" && ! grep -q "Вложение.*не скачан" "$1"' _ "$A/messages/2026-02.md"
 check "render: photo shown inline with its OCR text" bash -c 'grep -q "!\[\](../media/3-photo.jpg)" "$1" && grep -q "Слайд архитектуры сервиса" "$1"' _ "$M1"
@@ -169,7 +182,7 @@ mkdir -p "$A/.raw/picks"
 printf '{"frames": [{"n": 2, "caption": "Синий слайд"}, {"n": 999}]}' >"$A/.raw/picks/4.json"
 echo "# Сводка (hand-written)" >"$A/summary.md"
 "$TGA" render "Курс" >/dev/null 2>&1
-check "picks: the chosen frame is copied and placed after the matching paragraph, an unknown number ignored" bash -c 'f=$(ls "$1/frames"); [ "$(echo "$f" | wc -l)" = 1 ] && grep -q "!\[0:08 — Синий слайд\](../frames/$f)" "$1/transcripts/4.md" && grep -q "Текст на кадре" "$1/transcripts/4.md"' _ "$A"
+check "picks: the chosen frame is copied and placed after the matching paragraph, an unknown number ignored" bash -c 'f=$(ls "$1/frames"); [ "$(echo "$f" | wc -l)" = 1 ] && grep -q "!\[0:08 — Синий слайд\](../frames/$f)" "$1/transcripts/4.md" && grep -q "^\*Кадр 0:08 · 08:58 — Синий слайд\*" "$1/transcripts/4.md" && grep -q "Текст на кадре" "$1/transcripts/4.md"' _ "$A"
 check "picks: nothing left to pick" bash -c '"$1" frames -1001234 | grep -q "no video waits"' _ "$TGA"
 check "render: summary.md kept and linked from the index" bash -c 'grep -q "hand-written" "$1/summary.md" && grep -q "(summary.md)" "$1/index.md"' _ "$A"
 check "render: links still resolve with frames" python3 -I -B "$T/links.py" "$TG_ARCHIVE_ROOT"
