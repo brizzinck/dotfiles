@@ -32,7 +32,7 @@ import re
 import shutil
 import subprocess
 import sys
-from urllib.parse import quote, unquote
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 HEADER = ["folder", "favorite", "type", "name", "notes", "fields", "reprompt",
           "login_uri", "login_username", "login_password", "login_totp"]
@@ -133,6 +133,26 @@ def decode_migration_uri(uri):
 
 # ───────────────────────────── otpauth URIs and CSV ─────────────────────────────
 
+def parse_otpauth_uri(uri):
+    """Parse a plain otpauth://totp/... or otpauth://hotp/... URI into the account dict used by collect()."""
+    parsed = urlparse(uri)
+    kind = parsed.netloc  # "totp" or "hotp"
+    label = unquote(parsed.path.lstrip("/"))
+    params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+    secret_str = params.get("secret", "")
+    if not secret_str:
+        raise ValueError("missing secret parameter")
+    secret_bytes = base64.b32decode(secret_str.upper() + "=" * (-len(secret_str) % 8), casefold=True)
+    alg_map = {"SHA1": 1, "SHA256": 2, "SHA512": 3, "MD5": 4}
+    algorithm = alg_map.get(params.get("algorithm", "SHA1").upper(), 1)
+    digits_val = int(params.get("digits", "6"))
+    digits_enum = 2 if digits_val == 8 else 1
+    type_enum = 1 if kind == "hotp" else 2
+    counter = int(params.get("counter", "0"))
+    return {"secret": secret_bytes, "name": label, "issuer": params.get("issuer", ""),
+            "algorithm": algorithm, "digits": digits_enum, "type": type_enum, "counter": counter}
+
+
 def split_name(acct):
     """(issuer, account) with Google's habit of storing 'Issuer:account' in name handled."""
     issuer, name = acct["issuer"], acct["name"]
@@ -223,14 +243,14 @@ def grab_region():
 def links_from_input(item):
     if item == "-":
         return [line.strip() for line in sys.stdin.read().splitlines() if line.strip()]
-    if item.startswith("otpauth-migration://"):
+    if item.startswith("otpauth-migration://") or item.startswith("otpauth://"):
         return [item]
     if os.path.isfile(item):
         found = scan_image(item)
         if not found:
             warn(f"no QR code found in {item}")
         return found
-    warn(f"ignored: {item!r} is neither an image file nor an otpauth-migration:// link")
+    warn(f"ignored: {item!r} is neither an image file nor an otpauth:// link")
     return []
 
 
@@ -243,7 +263,7 @@ def ask(prompt):
 
 def interactive_inputs():
     print("Google Authenticator -> Transfer accounts -> Export accounts shows the QR code(s).")
-    print("Give each QR code as: an image path, a pasted otpauth-migration:// link, or Enter to select a screen region.")
+    print("Give each QR code as: an image path, a pasted otpauth-migration:// or otpauth:// link, or Enter to select a screen region.")
     links, n = [], 0
     while True:
         n += 1
@@ -266,7 +286,14 @@ def collect(links):
     for link in links:
         if not link.startswith("otpauth-migration://"):
             if link.startswith("otpauth://"):
-                warn("this is already a normal otpauth:// link (not a Google export), skipped")
+                try:
+                    acct = parse_otpauth_uri(link)
+                    ident = (acct["secret"], acct["name"], acct["issuer"], acct["type"])
+                    if ident not in seen_acct:
+                        seen_acct.add(ident)
+                        accounts.append(acct)
+                except (ValueError, KeyError) as exc:
+                    warn(f"cannot parse otpauth:// link: {exc}")
             else:
                 warn("a QR code that is not a Google Authenticator export was skipped")
             continue
