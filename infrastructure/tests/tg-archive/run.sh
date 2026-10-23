@@ -343,6 +343,9 @@ check "remote whisper: a long file goes over ssh to the remote GPU, the transcri
 rm -f "$F/.raw/asr/-1.json"
 TG_ARCHIVE_REMOTE_WHISPER=user@down TG_ARCHIVE_REMOTE_MIN=10 "$TGA" process -1009999 >"$T/remote-down.out" 2>&1
 check "remote whisper down: its job goes back to the local whisper" bash -c 'grep -q "goes on alone" "$2" && grep -q "\"model\": \"ggml-large-v3-turbo.bin\"" "$1/.raw/asr/-1.json"' _ "$F" "$T/remote-down.out"
+rm -f "$F/.raw/asr/-1.json"
+TG_ARCHIVE_REMOTE_WHISPER=user@up TG_ARCHIVE_REMOTE_ALL=1 "$TGA" process -1009999 >"$T/remote-all.out" 2>&1
+check "remote all: a short file goes to the remote whisper too" bash -c 'grep -q "every file on the remote whisper" "$2" && grep -q "\"model\": \"faster-whisper-fake (remote)\"" "$1/.raw/asr/-1.json"' _ "$F" "$T/remote-all.out"
 check "remote: a bad target exits 2" bash -c '"$1" remote setup "a b;rm" >/dev/null 2>&1; [ $? -eq 2 ]' _ "$TGA"
 
 # --- a channel's discussion group: its copy of post 4 (the lecture, archived in C1) and the comments on it ---

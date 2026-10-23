@@ -24,9 +24,11 @@ candidates, OCR, PDF text and the Markdown.
   tg-archive frames CHAT [--all] [--json]           videos whose frames are not chosen yet: transcript, candidates (time +
                                                     OCR), contact sheets, and the picks file to write
   tg-archive render CHAT|--all                      (re)build the Markdown from .raw/ (summary.md is never touched)
-  tg-archive remote [status] | setup USER@HOST | off  a second whisper on another machine's NVIDIA GPU over ssh (key
+  tg-archive remote [status] | setup USER@HOST | all | long | off
+                                                    a second whisper on another machine's NVIDIA GPU over ssh (key
                                                     login, uv there; no root): files from 2 min go there, the local
-                                                    GPU keeps the short ones, both at once
+                                                    GPU keeps the short ones, both at once (long); all = every file
+                                                    there, the local GPU only when it is down
   tg-archive links CHAT [--refresh] [--no-process]  what the messages link to (run does it beside the export): public
                                                     Notion pages with their sub-pages, databases and images (notion/),
                                                     YouTube videos up to 720p, transcribed with frames like a video
@@ -788,9 +790,20 @@ def remote_whisper():
     if env is not None:
         return env or None
     try:
-        return REMOTE_FILE.read_text().strip() or None
+        return (REMOTE_FILE.read_text().split() or [None])[0]
     except OSError:
         return None
+
+
+def remote_all():
+    """tg-archive remote all: every file goes to the remote whisper; the local one only takes over when it is down."""
+    env = os.environ.get('TG_ARCHIVE_REMOTE_ALL')
+    if env is not None:
+        return env == '1'
+    try:
+        return REMOTE_FILE.read_text().split()[1:2] == ['all']
+    except OSError:
+        return False
 
 
 def ssh(target, command, **kw):
@@ -943,7 +956,8 @@ def cmd_process(d, lang='auto', retry=False):
             continue
         bad = (failed.get(str(mid)) or {}).get('step')
         kind = m['kind']
-        if kind in TRANSCRIBE and bad != 'asr' and asr_stale(raw / f'asr/{mid}.json'):
+        if kind in TRANSCRIBE and bad != 'asr' and asr_stale(raw / f'asr/{mid}.json') \
+                and not (rec.get('youtube') and youtube_asr(d, rec['youtube'], mid)):
             todo.append(('asr', mid, rec, src))
         if kind == 'video' and (m.get('duration') or 0) >= 15 and bad != 'frames' \
                 and not (raw / f'frames/{mid}/candidates.json').exists():
@@ -961,10 +975,12 @@ def cmd_process(d, lang='auto', retry=False):
     asr_jobs = [t for t in todo if t[0] == 'asr']
     model = whisper_model() if asr_jobs else None
     vad = vad_model() if asr_jobs else None
-    remote = remote_whisper() if any(dur(t) >= REMOTE_MIN for t in asr_jobs) else None
+    every = remote_all()
+    remote = remote_whisper() if any(every or dur(t) >= REMOTE_MIN for t in asr_jobs) else None
     say(f'  process: {len(todo)} steps' + (f' (whisper {model.name}{" + VAD" if vad else ""}, language {lang}; '
-                                             f'{CPU_WORKERS} CPU workers beside it' + (f'; files from {REMOTE_MIN} s also on '
-                                             f'the remote whisper {remote}' if remote else '') + ')' if model else ''))
+                                             f'{CPU_WORKERS} CPU workers beside it' + (f'; every file on the remote whisper {remote}'
+                                             if remote and every else f'; files from {REMOTE_MIN} s also on the remote whisper '
+                                             f'{remote}' if remote else '') + ')' if model else ''))
     lock = threading.Lock()
     count = [0]
 
@@ -987,6 +1003,8 @@ def cmd_process(d, lang='auto', retry=False):
     def step_work(step, mid, rec, src, where=None):
         with tempfile.TemporaryDirectory(prefix='tg-archive.') as tmp:
             err = None
+            if step == 'asr' and rec.get('youtube') and youtube_asr(d, rec['youtube'], mid):
+                return None             # another archive transcribed the same video meanwhile
             if step == 'asr':
                 err = transcribe(src, raw / f'asr/{mid}.json', lang, model, tmp, vad, where)
             elif step == 'frames':
@@ -1006,7 +1024,7 @@ def cmd_process(d, lang='auto', retry=False):
     def remote_worker():
         while True:
             with lock:
-                if not queue or dur(queue[-1]) < REMOTE_MIN:
+                if not queue or not every and dur(queue[-1]) < REMOTE_MIN:
                     return
                 job = queue.pop()
             try:
@@ -1022,7 +1040,7 @@ def cmd_process(d, lang='auto', retry=False):
         far = threading.Thread(target=remote_worker, daemon=True) if remote else None
         if far:
             far.start()
-        while True:
+        while not (far and every):      # remote all: the local whisper waits and only takes what the remote leaves
             with lock:
                 job = queue.pop(0) if queue else None
             if job is None:
@@ -1569,6 +1587,18 @@ def youtube_share(d, vid, mid):
         say(f'  youtube {vid}: taken from {dd.name}')
         return [dest]
     return []
+
+
+def youtube_asr(d, vid, mid):
+    """Copy another archive's transcript of the same YouTube video (the channel and its comments link the same streams)."""
+    for dd, _ in archives():
+        other = (linked_load(dd).get('youtube') or {}).get(vid) or {} if dd != d else {}
+        src = dd / f".raw/asr/{other.get('id')}.json"
+        if other.get('id') and src.exists() and not asr_stale(src):
+            (d / '.raw/asr').mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, d / f'.raw/asr/{mid}.json')
+            return True
+    return False
 
 
 def youtube_file(d, vid):
@@ -2755,14 +2785,22 @@ def main(argv):
         elif sub == 'off':
             REMOTE_FILE.unlink(missing_ok=True)
             say('remote whisper off: only the local GPU transcribes')
+        elif sub in ('all', 'long'):
+            target = remote_whisper()
+            if not target or os.environ.get('TG_ARCHIVE_REMOTE_WHISPER') is not None:
+                raise Fail('no remote whisper set up (tg-archive remote setup USER@HOST)', 2)
+            write_text(REMOTE_FILE, f'{target} {sub}\n')
+            say(f'remote whisper {target}: ' + ('every file goes there, the local GPU only takes over when it is down'
+                                                if sub == 'all' else f'files from {REMOTE_MIN} s go there, the local GPU keeps the rest'))
         elif sub == 'status':
             target = remote_whisper()
             ok = target and ssh(target, 'test -x tg-whisper/run && nvidia-smi --query-gpu=name,memory.used,memory.total '
                                         '--format=csv,noheader', text=True)
-            print(f'{target}: ' + (ok.stdout.strip() if ok and ok.returncode == 0 else 'not reachable or not set up')
+            print(f'{target} ({"every file" if remote_all() else f"files from {REMOTE_MIN:.0f} s"}): '
+                  + (ok.stdout.strip() if ok and ok.returncode == 0 else 'not reachable or not set up')
                   if target else 'no remote whisper (tg-archive remote setup USER@HOST)')
         else:
-            raise Fail('tg-archive remote [status] | setup USER@HOST | off', 2)
+            raise Fail('tg-archive remote [status] | setup USER@HOST | all | long | off', 2)
         return 0
     if a.cmd == 'links':
         d, info = find_archive(' '.join(a.args))
