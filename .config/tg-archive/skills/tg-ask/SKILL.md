@@ -11,7 +11,8 @@ Archives live in `~/Documents/tg-archive/<title>-<id>/` (`tg-archive list`). The
 
 1. Pick the archive: `tg-archive list` or `tg-archive path <chat>`. No archive yet: offer `/tg-archive`.
    The user wants fresh data: run `tg-archive run <chat id>` first (add `--no-media` unless they asked for files).
-2. Read `index.md` and `summary.md` (when present) for the structure.
+2. Read `index.md` and `summary.md` (when present) for the structure; in a folder of chats first its hand-written
+   catalog (linked at the top of the folder's `index.md`).
 3. Search with ripgrep across `messages/`, `transcripts/` and `documents/`: several word stems, synonyms and both languages
    (ru/uk/en), e.g. `rg -n -i 'деплой|deploy|выкат' <dir>/messages <dir>/comments <dir>/transcripts <dir>/documents <dir>/notion <dir>/web`
    (a folder of chats: search all its chats and its other material, e.g. the pages of a web app). Read the

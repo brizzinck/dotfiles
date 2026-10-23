@@ -1394,6 +1394,8 @@ def files_fetch(d, files=True):
                         if size > FILE_MAX:
                             raise ValueError(f'больше {FILE_MAX >> 20} МБ')
                         fh.write(chunk)
+                if ext == 'bin' and open(tmp, 'rb').read(5) == b'%PDF-':     # Drive's octet-stream for a PDF named without .pdf
+                    dest, ctype = dest.with_suffix('.pdf'), 'application/pdf'
                 os.replace(tmp, dest)
                 v.update(file=dest.name, name=clean(name, 200), mime=ctype, size=size)
                 n += 1
@@ -2510,7 +2512,9 @@ Each folder is one chat, exported by `tg-archive` (docs: ~/dotfiles/docs/agents/
 its own `index.md` (`<folder>/<chat>/`); a folder can also hold other material with an `index.md` (e.g. the pages of a
 community's web app) and a `README.md` on how it was collected. Answer questions from these files only.
 
-- Start with the chat's `index.md` (months, video/audio, documents) and `summary.md` when it exists. A forum group has
+- Start with the folder's hand-written catalog when there is one (listed at the top of the folder's `index.md`: courses,
+  streams, cases, materials and topics with links), then the chat's `index.md` (months, video/audio, documents) and
+  `summary.md` when it exists. A forum group has
   one folder per topic (`messages/<topic>/YYYY-MM.md`, listed under "Темы" in its `index.md`).
 - Search with `rg -n -i 'word' <chat>/messages <chat>/transcripts <chat>/documents <chat>/notion` (and the other
   material of the folder); try word stems and both languages
@@ -2547,7 +2551,9 @@ def write_root():
             continue
         archived = {d for d, _ in chats}
         other = [o for o in sorted(f.iterdir()) if o.is_dir() and o not in archived and (o / 'index.md').is_file()]
-        notes = ['', f'Как это выкачивать: [README.md](README.md)'] if (f / 'README.md').is_file() else []
+        notes = [f'- [{md(n.stem)}]({n.name})' for n in sorted(f.glob('*.md'))      # hand-written: README, a catalog
+                 if n.name not in ('index.md', 'CLAUDE.md') and not n.read_text(errors='replace').startswith(GENERATED)]
+        notes = ['', 'Вручную:', ''] + notes if notes else []
         rows += ['', f'## [{md(f.name)}]({f.name}/index.md)', ''] + [row(d, i, ROOT) for d, i in chats]
         write_text(f / 'index.md', '\n'.join([GENERATED, f'# {f.name}', '', '[← все чаты](../index.md)'] + notes + ['']
                                              + [row(d, i, f) for d, i in chats]
