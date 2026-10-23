@@ -13,7 +13,8 @@ Archives live in `~/Documents/tg-archive/<title>-<id>/` (`tg-archive list`). The
    The user wants fresh data: run `tg-archive run <chat id>` first (add `--no-media` unless they asked for files).
 2. Read `index.md` and `summary.md` (when present) for the structure.
 3. Search with ripgrep across `messages/`, `transcripts/` and `documents/`: several word stems, synonyms and both languages
-   (ru/uk/en), e.g. `rg -n -i 'деплой|deploy|выкат' <dir>/messages <dir>/transcripts <dir>/documents`. Read the
+   (ru/uk/en), e.g. `rg -n -i 'деплой|deploy|выкат' <dir>/messages <dir>/comments <dir>/transcripts <dir>/documents <dir>/notion <dir>/web`
+   (a folder of chats: search all its chats and its other material, e.g. the pages of a web app). Read the
    surrounding messages, the replies (`↩ ответ на #id`) and the full transcript of a matching video.
 4. Answer in the user's language. Cite every fact with date, author and the file path with anchor
    (`<dir>/messages/2025-03.md#m1234`); for spoken words the place in the recording AND when it was said: each

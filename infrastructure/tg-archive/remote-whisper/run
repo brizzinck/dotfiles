@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# tg-archive's remote whisper entry: one job at a time on this GPU (flock), the CUDA libraries from the venv's wheels.
+d=$(dirname "$(readlink -f "$0")")
+sp=$("$d/venv/bin/python" -c 'import site; print(site.getsitepackages()[0])')
+export LD_LIBRARY_PATH="$sp/nvidia/cublas/lib:$sp/nvidia/cudnn/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec flock "$d/.lock" "$d/venv/bin/python" "$d/transcribe.py" "$@"

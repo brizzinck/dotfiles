@@ -33,14 +33,27 @@ allowlist; nothing is ever sent). `tg-archive` drives it and does everything els
   says "без больших видео", or `status` shows hours of queue: `--max-file-mb 500` (or what the user names); a larger
   value later fetches the skipped files.
 - Language for whisper: `--lang ru` / `uk` / `en` when the user or the chat makes it obvious, else the default `auto`.
+- Several chats that belong together (a community: its channel and its groups): `--folder NAME` keeps them in
+  `~/Documents/tg-archive/NAME/<chat>/` with an `index.md` of the folder; an archive that is elsewhere is moved there.
+  A forum group (kind `forum`, topics / ветки) is split by itself: one folder per topic under `messages/`.
 - The choices are saved per chat (`.raw/settings.json`): an update ("обнови архив") is a plain `tg-archive run <chat id>`;
   a flag given again changes the choice, and files the new choice wants are queued without `--refresh`.
+
+- What the messages link to comes along by itself (`run`, or `tg-archive links <chat id>`): public Notion pages, YouTube
+  videos (720p, transcribed, frames like a video), Google Drive / Docs files and PDF links, web articles. Closed Notion
+  pages and private videos stay links with the reason; tell the user which (a closed page: ask for an export or a browser
+  session). Instagram is not downloaded.
+- A channel with comments: also archive its discussion group (same `--folder`). Run the group with `--no-media` first,
+  then with files: copies of the channel's posts are never downloaded twice, and `render --all` links every post to
+  its `comments/<post>.md`.
+- `tg-archive remote status`: a second whisper on the LAN GPU box takes the long files when it is set up
+  (`tg-archive remote setup USER@HOST`).
 
 ## 2. Export and processing
 
 Run one command per chat with the Bash tool in the background (`run_in_background: true`); it can take hours on videos:
 
-    tg-archive run <chat id> [--no-media] [--files KINDS] [--max-file-mb N] [--lang ru]
+    tg-archive run <chat id> [--no-media] [--files KINDS] [--max-file-mb N] [--lang ru] [--folder NAME]
 
 It is one pipeline: download, transcription (whisper on the GPU, with VAD), OCR and frame candidates (CPU, in parallel)
 run at the same time, and the Markdown is rendered every 5 minutes. Several chats: start one `run` per chat at once.

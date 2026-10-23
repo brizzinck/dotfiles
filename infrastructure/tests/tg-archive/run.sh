@@ -62,8 +62,8 @@ export XDG_DATA_HOME="$T/home/.local/share" TG_ARCHIVE_VAD_MODEL="$T/vad.bin"   
 : >"$TG_ARCHIVE_VAD_MODEL"
 
 # source data: what the real export_history would have written (two chats)
-C1=-1001234 C2=-1005678
-mkdir -p "$T/src/$C1/media" "$T/src/$C2/media"
+C1=-1001234 C2=-1005678 C3=-1009999
+mkdir -p "$T/src/$C1/media" "$T/src/$C2/media" "$T/src/$C3/media"
 ff() { ffmpeg -nostdin -v error -y "$@"; }
 ff -f lavfi -i "sine=frequency=300:duration=3" "$T/src/$C1/media/2-voice.ogg"
 ff -f lavfi -i "testsrc=size=320x240:rate=1:duration=1" -frames:v 1 "$T/src/$C1/media/3-photo.jpg"
@@ -90,11 +90,61 @@ cat >"$T/src/$C2/messages.jsonl" <<'EOF'
 EOF
 printf 'x' >"$T/src/$C2/media/9-should-not-come.jpg"
 ff -f lavfi -i "testsrc=size=160x120:rate=1:duration=1" -frames:v 1 "$T/src/$C2/media/3-pic.jpg"
+# a forum group: topics are TopicCreate service messages, a message in a topic carries its id, General ones none
+cat >"$T/src/$C3/messages.jsonl" <<'EOF'
+{"id": 10, "date": "2026-04-01T10:00:00+00:00", "action": {"type": "TopicCreate", "title": "Челенджі"}}
+{"id": 11, "date": "2026-04-01T10:01:00+00:00", "from": {"id": 5, "name": "Анна"}, "text": "перший челендж", "reply_to": 10, "topic": 10}
+{"id": 12, "date": "2026-04-01T10:02:00+00:00", "from": {"id": 6, "name": "Борис"}, "text": "загальне питання"}
+{"id": 13, "date": "2026-04-01T10:03:00+00:00", "action": {"type": "TopicCreate", "title": "AI"}}
+{"id": 14, "date": "2026-04-01T10:04:00+00:00", "from": {"id": 6, "name": "Борис"}, "text": "нейромережі", "reply_to": 13, "topic": 13}
+{"id": 15, "date": "2026-04-02T10:00:00+00:00", "from": {"id": 6, "name": "Борис"}, "text": "відповідь у челенджі", "reply_to": 11, "topic": 10}
+{"id": 16, "date": "2026-04-03T10:00:00+00:00", "action": {"type": "TopicEdit", "title": "Челенджі 2026"}, "reply_to": 10, "topic": 10}
+{"id": 17, "date": "2026-04-03T11:00:00+00:00", "from": {"id": 5, "name": "Анна"}, "media": {"kind": "photo", "file": "17-pic.jpg"}, "reply_to": 13, "topic": 13}
+{"id": 18, "date": "2026-04-06T09:00:00+00:00", "from": {"id": 6, "name": "Борис"}, "text": "Матеріали: [гайд](https://www.notion.so/Gaid-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?source=copy_link), закрита https://www.notion.so/cccccccccccccccccccccccccccccccc, стрім https://youtube.com/live/abcdefghijk?feature=share і https://youtu.be/zzzzzzzzzzz"}
+EOF
+# linked content: Notion's public API (fake_gateway.py /notion, page A in two chunks with a sub-page, an image, a YouTube
+# block and a database; page C closed) and yt-dlp (one stream, one private video)
+A=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa NB=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb NC=cccccccc-cccc-cccc-cccc-cccccccccccc
+blk() { printf '"%s": {"value": {"value": %s, "role": "reader"}}' "$1" "$2"; }
+cat >"$T/notion.json" <<EOF
+{"$A": [{"block": {$(blk $A '{"id": "'$A'", "type": "page", "properties": {"title": [["Гайд"]]}, "format": {"page_icon": "📘"}, "content": ["n-h", "n-t", "n-l", "n-img", "n-vid", "'$NB'", "n-db", "n-end"]}'),
+   $(blk n-h '{"id": "n-h", "type": "sub_header", "properties": {"title": [["Розділ"]]}}'),
+   $(blk n-t '{"id": "n-t", "type": "text", "properties": {"title": [["Це "], ["жирний", [["b"]]], [" і "], ["посилання", [["a", "https://example.org/x"]]]]}}'),
+   $(blk n-l '{"id": "n-l", "type": "bulleted_list", "properties": {"title": [["пункт"]]}, "content": ["n-l2"]}'),
+   $(blk n-l2 '{"id": "n-l2", "type": "bulleted_list", "properties": {"title": [["вкладений"]]}}'),
+   $(blk n-img '{"id": "n-img", "type": "image", "space_id": "s1", "properties": {"source": [["attachment:x:schema.png"]], "caption": [["Схема"]]}}'),
+   $(blk n-vid '{"id": "n-vid", "type": "video", "properties": {"source": [["https://www.youtube.com/watch?v=abcdefghijk"]]}}')}},
+  {"block": {$(blk $NB '{"id": "'$NB'", "type": "page", "parent_table": "block", "parent_id": "'$A'", "properties": {"title": [["Глава 2"]]}}'),
+   $(blk n-db '{"id": "n-db", "type": "collection_view", "collection_id": "coll-1", "view_ids": ["view-1"], "space_id": "s1"}'),
+   $(blk n-end '{"id": "n-end", "type": "text", "properties": {"title": [["Кінець гайду"]]}}')},
+   "collection": {"coll-1": {"value": {"value": {"id": "coll-1", "name": [["Задачі"]], "schema": {"title": {"name": "Назва", "type": "title"}, "st": {"name": "Статус", "type": "select"}}}}}},
+   "collection_view": {"view-1": {"value": {"value": {"id": "view-1", "format": {"table_properties": [{"property": "title", "visible": true}, {"property": "st", "visible": true}]}}}}}}],
+ "$NB": [{"block": {$(blk $NB '{"id": "'$NB'", "type": "page", "parent_table": "block", "parent_id": "'$A'", "properties": {"title": [["Глава 2"]]}, "content": ["b-t"]}'),
+   $(blk b-t '{"id": "b-t", "type": "text", "properties": {"title": [["Текст глави"]]}}')}}],
+ "$NC": [{"block": {"$NC": {"value": {"role": "none"}}}}],
+ "rows": {"coll-1": {$(blk row-1 '{"id": "row-1", "type": "page", "parent_table": "collection", "properties": {"title": [["Перша"]], "st": [["готово"]]}}')}}}
+EOF
+ff -f lavfi -i "testsrc=size=80x60:rate=1:duration=1" -frames:v 1 "$T/notion-image.png"
+cat >"$T/fakes/yt-dlp" <<'EOF'
+#!/usr/bin/env bash
+printf 'yt-dlp %s\n' "$*" >>"$FAKE_LOG"
+url=${!#}
+case $url in *zzzzzzzzzzz*) echo "ERROR: [youtube] zzzzzzzzzzz: Private video" >&2; exit 1 ;; esac
+for a in "$@"; do
+  [ "$a" = -J ] && { printf '{"title": "Стрім про AI", "channel": "Test TV", "webpage_url": "%s", "duration": 16, "live_status": "was_live", "upload_date": "20260405", "release_timestamp": 1775412000, "description": "Опис стріму", "chapters": [{"start_time": 0, "title": "Вступ"}, {"start_time": 8, "title": "Слайди"}]}\n' "$url"; exit 0; }
+done
+while [ $# -gt 0 ]; do case $1 in -o) out=$2; shift ;; esac; shift; done
+cp "$FAKE_YT_VIDEO" "${out%.*}.mp4"
+EOF
+chmod +x "$T/fakes/yt-dlp"
+export FAKE_NOTION="$T/notion.json" FAKE_NOTION_IMAGE="$T/notion-image.png" FAKE_YT_VIDEO="$T/src/$C1/media/4-lecture.mp4"
+ff -f lavfi -i "testsrc=size=160x120:rate=1:duration=1" -frames:v 1 "$T/src/$C3/media/17-pic.jpg"
 export FAKE_TIMEOUT_ONCE=1   # the first export_history call times out on the server: tg-archive must just call again
-export FAKE_CHATS='[{"chat_id": -1001234, "title": "Курс Rust", "type": "Channel"}, {"chat_id": -1005678, "title": "Команда‮", "type": "Group"}]'
+export FAKE_CHATS='[{"chat_id": -1001234, "title": "Курс Rust", "type": "Channel"}, {"chat_id": -1005678, "title": "Команда‮", "type": "Group"}, {"chat_id": -1009999, "title": "Спільнота", "type": "Forum"}, {"chat_id": -1004444, "title": "Обговорення", "type": "Group"}]'
 python3 -I -B "$HERE/fake_gateway.py" "$T/port" "$TOKEN" &
 GW_PID=$!
 for _ in $(seq 50); do [ -s "$T/port" ] && break; sleep 0.1; done
+export TG_ARCHIVE_NOTION="http://127.0.0.1:$(cat "$T/port")/notion"
 
 # links: every relative Markdown link of the archive points at an existing file, every #mID anchor exists in its target
 cat >"$T/links.py" <<'EOF'
@@ -256,6 +306,70 @@ check "--max-file-mb larger: the skipped file is asked for again (refetch, no hi
 check "restarting service: HTTP 503 makes tg-archive reconnect and go on" bash -c 'grep -q "gateway answered HTTP 503; waiting up to 10 s for the gateway (1/5)" "$1" && grep -q "ready:" "$1" && [ ! -e "$2" ]' _ "$T/run-raise.out" "$T/http503"
 "$TGA" run -1005678 --files photo --no-process >/dev/null 2>&1
 check "--files after --no-media: files turn on, the never-queued photo is asked for without --refresh" bash -c 'grep "export_history" "$1" | grep -q "\"chat_id\": -1005678, \"media\": true, \"max_seconds\": 40, \"kinds\": \"photo\", \"refetch\": \"3\"" && [ -s "$2/media/3-pic.jpg" ]' _ "$FAKE_LOG" "${B:-$T/none}"
+
+# --- folders of chats, forum topics ---
+check "folder: a path as --folder exits 2" bash -c '"$1" run x --folder ../x >/dev/null 2>&1; [ $? -eq 2 ]' _ "$TGA"
+"$TGA" run -1009999 --folder Community >/dev/null 2>&1
+F=$(ls -d "$TG_ARCHIVE_ROOT"/Community/*-1009999 2>/dev/null | head -1)
+F=${F:-$T/none}
+check "folder: --folder keeps the archive in ROOT/FOLDER/; list, path and both indexes see it" bash -c '[ -d "$1" ] && "$2" list | grep -q -- "-1009999" && [ "$("$2" path Спільнота)" = "$1" ] && grep -q "^## \[Community\](Community/index.md)" "$3/index.md" && grep -q "(Community/${1##*/}/index.md)" "$3/index.md" && grep -q "(${1##*/}/index.md)" "$3/Community/index.md" && [ ! -e "$3/Community/CLAUDE.md" ]' _ "$F" "$TGA" "$TG_ARCHIVE_ROOT"
+check "forum: one folder per topic (a renamed topic under its latest title), General for the rest" bash -c 'grep -q "перший челендж" "$1/messages/челенджі-2026/2026-04.md" && grep -q "нейромережі" "$1/messages/ai/2026-04.md" && grep -q "загальне питання" "$1/messages/general/2026-04.md" && [ ! -e "$1/messages/2026-04.md" ]' _ "$F"
+check "forum: a reply links inside its topic, a photo two folders up" bash -c 'grep -q "↩ ответ на \[#11\](2026-04.md#m11)" "$1/messages/челенджі-2026/2026-04.md" && grep -q "(../../media/17-pic.jpg)" "$1/messages/ai/2026-04.md"' _ "$F"
+check "forum: the index lists the topics, every topic has its month index" bash -c 'grep -q "^## Темы" "$1/index.md" && grep -q "\[Челенджі 2026\](messages/челенджі-2026/index.md) — 4," "$1/index.md" && grep -q "\[2026-04\](2026-04.md) — 3" "$1/messages/ai/index.md"' _ "$F"
+check "forum: every relative link and anchor resolves" python3 -I -B "$T/links.py" "$TG_ARCHIVE_ROOT"
+NP="$F/notion/гайд-aaaaaaaa.md"
+check "notion: a linked public page becomes notion/<title>-<id>.md (both chunks, heading, bold, link, nested list)" bash -c 'grep -q "^# 📘 Гайд" "$1" && grep -q "^### Розділ" "$1" && grep -q "Це \*\*жирний\*\* і \[посилання\](https://example.org/x)" "$1" && grep -q "^  - вкладений" "$1" && grep -q "Кінець гайду" "$1"' _ "$NP"
+check "notion: image downloaded beside it, sub-page fetched and linked both ways, database as a table" bash -c 'grep -q "!\[Схема\](media/n-img.png)" "$1" && [ -s "$2/notion/media/n-img.png" ] && grep -q "📄 \[Глава 2\](глава-2-bbbbbbbb.md)" "$1" && grep -q "Текст глави" "$2/notion/глава-2-bbbbbbbb.md" && grep -q "раздел: \[Гайд\](гайд-aaaaaaaa.md)" "$2/notion/глава-2-bbbbbbbb.md" && grep -q "^| Назва | Статус |" "$1" && grep -q "^| Перша | готово |" "$1"' _ "$NP" "$F"
+check "notion: the page names the message, the message links the page, a closed page is said to be closed" bash -c 'grep -q "в чате: \[2026-04 #18\](../messages/general/2026-04.md#m18)" "$1" && grep -q -- "- Notion: \[Гайд\](../../notion/гайд-aaaaaaaa.md)" "$2/messages/general/2026-04.md" && grep -q -- "- Notion: страница закрыта" "$2/messages/general/2026-04.md" && grep -q "закрыта, нет доступа" "$2/index.md"' _ "$NP" "$F"
+YT="$F/transcripts/yt-abcdefghijk.md"
+check "youtube: the linked stream is downloaded, transcribed, timed from its live start, ↗ to the same second" bash -c '[ -s "$2/media/yt-abcdefghijk.mp4" ] && grep -q "^# YouTube: Стрім про AI" "$1" && grep -q "^Записано: 2026-04-05 18:00 (начало стрима на YouTube)" "$1" && grep -q "^\*\*\[0:00\](../media/yt-abcdefghijk.mp4#t=0) · 18:00\*\* \[↗\](https://www.youtube.com/watch?v=abcdefghijk&t=0s) Это расшифровка номер один" "$1" && grep -q "Слайди" "$1"' _ "$YT" "$F"
+check "youtube: page and message link each other, the Notion block too, a private video is named" bash -c 'grep -q "Ссылки в чате: \[2026-04 #18\](../messages/general/2026-04.md#m18), \[Notion: Гайд\](../notion/гайд-aaaaaaaa.md)" "$1" && grep -q -- "- YouTube 0:16: \[Стрім про AI\](../../transcripts/yt-abcdefghijk.md)" "$2/messages/general/2026-04.md" && grep -q -- "- YouTube: недоступно (\[youtube\] zzzzzzzzzzz: Private video)" "$2/messages/general/2026-04.md" && grep -q "../transcripts/yt-abcdefghijk.md" "$3" && grep -q "^## YouTube по ссылкам из чата" "$2/index.md"' _ "$YT" "$F" "$NP"
+check "youtube: its frames wait for the agent like a video message" bash -c '"$1" frames -1009999 --json | grep -q "\"message\": -1,.*picks/-1.json"' _ "$TGA"
+check "linked: every relative link resolves with Notion and YouTube pages" python3 -I -B "$T/links.py" "$TG_ARCHIVE_ROOT"
+
+# --- a remote whisper over ssh (fake ssh: "up" answers like remote-whisper/run, "down" cannot connect) ---
+cat >"$T/fakes/ssh" <<'EOF'
+#!/usr/bin/env bash
+printf 'ssh %s\n' "$*" >>"$FAKE_LOG"
+case "$*" in
+  *down*) echo "ssh: connect to host down port 22: No route to host" >&2; exit 255 ;;
+  *tg-whisper/run*) cat >/dev/null; printf '{"result": {"language": "uk"}, "model": "org/faster-whisper-fake", "transcription": [{"offsets": {"from": 0, "to": 3000}, "text": " Віддалена розшифровка."}]}' ;;
+esac
+EOF
+chmod +x "$T/fakes/ssh"
+rm -f "$F/.raw/asr/-1.json"
+TG_ARCHIVE_REMOTE_WHISPER=user@up TG_ARCHIVE_REMOTE_MIN=10 "$TGA" process -1009999 >"$T/remote.out" 2>&1
+check "remote whisper: a long file goes over ssh to the remote GPU, the transcript says so" bash -c 'grep -q "\"model\": \"faster-whisper-fake (remote)\"" "$1/.raw/asr/-1.json" && grep -q "ssh -o BatchMode=yes -o ConnectTimeout=10 user@up tg-whisper/run auto" "$2" && grep -q "Віддалена розшифровка" "$1/transcripts/yt-abcdefghijk.md" && grep -q "remote" "$3"' _ "$F" "$FAKE_LOG" "$T/remote.out"
+rm -f "$F/.raw/asr/-1.json"
+TG_ARCHIVE_REMOTE_WHISPER=user@down TG_ARCHIVE_REMOTE_MIN=10 "$TGA" process -1009999 >"$T/remote-down.out" 2>&1
+check "remote whisper down: its job goes back to the local whisper" bash -c 'grep -q "goes on alone" "$2" && grep -q "\"model\": \"ggml-large-v3-turbo.bin\"" "$1/.raw/asr/-1.json"' _ "$F" "$T/remote-down.out"
+check "remote: a bad target exits 2" bash -c '"$1" remote setup "a b;rm" >/dev/null 2>&1; [ $? -eq 2 ]' _ "$TGA"
+
+# --- a channel's discussion group: its copy of post 4 (the lecture, archived in C1) and the comments on it ---
+C4=-1004444 PORT=$(cat "$T/port")
+mkdir -p "$T/src/$C4/media"
+cp "$T/src/$C1/media/4-lecture.mp4" "$T/src/$C4/media/1-lecture.mp4"
+cat >"$T/src/$C4/messages.jsonl" <<EOF
+{"id": 1, "date": "2026-01-07T09:00:05+00:00", "from": {"id": -1001234, "name": "Курс Rust"}, "forwarded": {"id": -1001234, "name": "Курс Rust", "post": 4, "date": "2026-01-07T09:00:00+00:00"}, "text": "Лекция 1", "media": {"kind": "video", "file": "1-lecture.mp4", "duration": 16, "size": 9000}}
+{"id": 2, "date": "2026-01-07T09:10:00+00:00", "from": {"id": 5, "name": "Анна"}, "text": "дякую за лекцію", "reply_to": 1}
+{"id": 3, "date": "2026-01-07T09:11:00+00:00", "from": {"id": 6, "name": "Борис"}, "text": "а слайди будуть?", "reply_to": 2, "topic": 1}
+{"id": 4, "date": "2026-01-08T10:00:00+00:00", "from": {"id": 6, "name": "Борис"}, "text": "просто розмова, стаття http://127.0.0.1:$PORT/web/article і гайд http://127.0.0.1:$PORT/files/guide.pdf"}
+EOF
+"$TGA" run $C4 --no-media >/dev/null 2>&1
+n_calls=$(grep -c export_history "$FAKE_LOG")
+"$TGA" run $C4 --files all --no-process >"$T/c4.out" 2>&1
+"$TGA" render --all >/dev/null 2>&1
+G4=$(ls -d "$TG_ARCHIVE_ROOT"/*-1004444 2>/dev/null | head -1)
+G4=${G4:-$T/none}
+check "comments: the channel copy's file is never asked for (it is in the channel's archive)" bash -c '! grep "export_history" "$1" | tail -n +$(($2 + 1)) | grep -q "\"refetch\": \"1\"" && [ -z "$(ls "$3/media" | grep "^1-")" ]' _ "$FAKE_LOG" "$n_calls" "$G4"
+check "comments: a thread page per post with the comments, linking the original post in the channel archive" bash -c 'grep -q "комментарии к посту Курс Rust #4" "$1/comments/4.md" && grep -q "Оригинал: \[Курс Rust #4\](../../${2##*/}/messages/2026-01.md#m4)" "$1/comments/4.md" && grep -q "дякую за лекцію" "$1/comments/4.md" && grep -q "а слайди будуть" "$1/comments/4.md" && ! grep -q "дякую за лекцію" "$1/messages/2026-01.md" && grep -q "просто розмова" "$1/messages/2026-01.md"' _ "$G4" "$A"
+check "comments: the channel post links its comments, the group index lists the threads" bash -c 'grep -q "💬 \[комментарии: 2\](../../${2##*/}/comments/4.md)" "$1/messages/2026-01.md" && grep -q "^## Комментарии к постам канала (1)" "$2/index.md" && grep -q "(comments/4.md) — комментариев 2" "$2/index.md"' _ "$A" "$G4"
+"$TGA" links $C4 >/dev/null 2>&1
+check "web: a linked article is kept as text (no page chrome) and linked from its message" bash -c 'f=$(grep -l "Стаття про гроші" "$1"/web/*.md) && grep -q "Перший абзац статті про \*\*гроші\*\*" "$f" && ! grep -q "меню меню" "$f" && grep -q -- "- Страница по ссылке: \[Стаття про гроші\](../web/" "$1/messages/2026-01.md"' _ "$G4"
+check "files: a linked PDF is downloaded into media/ and linked from its message" bash -c 'ls "$1"/media/gd-pdf*.pdf >/dev/null 2>&1 && grep -q -- "- Файл по ссылке: \[guide.pdf\](../media/gd-pdf" "$1/messages/2026-01.md"' _ "$G4"
+check "comments: every relative link resolves across the archives" python3 -I -B "$T/links.py" "$TG_ARCHIVE_ROOT"
+"$TGA" run -1005678 --folder Community --no-process >/dev/null 2>&1
+check "folder: --folder moves an archive that is elsewhere into the folder" bash -c '[ ! -e "$1" ] && [ -d "$2/Community/${1##*/}" ] && "$3" list | grep -q "Community/${1##*/}"' _ "${B:-$T/none}" "$TG_ARCHIVE_ROOT" "$TGA"
 
 echo "tg-archive tests: $PASS passed, $FAILS failed, $SKIPS skipped"
 [[ $FAILS -eq 0 ]]

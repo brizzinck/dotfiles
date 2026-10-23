@@ -4,7 +4,9 @@ $FAKE_EXPORT_SRC/<chat id>/ (messages.jsonl, media/) into $TG_ARCHIVE_EXPORT/<ch
 over two calls, with the service's file bookkeeping (kinds left out, max_file_mb, refetch, restart). A chat that is not in
 $FAKE_CHATS gets upstream's privacy-policy text (not an isError, like the real server). While $FAKE_LOG's folder holds the
 file http503, the next export_history call answers HTTP 503 (a restarting service) and removes it. Every tools/call is
-logged to $FAKE_LOG.
+logged to $FAKE_LOG. Under /notion it also plays Notion's public API: loadPageChunk (the pages of $FAKE_NOTION, a JSON
+file {page id: [recordMap chunk, ...]}, one chunk per call with a cursor), queryCollection (rows from the same file under
+"rows") and /notion/image/... (a PNG); /web/article is a blog page and /files/guide.pdf a PDF.
   fake_gateway.py PORTFILE TOKEN
 """
 import json
@@ -61,9 +63,12 @@ def export_history(args):
         excluded.discard(int(mid))
         skipped.pop(mid, None)
         done.discard(int(mid))
-    if args.get('media', True):
+    fresh = {json.loads(l)['id'] for l in new} | {int(x) for x in refetched}
+    if args.get('restart'):
+        fresh = set(files)
+    if args.get('media', True):         # like the service: files of the messages read now, and the refetched ones
         for mid, m in files.items():
-            if m['file'] in state['files'] or str(mid) in skipped or mid in excluded:
+            if mid not in fresh or m['file'] in state['files'] or str(mid) in skipped or mid in excluded:
                 continue
             if kinds != ['all'] and m['kind'] not in kinds:
                 excluded.add(mid)
@@ -87,11 +92,51 @@ def export_history(args):
                               'bytes': 123, 'done': done, 'next': None})
 
 
+def notion(path, body):
+    pages = json.loads(Path(os.environ['FAKE_NOTION']).read_text())
+    with open(os.environ['FAKE_LOG'], 'a') as fh:
+        fh.write(json.dumps({'notion': path.rsplit('/', 1)[1], 'body': body}) + '\n')
+    if path.endswith('/loadPageChunk'):
+        chunks = pages.get(body['pageId']) or [{}]
+        n = body.get('chunkNumber', 0)
+        more = n + 1 < len(chunks)
+        return {'recordMap': chunks[min(n, len(chunks) - 1)],
+                'cursor': {'stack': [[{'table': 'block', 'id': body['pageId'], 'index': n}]] if more else []}}
+    if path.endswith('/queryCollection'):
+        rows = pages.get('rows', {}).get(body['collection']['id'], {})
+        return {'result': {'reducerResults': {'collection_group_results': {'blockIds': list(rows)}}},
+                'recordMap': {'block': rows}}
+    return {}
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def reply(self, data, ctype):
+        self.send_response(200)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if self.path.startswith('/notion/image/'):
+            return self.reply(Path(os.environ['FAKE_NOTION_IMAGE']).read_bytes(), 'image/png')
+        if self.path == '/web/article':         # an article page of a blog: chrome around an <article>
+            return self.reply(('<html><head><title>Стаття про гроші</title></head><body><nav>меню меню</nav><article>'
+                               '<h1>Гроші</h1><p>Перший абзац статті про <b>гроші</b> і заощадження. ' + 'Текст. ' * 40 +
+                               '</p><ul><li>пункт один</li></ul></article><footer>підвал</footer></body></html>').encode(),
+                              'text/html; charset=utf-8')
+        if self.path == '/files/guide.pdf':
+            return self.reply(b'%PDF-1.4 fake guide', 'application/pdf')
+        self.send_response(404)
+        self.end_headers()
+
     def do_POST(self):
+        if self.path.startswith('/notion/api/v3/'):
+            body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            return self.reply(json.dumps(notion(self.path, body)).encode(), 'application/json')
         if self.headers.get('Authorization') != f'Bearer {TOKEN}':
             self.send_response(401)
             self.end_headers()
