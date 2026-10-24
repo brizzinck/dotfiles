@@ -41,6 +41,7 @@ dust
 earlyoom
 easyeffects
 efibootmgr
+electron42
 eza
 fail2ban
 fastfetch
