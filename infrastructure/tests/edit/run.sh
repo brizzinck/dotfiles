@@ -305,10 +305,10 @@ if command -v nvim >/dev/null 2>&1; then
   nv "" 'ok<C-ы>'; expect "nvim: Ctrl+S on the ru layout key finishes" bash -c "[ -e '$T/n/saved' ]"
   nv "" 'ok<C-і>'; expect "nvim: Ctrl+S on the ua layout key finishes" bash -c "[ -e '$T/n/saved' ]"
   nv "" 'ok<Esc>'; expect "nvim: Esc is an ordinary Esc (no marker, still open until killed)" bash -c "[ ! -e '$T/n/saved' ]"
-  # starts in insert mode with wrap on, text filetype, no swap/undo
+  # starts in insert mode with wrap on, markdown filetype, no swap/undo
   EDIT_ANYWHERE_DIR="$T/n" timeout 20 nvim --headless -u NONE -n -i NONE -c "luafile $LUA" "$T/n/text.txt" \
     -c "lua vim.defer_fn(function() local f=io.open('$T/n/state','w'); f:write(vim.fn.mode()..' '..vim.bo.filetype..' wrap='..tostring(vim.wo.wrap)..' undofile='..tostring(vim.bo.undofile)..' swap='..tostring(vim.bo.swapfile)); f:close(); vim.cmd('qall!') end, 600)" >/dev/null 2>&1
-  expect "nvim: starts in INSERT, filetype text, wrap on, no undofile or swap" test "$(cat "$T/n/state")" = "i text wrap=true undofile=false swap=false"
+  expect "nvim: starts in INSERT, filetype markdown, wrap on, no undofile or swap" test "$(cat "$T/n/state")" = "i markdown wrap=true undofile=false swap=false"
   # without the session directory the module does nothing at all
   out=$(env -u EDIT_ANYWHERE_DIR timeout 20 nvim --headless -u NONE -n -i NONE -c "luafile $LUA" -c 'lua vim.defer_fn(function() io.stdout:write(vim.fn.mode()) vim.cmd("qall!") end, 400)' 2>&1)
   expect "nvim: the helper is inert without EDIT_ANYWHERE_DIR" test "$out" = n

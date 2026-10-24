@@ -16,9 +16,11 @@ vim.api.nvim_create_autocmd("VimEnter", {
   once = true,
   callback = function()
     local buf = vim.api.nvim_get_current_buf()
+    -- markdown first: its ftplugin sets formatoptions, overridden below; render-markdown (ft markdown) shows **bold**, lists,
+    -- code in NORMAL mode, the raw text in INSERT
+    vim.bo[buf].filetype = "markdown"
     vim.bo[buf].swapfile = false
     vim.bo[buf].undofile = false
-    vim.bo[buf].filetype = "text"
     vim.bo[buf].fixendofline = false
     vim.bo[buf].endofline = false
     vim.bo[buf].formatoptions = ""
