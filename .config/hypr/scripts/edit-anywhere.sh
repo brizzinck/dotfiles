@@ -15,13 +15,12 @@
 # terminal has no such replacement, so nothing is preloaded when you start from a terminal. Only a fresh selection is preloaded:
 # the watcher saw it appear in the window you start from, at most EDIT_ANYWHERE_MAX_AGE seconds (120) ago, and it was not
 # preloaded before. A selection left over in any window (the primary selection lives until something else is selected) never is.
-# The clipboard you had before is put back after a few seconds, unless it held an image, a password-manager copy or
-# something that is not text.
+# The text stays on the clipboard after the paste (also when the paste is skipped), so you can paste it again elsewhere.
 # The nvim side is edit-anywhere.lua (loaded with -c, nothing in the owner's nvim config changes; K3 layout auto-switch is
 # part of that config and works). The keyboard layout you had when you pressed the key is restored when the editor closes.
 # Files: $XDG_RUNTIME_DIR/edit-anywhere/ (tmpfs, 0700), removed after every run.
 # Test hooks: EDIT_ANYWHERE_DIR, EDIT_ANYWHERE_TERMINAL (command prefix replacing `ghostty --class=float.edit --title=edit-anywhere -e`),
-# EDIT_ANYWHERE_NVIM, EDIT_ANYWHERE_NVIM_ARGS (extra nvim arguments, one per line), EDIT_ANYWHERE_RESTORE_DELAY (seconds, default 4),
+# EDIT_ANYWHERE_NVIM, EDIT_ANYWHERE_NVIM_ARGS (extra nvim arguments, one per line),
 # EDIT_ANYWHERE_MAX_AGE (seconds), EDIT_ANYWHERE_NO_NOTIFY=1, EDIT_ANYWHERE_SYNC=1 (finish in the foreground), EDIT_ANYWHERE_KEEP=1 (keep the files).
 set -u
 
@@ -39,7 +38,6 @@ NVIM=${EDIT_ANYWHERE_NVIM:-nvim}
 LUA="$HERE/edit-anywhere.lua"
 read -ra TERMINAL <<<"${EDIT_ANYWHERE_TERMINAL:-ghostty --class=$CLASS --title=edit-anywhere -e}"
 MAX_SELECTION=100000
-MAX_CLIP=1000000
 MAX_AGE=${EDIT_ANYWHERE_MAX_AGE:-120}
 SEEN="$RUN/seen" # written by the watcher: epoch, window address, fingerprint of the selection; consumed by `open`
 WIN_W=900
@@ -139,7 +137,7 @@ cmd_open() {
   [[ -n $prev ]] && class=$(paste_class "$prev")
   if ((!DRY)); then
     (umask 077; mkdir -p "$RUN") && chmod 700 "$RUN"
-    rm -f -- "$RUN/text.txt" "$RUN/saved" "$RUN/prev" "$RUN/prev-class" "$RUN/layout" "$RUN/clip.prev" "$RUN/clip.kind" "$RUN/nvim-args"
+    rm -f -- "$RUN/text.txt" "$RUN/saved" "$RUN/prev" "$RUN/prev-class" "$RUN/layout" "$RUN/nvim-args"
   fi
   sel=""
   if [[ $(paste_mods "$class") != "CTRL SHIFT" ]]; then
@@ -170,7 +168,7 @@ restore_layout() {
   return 0
 }
 
-cleanup() { [[ ${EDIT_ANYWHERE_KEEP:-0} == 1 ]] || rm -f -- "$RUN/text.txt" "$RUN/saved" "$RUN/prev" "$RUN/prev-class" "$RUN/layout" "$RUN/clip.prev" "$RUN/clip.kind" "$RUN/nvim-args"; }
+cleanup() { [[ ${EDIT_ANYWHERE_KEEP:-0} == 1 ]] || rm -f -- "$RUN/text.txt" "$RUN/saved" "$RUN/prev" "$RUN/prev-class" "$RUN/layout" "$RUN/nvim-args"; }
 
 cmd_session() { # runs inside the floating terminal; when it returns the window closes
   local rc extra=() args
@@ -193,34 +191,7 @@ cmd_session() { # runs inside the floating terminal; when it returns the window 
   return 0
 }
 
-save_clipboard() { # remember a plain text clipboard (not an image, not a password-manager copy, not huge) for the restore
-  local types
-  rm -f -- "$RUN/clip.prev" "$RUN/clip.kind"
-  types=$(wl-paste --list-types 2>/dev/null) || return 0
-  [[ -n $types ]] || return 0
-  grep -qi 'x-kde-passwordmanagerhint' <<<"$types" && return 0
-  grep -qi '^image/' <<<"$types" && return 0
-  grep -qiE '^(text/plain|string$|utf8_string$)' <<<"$types" || return 0
-  wl-paste --no-newline --type text/plain 2>/dev/null | head -c "$((MAX_CLIP + 1))" >"$RUN/clip.prev"
-  if (($(stat -c %s "$RUN/clip.prev") > MAX_CLIP)); then rm -f "$RUN/clip.prev"; return 0; fi
-  echo text >"$RUN/clip.kind"
-}
-
-restore_clipboard_later() { # restore_clipboard_later TEXT: after a few seconds, only if the clipboard still holds our text
-  local delay=${EDIT_ANYWHERE_RESTORE_DELAY:-4} ours
-  [[ -e $RUN/clip.kind && -s $RUN/clip.prev ]] || return 0
-  ours=$(mktemp "$RUN/ours.XXXXXX")
-  printf '%s' "$1" >"$ours"
-  (
-    sleep "$delay"
-    cur=$(wl-paste --no-newline --type text/plain 2>/dev/null; printf x)
-    want=$(cat "$ours"; printf x)
-    if [[ $cur == "$want" ]]; then wl-copy -t text/plain <"$RUN/clip.prev"; fi
-    rm -f -- "$RUN/clip.prev" "$RUN/clip.kind" "$ours"
-  ) >/dev/null 2>&1 </dev/null &
-}
-
-cmd_finish() { # copy, wait for the window to be gone, refocus, paste, restore the clipboard
+cmd_finish() { # copy (the text stays on the clipboard), wait for the window to be gone, refocus, paste
   local text prev i
   text=$(cat "$RUN/text.txt" 2>/dev/null; printf x)
   text=${text%x}
@@ -230,18 +201,17 @@ cmd_finish() { # copy, wait for the window to be gone, refocus, paste, restore t
     cleanup
     return 0
   fi
-  save_clipboard
   printf '%s' "$text" | wl-copy -t text/plain
   if [[ -z $prev ]]; then
     say "Edit anywhere" "no window to paste into: the text is on the clipboard"
-    rm -f -- "$RUN/clip.prev" "$RUN/clip.kind"; cleanup
+    cleanup
     return 0
   fi
   # the editor window closes when its terminal command returns: wait for it (at most 3 s)
   for ((i = 0; i < 60; i++)); do [[ -z $(editor_address) ]] && break; sleep 0.05; done
   if ! window_exists "$prev"; then
     say "Edit anywhere" "the target window is gone: the text is on the clipboard"
-    rm -f -- "$RUN/clip.prev" "$RUN/clip.kind"; cleanup
+    cleanup
     return 0
   fi
   hyprd focuswindow "address:$prev" >/dev/null 2>&1
@@ -249,13 +219,11 @@ cmd_finish() { # copy, wait for the window to be gone, refocus, paste, restore t
   sleep 0.2 # the physical Ctrl of Ctrl+S is released by now; the paste shortcut is sent with explicit modifiers
   if ! tg_ok "$prev" edit-anywhere; then
     say "Edit anywhere" "focus changed: the text is on the clipboard"
-    rm -f -- "$RUN/clip.prev" "$RUN/clip.kind"; cleanup
+    cleanup
     return 0
   fi
   paste_send "$prev"
-  restore_clipboard_later "$text"
-  # the session files go now; clip.prev (and the marker of our text) stay for the restore
-  rm -f -- "$RUN/text.txt" "$RUN/saved" "$RUN/prev" "$RUN/prev-class" "$RUN/layout" "$RUN/nvim-args"
+  cleanup
 }
 
 case $CMD in

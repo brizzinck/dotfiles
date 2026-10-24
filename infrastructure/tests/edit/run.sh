@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2016
 # Offline tests of edit-anywhere (SUPER+CTRL+E): geometry at the pointer (clamping, scale, second monitor), the starting text
-# from the primary selection, finish / cancel / empty / target gone, paste shortcut per class, clipboard restore rules, layout
-# restore, and the nvim side (edit-anywhere.lua) driven headless with `nvim -u NONE`. Fake hyprctl / hyprd / wl-paste / wl-copy /
+# from the primary selection, finish / cancel / empty / target gone, paste shortcut per class, the text kept on the clipboard,
+# layout restore, and the nvim side (edit-anywhere.lua) driven headless with `nvim -u NONE`. Fake hyprctl / hyprd / wl-paste / wl-copy /
 # notify-send: the live session, its clipboard and its windows are never touched.
 #   infrastructure/tests/edit/run.sh
 set -u
@@ -93,7 +93,7 @@ X2
 chmod +x "$T/bin"/*
 export FAKE="$F" XDG_RUNTIME_DIR="$T/run" HOME="$T/home" PATH="$T/bin:$PATH" HYPRLAND_INSTANCE_SIGNATURE=fake
 export EDIT_ANYWHERE_DIR="$T/run/edit-anywhere" EDIT_ANYWHERE_NO_NOTIFY=1 EDIT_ANYWHERE_TERMINAL="$T/bin/term" EDIT_ANYWHERE_NVIM="$T/bin/fakenvim"
-export EDIT_ANYWHERE_SYNC=1 EDIT_ANYWHERE_RESTORE_DELAY=0.4
+export EDIT_ANYWHERE_SYNC=1
 unset HUB_TARGET TG_SKIP
 reset() { rm -f "$F"/log "$F"/term-done "$F"/prev-gone "$F"/editor-open "$F"/clip "$F"/clip.types "$F"/primary "$F"/primary.types "$F"/active "$F"/layout "$F"/prev-class; rm -rf "$EDIT_ANYWHERE_DIR"; unset NVIM_ACTION NVIM_LAYOUT_AFTER; }
 set_primary() { printf '%s' "$1" >"$F/primary"; printf 'text/plain\n' >"$F/primary.types"; }
@@ -108,7 +108,6 @@ set_clip() { printf '%s' "$1" >"$F/clip"; printf '%s\n' "${2:-text/plain}" >"$F/
 run_flow() { # run_flow: open the editor and wait until the fake terminal (and the synchronous finish) is done
   HUB_TARGET=address:0x1 "$EA" open >/dev/null 2>&1
   for _ in $(seq 1 100); do [[ -e $F/term-done ]] && break; sleep 0.05; done
-  sleep 0.9 # restore delay
 }
 
 # ── geometry ──
@@ -184,7 +183,7 @@ expect "finish: the text goes to the clipboard with wl-copy" grep -q '^wl-copy -
 expect "finish: the previous window gets the focus" grep -q '^hyprd focuswindow address:0x1' "$F/log"
 expect "finish: Ctrl+V on the physical V key into that window" grep -q '^hyprd sendshortcut CTRL,code:55,address:0x1' "$F/log"
 expect "finish: the focus is restored before the paste" bash -c "[ \$(grep -n 'focuswindow' '$F/log' | head -1 | cut -d: -f1) -lt \$(grep -n 'sendshortcut' '$F/log' | head -1 | cut -d: -f1) ]"
-expect "finish: the clipboard you had comes back" test "$(cat "$F/clip")" = "my clipboard"
+expect "finish: the text stays on the clipboard after the paste" test "$(cat "$F/clip")" = "new text"
 expect "finish: nothing is left in the session directory" bash -c "[ -z \"\$(ls -A '$EDIT_ANYWHERE_DIR')\" ]"
 # the text must have been on the clipboard at paste time
 reset; set_clip "my clipboard"; export NVIM_ACTION='finish:typed text'
@@ -266,21 +265,6 @@ case "$1" in
   sendshortcut) echo ok ;;
 esac
 X2
-
-# ── clipboard restore rules ──
-for kind in 'image/png' 'text/plain
-x-kde-passwordManagerHint' 'application/octet-stream'; do
-  reset; set_clip "PRIVATE" "$kind"; export NVIM_ACTION='finish:new'
-  printf '%s' "$laptop" >"$F/monitors.json"; printf '{"x":960,"y":2040}' >"$F/cursor.json"
-  run_flow
-  expect "clipboard of kind [$(printf '%s' "$kind" | tr '\n' ' ')] is not restored" test "$(cat "$F/clip")" = new
-done
-reset; set_clip "my clipboard"; export NVIM_ACTION='finish:new'
-printf '%s' "$laptop" >"$F/monitors.json"; printf '{"x":960,"y":2040}' >"$F/cursor.json"
-EDIT_ANYWHERE_RESTORE_DELAY=0.6 HUB_TARGET=address:0x1 "$EA" open >/dev/null 2>&1
-for _ in $(seq 1 100); do [[ -e $F/term-done ]] && break; sleep 0.05; done
-sleep 0.2; set_clip "copied meanwhile"; sleep 1.2
-expect "something you copied meanwhile is not overwritten by the restore" test "$(cat "$F/clip")" = "copied meanwhile"
 
 # ── layout restore ──
 reset; set_clip "x"; export NVIM_ACTION='finish:x' NVIM_LAYOUT_AFTER=0; echo 2 >"$F/layout"
