@@ -942,6 +942,17 @@ def dur(job):
     return float(((job[2].get('media') or {}).get('duration')) or 0)
 
 
+def step_errors(entry):
+    """{step: error} of one file in process-failed.json; older records hold a single step."""
+    if not entry:
+        return {}
+    return entry.get('errors') or {entry['step']: entry['error']}
+
+
+def failed_steps(entry):
+    return set(step_errors(entry))
+
+
 def cmd_process(d, lang='auto', retry=False):
     """Transcripts, frame candidates, OCR and document text for every file that has none yet; returns the number of
     steps. whisper runs one file at a time (the GPU) in this thread while CPU_WORKERS threads do OCR, frames and text."""
@@ -955,12 +966,12 @@ def cmd_process(d, lang='auto', retry=False):
         src = media_path(d, rec)
         if not src:
             continue
-        bad = (failed.get(str(mid)) or {}).get('step')
+        bad = failed_steps(failed.get(str(mid)))
         kind = m['kind']
-        if kind in TRANSCRIBE and bad != 'asr' and asr_stale(raw / f'asr/{mid}.json') \
+        if kind in TRANSCRIBE and 'asr' not in bad and asr_stale(raw / f'asr/{mid}.json') \
                 and not (rec.get('youtube') and youtube_asr(d, rec['youtube'], mid)):
             todo.append(('asr', mid, rec, src))
-        if kind == 'video' and (m.get('duration') or 0) >= 15 and bad != 'frames' \
+        if kind == 'video' and (m.get('duration') or 0) >= 15 and 'frames' not in bad \
                 and not (raw / f'frames/{mid}/candidates.json').exists():
             todo.append(('frames', mid, rec, src))
         image = kind == 'photo' or (kind == 'document' and src.suffix.lower() in IMAGE_EXT)
@@ -995,8 +1006,9 @@ def cmd_process(d, lang='auto', retry=False):
             err = f'{type(e).__name__}: {str(e)[:200]}'
         with lock:
             count[0] += 1
-            if err and step != 'text':
-                failed[str(mid)] = {'step': step, 'error': err}
+            if err and step != 'text':     # every failed step of a file is kept, or asr and frames would retry in turn forever
+                errors = dict(step_errors(failed.get(str(mid))), **{step: err})
+                failed[str(mid)] = {'step': step, 'error': err, 'errors': errors}
                 write_json(raw / 'process-failed.json', failed)
             say(f'  process {count[0]}/{len(todo)}: {step} #{mid} {hms(time.monotonic() - t0)}' + (' remote' if where else '')
                 + (f' ({err})' if err else ''))
@@ -2252,8 +2264,9 @@ def render(d):
                 elif mid in asr:
                     out.append(line + ' (речь не распознана)')
                 else:
-                    err = (read_json(raw / 'process-failed.json', {}) or {}).get(str(mid))
-                    out.append(line + (f" (без расшифровки: {err['error']})" if err else ' (ещё не расшифровано)'))
+                    errs = step_errors((read_json(raw / 'process-failed.json', {}) or {}).get(str(mid)))
+                    err = errs.get('asr') or next(iter(errs.values()), None)
+                    out.append(line + (f" (без расшифровки: {err})" if err else ' (ещё не расшифровано)'))
                     av_rows.append((rec['date'], mid, kind, m.get('duration'), ''))
             else:
                 line = f'- {label}: [{md(name)}]({rel})' + (f" · {human(m['size'])}" if m.get('size') else '')

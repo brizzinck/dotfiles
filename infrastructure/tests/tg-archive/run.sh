@@ -283,6 +283,14 @@ rm -f "$A/.raw/asr/2.json"
 "$TGA" process -1001234 >"$T/proc-bad.out" 2>&1
 check "process: non-UTF-8 ffmpeg output does not crash; the file is recorded and render still runs" bash -c '[ $? -eq 0 ] && grep -q "\"2\"" "$1/.raw/process-failed.json" && [ -s "$1/index.md" ]' _ "$A"
 rm -f "$T/fakes/ffmpeg"
+printf 'not a video' >"$T/src/$C1/media/77-broken.mp4"
+cat >>"$T/src/$C1/messages.jsonl" <<'EOF2'
+{"id": 77, "date": "2026-02-02T11:00:00+00:00", "text": "broken", "media": {"kind": "video", "file": "77-broken.mp4", "name": "broken.mp4", "duration": 60, "size": 11}}
+EOF2
+"$TGA" run -1001234 --files all --no-process >/dev/null 2>&1
+"$TGA" process -1001234 >/dev/null 2>&1
+"$TGA" process -1001234 >"$T/proc-again.out" 2>&1
+check "process: a file whose asr and frames both fail keeps both and is not retried in turn" bash -c 'python3 -I -B -c "import json, sys; assert set(json.load(open(sys.argv[1]))[\"77\"][\"errors\"]) == {\"asr\", \"frames\"}" "$1/.raw/process-failed.json" && ! grep -q "#77" "$2"' _ "$A" "$T/proc-again.out"
 : >"$T/idle"     # the fake gateway reports no progress while this file exists
 TG_ARCHIVE_BACKOFF=0.001 timeout 20 "$TGA" export -1005678 --no-media >"$T/idle.out" 2>&1
 rc=$?
