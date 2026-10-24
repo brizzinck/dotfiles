@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+# claude-unlocked: Claude Code on OpenAI-compatible providers (ArliAI, Experiential Labs) through a local
+# claude-code-router gateway. Docs: CLAUDE.md "Claude unlocked". Plain `claude` stays untouched: nothing here
+# writes to ~/.claude, everything reaches Claude Code as environment variables and --settings.
+#
+#   claude-unlocked [CLAUDE ARGS...]          e.g. claude-unlocked -c, CLAUDE_UNLOCKED_MODEL=explabs/glm-4.6v claude-unlocked
+#   claude-unlocked --cu-stop                 stop the gateway (the next run starts it again)
+#   claude-unlocked --cu-reseed               fetch the provider keys from Bitwarden again (after a key rotation)
+#
+# The router store lives in tmpfs ($XDG_RUNTIME_DIR/claude-unlocked): ccr keeps provider keys there in plain text, so
+# they never reach a persistent file. After a reboot the first run seeds it again from Bitwarden Env/global
+# (ARLIAI_API_KEY, EXPLABS_API_KEY) through `envs run -g`; a provider without its key is left out.
+set -euo pipefail
+umask 077
+
+SELF_DIR="$(dirname "$(readlink -f "$0")")"
+LIB="$SELF_DIR/../share/claude-unlocked"
+ENV_FILE="$HOME/.config/claude-unlocked/env"
+GATEWAY_WAIT_SECONDS=30
+
+CCR_BIN="${CCR_BIN:-$(command -v ccr || echo "$HOME/.npm-global/bin/ccr")}"
+if [ ! -x "$CCR_BIN" ]; then
+  echo "claude-unlocked: claude-code-router not found (infrastructure/dev/user-tools.sh --only claude-code-router)" >&2
+  exit 1
+fi
+CU_RUNTIME="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/claude-unlocked"
+export CCR_INTERNAL_HOME_DIR="$CU_RUNTIME"
+mkdir -p -m 700 "$CU_RUNTIME"
+chmod 700 "$CU_RUNTIME"
+
+case "${1-}" in
+  --cu-stop) exec "$CCR_BIN" stop ;;
+  --cu-reseed) CU_RESEED=1; shift ;;
+  *) CU_RESEED=0 ;;
+esac
+
+if [ ! -r "$ENV_FILE" ]; then
+  echo "claude-unlocked: missing $ENV_FILE (run stow . in ~/dotfiles)" >&2
+  exit 1
+fi
+# Every caller-supplied CLAUDE_UNLOCKED_* var wins over the env file, so a
+# one-off `CLAUDE_UNLOCKED_MODEL=... claude-unlocked` survives sourcing it.
+_caller_overrides=""
+for _n in $(compgen -v | grep '^CLAUDE_UNLOCKED_' || true); do
+  _caller_overrides+="$(printf '%s=%q; ' "$_n" "${!_n}")"
+done
+# shellcheck source=/dev/null
+. "$ENV_FILE"
+[ -n "$_caller_overrides" ] && eval "$_caller_overrides"
+CLAUDE_UNLOCKED_GOAL="${CLAUDE_UNLOCKED_GOAL-}"
+CLAUDE_UNLOCKED_GOAL_TIMEOUT="${CLAUDE_UNLOCKED_GOAL_TIMEOUT-900}"
+CLAUDE_UNLOCKED_GOAL_MODEL="${CLAUDE_UNLOCKED_GOAL_MODEL-}"
+: "${CLAUDE_UNLOCKED_GATEWAY_URL:?set in $ENV_FILE}"
+: "${CLAUDE_UNLOCKED_MODEL:?set in $ENV_FILE}"
+CLAUDE_UNLOCKED_SMALL_MODEL="${CLAUDE_UNLOCKED_SMALL_MODEL:-$CLAUDE_UNLOCKED_MODEL}"
+CLAUDE_UNLOCKED_PICKER_PROVIDERS="${CLAUDE_UNLOCKED_PICKER_PROVIDERS:-arliai explabs}"
+
+export CU_ROUTER_DB="$CU_RUNTIME/.claude-code-router/config.sqlite"
+export CU_MARKER="$CU_RUNTIME/config-changed-at"
+export CU_WINDOWS="$HOME/.cache/claude-unlocked/model-windows.json"
+export CU_PICKER_PROVIDERS="$CLAUDE_UNLOCKED_PICKER_PROVIDERS"
+CU_CUSTOM_ROUTER="$(readlink -f "$LIB/router.cjs")"
+export CU_CUSTOM_ROUTER
+export CU_MAX_OUTPUT="${CLAUDE_UNLOCKED_MAX_OUTPUT_TOKENS:-32000}"
+export CU_CONTEXT_PERCENT="${CLAUDE_UNLOCKED_CONTEXT_PERCENT:-75}"
+export CU_COMPACT_MAX="${CLAUDE_UNLOCKED_AUTO_COMPACT_MAX:-1000000}"
+SERVICE_FILE="$CU_RUNTIME/.claude-code-router/service.json"
+
+cfg() { /usr/bin/python3 -I -B "$LIB/ccr-config.py" "$@"; }
+
+gateway_healthy() {
+  curl -fsS -m 2 "$CLAUDE_UNLOCKED_GATEWAY_URL/health" >/dev/null 2>&1
+}
+
+gateway_stop() {
+  "$CCR_BIN" stop >/dev/null 2>&1 || true
+  for _ in $(seq 1 "$GATEWAY_WAIT_SECONDS"); do
+    gateway_healthy || break
+    sleep 1
+  done
+}
+
+# The gateway loads its config only at start, so it is restarted whenever the store changed after its startedAt,
+# including a change from an earlier launch whose restart never happened.
+gateway_older_than_config() {
+  python3 -I -B -c '
+import datetime, json, sys
+try:
+    changed = datetime.datetime.fromisoformat(open(sys.argv[1]).read().strip())
+    started = datetime.datetime.fromisoformat(json.load(open(sys.argv[2]))["startedAt"].replace("Z", "+00:00"))
+except Exception:
+    sys.exit(1)
+sys.exit(0 if changed > started else 1)
+' "$CU_MARKER" "$SERVICE_FILE"
+}
+
+# Router patches before any ccr start. cu-no-settings is mandatory: unpatched, ccr's Claude Code profile management
+# rewrites ~/.claude/settings.json (base URL 127.0.0.1:3456 plus an apiKeyHelper), which cuts plain `claude` off the API.
+CU_ROUTER_DIST="$(dirname "$(readlink -f "$CCR_BIN")")"
+if CU_ROUTER_DIST="$CU_ROUTER_DIST" python3 -I -B "$LIB/patch-router.py"; then :; else
+  [ $? -ne 10 ] || date -u +%Y-%m-%dT%H:%M:%S+00:00 >"$CU_MARKER"
+fi
+if ! grep -q 'cu-no-settings' "$CU_ROUTER_DIST/cli.js"; then
+  echo "claude-unlocked: refusing to start ccr: the patch that keeps it away from ~/.claude/settings.json is missing" >&2
+  exit 1
+fi
+
+# A fresh tmpfs store: one ccr start creates the database with its local gateway key; the gateway itself does not
+# listen until a provider exists.
+if [ ! -s "$CU_ROUTER_DB" ] || ! cfg key >/dev/null 2>&1; then
+  echo "claude-unlocked: creating the router store in $CU_RUNTIME..." >&2
+  "$CCR_BIN" start --no-open >/dev/null
+  for _ in $(seq 1 "$GATEWAY_WAIT_SECONDS"); do
+    cfg key >/dev/null 2>&1 && break
+    sleep 1
+  done
+  gateway_stop
+  cfg key >/dev/null || { echo "claude-unlocked: ccr did not create its store" >&2; exit 1; }
+fi
+
+# Provider keys: Bitwarden Env/global -> envs run -g -> the tmpfs store. Only a provider without a key is fetched.
+seeded=0
+for name in $CLAUDE_UNLOCKED_PICKER_PROVIDERS; do
+  if [ "$CU_RESEED" = 1 ] || ! cfg has-key "$name"; then
+    var="$(printf '%s' "$name" | tr '[:lower:]-' '[:upper:]_')_API_KEY"
+    if "$HOME/.local/bin/envs" run -g --only "$var" -- /usr/bin/python3 -I -B "$(readlink -f "$LIB/ccr-config.py")" seed "$name"; then
+      seeded=1
+    else
+      echo "claude-unlocked: $name: envs gave no $var (missing in Bitwarden Env/global: envs set -g $var; or envs refused, see above); the saved key, if any, stays" >&2
+    fi
+  fi
+done
+cfg layout
+
+cfg sync || echo "claude-unlocked: model sync failed, keeping saved lists" >&2
+
+if gateway_healthy && gateway_older_than_config; then
+  echo "claude-unlocked: restarting gateway to load the new config..." >&2
+  gateway_stop
+fi
+if ! gateway_healthy; then
+  echo "claude-unlocked: starting claude-code-router gateway..." >&2
+  "$CCR_BIN" start --no-open >/dev/null
+  for _ in $(seq 1 "$GATEWAY_WAIT_SECONDS"); do
+    gateway_healthy && break
+    sleep 1
+  done
+  if ! gateway_healthy; then
+    echo "claude-unlocked: gateway did not become healthy at $CLAUDE_UNLOCKED_GATEWAY_URL (no provider key? claude-unlocked --cu-reseed)" >&2
+    exit 1
+  fi
+fi
+[ "$seeded" = 1 ] && echo "claude-unlocked: provider keys loaded into the tmpfs store" >&2
+
+CU_START_MODEL="$CLAUDE_UNLOCKED_MODEL"
+if [ "${CLAUDE_UNLOCKED_RESUME_MODEL:-1}" = "1" ]; then
+  CU_START_MODEL="$(CU_DEFAULT_MODEL="$CLAUDE_UNLOCKED_MODEL" CU_PROJECTS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" \
+    cfg resume-model "$@")" || CU_START_MODEL="$CLAUDE_UNLOCKED_MODEL"
+  [ -n "$CU_START_MODEL" ] || CU_START_MODEL="$CLAUDE_UNLOCKED_MODEL"
+  if [ "$CU_START_MODEL" != "$CLAUDE_UNLOCKED_MODEL" ]; then
+    echo "claude-unlocked: resuming on $CU_START_MODEL" >&2
+  fi
+fi
+
+unset ANTHROPIC_API_KEY
+export ANTHROPIC_BASE_URL="$CLAUDE_UNLOCKED_GATEWAY_URL"
+ANTHROPIC_AUTH_TOKEN="$(cfg key)"
+export ANTHROPIC_AUTH_TOKEN
+export ANTHROPIC_MODEL="$CU_START_MODEL"
+export ANTHROPIC_DEFAULT_FABLE_MODEL="$CLAUDE_UNLOCKED_MODEL"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="$CLAUDE_UNLOCKED_MODEL"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="$CLAUDE_UNLOCKED_MODEL"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="$CLAUDE_UNLOCKED_SMALL_MODEL"
+export CLAUDE_CODE_MAX_OUTPUT_TOKENS="$CU_MAX_OUTPUT"
+export CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1
+# vLLM rejects a request when input + max_tokens exceeds the model window, but
+# Claude Code's own context accounting ignores max_tokens. Tell it the real
+# window and make it auto-compact early enough to leave room for the reply,
+# otherwise the session deadlocks: too big to send, too big to compact.
+# Models whose provider reports a window (explabs) get their own compact
+# window through settings modelSettings (CU_WINDOWS). The env var
+# CLAUDE_CODE_AUTO_COMPACT_WINDOW would override those, so the default goes in
+# settings too, and the context ceiling is raised to 1M so no per-model window
+# is clipped by it. CLAUDE_UNLOCKED_AUTO_COMPACT_MAX caps every computed window;
+# an explicit CLAUDE_UNLOCKED_AUTO_COMPACT_WINDOW is not capped.
+CU_DEFAULT_COMPACT=""
+if [ -n "${CLAUDE_UNLOCKED_CONTEXT_TOKENS-}" ]; then
+  export CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000
+  CU_USABLE=$(( CLAUDE_UNLOCKED_CONTEXT_TOKENS * CU_CONTEXT_PERCENT / 100 ))
+  CU_RESERVED=$(( CLAUDE_UNLOCKED_CONTEXT_TOKENS - CLAUDE_CODE_MAX_OUTPUT_TOKENS - 8000 ))
+  CU_COMPACT=$(( CU_USABLE < CU_RESERVED ? CU_USABLE : CU_RESERVED ))
+  CU_DEFAULT_COMPACT="${CLAUDE_UNLOCKED_AUTO_COMPACT_WINDOW:-$(( CU_COMPACT < CU_COMPACT_MAX ? CU_COMPACT : CU_COMPACT_MAX ))}"
+fi
+unset CLAUDE_CODE_AUTO_COMPACT_WINDOW
+export CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK=1
+# ArliAI PRO allows 2 parallel requests; Claude Code runs tools + a status summarizer concurrently.
+export CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY="${CLAUDE_UNLOCKED_TOOL_CONCURRENCY:-1}"
+
+CU_BLOCK_IMAGES=""
+if [ "${CLAUDE_UNLOCKED_BLOCK_IMAGES:-0}" = "1" ]; then
+  CU_BLOCK_IMAGES="/usr/bin/python3 -I -B $(readlink -f "$LIB/block-images.py")"
+fi
+CLAUDE_UNLOCKED_SETTINGS="$(
+  CU_GOAL="$CLAUDE_UNLOCKED_GOAL" CU_GOAL_TIMEOUT="$CLAUDE_UNLOCKED_GOAL_TIMEOUT" CU_GOAL_MODEL="$CLAUDE_UNLOCKED_GOAL_MODEL" \
+  CU_DEFAULT_COMPACT="$CU_DEFAULT_COMPACT" CU_BLOCK_IMAGES="$CU_BLOCK_IMAGES" cfg settings
+)"
+
+if [ -n "$CLAUDE_UNLOCKED_GOAL" ]; then
+  echo "claude-unlocked: goal hook active (${CLAUDE_UNLOCKED_GOAL_TIMEOUT}s): $CLAUDE_UNLOCKED_GOAL" >&2
+fi
+
+# Slim mode: drop MCP servers and heavy tool schemas. The agent prompt from
+# settings.json stays. Pass --mcp-config on the command line to bring MCP
+# servers back for one session.
+if [ "${CLAUDE_UNLOCKED_SLIM:-1}" = "1" ]; then
+  set -- \
+    --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
+    --disallowedTools "${CLAUDE_UNLOCKED_DISALLOWED_TOOLS:-}" \
+    "$@"
+fi
+
+set -- --settings "$CLAUDE_UNLOCKED_SETTINGS" "$@"
+
+unset CU_ROUTER_DB CU_MARKER CU_WINDOWS CU_PICKER_PROVIDERS CU_CUSTOM_ROUTER CU_MAX_OUTPUT CU_CONTEXT_PERCENT CU_COMPACT_MAX
+exec claude "$@"

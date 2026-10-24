@@ -3,7 +3,7 @@
 # step is skipped when the installed version is already at least the pin (the pins are the fresh-install floor: sysup moves
 # these tools forward later with its go / pipx / npm / cargo steps), a failed step only warns.
 #
-#   infrastructure/dev/user-tools.sh [--dry-run] [--only NAME[,NAME]]     names: lazysql gh-dash posting gitlab-ci-local glab-tui glab
+#   infrastructure/dev/user-tools.sh [--dry-run] [--only NAME[,NAME]]     names: lazysql gh-dash posting gitlab-ci-local glab-tui glab claude-code-router
 #   infrastructure/dev/user-tools.sh --shared [--prefix DIR] [--dry-run] [--only NAME[,NAME]] [--check | --stamp]
 #
 # (posting is the exception: exactly the pin, from the hash lock.)
@@ -26,6 +26,7 @@ LAZYSQL_VERSION=v0.7.0                 # github.com/jorgerojas26/lazysql
 GHDASH_VERSION=v4.26.2                 # github.com/dlvhdr/gh-dash/v4
 POSTING_VERSION=2.11.1                 # PyPI posting (pipx, hash-locked: posting-requirements.txt, exact version)
 GCL_VERSION=4.76.1                     # npm gitlab-ci-local
+CCR_VERSION=3.1.3                      # npm @musistudio/claude-code-router (claude-unlocked; its patches are anchored to 3.1.x)
 GLABTUI_VERSION=0.9.3                  # crates.io glab-tui-crate (binary glab-tui)
 WORKMUX_VERSION=0.1.276                # crates.io workmux (shared tree only: the owner's copy comes from install.sh / sysup)
 FZFTAB_COMMIT=24105b15714bfec37989ed5c5b6e60f572253019   # github.com/Aloxaf/fzf-tab (shared tree only: the zsh plugin of the managed users)
@@ -111,6 +112,19 @@ except Exception:
   if [[ -n $have_v ]] && ver_ge "$have_v" "$GCL_VERSION"; then log "gitlab-ci-local $have_v present (pin $GCL_VERSION)"; return 0; fi
   log "gitlab-ci-local: npm install -g --ignore-scripts gitlab-ci-local@$GCL_VERSION"
   run npm install -g --ignore-scripts "gitlab-ci-local@$GCL_VERSION" || warn "gitlab-ci-local: npm install failed"
+}
+
+step_ccr() { # install scripts only for better-sqlite3 (native module); claude-unlocked patches the install before every start
+  have npm || { warn "npm is not installed: claude-code-router skipped"; return 0; }
+  local have_v
+  have_v=$(npm ls -g --depth=0 --json 2>/dev/null | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin)["dependencies"]["@musistudio/claude-code-router"]["version"])
+except Exception:
+    pass' 2>/dev/null)
+  if [[ -n $have_v ]] && ver_ge "$have_v" "$CCR_VERSION"; then log "claude-code-router $have_v present (pin $CCR_VERSION)"; return 0; fi
+  log "claude-code-router: npm install -g --allow-scripts=better-sqlite3 @musistudio/claude-code-router@$CCR_VERSION"
+  run npm install -g --allow-scripts=better-sqlite3 "@musistudio/claude-code-router@$CCR_VERSION" || warn "claude-code-router: npm install failed"
 }
 
 step_glabtui() {
@@ -331,4 +345,5 @@ want posting && step_posting
 want gitlab-ci-local && step_gcl
 want glab-tui && step_glabtui && step_glabtui_config
 want glab && step_glab
+want claude-code-router && step_ccr
 exit 0

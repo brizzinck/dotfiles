@@ -1,0 +1,43 @@
+# claude-unlocked: model tiers and limits. No secrets here: the provider keys come from
+# Bitwarden Env/global (ARLIAI_API_KEY, EXPLABS_API_KEY) through `envs run -g` and live only
+# in the tmpfs router store. Docs: CLAUDE.md "Claude unlocked". A caller's CLAUDE_UNLOCKED_*
+# variable wins over this file: CLAUDE_UNLOCKED_MODEL=explabs/... claude-unlocked
+CLAUDE_UNLOCKED_GATEWAY_URL="http://127.0.0.1:3456"
+# Any id the gateway serves (provider/model): /model in a session lists them.
+CLAUDE_UNLOCKED_MODEL="arliai/Qwen3.5-27B-Derestricted"
+CLAUDE_UNLOCKED_SMALL_MODEL="arliai/GLM-4.6-Derestricted-v5"
+# Output cap per reply. The provider rejects the request when
+# input + this exceeds the model context, so it is reserved space, not a target.
+CLAUDE_UNLOCKED_MAX_OUTPUT_TOKENS=32000
+# Default context window for models whose provider reports none (arliai).
+# explabs models get their own window and output cap from its /models on
+# every launch (~/.cache/claude-unlocked/model-windows.json), not this. 262144 for
+# Qwen3.5-27B, 202752 for GLM-4.6.
+CLAUDE_UNLOCKED_CONTEXT_TOKENS=262144
+# Share of the advertised context Claude Code may fill (all providers).
+CLAUDE_UNLOCKED_CONTEXT_PERCENT=75
+# Auto-compact trigger window. Default: the smaller of that share and
+# context - output cap - 8000 of slack.
+#CLAUDE_UNLOCKED_AUTO_COMPACT_WINDOW=200000
+# Ceiling on every computed auto-compact window (all providers).
+CLAUDE_UNLOCKED_AUTO_COMPACT_MAX=300000
+# Slim mode (1/0): no MCP servers, heavy tools denied.
+CLAUDE_UNLOCKED_SLIM=1
+CLAUDE_UNLOCKED_DISALLOWED_TOOLS="Artifact,DesignSync,Workflow,PushNotification,SendFeedback"
+# Providers seeded from Bitwarden, listed in /model and synced from their live /models each launch.
+#CLAUDE_UNLOCKED_PICKER_PROVIDERS="arliai explabs"
+# Parallel tool calls (ArliAI PRO allows 2 parallel requests; Claude Code also runs a summarizer).
+#CLAUDE_UNLOCKED_TOOL_CONCURRENCY=1
+# 1: block Read on image files (the gateway models cannot see images).
+#CLAUDE_UNLOCKED_BLOCK_IMAGES=0
+
+# Goal hook (claude-unlocked only; nothing here reaches plain `claude`).
+# Set CLAUDE_UNLOCKED_GOAL to register a Stop prompt hook that keeps the turn
+# going until the condition is met. This is the only way to raise the check
+# timeout: the /goal slash command registers the same hook without one, and
+# Claude Code then hardcodes 30s.
+#CLAUDE_UNLOCKED_GOAL="all tests pass"
+# Seconds allowed for one goal check (launcher default 900).
+#CLAUDE_UNLOCKED_GOAL_TIMEOUT=900
+# Evaluator model. Unset: the session's own model (router.cjs).
+#CLAUDE_UNLOCKED_GOAL_MODEL=

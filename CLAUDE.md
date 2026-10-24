@@ -49,6 +49,7 @@ Quoted names are the section headings inside each file; other files and code com
 - `sysup.md`: "Update tool (sysup)". Background check and download timers, the steps of the install run, logs, tests.
 - `envs.md`: "Dev environments (DEV-b: mise + envs)". mise (replaces direnv, activation modes, install on cd, trust); `envs` (`bw://` references, bind, import, native managed writes, approved agents, `--env-file`, Send, scan, recovery, threat model, tests).
 - `devtools.md`: "Dev tools (DEV-d: databases, HTTP, forges, local CI)". `db` (lazysql), `api` (posting, hurl), `ci` (act, gitlab-ci-local), `forge` (gh-dash, glab-tui), the global envs scope, pinned installs (`user-tools.sh`), FIX-DEVd hardening, threat model, tests.
+- `claude-unlocked.md`: "Claude unlocked". `claude-unlocked`: Claude Code on ArliAI / Experiential Labs through claude-code-router, the tmpfs router store seeded from Bitwarden, router patches (`cu-no-settings` keeps ccr away from `~/.claude/settings.json`), model sync.
 - `dictation.md`: "Dictation (D1b)". Voxtype through `dictation.sh`, languages, waybar indicator, Vulkan / CPU backend choice, model benchmark.
 - `llm.md`: "Local LLM (DEV-e)". `llm`: llama.cpp on Vulkan behind on-demand socket units, token, server flags and limits, models, presets, `fix-layout`, measurements, tests.
 - `greeter.md`: "Login screen (greetd + Quickshell)". Greeter session and fallbacks, `users.json`, password reveal, the Shell session, root login (`greetd-login` PAM), VT switching, rollback, tests.
