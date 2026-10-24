@@ -1516,7 +1516,7 @@ fi
 # system side comes from apply-system.sh --only config
 st_bad=""
 [ "$(systemctl --user show -p DefaultTimeoutStopUSec --value 2>/dev/null)" = 10s ] || st_bad="$st_bad user manager default stop timeout is not 10 s (stow ., systemctl --user daemon-reexec);"
-for st_f in "stop-timeout.conf:/etc/systemd/system.conf.d/10-dotfiles-stop-timeout.conf" "user-at-stop-timeout.conf:/etc/systemd/system/user@.service.d/10-dotfiles-stop-timeout.conf"; do
+for st_f in "stop-timeout.conf:/etc/systemd/system.conf.d/10-dotfiles-stop-timeout.conf" "user-at-stop-timeout.conf:/etc/systemd/system/user@.service.d/10-dotfiles-stop-timeout.conf" "user-manager-stop-timeout.conf:/etc/systemd/user.conf.d/10-dotfiles-stop-timeout.conf"; do
   cmp -s "$DOTFILES/infrastructure/systemd/${st_f%%:*}" "${st_f#*:}" || st_bad="$st_bad ${st_f#*:} differs or is missing;"
 done
 if [ -z "$st_bad" ]; then ok stop-timeouts "user units 10 s, system units 20 s, user managers 30 s"

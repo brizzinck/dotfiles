@@ -717,10 +717,11 @@ section_config() {
   install_file "$INFRA/systemd/coredump-limits.conf" /etc/systemd/coredump.conf.d/limits.conf
 
   # stop timeouts: a hanging service must not hold a reboot or poweroff (20 s per system unit, 30 s for a user manager,
-  # whose own units get 10 s from ~/.config/systemd/user.conf.d); the manager reads system.conf.d only on a re-exec
+  # whose own units get 10 s from /etc/systemd/user.conf.d, read at the next start of a user manager); the manager reads system.conf.d only on a re-exec
   local stop_changed=0 st
   for st in "stop-timeout.conf:/etc/systemd/system.conf.d/10-dotfiles-stop-timeout.conf" \
-    "user-at-stop-timeout.conf:/etc/systemd/system/user@.service.d/10-dotfiles-stop-timeout.conf"; do
+    "user-at-stop-timeout.conf:/etc/systemd/system/user@.service.d/10-dotfiles-stop-timeout.conf" \
+    "user-manager-stop-timeout.conf:/etc/systemd/user.conf.d/10-dotfiles-stop-timeout.conf"; do
     cmp -s -- "$INFRA/systemd/${st%%:*}" "${st#*:}" 2>/dev/null || stop_changed=1
     install_file "$INFRA/systemd/${st%%:*}" "${st#*:}"
   done
