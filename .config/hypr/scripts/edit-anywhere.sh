@@ -3,6 +3,8 @@
 # have no vim; the text you write is pasted back into the window you came from.
 #   edit-anywhere.sh open    the keybind: record the focused window, take the primary selection (the text selected on screen)
 #                            as the starting text, open the editor in INSERT mode
+#   edit-anywhere.sh _watch  the primary-selection watcher (autostart): wl-paste --primary --type text --watch ... _seen notes
+#                            when and in which window each new selection was made
 #   edit-anywhere.sh help
 #   --dry-run                (first argument) with `open`: print the geometry and the command, touch nothing
 #
@@ -10,14 +12,17 @@
 # the text goes to the clipboard, the window closes, the window you came from is focused again and gets the paste shortcut
 # (Ctrl+V, Ctrl+Shift+V for terminals; the physical V key, so it works on the ua and ru layouts too). Text that was selected there
 # is replaced because it is still selected in that field (GTK, Chromium and Electron fields replace a selection on paste). A
-# terminal has no such replacement, so nothing is preloaded when you start from a terminal. The clipboard you had before is
-# put back after a few seconds, unless it held an image, a password-manager copy or something that is not text.
+# terminal has no such replacement, so nothing is preloaded when you start from a terminal. Only a fresh selection is preloaded:
+# the watcher saw it appear in the window you start from, at most EDIT_ANYWHERE_MAX_AGE seconds (120) ago, and it was not
+# preloaded before. A selection left over in any window (the primary selection lives until something else is selected) never is.
+# The clipboard you had before is put back after a few seconds, unless it held an image, a password-manager copy or
+# something that is not text.
 # The nvim side is edit-anywhere.lua (loaded with -c, nothing in the owner's nvim config changes; K3 layout auto-switch is
 # part of that config and works). The keyboard layout you had when you pressed the key is restored when the editor closes.
 # Files: $XDG_RUNTIME_DIR/edit-anywhere/ (tmpfs, 0700), removed after every run.
 # Test hooks: EDIT_ANYWHERE_DIR, EDIT_ANYWHERE_TERMINAL (command prefix replacing `ghostty --class=float.edit --title=edit-anywhere -e`),
 # EDIT_ANYWHERE_NVIM, EDIT_ANYWHERE_NVIM_ARGS (extra nvim arguments, one per line), EDIT_ANYWHERE_RESTORE_DELAY (seconds, default 4),
-# EDIT_ANYWHERE_NO_NOTIFY=1, EDIT_ANYWHERE_SYNC=1 (finish in the foreground), EDIT_ANYWHERE_KEEP=1 (keep the files).
+# EDIT_ANYWHERE_MAX_AGE (seconds), EDIT_ANYWHERE_NO_NOTIFY=1, EDIT_ANYWHERE_SYNC=1 (finish in the foreground), EDIT_ANYWHERE_KEEP=1 (keep the files).
 set -u
 
 DRY=0
@@ -35,6 +40,8 @@ LUA="$HERE/edit-anywhere.lua"
 read -ra TERMINAL <<<"${EDIT_ANYWHERE_TERMINAL:-ghostty --class=$CLASS --title=edit-anywhere -e}"
 MAX_SELECTION=100000
 MAX_CLIP=1000000
+MAX_AGE=${EDIT_ANYWHERE_MAX_AGE:-120}
+SEEN="$RUN/seen" # written by the watcher: epoch, window address, fingerprint of the selection; consumed by `open`
 WIN_W=900
 WIN_H=360
 
@@ -57,6 +64,40 @@ selection_text() { # the primary selection as text; empty when none, not text, o
   t=${t%x}
   ((${#t} > MAX_SELECTION)) && return 0
   printf '%s' "$t"
+}
+
+fingerprint() { # stdin -> sha256 of the text (trailing newlines dropped, so wl-paste --watch and wl-paste --no-newline agree)
+  local c
+  c=$(head -c "$((MAX_SELECTION + 1))")
+  printf '%s' "$c" | sha256sum | cut -c1-64
+}
+
+cmd_watch() { # wl-paste runs _seen once at start for the selection already there: that one was not made now, see cmd_seen
+  (umask 077; mkdir -p "$RUN") && chmod 700 "$RUN"
+  date +%s%N >"$RUN/watch-start"
+  exec wl-paste --primary --type text --watch "$SELF" _seen
+}
+
+cmd_seen() { # the watcher: CLIPBOARD_STATE=data with the new primary selection on stdin; nil / sensitive = forget it
+  (umask 077; mkdir -p "$RUN") && chmod 700 "$RUN"
+  local start
+  start=$(cat "$RUN/watch-start" 2>/dev/null)
+  if [[ ${CLIPBOARD_STATE:-data} != data ]] || { [[ $start =~ ^[0-9]+$ ]] && (($(date +%s%N) - start < 1000000000)); }; then
+    rm -f -- "$SEEN"; cat >/dev/null; return 0
+  fi
+  local fp addr
+  fp=$(fingerprint)
+  addr=$(tg_active)
+  printf '%s\n%s\n%s\n' "$(date +%s)" "$addr" "$fp" >"$SEEN.tmp" && mv -f -- "$SEEN.tmp" "$SEEN"
+}
+
+fresh_selection() { # fresh_selection TEXT TARGET: the watcher saw TEXT selected in TARGET at most MAX_AGE seconds ago
+  local at addr fp
+  [[ -n $1 && -n $2 && -s $SEEN ]] || return 1
+  { read -r at; read -r addr; read -r fp; } <"$SEEN"
+  [[ $at =~ ^[0-9]+$ && $addr == "$2" ]] || return 1
+  (($(date +%s) - at <= MAX_AGE)) || return 1
+  [[ $fp == "$(printf '%s' "$1" | fingerprint)" ]]
 }
 
 geometry() { # geometry -> "X Y W H": monitor-relative logical position (window centred on the pointer, clamped to the work area), size
@@ -101,7 +142,11 @@ cmd_open() {
     rm -f -- "$RUN/text.txt" "$RUN/saved" "$RUN/prev" "$RUN/prev-class" "$RUN/layout" "$RUN/clip.prev" "$RUN/clip.kind" "$RUN/nvim-args"
   fi
   sel=""
-  if [[ $(paste_mods "$class") != "CTRL SHIFT" ]]; then sel=$(selection_text); fi
+  if [[ $(paste_mods "$class") != "CTRL SHIFT" ]]; then
+    sel=$(selection_text)
+    fresh_selection "$sel" "$prev" || sel=""
+  fi
+  ((DRY)) || rm -f -- "$SEEN" # a selection is preloaded once at most
   geo=$(geometry) || { say "Edit anywhere" "Hyprland did not answer (cursor position or monitors)"; return 1; }
   if ((DRY)); then
     printf '[dry-run] target window=%s class=%s, preloaded %s characters from the primary selection\n' "${prev:-none}" "${class:-?}" "${#sel}"
@@ -217,6 +262,8 @@ case $CMD in
   open) cmd_open ;;
   _session) cmd_session ;;
   _finish) cmd_finish ;;
+  _watch) cmd_watch ;;
+  _seen) cmd_seen ;;
   -h | --help | help | "") sed -n '2,/^set -u/p' "$0" | sed '$d;s/^# \{0,1\}//' ;;
   *) echo "edit-anywhere: unknown command $CMD (open)" >&2; exit 2 ;;
 esac

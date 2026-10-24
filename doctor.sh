@@ -1401,6 +1401,11 @@ if sc_copy_out="$("$DOTFILES/infrastructure/tests/selfcopy/run.sh" 2>&1)"; then 
 # FIX5: the suites must not leave Python bytecode in the repo (python3 -I ignores PYTHONPYCACHEPREFIX; -B / PYTHONDONTWRITEBYTECODE do not)
 if hy_out="$("$DOTFILES/infrastructure/tests/hygiene/run.sh" --quick 2>&1)"; then ok hygiene-tests "test suites leave no __pycache__ in the repo: $(printf '%s' "$hy_out" | tail -1)"; else bad hygiene-tests "$(printf '%s' "$hy_out" | grep -m1 '^FAIL') (infrastructure/tests/hygiene/run.sh)"; fi
 if edit_out="$("$DOTFILES/infrastructure/tests/edit/run.sh" 2>&1)"; then ok edit-tests "edit anywhere (SUPER+CTRL+E): $(printf '%s' "$edit_out" | tail -1)"; else bad edit-tests "$(printf '%s' "$edit_out" | grep -m1 '^FAIL') (infrastructure/tests/edit/run.sh)"; fi
+# edit anywhere preloads only a selection its primary-selection watcher saw being made (autostart in hyprland.lua)
+if [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]; then
+  if pgrep -u "$(id -u)" -f 'wl-paste --primary --type text --watch .*edit-anywhere.sh _seen' >/dev/null 2>&1; then ok edit-watch "primary-selection watcher runs (fresh selections are preloaded)"
+  else bad edit-watch "primary-selection watcher not running, nothing is preloaded (setsid -f ~/.config/hypr/scripts/edit-anywhere.sh _watch)"; fi
+fi
 # DEV-a: gitleaks pre-commit hook, atuin (local history), carapace gap filler, difftastic, long-command toast
 da_hp="$(git -C "$DOTFILES" config --get core.hooksPath 2>/dev/null)"
 da_bad=""

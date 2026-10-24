@@ -82,6 +82,7 @@ X2
 cat >"$T/bin/fakenvim" <<'X2'
 #!/bin/bash
 file="${*: -1}"
+cp "$file" "$FAKE/started-with"
 case "$NVIM_ACTION" in
   finish:*) printf '%b' "${NVIM_ACTION#finish:}" >"$file"; : >"$EDIT_ANYWHERE_DIR/saved" ;;
   empty) printf '' >"$file"; : >"$EDIT_ANYWHERE_DIR/saved" ;;
@@ -96,6 +97,13 @@ export EDIT_ANYWHERE_SYNC=1 EDIT_ANYWHERE_RESTORE_DELAY=0.4
 unset HUB_TARGET TG_SKIP
 reset() { rm -f "$F"/log "$F"/term-done "$F"/prev-gone "$F"/editor-open "$F"/clip "$F"/clip.types "$F"/primary "$F"/primary.types "$F"/active "$F"/layout "$F"/prev-class; rm -rf "$EDIT_ANYWHERE_DIR"; unset NVIM_ACTION NVIM_LAYOUT_AFTER; }
 set_primary() { printf '%s' "$1" >"$F/primary"; printf 'text/plain\n' >"$F/primary.types"; }
+seen() { # seen TEXT [WINDOW] [SECONDS_AGO]: the watcher saw TEXT selected in WINDOW (default 0x1)
+  printf '%s' "${2:-0x1}" >"$F/active"
+  printf '%s' "$1" | CLIPBOARD_STATE=data "$EA" _seen
+  rm -f "$F/active"
+  [[ -n ${3:-} ]] && sed -i "1s/.*/$(($(date +%s) - $3))/" "$EDIT_ANYWHERE_DIR/seen"
+  return 0
+}
 set_clip() { printf '%s' "$1" >"$F/clip"; printf '%s\n' "${2:-text/plain}" >"$F/clip.types"; }
 run_flow() { # run_flow: open the editor and wait until the fake terminal (and the synchronous finish) is done
   HUB_TARGET=address:0x1 "$EA" open >/dev/null 2>&1
@@ -123,9 +131,30 @@ expect "geometry: a pointer outside every monitor falls back to the focused one"
 reset; printf '%s' "$laptop" >"$F/monitors.json"; printf '{"x":960,"y":2040}' >"$F/cursor.json"
 set_primary "picked words"
 out=$(HUB_TARGET=address:0x1 "$EA" --dry-run open 2>&1)
-expect "a selection in a normal window is preloaded" bash -c "grep -q 'preloaded 12 characters' <<<'$out'"
+expect "a selection the watcher never saw (left over from before) is not preloaded" bash -c "grep -q 'preloaded 0 characters' <<<'$out'"
+seen "picked words"
+out=$(HUB_TARGET=address:0x1 "$EA" --dry-run open 2>&1)
+expect "a fresh selection in a normal window is preloaded" bash -c "grep -q 'preloaded 12 characters' <<<'$out'"
+expect "the watcher notes time, window and fingerprint, no text" bash -c "[ \$(wc -l <'$EDIT_ANYWHERE_DIR/seen') = 3 ] && ! grep -q picked '$EDIT_ANYWHERE_DIR/seen'"
+seen "picked words" 0x9
+out=$(HUB_TARGET=address:0x1 "$EA" --dry-run open 2>&1)
+expect "a selection made in another window (a terminal, an old chat) is not preloaded" bash -c "grep -q 'preloaded 0 characters' <<<'$out'"
+seen "picked words" 0x1 600
+out=$(HUB_TARGET=address:0x1 "$EA" --dry-run open 2>&1)
+expect "a selection older than EDIT_ANYWHERE_MAX_AGE is not preloaded" bash -c "grep -q 'preloaded 0 characters' <<<'$out'"
+seen "other words"
+out=$(HUB_TARGET=address:0x1 "$EA" --dry-run open 2>&1)
+expect "a selection that changed since the watcher saw it is not preloaded" bash -c "grep -q 'preloaded 0 characters' <<<'$out'"
+seen "picked words"; printf '' | CLIPBOARD_STATE=nil "$EA" _seen
+out=$(HUB_TARGET=address:0x1 "$EA" --dry-run open 2>&1)
+expect "a cleared selection (CLIPBOARD_STATE=nil) forgets the note" bash -c "[ ! -e '$EDIT_ANYWHERE_DIR/seen' ] && grep -q 'preloaded 0 characters' <<<'$out'"
+date +%s%N >"$EDIT_ANYWHERE_DIR/watch-start"; seen "picked words"
+expect "the event at watcher start (a selection made before it) is ignored" test ! -e "$EDIT_ANYWHERE_DIR/seen"
+rm -f "$EDIT_ANYWHERE_DIR/watch-start"
+seen "picked words"
 echo org.gnome.Test >"$F/prev-class"
 printf 'com.mitchellh.ghostty' >"$F/prev-class"
+seen "picked words"
 out=$(HUB_TARGET=address:0x1 "$EA" --dry-run open 2>&1)
 expect "starting from a terminal preloads nothing (a terminal does not replace a selection)" bash -c "grep -q 'preloaded 0 characters' <<<'$out'"
 printf 'org.gnome.Test' >"$F/prev-class"
@@ -138,6 +167,13 @@ expect "a non-text selection is never preloaded" bash -c "grep -q 'preloaded 0 c
 rm -f "$F/primary" "$F/primary.types"
 out=$(HUB_TARGET=address:0x1 "$EA" --dry-run open 2>&1)
 expect "no selection: empty start" bash -c "grep -q 'preloaded 0 characters' <<<'$out'"
+reset; printf '%s' "$laptop" >"$F/monitors.json"; printf '{"x":960,"y":2040}' >"$F/cursor.json"
+set_primary "fresh words"; seen "fresh words"
+run_flow
+expect "open: the fresh selection is the starting text" test "$(cat "$F/started-with")" = "fresh words"
+rm -f "$F/term-done"
+run_flow
+expect "open: the same selection is not preloaded a second time" test ! -s "$F/started-with"
 
 # ── finish: copy, refocus, paste ──
 reset; printf '%s' "$laptop" >"$F/monitors.json"; printf '{"x":960,"y":2040}' >"$F/cursor.json"
