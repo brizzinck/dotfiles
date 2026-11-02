@@ -56,6 +56,7 @@ packages=(
   android-tools bluez bluez-utils cloc cmatrix
   # workstation additions — keep in sync with REPO_PACKAGES in apply-system.sh (it verifies each name with pacman -Si)
   pacman-contrib earlyoom reflector smartmontools nvme-cli libva-utils amdgpu_top   # paccache/updates, OOM guard, mirrors, SMART, vainfo, GPU monitor
+  wireless-regdb                                                                    # Wi-Fi regulatory database (country UA from infrastructure/net/cfg80211-regdom.conf; without it 5 GHz is no-IR)
   hyprpolkitagent cliphist wl-clip-persist swayosd wiremix hyprshot satty hyprpicker hyprsunset
   xorg-xcursorgen librsvg                                                           # build deps of the local everforest-cursor-theme package (infrastructure/cursor)
   rofimoji wtype udiskie                                                            # polkit agent, clipboard, OSD, screenshots, picker, emoji (rofimoji = the emoji data of emoji.sh), automount

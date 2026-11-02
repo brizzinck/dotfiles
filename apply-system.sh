@@ -6,7 +6,7 @@
 #   sudo ./apply-system.sh --only cleanup  run a single section (several: --only users,mcp, always in the order below)
 #
 # Section order: cleanup -> upgrade -> install -> remove -> config -> services -> net -> greeter -> users -> mcp -> disk -> boot -> flatpak -> summary
-#   (net = network exposure: firewall (ufw), LLMNR off, v2rayA web UI on loopback, see infrastructure/net;
+#   (net = network exposure: firewall (ufw), LLMNR off, v2rayA web UI on loopback, Wi-Fi country, see infrastructure/net;
 #    also runnable alone: sudo ./apply-system.sh --only net)
 #   (greeter = the login screen, see infrastructure/greetd; also runnable alone: sudo ./apply-system.sh --only greeter)
 #   (users = managed child users, see infrastructure/users; also runnable alone: sudo ./apply-system.sh --only users)
@@ -261,6 +261,8 @@ section_upgrade() {
 REPO_PACKAGES=(
   # system
   pacman-contrib earlyoom reflector git-lfs fd smartmontools nvme-cli libva-utils amdgpu_top
+  # Wi-Fi: regulatory database; without it the kernel keeps country 00 and every 5 GHz channel is no-IR (see section net)
+  wireless-regdb
   # wayland desktop helpers
   hyprpolkitagent cliphist wl-clip-persist swayosd wiremix hyprshot satty hyprpicker hyprsunset
   rofimoji wtype udiskie qt6ct
@@ -954,7 +956,23 @@ section_net() {
   else
     log "v2raya is not installed: nothing to bind"
   fi
-  # 3. firewall
+  # 3. Wi-Fi regulatory domain. cfg80211 reads ieee80211_regdom when the module loads (next boot); `iw reg set` applies it
+  # now. Needs wireless-regdb (/usr/lib/firmware/regulatory.db), else the kernel stays on country 00 and 5 GHz is no-IR.
+  install_file "$NET_SRC/cfg80211-regdom.conf" /etc/modprobe.d/cfg80211-regdom.conf
+  if [ ! -e /usr/lib/firmware/regulatory.db ] && [ ! -e /usr/lib/firmware/regulatory.db.zst ]; then
+    try pacman -S --needed --noconfirm wireless-regdb
+  fi
+  local regdom
+  regdom="$(sed -n 's/^options cfg80211 ieee80211_regdom=\([A-Z][A-Z]\).*/\1/p' "$NET_SRC/cfg80211-regdom.conf")"
+  if command -v iw >/dev/null 2>&1 && [ -n "$regdom" ] && ! iw reg get 2>/dev/null | grep -q "^country $regdom:"; then
+    # cfg80211 loads regulatory.db once at boot and remembers a failure; reload makes it read a database installed later
+    try iw reg reload
+    try iw reg set "$regdom"
+    changed "Wi-Fi regulatory domain set to $regdom (iw reg set)"
+  else
+    log "Wi-Fi regulatory domain already ${regdom:-unset} or iw missing"
+  fi
+  # 4. firewall
   net_firewall
   followup "ss -ltnH | awk '{print \$4}' | grep -v '^127\\.'   # nothing but your allowlisted ports (doctor net-exposure lists them)"
   followup "systemctl --user restart camoufox-gateway    # applies the 127.0.0.1 bind of ~/job/youtube/.../camoufox_gateway.py (interrupts running Flow jobs)"

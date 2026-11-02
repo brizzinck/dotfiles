@@ -198,6 +198,7 @@ watchexec
 waybar
 whisper-cpp
 wine-staging
+wireless-regdb
 wiremix
 wireplumber
 wl-clipboard
