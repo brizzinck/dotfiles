@@ -178,16 +178,25 @@ None|None" "$out"
 # ── usr: scratch publish, profile links, clipboard ACL ──────────────────────────
 export USR_SRV_DOTFILES="$T/srv"
 export USR_DEVTOOLS_SHARED="$T/no-devtools"   # a test must never start the real installer into the real /srv/devtools
+export USR_SRV_PRIVATE="$T/no-private"        # ... nor publish the real private checkout into the real /srv/private
 mkdir -p "$T/srv" "$T/home"
 export HOME="$T/home"
 export XDG_STATE_HOME="$T/home/.local/state"
 STATE_USR="$XDG_STATE_HOME/usr"
-"$USR" sync --worktree --quiet >/dev/null 2>&1 || bad "usr sync --worktree failed"
+# the registry of this run names no existing account: sync relinks every profile user that exists (sudo -u USER), and a real td
+# must never be relinked to the scratch tree
+printf 'usrtest-nobody\tcli\tinteractive\torange\n' >"$T/sync.tsv"
+USR_MANAGED_TSV="$T/sync.tsv" "$USR" sync --worktree --quiet >/dev/null 2>&1 || bad "usr sync --worktree failed"
 [ -f "$T/srv/.zshrc" ] && ok || bad "sync: .zshrc not published"
 [ -e "$T/srv/private" ] && bad "sync: private/ was published" || ok
 [ -e "$T/srv/env.secret.sh" ] && bad "sync: env.secret.sh was published" || ok
 [ -x "$T/srv/.local/bin/usr" ] && ok || bad "sync: usr itself is not published"
 [ -f "$T/srv/.published" ] && ok || bad "sync: .published missing"
+# the owner's TPM checkouts (gitignored) are published without .git, so a managed user's tmux has resurrect (prefix+S / prefix+R)
+if [ -e "$REPO/.config/tmux/plugins/tmux-resurrect/.git" ]; then
+  [ -f "$T/srv/.config/tmux/plugins/tmux-resurrect/scripts/helpers.sh" ] && ok || bad "sync: tmux-resurrect is not published"
+  [ -e "$T/srv/.config/tmux/plugins/tmux-resurrect/.git" ] && bad "sync: a tmux plugin's .git was published" || ok
+fi
 mkdir -p "$T/h/td/.config"
 ln -s ../dotfiles/.config/tmux "$T/h/td/.config/tmux"
 echo old >"$T/h/td/.gitconfig"

@@ -157,6 +157,29 @@ class Secrets(unittest.TestCase):
         with self.assertRaises(m.Refused):
             m.validate_private_tree(self.root, os.getuid())
 
+    def test_private_link_retires_pre_split_clone_parent(self):
+        # yc's ~/.claude -> dotfiles/.claude: the clone layout from before private/ was split out
+        self.setup_root()
+        self.commit({'.claude/agents/ok.md': 'shared'})
+        m.publish(self.repo, self.root)
+        clone = self.home / 'dotfiles/.claude'
+        clone.mkdir(parents=True)
+        (self.home / '.claude').symlink_to('dotfiles/.claude')
+        backup = self.home / '.local/state/usr/backup-test'
+        m.link_private(self.root, self.home, backup)
+        self.assertFalse((self.home / '.claude').is_symlink())
+        self.assertTrue((self.home / '.claude/agents').is_symlink())
+        self.assertTrue((backup / '.retired-parents/.claude').is_symlink())
+
+    def test_private_link_refuses_other_parent_link(self):
+        self.setup_root()
+        self.commit({'.claude/agents/ok.md': 'shared'})
+        m.publish(self.repo, self.root)
+        (self.t / 'elsewhere').mkdir()
+        (self.home / '.claude').symlink_to(self.t / 'elsewhere')
+        with self.assertRaises(m.Refused):
+            m.link_private(self.root, self.home, self.home / '.local/state/usr/backup-test')
+
     def test_private_link_retires_parent_without_traversal(self):
         self.setup_root()
         self.commit({'.claude/agents/ok.md': 'shared'})

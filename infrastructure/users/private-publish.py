@@ -566,7 +566,8 @@ def link_private(root, home, backup, dry=False, restore=False):
             p = home / str(rel)
             if p.is_symlink():
                 target = os.path.normpath(os.path.join(str(p.parent), os.readlink(p)))
-                if target != str(home / 'dotfiles/private' / str(rel)):
+                # the user's own old clone: ~/dotfiles/private/<rel>, or ~/dotfiles/<rel> from before private/ was split out
+                if target not in (str(home / 'dotfiles/private' / str(rel)), str(home / 'dotfiles' / str(rel))):
                     raise Refused(f'foreign destination parent: {str(rel)}')
                 parents[str(rel)] = p
                 break

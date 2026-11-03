@@ -101,7 +101,7 @@ cmd_list() {
 # creators ask for stay as they are); the deny on what exists is applied by each run.
 
 cmd_clipboard_acl() {
-  local rt="${XDG_RUNTIME_DIR:-}" wl="${WAYLAND_DISPLAY:-}" u f n=0 d=0
+  local rt="${XDG_RUNTIME_DIR:-}" wl="${WAYLAND_DISPLAY:-}" u n=0 d=0 paths=()
   [ -n "$rt" ] && [ -n "$wl" ] || return 0
   [ "${wl#/}" = "$wl" ] || { rt=$(dirname "$wl"); wl=$(basename "$wl"); }
   [ -S "$rt/$wl" ] || return 0
@@ -117,15 +117,15 @@ cmd_clipboard_acl() {
     # group::rwx above makes that rwx, which widened the 0600 llm.sock to 0670 for the group; a deny entry needs no mask)
     # sockets: every one under the runtime dir (the first level, and those in subdirectories such as systemd/io.systemd.Manager or
     # pulse/native, which are 0666 and would be reachable through the traverse-only x), except the Wayland socket
-    while IFS= read -r -d '' f; do
-      [ "$f" = "$rt/$wl" ] && continue
-      setfacl -n -m "u:$u:---" "$f" 2>/dev/null && n=$((n + 1))
-    done < <(find "$rt" -xdev -mindepth 1 -maxdepth 4 -type s -print0 2>/dev/null)
+    # (one setfacl per batch through xargs: a call per path took 2 s per terminal with ~1300 stale .flatpak/wl sockets around)
+    mapfile -d '' -t paths < <(find "$rt" -xdev -mindepth 1 -maxdepth 4 -type s ! -path "$rt/$wl" -print0 2>/dev/null)
+    n=${#paths[@]}
+    [ "$n" = 0 ] || printf '%s\0' "${paths[@]}" | xargs -0 setfacl -n -m "u:$u:---" 2>/dev/null || true
     # first-level subdirectories and files: no traversal and no reading, so world-readable files in 0755 directories (hub/, pinned/,
     # systemd/, ...) and loose ones (cliphist-mode, *.lock) stay out of reach.
-    while IFS= read -r -d '' f; do
-      setfacl -n -m "u:$u:---" "$f" 2>/dev/null && d=$((d + 1))
-    done < <(find "$rt" -xdev -mindepth 1 -maxdepth 1 \( -type d -o -type f \) -print0 2>/dev/null)
+    mapfile -d '' -t paths < <(find "$rt" -xdev -mindepth 1 -maxdepth 1 \( -type d -o -type f \) -print0 2>/dev/null)
+    d=${#paths[@]}
+    [ "$d" = 0 ] || printf '%s\0' "${paths[@]}" | xargs -0 setfacl -n -m "u:$u:---" 2>/dev/null || true
     note "clipboard ACL for $u: $rt x, $wl rw, $n other sockets and $d subdirectories/files closed"
   done
 }
@@ -689,6 +689,15 @@ cmd_sync() {
       fi
     done < <(git -C "$REPO" ls-tree -r HEAD | awk '$2 == "commit" { print $1, $3, $4 }')
   fi
+  # tmux plugins: TPM keeps them in the owner's gitignored ~/.config/tmux/plugins, and a managed user's ~/.config/tmux is this
+  # read-only tree, so without them there is no resurrect (prefix+S / prefix+R fail), sidebar or fzf-url. Each checkout goes out at
+  # its HEAD (git archive: committed files, no .git); the -e .git test keeps git from walking up into the dotfiles repo.
+  for path in "$REPO"/.config/tmux/plugins/*/; do
+    [ -e "$path/.git" ] || continue
+    sub="$stage/.config/tmux/plugins/$(basename "$path")"
+    mkdir -p "$sub"
+    git -C "$path" archive --format=tar HEAD | tar -x -C "$sub" 2>/dev/null || echo "sync: could not archive tmux plugin $path" >>"$log"
+  done
   # the secret-bearing paths never leave the owner's checkout, whatever git says
   rm -rf -- "$stage/private" "$stage/env.secret.sh"
   if [ "$dry" = 1 ]; then
