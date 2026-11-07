@@ -19,6 +19,22 @@ max_duration_secs = 60
 model = "small"
 language = "ru"                # default; replaced by the remembered choice: ru | uk | en | auto | a comma list like en,ru,uk (auto-detect misfires on short clips)
 
+[vad]
+# Voice-activity check before Whisper: a recording without speech is dropped instead of transcribed, so Whisper's silence
+# hallucinations ("Субтитры субтитров Н.Новикова", 2026-11-06) never get pasted. energy (RMS, no model) only accepts or rejects
+# the whole recording; the Silero backend ("whisper", voxtype setup vad) was tried first and the next dictation lost its
+# punctuation and the start of a word ("не знаю, может" -> "за может"), which looks like speech-segment cutting.
+enabled = true
+backend = "energy"
+
 [output]
-mode = "type"
+# paste, not type: wtype gives every character a made-up keycode (the 1st new character gets keycode 9, the 14th 22 ...), and
+# ghostty reads the PHYSICAL key from the keycode, so characters that land on the BackSpace, Tab, Control_L or Alt_L codes vanish
+# (2026-11-06: "это просто" came out as "э прс" while the journal held the right text). The text goes through the clipboard and
+# one Ctrl+Shift+V (terminals: ghostty default + layout-keys.conf; Zen, Electron, Telegram: paste as plain text); the previous
+# clipboard comes back afterwards.
+mode = "paste"
+paste_keys = "ctrl+shift+v"
+restore_clipboard = true
+restore_clipboard_delay_ms = 300
 fallback_to_clipboard = true

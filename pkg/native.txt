@@ -41,7 +41,6 @@ dust
 earlyoom
 easyeffects
 efibootmgr
-electron42
 eza
 fail2ban
 fastfetch
@@ -144,6 +143,7 @@ qt6ct
 quickshell
 ranger
 rbw
+rclone
 reflector
 remmina
 ripgrep
@@ -167,6 +167,7 @@ stress-ng
 s-tui
 sudo
 swappy
+sway
 swaybg
 swayosd
 telegram-desktop

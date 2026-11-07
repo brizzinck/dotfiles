@@ -222,6 +222,8 @@ hl.config({
         -- fzf-menu relies on it: a one-shot menu terminal exits after its menu, and the then empty special workspace must close by
         -- itself (the window closes like any window, with its own animation, instead of a workspace toggle)
         close_special_on_empty = true,
+        -- frame rate for windows with the render_unfocused rule while they are hidden (camoufox-render-unfocused below)
+        render_unfocused_fps = 30,
     },
 
     cursor = {
@@ -283,6 +285,15 @@ hl.workspace_rule({
     workspace = "special:notes",
     gaps_out = 48,
     on_created_empty = "[workspace special:notes] ghostty -e sh -c 'mkdir -p ~/notes; exec nvim ~/notes/scratch.md'",
+})
+
+-- skw browsers (Camoufox) keep rendering on a hidden workspace. Wayland sends frame callbacks only to shown surfaces, so an
+-- automation window on another workspace got no paint, no requestAnimationFrame and hung screenshots. Workaround until skw
+-- ships per-window render modes (skalseweb plans/specs/items/followups-v020.md, item 8).
+hl.window_rule({
+    name = "camoufox-render-unfocused",
+    match = { class = "^(camoufox)$" },
+    render_unfocused = true,
 })
 
 -- Fail closed before any listener runs: only identifiable human windows are silently returned by skw-ws8.

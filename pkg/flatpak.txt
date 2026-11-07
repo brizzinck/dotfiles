@@ -3,7 +3,9 @@ app.zen_browser.zen
 com.brave.Browser
 com.google.AndroidStudio
 com.google.Chrome
+com.microsoft.Edge
 com.mojang.Minecraft
+com.opera.Opera
 com.spotify.Client
 com.surfshark.Surfshark
 com.unity.UnityHub
