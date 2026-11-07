@@ -237,6 +237,9 @@ WRITE_STAGES = frozenset(('request', 'policy', 'storage', 'backend-prepare', 'ba
                          'item-create', 'item-edit', 'item-verify', 'read-visibility', 'complete', 'capacity'))
 WRITE_CODES = frozenset(('locked', 'unavailable', 'policy', 'bad_request', 'rate_limited', 'conflict', 'pending', 'internal', 'refused'))
 MARKER = "vault-share"
+# Peers that may ask only the BW unlock bit (op "unlocked"): metadata, no secret, no scope. tgconfirm uses it to decide whether a
+# Telegram send may skip the owner's popup. The unit sets the env; the default covers the standard install.
+UNLOCK_PEERS = frozenset(p.strip() for p in (os.environ.get("VAULT_SHARE_UNLOCK_PEERS") or "tgconfirm").split(",") if p.strip())
 
 
 def _under(path, root):
@@ -921,6 +924,23 @@ class Broker:
         fn = {"list": self.op_list, "describe": self.op_describe, "get": self.op_get, "totp": self.op_totp}[op]
         return await fn(msg, name)
 
+    async def handle_unlock(self, reader, uid):
+        """Answer only the BW unlock bit to a trusted peer (op "unlocked"). No vault read, no scope, no secret."""
+        try:
+            line = await asyncio.wait_for(reader.readline(), 5)
+            if len(line) > MAX_REQUEST or not line.endswith(b"\n"):
+                raise ValueError
+            msg = json.loads(line)
+            if not isinstance(msg, dict) or msg.get("v") != 1 or msg.get("op") != "unlocked":
+                raise ValueError
+        except (ValueError, asyncio.TimeoutError, asyncio.LimitOverrunError):
+            return {"ok": False, "v": 1, "error": "bad_request", "message": "bad request"}, "bad_request"
+        wait = self.rates.take(uid, "meta")
+        if wait is not None:
+            return {"ok": False, "v": 1, "error": "rate_limited", "message": "too many requests", "retry_after": int(wait) + 1}, "rate_limited"
+        up = await self.unlocked()
+        return {"ok": True, "v": 1, "unlocked": up}, "ok"
+
     async def handle(self, reader, writer):
         t0 = time.monotonic()
         self.last_conn = t0
@@ -933,6 +953,9 @@ class Broker:
                 resp = {"ok": False, "v": 1, "error": "refused",
                         "message": f"uid {uid} is the owner: use rbw directly" if uid == self.owner_uid else f"uid {uid} has no vault scope"}
                 result = "refused"
+            elif name in UNLOCK_PEERS:
+                op = "unlocked"
+                resp, result = await self.handle_unlock(reader, uid)
             elif not self.scopes.load():
                 resp = {"ok": False, "v": 1, "error": "unavailable", "message": "the scope file is missing or invalid"}
                 result = "unavailable"

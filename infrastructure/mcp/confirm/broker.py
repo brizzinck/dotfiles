@@ -74,6 +74,8 @@ SOCKET_CANDIDATES = range(10) # wayland-0 .. wayland-9
 # processes that may sit between the session leader and the compositor (comm names): the wrapper, the login shell hypr-login execs
 LOGIN_CHAIN = {"start-hyprland", "hypr-login", "sh", "bash", "zsh", "dash", "fish"}
 ACCOUNT_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+VAULT_SOCK = "/run/vault-share/sock"   # the owner's vault-share broker; answers the BW unlock bit (op "unlocked")
+VAULT_UNLOCK_WAIT = 4                   # seconds for the unlock query, fail-closed (treated as locked) on any error
 
 
 def log(msg: str) -> None:
@@ -132,6 +134,7 @@ class Broker:
         self.request_rate = RateLimit(*REQUEST_RATE, clock=mono)
         self.lock = asyncio.Lock()          # one popup at a time
         self.last_state = None
+        self.vault_sock = env.get("TGCONFIRM_VAULT_SOCK", VAULT_SOCK)
 
     # --- state file read by waybar / hub / mcp-telegram-send status -----------------------------------------------------
     def enabled(self) -> bool:
@@ -394,6 +397,32 @@ class Broker:
     async def x_send(self, account: str, body: dict, timeout: float) -> tuple[int, dict]:
         return await asyncio.get_running_loop().run_in_executor(None, self.x_send_sync, account, body, timeout)
 
+    # --- Bitwarden unlock bridge (vault-share) --------------------------------------------------------------------------
+    def vault_unlocked_sync(self) -> bool:
+        """Ask the owner's vault-share broker whether the vault is unlocked. Fail closed (False) on any error: an unreachable or
+        silent bridge falls back to the hub toggle + popup, never to silent sending. The bit is not a secret (an owner-uid process
+        can run `rbw unlocked` itself); the point is that this isolated user cannot be lied to by an agent."""
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(VAULT_UNLOCK_WAIT)
+        try:
+            s.connect(self.vault_sock)
+            s.sendall(b'{"v":1,"op":"unlocked"}\n')
+            buf = b""
+            while not buf.endswith(b"\n") and len(buf) < 65536:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+            resp = json.loads(buf or b"{}")
+            return bool(resp.get("ok") and resp.get("unlocked") is True)
+        except (OSError, ValueError):
+            return False
+        finally:
+            s.close()
+
+    async def vault_unlocked(self) -> bool:
+        return await asyncio.get_running_loop().run_in_executor(None, self.vault_unlocked_sync)
+
     # --- operations -----------------------------------------------------------------------------------------------------
     def status(self) -> dict:
         return {"ok": True, "enabled": self.enabled(), "until": int(self.until) if self.enabled() else 0,
@@ -444,8 +473,9 @@ class Broker:
         return {"ok": True, "status": "disabled", "enabled": False}
 
     async def op_send(self, msg: dict) -> dict:
-        if not self.enabled():
-            return {"ok": False, "status": "disabled", "reason": "sending is disabled (owner: hub > Telegram: allow sending)"}
+        auto = await self.vault_unlocked()   # BW unlocked -> sending allowed for any agent, popup skipped (allowlist/rate/audit stay)
+        if not self.enabled() and not auto:
+            return {"ok": False, "status": "disabled", "reason": "sending is disabled (owner: unlock Bitwarden, or hub > Telegram: allow sending)"}
         account = msg.get("account", "main")
         is_file = msg.get('op') == 'send_file'
         text, chat, reply_to = msg.get("text", '' if is_file else None), msg.get("chat"), msg.get("reply_to")
@@ -482,22 +512,28 @@ class Broker:
                 log(f"send account={account} chat={clean_line(chat, 40)} len={n} sha256={h} result=rejected({why})")
                 return {"ok": False, "status": "rejected", "reason": why}
             chat_id, name = info["chat_id"], clean_line(info.get("name", "?"), 120)
-            if not self.enabled():
+            if not self.enabled() and not auto:
                 return {"ok": False, "status": "disabled", "reason": "sending was switched off"}
-            if not self.popup_rate.take():   # popups, not requests: a typo in a chat name costs nothing
-                log(f"send account={account} chat={chat_id} len={n} sha256={h} result=rejected(rate)")
-                return {"ok": False, "status": "rejected",
-                        "reason": f"rate limit ({RATE[0]} confirmation popups per {RATE[1] // 60} minutes), try later"}
-            popup_text = attachment_description(attachment) + '\n\nCaption:\n' + text if is_file else text
-            res = await self.popup({"kind": "send", "title": "Send this Telegram file?" if is_file else "Send this Telegram message?", "account": account, "name": info.get("name", "?"),
-                                    "username": info.get("username", ""), "chat_id": chat_id, "chat_kind": info.get("kind", ""),
-                                    "reply_preview": info.get("reply_preview", ""), "reply_to": reply_to, "text": popup_text})
-            if res != "confirmed":
-                log(f"send account={account} chat={chat_id} len={n} sha256={h} result={clean_line(res)}")
-                if res.startswith("error"):
-                    return {"ok": False, "status": "rejected", "reason": clean_line(res[7:])}
-                return {"ok": False, "status": res, "name": name}
-            if not self.enabled():
+            if auto:
+                # Bitwarden unlocked = the owner's standing consent. No popup; the allowlist resolve above, the request rate limit
+                # and this audit line stay. The log marks it so the trail shows no human pressed a code.
+                log(f"send account={account} chat={chat_id} len={n} sha256={h} auto=vault-unlocked (no popup)")
+                res = "confirmed"
+            else:
+                if not self.popup_rate.take():   # popups, not requests: a typo in a chat name costs nothing
+                    log(f"send account={account} chat={chat_id} len={n} sha256={h} result=rejected(rate)")
+                    return {"ok": False, "status": "rejected",
+                            "reason": f"rate limit ({RATE[0]} confirmation popups per {RATE[1] // 60} minutes), try later"}
+                popup_text = attachment_description(attachment) + '\n\nCaption:\n' + text if is_file else text
+                res = await self.popup({"kind": "send", "title": "Send this Telegram file?" if is_file else "Send this Telegram message?", "account": account, "name": info.get("name", "?"),
+                                        "username": info.get("username", ""), "chat_id": chat_id, "chat_kind": info.get("kind", ""),
+                                        "reply_preview": info.get("reply_preview", ""), "reply_to": reply_to, "text": popup_text})
+                if res != "confirmed":
+                    log(f"send account={account} chat={chat_id} len={n} sha256={h} result={clean_line(res)}")
+                    if res.startswith("error"):
+                        return {"ok": False, "status": "rejected", "reason": clean_line(res[7:])}
+                    return {"ok": False, "status": res, "name": name}
+            if not self.enabled() and not auto:
                 return {"ok": False, "status": "disabled", "reason": "sending was switched off"}
             # shielded: once the owner confirmed, a hang-up of the client must not tear the call down half way; the log line
             # below is written either way. (A client that left DURING the popup never gets here: the popup is cancelled.)

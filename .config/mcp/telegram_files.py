@@ -9,7 +9,7 @@ import hashlib
 import os
 import stat
 
-MAX_FILE_BYTES = 5 * 1024 * 1024
+MAX_FILE_BYTES = 4 * 1024 * 1024 * 1024
 MAX_REQUEST_BYTES = 4 * ((MAX_FILE_BYTES + 2) // 3) + 65536
 MAX_CAPTION = 1024
 
@@ -25,7 +25,7 @@ def validate_attachment(value):
         raise ValueError("attachment needs a filename without a path or control characters")
     size = value.get("size")
     if type(size) is not int or not 0 < size <= MAX_FILE_BYTES:
-        raise ValueError("file must contain between 1 byte and 5 MiB")
+        raise ValueError("file must contain between 1 byte and 4 GiB")
     if not isinstance(encoded, str) or len(encoded) > 4 * ((MAX_FILE_BYTES + 2) // 3):
         raise ValueError("file data is missing or too large")
     try:
@@ -44,7 +44,7 @@ def snapshot_file(path):
     with os.fdopen(fd, 'rb') as stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= MAX_FILE_BYTES:
-            raise ValueError("choose a non-empty regular file of at most 5 MiB")
+            raise ValueError("choose a non-empty regular file of at most 4 GiB")
         content = stream.read(MAX_FILE_BYTES + 1)
     value = dict(name=os.path.basename(path), size=len(content),
                  sha256=hashlib.sha256(content).hexdigest(),
