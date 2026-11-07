@@ -330,6 +330,7 @@ fi
 
 # mise: tool versions per project (non-secret [env] too); replaces direnv. Secrets never live in the shell: `envs run`, see CLAUDE.md
 [[ -r ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/mise.zsh ]] && source ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/mise.zsh
+[[ -r ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/skw-shim.zsh ]] && source "${XDG_CONFIG_HOME:-$HOME/.config}/zsh/skw-shim.zsh"
 
 # ── Maintenance helpers ─────────────────────────────────────────────────────
 # System upgrades: `sysup` is ~/.local/bin/sysup (background check + download, install only when you run it:

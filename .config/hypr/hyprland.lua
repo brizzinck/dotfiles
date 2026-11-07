@@ -56,6 +56,7 @@ hl.on("hyprland.start", function()
     hl.exec_cmd("~/.config/waybar/scripts/bar.sh init; ~/.config/waybar/scripts/waybar-run.sh & hypridle")
     hl.exec_cmd("systemctl --user start hyprpolkitagent")
     hl.exec_cmd("~/.local/bin/usr clipboard-acl")
+    hl.exec_cmd("systemctl --user start skw-ws8.service")
     hl.exec_cmd("dunst")
     hl.exec_cmd("swayosd-server")
     hl.exec_cmd("wl-paste --type text --watch cliphist -max-items 300 store")
@@ -282,6 +283,13 @@ hl.workspace_rule({
     workspace = "special:notes",
     gaps_out = 48,
     on_created_empty = "[workspace special:notes] ghostty -e sh -c 'mkdir -p ~/notes; exec nvim ~/notes/scratch.md'",
+})
+
+-- Fail closed before any listener runs: only identifiable human windows are silently returned by skw-ws8.
+hl.window_rule({
+    name = "camoufox-ws8",
+    match = { class = "^(camoufox)$" },
+    workspace = (os.getenv("SKW_WS8_WORKSPACE") or "8") .. " silent",
 })
 
 -- Floating TUIs (tui)

@@ -1,0 +1,384 @@
+#!/usr/bin/env -S python3 -I -B
+"""Keep Camoufox hidden by default; silently return identifiable human windows."""
+import datetime as dt
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import stat
+import subprocess
+import sys
+import time
+
+
+RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+STATE = RUNTIME / "skw-ws8"
+SHIM = Path.home() / ".local/lib/skw-shim/skw"
+WORKSPACE = os.environ.get("SKW_WS8_WORKSPACE", "8")
+
+
+class Uncertain(Exception):
+    pass
+
+
+def real_skw():
+    for entry in os.get_exec_path():
+        p = Path(entry) / "skw"
+        if p.is_file() and os.access(p, os.X_OK) and p.resolve() != SHIM.resolve():
+            return str(p.absolute())
+    return None
+
+
+def call(args, env=None):
+    try:
+        p = subprocess.run(args, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=1.5)
+        if p.returncode:
+            raise Uncertain()
+        return json.loads(p.stdout)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        raise Uncertain() from None
+
+
+def items(value):
+    if not isinstance(value, dict) or not isinstance(value.get("items"), list):
+        raise Uncertain()
+    return value["items"]
+
+
+def epoch(value):
+    try:
+        return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError, TypeError):
+        raise Uncertain() from None
+
+
+def atomic_json(path, value):
+    tmp = path.with_suffix(".tmp")
+    with tmp.open("w") as out:
+        json.dump(value, out)
+    tmp.replace(path)
+
+
+def sockets():
+    root = RUNTIME / "hypr"
+    candidates = list(root.glob("*/.socket2.sock"))
+    candidates.sort(key=lambda p: p.parent.stat().st_mtime, reverse=True)
+    sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE", "")
+    preferred = root / sig / ".socket2.sock"
+    if preferred in candidates:
+        candidates.remove(preferred)
+        candidates.insert(0, preferred)
+    return candidates
+
+
+class Placer:
+    def __init__(self):
+        self.skw = real_skw()
+        self.env = dict(os.environ)
+        self.handled = set()
+        self.seeded_pids = set()
+        try:
+            self.uncertain_pids = set(json.loads((STATE / "uncertain-pids").read_text()))
+        except FileNotFoundError:
+            self.uncertain_pids = set()
+        except (OSError, ValueError, TypeError):
+            raise Uncertain() from None
+        try:
+            self.cutoff = float((STATE / "uncertain-before").read_text())
+        except FileNotFoundError:
+            self.cutoff = 0
+        except (OSError, ValueError):
+            raise Uncertain() from None
+        try:
+            self.profiles = json.loads((STATE / "sessions.json").read_text())
+            if not isinstance(self.profiles, dict):
+                raise ValueError()
+        except FileNotFoundError:
+            self.profiles = {}
+        except (OSError, ValueError):
+            # Missing first-window history is ambiguous. Never guess that a later automation window is the first.
+            raise Uncertain() from None
+
+    def status(self, signature, connected):
+        atomic_json(STATE / "status.json", {"pid": os.getpid(), "signature": signature, "connected": connected})
+
+    def save(self):
+        atomic_json(STATE / "sessions.json", self.profiles)
+
+    def log(self, address, decision):
+        # Fixed reasons and address only: no profile names, titles, URLs or CLI error output.
+        print(f"camoufox address={address} decision={decision}", flush=True)
+
+    def clients(self):
+        value = call(["hyprctl", "clients", "-j"], self.env)
+        if not isinstance(value, list):
+            raise Uncertain()
+        return value
+
+    def profile(self, pid):
+        if not self.skw:
+            self.skw = real_skw()
+        if not self.skw:
+            raise Uncertain()
+        for p in items(call([self.skw, "ps", "--json"])):
+            session = p.get("session") or {}
+            if session.get("pid") == pid:
+                name, started = p.get("name"), session.get("started_at")
+                if not isinstance(name, str) or not name or "/" in name or "\n" in name or "\r" in name:
+                    raise Uncertain()
+                epoch(started)
+                refs = {name, str(p.get("id", "")), p.get("uuid", "")}
+                refs = {r for r in refs if isinstance(r, str) and r and "/" not in r and "\n" not in r and "\r" not in r}
+                return name, started, refs
+        raise Uncertain()
+
+    def record(self, name, pid, started):
+        key = f"{pid}:{started}"
+        old = self.profiles.get(name, {})
+        if old.get("key") != key:
+            old = {"key": key, "seen": False, "agent": False, "tokens": old.get("tokens", {})}
+            self.profiles[name] = old
+        return old
+
+    def read_record(self, path):
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd) as source:
+                metadata = os.fstat(source.fileno())
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_mode & 0o077:
+                    raise Uncertain()
+                return source.read(1024)
+        except FileNotFoundError:
+            return None
+        except OSError:
+            raise Uncertain() from None
+
+    def stamp(self, value):
+        try:
+            stamp = float(value)
+            if not 0 < stamp <= time.time() + 1:
+                raise ValueError()
+            return stamp
+        except (ValueError, TypeError):
+            raise Uncertain() from None
+
+    def marker(self, refs, started, record):
+        # Human starts invalidate pending agent intents across name / numeric ID / UUID aliases.
+        human = max((self.stamp(value) for ref in refs
+                     if (value := self.read_record(STATE / f"human-{ref}")) is not None), default=0)
+        for ref in refs:
+            inhibit = self.read_record(STATE / f"inhibit-{ref}")
+            if inhibit is not None and self.stamp(inhibit) >= human:
+                record["agent"] = True
+            token = self.read_record(STATE / f"agent-{ref}")
+            if token is None:
+                continue
+            fields = token.split()
+            if len(fields) < 2:
+                raise Uncertain()
+            stamp = self.stamp(fields[0])
+            if stamp <= human:
+                continue
+            launched = len(fields) == 3 and fields[2] in ("start", "restart")
+            fresh = stamp >= epoch(started)
+            pending = launched and token != record["tokens"].get(ref)
+            if fresh or pending:
+                record["agent"] = True
+            # An old session may see a restart intent, but only the new session may consume it.
+            if not launched or epoch(started) >= stamp:
+                record["tokens"][ref] = token
+        return record["agent"]
+
+    def seed(self):
+        self.handled.clear()
+        self.seeded_pids = set(self.uncertain_pids)
+        for c in self.clients():
+            if c.get("class") != "camoufox":
+                continue
+            self.handled.add(c.get("address"))
+            pid = c.get("pid")
+            self.seeded_pids.add(pid)
+            try:
+                name, started, refs = self.profile(pid)
+                r = self.record(name, pid, started)
+                self.marker(refs, started, r)
+                r["seen"] = True
+            except Uncertain:
+                self.uncertain_pids.add(pid)
+                self.cutoff = time.time()
+        atomic_json(STATE / "uncertain-pids", list(self.uncertain_pids))
+        atomic_json(STATE / "uncertain-before", self.cutoff)
+        self.save()
+
+    def event(self, line):
+        kind, sep, body = line.partition(">>")
+        if not sep:
+            return
+        if kind in ("closewindow", "closewindowv2"):
+            self.handled.discard("0x" + body.removeprefix("0x").split(",", 1)[0])
+            return
+        if kind not in ("openwindow", "openwindowv2"):
+            return
+        fields = body.split(",", 3)
+        if len(fields) < 3 or fields[2] != "camoufox":
+            return
+        address = "0x" + fields[0].removeprefix("0x")
+        if not re.fullmatch(r"0x[0-9a-fA-F]+", address) or address in self.handled:
+            return
+        self.handled.add(address)
+        observed_pid = None
+        for attempt in range(6):
+            try:
+                clients = self.clients()
+                window = next((c for c in clients if c.get("address") == address), None)
+                if window is None:
+                    raise Uncertain()
+                if window.get("class") != "camoufox":
+                    return
+                pid = window["pid"]
+                observed_pid = pid
+                name, started, refs = self.profile(pid)
+                r = self.record(name, pid, started)
+                first = not r["seen"] and pid not in self.seeded_pids and epoch(started) > self.cutoff
+                agent = self.marker(refs, started, r)
+                # Save even if later metadata/dispatch fails: this window consumed the first-window exception.
+                r["seen"] = True
+                self.save()
+                if agent:
+                    self.log(address, "keep-agent")
+                    return
+                if not first and items(call([self.skw, "automation", name, "--list", "--json"])):
+                    self.log(address, "keep-automation")
+                    return
+                workspace = call(["hyprctl", "activeworkspace", "-j"], self.env)
+                wsid = workspace.get("id")
+                if isinstance(wsid, int) and wsid > 0:
+                    target = str(wsid)
+                else:
+                    name_ws = workspace["name"]
+                    target = name_ws if name_ws.startswith("special:") else "name:" + name_ws
+                # Recheck marker and target identity immediately before moving; a concurrent agent request wins.
+                if self.marker(refs, started, r):
+                    self.save()
+                    self.log(address, "keep-agent")
+                    return
+                current = next((c for c in self.clients() if c.get("address") == address), {})
+                if current.get("class") != "camoufox" or current.get("pid") != pid:
+                    self.log(address, "keep-changed")
+                    return
+                # A delayed event must not override a window the owner has already moved off the managed desk.
+                if str((current.get("workspace") or {}).get("id")) != WORKSPACE:
+                    self.log(address, "keep-moved")
+                    return
+                if target != WORKSPACE:
+                    moved = subprocess.run(["hyprd", "movetoworkspacesilent", f"{target},address:{address}"],
+                                           env=self.env, stdin=subprocess.DEVNULL, capture_output=True, timeout=1.5)
+                    if moved.returncode:
+                        raise Uncertain()
+                self.log(address, "return-human")
+                return
+            except (Uncertain, OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
+                if attempt < 5:
+                    time.sleep(0.1 * (attempt + 1))
+        # An unresolved event may have consumed the first-window exception of any already-started session.
+        # Persist the ambiguity, including when even the PID was unavailable, so later automation cannot claim first.
+        if observed_pid is not None:
+            self.uncertain_pids.add(observed_pid)
+            self.seeded_pids.add(observed_pid)
+            atomic_json(STATE / "uncertain-pids", sorted(self.uncertain_pids))
+        self.cutoff = time.time()
+        atomic_json(STATE / "uncertain-before", self.cutoff)
+        self.log(address, "keep-unknown")
+
+    def follow(self):
+        while True:
+            connected = False
+            for path in sockets():
+                signature = path.parent.name
+                try:
+                    with socket.socket(socket.AF_UNIX) as sock:
+                        sock.settimeout(2)
+                        sock.connect(str(path))
+                        self.env["HYPRLAND_INSTANCE_SIGNATURE"] = signature
+                        # Subscribe before snapshotting: existing windows are never relocated on service start/restart.
+                        self.seed()
+                        self.status(signature, True)
+                        connected = True
+                        pending = b""
+                        while True:
+                            try:
+                                chunk = sock.recv(65536)
+                            except socket.timeout:
+                                continue
+                            if not chunk:
+                                break
+                            pending += chunk
+                            if len(pending) > 1048576:
+                                raise Uncertain()
+                            while b"\n" in pending:
+                                line, pending = pending.split(b"\n", 1)
+                                self.event(line.decode("utf-8", "replace"))
+                except (OSError, Uncertain):
+                    pass
+                finally:
+                    self.status(signature, False)
+                if connected:
+                    break
+            time.sleep(1)
+
+
+def check():
+    if real_skw() is None:
+        print("INFO skw is not installed")
+        return 0
+    try:
+        p = subprocess.run(["zsh", "-lc", "command -v skw"], capture_output=True, text=True, timeout=5)
+        if p.returncode or Path(p.stdout.strip()).absolute() != SHIM:
+            raise Uncertain()
+    except (OSError, subprocess.TimeoutExpired, Uncertain):
+        print("FAIL shim is not first on PATH in login zsh")
+        return 1
+    if not sockets():
+        print("INFO no Hyprland session; login zsh uses the shim")
+        return 0
+    try:
+        status = json.loads((STATE / "status.json").read_text())
+        with (STATE / "placer.lock").open() as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                raise Uncertain()
+            except BlockingIOError:
+                pass
+        os.kill(status["pid"], 0)
+        if not status["connected"] or status["signature"] not in {p.parent.name for p in sockets()}:
+            raise Uncertain()
+    except (OSError, ValueError, KeyError, Uncertain):
+        print("FAIL placer is not connected in this Hyprland session")
+        return 1
+    print("PASS placer connected; login zsh uses the shim")
+    return 0
+
+
+def main():
+    if sys.argv[1:] == ["--check"]:
+        return check()
+    if sys.argv[1:]:
+        print("usage: skw-ws8 [--check]", file=sys.stderr)
+        return 2
+    if not re.fullmatch(r"[1-9][0-9]*", WORKSPACE):
+        print("skw-ws8: SKW_WS8_WORKSPACE must be a positive workspace number", file=sys.stderr)
+        return 2
+    os.umask(0o077)
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with (STATE / "placer.lock").open("w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return 0
+        Placer().follow()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

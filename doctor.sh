@@ -63,6 +63,29 @@ check() { # check <name> <ok-detail> <fail-detail> <command...>
   if "$@" >/dev/null 2>&1; then ok "$name" "$okd"; else bad "$name" "$badd"; fi
 }
 
+skw_ws8_check() {
+  local result tests
+  result=$("$DOTFILES/.local/bin/skw-ws8" --check 2>&1)
+  case "$result" in
+    PASS\ *) ok skw-ws8 "${result#PASS }" ;;
+    INFO\ *) info skw-ws8 "${result#INFO }" ;;
+    *) bad skw-ws8 "${result#FAIL } (stow ., systemctl --user enable --now skw-ws8.service)" ;;
+  esac
+  if tests=$("$DOTFILES/infrastructure/tests/skw-ws8/run.sh" --quick 2>&1); then
+    ok skw-ws8-tests "$(printf '%s' "$tests" | tail -1)"
+  else
+    bad skw-ws8-tests "$(printf '%s' "$tests" | grep -m1 '^FAIL') (infrastructure/tests/skw-ws8/run.sh)"
+  fi
+}
+
+# Focused read-only check for the skw window subsystem; keeps unrelated checks out of its rollout.
+if [ "${1:-}" = --only ] && [ "${2:-}" = skw-ws8 ]; then
+  info() { [ "$ONLY_FAILS" = 1 ] || printf 'INFO  %-18s %s\n' "$1" "${2:-}"; }
+  skw_ws8_check
+  printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
+  exit "$((FAIL > 0))"
+fi
+
 # Hyprland instance (hyprctl needs the signature; fall back to the newest instance dir of this user)
 if [ -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]; then
   sig="$(find "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/hypr" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %f\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2)"
@@ -1523,6 +1546,7 @@ if [ -z "$st_bad" ]; then ok stop-timeouts "user units 10 s, system units 20 s, 
 elif [ ! -e /etc/systemd/system.conf.d/10-dotfiles-stop-timeout.conf ]; then info stop-timeouts "${st_bad# } (sudo ./apply-system.sh --only config)"
 else bad stop-timeouts "${st_bad# } (sudo ./apply-system.sh --only config)"; fi
 if systemctl --user is-active crash-watch.service >/dev/null 2>&1; then ok crash-watch "crash-watch.service follows the coredump journal (toast, details, ask Claude, mute)"; else bad crash-watch "crash-watch.service is not running (stow ., systemctl --user enable --now crash-watch.service)"; fi
+skw_ws8_check
 if command -v voxtype >/dev/null 2>&1; then
   dict_model="$(cat "${XDG_STATE_HOME:-$HOME/.local/state}/dictation/model" 2>/dev/null)"; dict_model="${dict_model:-small}"
   if [ -s "$HOME/.local/share/voxtype/models/ggml-$dict_model.bin" ]; then info dictation "voxtype installed, model $dict_model present, language $(cat "${XDG_STATE_HOME:-$HOME/.local/state}/dictation/lang" 2>/dev/null || echo ru)"; else info dictation "voxtype installed, model $dict_model missing (dictation.sh model)"; fi

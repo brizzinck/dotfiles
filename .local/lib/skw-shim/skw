@@ -1,0 +1,99 @@
+#!/usr/bin/zsh -f
+# Keep agent detection in sync with .local/bin/envs: agent_context(), AGENTS / AGENT_RUNNERS / AGENT_PATHS.
+# zsh builtins read /proc and the clock: no Python startup on the caller's path.
+emulate -LR zsh
+setopt no_unset
+
+typeset self=$0 real='' d candidate
+typeset -a clean
+for d in "${path[@]}"; do
+  candidate=${d:-.}/skw
+  [[ -e $candidate && $candidate -ef $self ]] && continue
+  clean+=("$d")
+  [[ -z $real && -f $candidate && -x $candidate ]] && real=$candidate
+done
+path=("${clean[@]}")
+export PATH
+[[ -n $real ]] || { print -u2 -r -- 'skw: real executable not found after removing shim'; exit 127; }
+
+typeset verb='' a skip=0 positional=0 help=0
+typeset -a profiles
+for a in "$@"; do
+  if (( skip )); then skip=0; continue; fi
+  if (( ! positional )); then
+    case $a in
+      --) positional=1; continue ;;
+      --host|--client|--downloads|--revoke) skip=1; continue ;;
+      -h|--help) help=1; continue ;;
+      -*) continue ;;
+    esac
+  fi
+  if [[ -z $verb ]]; then verb=$a; else profiles+=("$a"); fi
+done
+
+agent_context() {
+  if [[ -n ${CLAUDECODE:-} ]]; then REPLY=claude; return; fi
+  if [[ -n ${AI_AGENT:-} ]]; then
+    case $AI_AGENT in (*[^a-zA-Z0-9_.-]*) REPLY=agent ;; (*) REPLY=$AI_AGENT ;; esac
+    return
+  fi
+  local pid=$$ count=0 comm stat arg base
+  local -a argv fields
+  while (( pid > 1 && count++ < 64 )); do
+    comm=$(</proc/$pid/comm) 2>/dev/null || break
+    case $comm in
+      claude|codex|gemini|claude-agent-ac|claude-agent-acp|codex-acp) REPLY=$comm; return ;;
+      node|bun|python3|python|deno)
+        argv=("${(@0)$(</proc/$pid/cmdline)}")
+        for arg in "${argv[@]:1:3}"; do
+          base=${arg:t}; base=${base%.mjs}; base=${base%.js}
+          case $base in
+            claude|codex|gemini|claude-agent-ac|claude-agent-acp|codex-acp) REPLY=$base; return ;;
+          esac
+          case $arg/ in
+            */claude-code/*|*/gemini-cli/*|*/@openai/codex/*|*/claude-agent-acp/*|*/codex-acp/*)
+              REPLY=agent; return ;;
+          esac
+        done ;;
+    esac
+    stat=$(</proc/$pid/stat) 2>/dev/null || break
+    fields=(${=stat##*\) })
+    pid=${fields[2]:-0}
+  done
+  REPLY=''
+}
+
+if (( ! help )) && [[ $verb == (start|restart|automation) ]]; then
+  agent_context
+  typeset agent=$REPLY profile dir=${XDG_RUNTIME_DIR:-/run/user/$UID}/skw-ws8 tmp old_umask=$(umask)
+  # A manual launch invalidates an unconsumed pre-start marker (see docs/agents/skw-windows.md).
+  if [[ -n $agent || $verb == (start|restart) ]]; then
+    umask 077
+    if [[ -d $dir ]] || command mkdir -p -m 700 -- "$dir" 2>/dev/null; then
+      zmodload zsh/datetime
+      for profile in "${profiles[@]}"; do
+        # A profile name is one filename component; malformed arguments still reach the real CLI unchanged.
+        [[ -n $profile && $profile != */* && $profile != *$'\n'* && $profile != *$'\r'* ]] || continue
+        # The real CLI parses all-digit refs as IDs, including leading zeroes. Avoid arithmetic overflow.
+        if [[ $profile != *[^0-9]* ]]; then
+          while (( ${#profile} > 1 )) && [[ $profile == 0* ]]; do profile=${profile#0}; done
+        fi
+        if [[ -n $agent ]]; then
+          # Keep an inhibit record if atomic marker installation fails: the real command must still run unchanged.
+          (print -r -- "$EPOCHREALTIME" >| "$dir/inhibit-$profile") 2>/dev/null
+          tmp=$dir/.agent-$$
+          if (print -r -- "$EPOCHREALTIME $agent $verb" >| "$tmp" && command mv -f -- "$tmp" "$dir/agent-$profile") 2>/dev/null; then
+            command rm -f -- "$dir/inhibit-$profile" 2>/dev/null
+          fi
+        else
+          # Profile refs include names, numeric IDs and UUIDs; the placer compares this invalidation across aliases.
+          tmp=$dir/.human-$$
+          (print -r -- "$EPOCHREALTIME" >| "$tmp" && command mv -f -- "$tmp" "$dir/human-$profile") 2>/dev/null
+          command rm -f -- "$dir/agent-$profile" "$dir/inhibit-$profile" 2>/dev/null
+        fi
+      done
+    fi
+    umask "$old_umask"
+  fi
+fi
+exec "$real" "$@"
