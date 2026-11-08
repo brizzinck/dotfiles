@@ -539,6 +539,27 @@ FAKE_PICK_IDS="-1001111" setup_env "$SETUP" send-chats </dev/null >/dev/null 2>&
 check "send-chats: no answer at all (EOF) is a no" bash -c '[ ! -e "$1" ] && [ "$(cat "$2")" = 777 ]' _ "$FAKE_DIR/creds-payload.json" "$FAKE_DIR/sealed-send.txt"
 FAKE_PICK_IDS="-1001111" setup_env "$SETUP" send-chats <<<"y" >/dev/null 2>&1
 check "send-chats: confirmed, the sealed list (not the widened record) plus the ticked chat is what the helper gets" jq -e '.send_allowlist == "-1001111,777"' "$FAKE_DIR/creds-payload.json"
+
+# add / remove / join: change the read allowlist by @name / id / t.me link, no picker (an agent hands the owner the command)
+jq '(.fields[] | select(.name=="allowlist") | .value) = "-1001111,42"' "$FAKE_DIR/bw-item.json" >"$FAKE_DIR/x.json" && mv "$FAKE_DIR/x.json" "$FAKE_DIR/bw-item.json"
+: >"$FAKE_DIR/login.log"; rm -f "$FAKE_DIR/creds-payload.json"
+setup_env "$SETUP" add @news --yes </dev/null >"$SCRATCH/add.out" 2>&1
+check "add: resolves the chat (resolve mode, no picker, no QR)" bash -c 'grep -q "^mode=resolve .*queries=@news" "$1" && ! grep -q "^mode=qr" "$1"' _ "$FAKE_DIR/login.log"
+check "add: the allowlist grows and only the allowlist goes to the root helper" bash -c 'jq -e "keys == [\"allowlist\"]" "$1" && jq -e "(.fields[] | select(.name==\"allowlist\") | .value) == \"-1002222,-1001111,42\"" "$2"' _ "$FAKE_DIR/creds-payload.json" "$FAKE_DIR/bw-item.json"
+check "add: the summary names the chat with title, kind and id" bash -c 'grep -q "^Adding (1):" "$1" && grep -q "News" "$1" && grep -q "id -1002222" "$1"' _ "$SCRATCH/add.out"
+rm -f "$FAKE_DIR/creds-payload.json"
+setup_env "$SETUP" remove @news --yes </dev/null >"$SCRATCH/remove.out" 2>&1
+check "remove: the allowlist shrinks back and lists the chat under Removing" bash -c 'grep -q "^Removing (1):" "$1" && jq -e "(.fields[] | select(.name==\"allowlist\") | .value) == \"-1001111,42\"" "$2"' _ "$SCRATCH/remove.out" "$FAKE_DIR/bw-item.json"
+jq '(.fields[] | select(.name=="allowlist") | .value) = "42"' "$FAKE_DIR/bw-item.json" >"$FAKE_DIR/x.json" && mv "$FAKE_DIR/x.json" "$FAKE_DIR/bw-item.json"
+rm -f "$FAKE_DIR/creds-payload.json"
+setup_env "$SETUP" remove @ann --yes </dev/null >"$SCRATCH/remove-last.out" 2>&1
+check "remove: emptying the allowlist is refused and nothing reaches the root helper" bash -c '[ ! -e "$1" ] && grep -q "no chat to read" "$2" && jq -e "(.fields[] | select(.name==\"allowlist\") | .value) == \"42\"" "$3"' _ "$FAKE_DIR/creds-payload.json" "$SCRATCH/remove-last.out" "$FAKE_DIR/bw-item.json"
+jq '(.fields[] | select(.name=="allowlist") | .value) = "-1001111,42"' "$FAKE_DIR/bw-item.json" >"$FAKE_DIR/x.json" && mv "$FAKE_DIR/x.json" "$FAKE_DIR/bw-item.json"
+: >"$FAKE_DIR/login.log"; : >"$FAKE_DIR/argv.log"; rm -f "$FAKE_DIR/creds-payload.json"
+setup_env "$SETUP" join @newchan --yes </dev/null >"$SCRATCH/join.out" 2>&1
+check "join: calls login.py join (a Telegram write), not list or resolve" bash -c 'grep -q "^mode=join .*queries=@newchan" "$1" && ! grep -q "^mode=resolve" "$1" && ! grep -q "^mode=list" "$1"' _ "$FAKE_DIR/login.log"
+check "join: the joined chat is added to the read allowlist and the gateway is restarted" bash -c 'jq -e "(.fields[] | select(.name==\"allowlist\") | .value | split(\",\") | index(\"-1009999\")) != null" "$1" && grep -q "gateway restart" "$2"' _ "$FAKE_DIR/bw-item.json" "$FAKE_DIR/argv.log"
+jq '(.fields[] | select(.name=="allowlist") | .value) = "-1001111,777"' "$FAKE_DIR/bw-item.json" >"$FAKE_DIR/x.json" && mv "$FAKE_DIR/x.json" "$FAKE_DIR/bw-item.json"
 # a stale stored session falls back to the QR login
 jq '(.fields[] | select(.name=="session") | .value) = "1STALE"' "$FAKE_DIR/bw-item.json" >"$FAKE_DIR/x.json" && mv "$FAKE_DIR/x.json" "$FAKE_DIR/bw-item.json"
 : >"$FAKE_DIR/login.log"

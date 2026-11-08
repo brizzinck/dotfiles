@@ -4,6 +4,14 @@
   mcp-telegram-setup              first setup: log in by QR (or reuse the session stored in Bitwarden), tick the chats the AI
                                   may read, store everything, start the service, check it through the gateway
   mcp-telegram-setup chats        change the allowlist (extend or shrink it): a checkbox list, `[x]` = the AI may read it
+  mcp-telegram-setup add  <@chat|id|t.me-link> [...] [--yes]
+                                  add chats to the read allowlist by name/id/link, no picker (an agent can hand you the exact
+                                  command; you still type the sudo password). Resolves each chat first, prints what changes.
+  mcp-telegram-setup remove <@chat|id|t.me-link> [...] [--yes]
+                                  drop chats from the read allowlist the same way (it refuses to empty the list)
+  mcp-telegram-setup join <@chat|id|t.me-link> [...] [--yes]
+                                  JOIN each channel/group with your account (a Telegram WRITE, done by a one-shot login.py run;
+                                  the telegram-mcp service itself stays read-only) and then add it to the read allowlist
   mcp-telegram-setup send-chats [--account NAME]
                                   choose the chats the AI may ASK to write to (a subset of the readable chats; same checkbox
                                   list). Sending stays off until you switch it on (hub: Telegram: allow sending) and
@@ -311,6 +319,24 @@ def run_login(mode: str, api_id: str, api_hash: str, session: str = "") -> dict 
         return None
     if p.returncode != 0:
         die(f"Telegram login/listing failed (exit {p.returncode})")
+    try:
+        return json.loads(p.stdout)
+    except ValueError:
+        die("the Telegram helper returned something that is not JSON")
+
+
+def run_login_args(mode: str, api_id: str, api_hash: str, session: str, args: list[str]) -> dict | None:
+    """login.py resolve/join: the extra args are the chat queries (@name / id / t.me link); per-chat errors are inside the JSON,
+    so a non-zero exit is a real failure. None = the session is not authorised (exit 3)."""
+    env = dict(os.environ, TELEGRAM_API_ID=api_id, TELEGRAM_API_HASH=api_hash)
+    env.pop("TELEGRAM_SESSION_STRING", None)
+    if session:
+        env["TELEGRAM_SESSION_STRING"] = session
+    p = subprocess.run([TG_PYTHON, TG_LOGIN, mode, *args], env=env, stdout=subprocess.PIPE, text=True)
+    if p.returncode == 3:
+        return None
+    if p.returncode != 0:
+        die(f"Telegram {mode} failed (exit {p.returncode})")
     try:
         return json.loads(p.stdout)
     except ValueError:
@@ -855,6 +881,69 @@ def cmd_send_chats(account: str) -> None:
     print_total()
 
 
+def cmd_mutate(queries: list[str], mode: str, assume_yes: bool) -> None:
+    """add / remove / join one or more chats by @username, id or t.me link (no picker). `join` first JOINS the chat with the
+    owner's session (a Telegram WRITE, done by a one-shot login.py run; the telegram-mcp service stays read-only) and then adds it
+    to the read allowlist. add / remove only change the read allowlist. The sealing, gateway restart and verify are the same path
+    as `chats` (apply_setup)."""
+    for what, path in (("the venv", TG_PYTHON), ("login.py", TG_LOGIN)):
+        if not Path(path).exists():
+            die(f"{what} is missing ({path}): run  sudo ~/dotfiles/apply-system.sh --only users,mcp  first")
+    m = load_vault_bw()
+    item = read_item(m)
+    api_id, api_hash, session = field(item, "api_id"), field(item, "api_hash"), field(item, "session")
+    if not api_id or not api_hash:
+        die(f"the Bitwarden item {FOLDER}/{ITEM} needs the custom fields api_id and api_hash (https://my.telegram.org/apps)")
+    if not session:
+        die("no session in Bitwarden yet: run mcp-telegram-setup first")
+    current = parse_ids(field(item, "allowlist"))
+    login_mode = "join" if mode == "join" else "resolve"
+    with phase(f"Telegram {login_mode}"):
+        out = run_login_args(login_mode, api_id, api_hash, session, queries)
+    if out is None:
+        die("the stored session is not valid: run mcp-telegram-setup --new-login")
+    rows = out.get("joined" if mode == "join" else "resolved") or []
+    names: dict[int, dict] = {}
+    touched: set[int] = set()
+    errors_seen: list[tuple[str, str]] = []
+    for row in rows:
+        if row.get("error"):
+            errors_seen.append((row["query"], row["error"]))
+            continue
+        cid = int(row["id"])
+        names[cid] = {"title": row["title"], "kind": row["kind"]}
+        touched.add(cid)
+    if mode == "remove":   # a bare numeric id that did not resolve is still removable
+        for q, err in list(errors_seen):
+            if q.strip().lstrip("-").isdigit():
+                touched.add(int(q.strip()))
+                errors_seen.remove((q, err))
+    for q, err in errors_seen:
+        eprint(f"  could not {'join' if mode == 'join' else 'resolve'} {q}: {err}")
+    if mode in ("add", "join") and not touched:
+        die(f"nothing could be {'joined' if mode == 'join' else 'added'} (see the errors above); nothing was changed")
+    if mode == "remove" and not touched:
+        die("nothing matched to remove; nothing was changed", 0)
+    final = (current - touched) if mode == "remove" else (current | touched)
+    if mode == "remove" and not final:
+        die("that would leave no chat to read; the service refuses to run without an allowlist (nothing was changed)")
+    if final == current:
+        eprint("No change." + (" (already joined and already readable)" if mode == "join" else ""))
+        print_total()
+        return
+    print_summary(final, current, names)
+    if not assume_yes and not confirm("\nSave these chats?", default=True):
+        die("not confirmed, nothing was changed", 0)
+    allowlist = sorted(final)
+    value = ",".join(map(str, allowlist))
+    with phase("Bitwarden write"):
+        store_fields(m, item, {"allowlist": (value, 0)})
+    eprint("Bitwarden updated (the master copy).")
+    apply_setup(m, item, allowlist, session, api_id, api_hash, full=not service_active(),
+                names={i: (names[i]["title"] if i in names else str(i)) for i in allowlist}, fresh=False)
+    print_total()
+
+
 def cmd_status() -> int:
     rc = 0
 
@@ -886,6 +975,7 @@ def main(argv: list[str]) -> int:
     if argv and argv[0] == "_pick-demo" and len(argv) == 2:   # hidden: the real picker on a prepared directory (UI test)
         return pick_demo(Path(argv[1]))
     new_login = "--new-login" in argv
+    assume_yes = "--yes" in argv
     words = [a for a in argv if not a.startswith("--")]
     if "--resume" in argv:
         if words:
@@ -910,6 +1000,11 @@ def main(argv: list[str]) -> int:
             print("usage: mcp-telegram-setup send-chats [--account NAME]", file=sys.stderr)
             return 2
         cmd_send_chats(acct)
+    elif words and words[0] in ("add", "remove", "join"):
+        if len(words) < 2:
+            print(f"usage: mcp-telegram-setup {words[0]} <@chat|id|t.me-link> [...] [--yes]", file=sys.stderr)
+            return 2
+        cmd_mutate(words[1:], words[0], assume_yes)
     elif words == ["chats"]:
         cmd_setup(True, new_login)
     elif not words:
