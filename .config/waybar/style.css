@@ -77,7 +77,7 @@ window#waybar #custom-pin:hover { color: @fg; }
 /* a mode is active (resize, mouse): the same quiet pill as the active workspace */
 #submap { color: @green; background: @raised; padding: 0 8px; margin: 4px; border-radius: 6px; }
 
-#clock { color: @fg; font-weight: 600; }
+#clock { color: @fg; font-weight: 600; margin-left: 4px; }
 
 /* script and module classes -> roles (the id of window#waybar lifts these above the plain id rules) */
 window#waybar .dim { color: @muted; }

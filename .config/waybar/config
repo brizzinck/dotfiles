@@ -16,8 +16,8 @@
     "margin": 0,
     "exclusive": true,
     "on-sigusr1": "noop",
-    "modules-left": ["hyprland/workspaces", "hyprland/submap"],
-    "modules-center": ["clock"],
+    "modules-left": ["clock", "hyprland/workspaces", "hyprland/submap"],
+    "modules-center": [],
     "modules-right": [
       "privacy", "custom/recording", "custom/dictation", "custom/reminder", "custom/health", "network#alert", "custom/updates#alert",
       "group/pinned", "hyprland/language", "custom/toggles", "battery", "custom/mode#compact"
@@ -34,8 +34,8 @@
     "exclusive": false,
     "margin-top": -28,
     "on-sigusr1": "toggle",
-    "modules-left": ["hyprland/workspaces", "hyprland/submap"],
-    "modules-center": ["clock"],
+    "modules-left": ["clock", "hyprland/workspaces", "hyprland/submap"],
+    "modules-center": [],
     "modules-right": [
       "privacy", "custom/recording", "custom/dictation", "custom/reminder", "custom/health", "custom/updates", "custom/media",
       "group/toggles", "group/net", "group/audio", "group/system",
