@@ -41,13 +41,15 @@ case "$MODE" in report | apply | check | restore) ;; -h | --help | "") sed -n '2
 
 ROOT="${HOME:-}" OWNER="$(id -un)" STATE=/var/lib/usr-managed MANAGED="" KEEP="$HERE/home-acl-keep.txt"
 SECRETS="$HERE/secret-paths.txt" REPO="$(cd "$HERE/../.." && pwd)" MARKER="" EXAMPLES=8 DEPTH=5 BUDGET=10 RUNAS=""
-managed_set=0
+INBOX=""
+managed_set=0 inbox_set=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --root) ROOT="$2"; shift ;;
     --owner) OWNER="$2"; shift ;;
     --state) STATE="$2"; shift ;;
     --managed) MANAGED="$2"; managed_set=1; shift ;;
+    --inbox) INBOX="$2"; inbox_set=1; shift ;;
     --keep) KEEP="$2"; shift ;;
     --secrets) SECRETS="$2"; shift ;;
     --repo) REPO="$2"; shift ;;
@@ -67,6 +69,11 @@ if [ "$managed_set" -eq 0 ] && [ -r "$HERE/lib.sh" ]; then
   # shellcheck source=infrastructure/users/lib.sh
   source "$HERE/lib.sh"
   MANAGED="$(managed_users | paste -sd' ' -)"
+fi
+if [ "$inbox_set" -eq 0 ] && [ -r "$HERE/lib.sh" ]; then
+  # shellcheck source=infrastructure/users/lib.sh
+  source "$HERE/lib.sh"
+  INBOX="$(managed_users inbox 2>/dev/null | paste -sd' ' - || true)"
 fi
 W="$(mktemp -d)"
 trap 'rm -rf "$W"' EXIT
@@ -97,20 +104,24 @@ as_owner() {
 # class: STRIP | KEEP-named | KEEP-excluded | KEEP-foreign | SKIP-oddname. (`setfacl -b` leaves the group bits at the
 # effective permission, the mode bits showed the mask, so nothing becomes wider and no second chmod pass is needed.)
 classify() {
-  awk -v root="$ROOT" -v own="$OWNER" -v managed="$MANAGED" -v keepfile="$KEEP" '
+  awk -v root="$ROOT" -v own="$OWNER" -v managed="$MANAGED" -v keepfile="$KEEP" -v inbox="$INBOX" '
     function kept(rel,   p) {
+      if (rel == "." || rel in keep) return 1
       p = rel
-      while (p != "") {
-        if (p in keep) return 1
-        if (index(p, "/") == 0) break
+      while (index(p, "/") > 0) {
         sub(/\/[^\/]*$/, "", p)
+        if (p == "Downloads") continue
+        if (p in keep) return 1
       }
       return 0
     }
     function flush(   cls, rel, top) {
       if (path == "") return
-      rel = (substr(path, 1, length(root) + 1) == root "/") ? substr(path, length(root) + 2) : path
-      top = rel; sub(/\/.*/, "", top); if (path == root) top = "."
+      if (path == root) { rel = "."; top = "." }
+      else {
+        rel = (substr(path, 1, length(root) + 1) == root "/") ? substr(path, length(root) + 2) : path
+        top = rel; sub(/\/.*/, "", top)
+      }
       if (path ~ /\\/) cls = "SKIP-oddname"
       else if (named_other) cls = "KEEP-named"
       else if (kept(rel)) cls = "KEEP-excluded"
@@ -121,6 +132,7 @@ classify() {
     BEGIN {
       n = split(managed, m, " "); for (i = 1; i <= n; i++) mg[m[i]] = 1
       while ((getline l < keepfile) > 0) { sub(/#.*/, "", l); gsub(/^[ \t]+|[ \t]+$/, "", l); sub(/\/+$/, "", l); if (l != "") keep[l] = 1 }
+      n_inb = split(inbox, inb, " "); for (i = 1; i <= n_inb; i++) if (inb[i] != "") keep["Downloads/" inb[i]] = 1
     }
     /^# file: / { flush(); path = substr($0, 9); owner = ""; named_other = 0; sig = ""; next }
     /^# owner: / { owner = substr($0, 10); next }

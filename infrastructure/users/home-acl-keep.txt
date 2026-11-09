@@ -6,3 +6,7 @@
 # the portals do not set ACLs in $HOME, and the only named entries ever found were the td/yc/aimcp/tgconfirm ones that the
 # users section removes. A path with a named entry of somebody else is kept anyway (and listed), files owned by another uid
 # (Docker volumes) are never touched. Add a line here only for an ACL somebody wants to keep.
+#
+# Owner home and Downloads directory (traversed by managed users to reach Downloads/<user>)
+.
+Downloads

@@ -1180,14 +1180,39 @@ if [ -r "$users_lib" ]; then
   users_linger=""
   for u in $(managed_users interactive); do [ -e "/var/lib/systemd/linger/$u" ] && users_linger="$users_linger $u"; done
   if [ -z "$users_linger" ]; then ok users-no-linger "no managed interactive user lingers"; else users_report users-no-linger "linger is on for:$users_linger (sudo ./apply-system.sh --only users)"; fi
-  # the managed users have no ACL entry on the owner's home (top two levels; the section removes the whole tree)
+  # the managed users have no unauthorized ACL entries on the owner's home (inbox users have traverse and Downloads/<user> only)
   users_acl=""
   for u in $(managed_users); do
     getent passwd "$u" >/dev/null || continue
-    n=$(find "$HOME" -xdev -maxdepth 2 ! -type l -print0 2>/dev/null | xargs -0 -r getfacl -p -s 2>/dev/null | grep -c "^\(default:\)\?user:$u:")
-    [ "$n" -gt 0 ] && users_acl="$users_acl $u($n)"
+    if ! managed_has "$u" inbox; then
+      n=$(find "$HOME" -xdev -maxdepth 2 ! -type l -print0 2>/dev/null | xargs -0 -r getfacl -p -s 2>/dev/null | grep -c "^\(default:\)\?user:$u:" || true)
+      [ "$n" -gt 0 ] && users_acl="$users_acl $u(unauthorized:$n)"
+      continue
+    fi
+    h_ent="$(getfacl -p "$HOME" 2>/dev/null | grep "^user:$u:" || true)"
+    [ -z "$h_ent" ] || [ "$h_ent" = "user:$u:--x" ] || users_acl="$users_acl $u(home:$h_ent)"
+    d_ent="$(getfacl -p "$HOME/Downloads" 2>/dev/null | grep "^user:$u:" || true)"
+    [ -z "$d_ent" ] || [ "$d_ent" = "user:$u:--x" ] || users_acl="$users_acl $u(downloads:$d_ent)"
+    other_top="$(find "$HOME" -xdev -maxdepth 1 ! -type l ! -path "$HOME" ! -path "$HOME/Downloads" -print0 2>/dev/null | xargs -0 -r getfacl -p -s 2>/dev/null | grep "^\(default:\)\?user:$u:" || true)"
+    [ -z "$other_top" ] || users_acl="$users_acl $u(stray_top)"
   done
-  if [ -z "$users_acl" ]; then ok users-acl-home "no managed user has an ACL entry on $HOME"; else users_report users-acl-home "ACL entries on $HOME remain for:$users_acl (sudo ./apply-system.sh --only users)"; fi
+  if [ -z "$users_acl" ]; then ok users-acl-home "no unauthorized managed-user ACL entries on $HOME"; else users_report users-acl-home "ACL entries on $HOME remain for:$users_acl (sudo ./apply-system.sh --only users)"; fi
+  # incoming inboxes for managed users (to-owner / usr inbox)
+  users_inbox_bad=""
+  for u in $(managed_users inbox); do
+    getent passwd "$u" >/dev/null || continue
+    idir="$HOME/Downloads/$u"
+    if [ ! -d "$idir" ]; then users_inbox_bad="$users_inbox_bad $u(missing)"; continue; fi
+    iacl="$(getfacl -p "$idir" 2>/dev/null)"
+    grep -q "^group::---" <<<"$iacl" && grep -q "^other::---" <<<"$iacl" || users_inbox_bad="$users_inbox_bad $u(mode)"
+    grep -q "^user:$u:rwx" <<<"$iacl" || users_inbox_bad="$users_inbox_bad $u(access_acl)"
+    grep -q "^default:user:$u:rwx" <<<"$iacl" || users_inbox_bad="$users_inbox_bad $u(def_user_acl)"
+    grep -q "^default:user:$USER:rwx" <<<"$iacl" || users_inbox_bad="$users_inbox_bad $u(def_owner_acl)"
+    [ "$(getfacl -p "$HOME" 2>/dev/null | grep "^user:$u:")" = "user:$u:--x" ] || users_inbox_bad="$users_inbox_bad $u(home_x)"
+    [ "$(getfacl -p "$HOME/Downloads" 2>/dev/null | grep "^user:$u:")" = "user:$u:--x" ] || users_inbox_bad="$users_inbox_bad $u(dl_x)"
+  done
+  if [ -z "$users_inbox_bad" ]; then ok users-inbox "inboxes configured for $(managed_users inbox | paste -sd' ' -) in $HOME/Downloads"; else users_report users-inbox "inbox configuration incomplete for:$users_inbox_bad (sudo ./apply-system.sh --only users)"; fi
+  if [ -x "$DOTFILES/.local/bin/to-owner" ]; then ok users-to-owner "to-owner helper present"; else bad users-to-owner ".local/bin/to-owner missing"; fi
   # no unintended extended ACL (default skeletons make new files 0650/0750) and the secret locations are owner-only; bounded scan
   # (top 5 levels + the secret locations, 10 s); INFO until the users section ran with the cleanup (marker file), FAIL after it
   if [ -x "$DOTFILES/infrastructure/users/home-acl.sh" ]; then

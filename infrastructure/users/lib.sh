@@ -2,7 +2,7 @@
 # Shared reader of managed.tsv (sourced by apply-system.sh, .local/bin/usr, doctor.sh). No side effects when sourced.
 #   managed_tsv                    path of the registry (USR_MANAGED_TSV overrides it, used by the tests)
 #   managed_users [CAP]            names, one per line; CAP filters by a capability:
-#                                  interactive | service | become | acl | clipboard | wayland | create | profile | env-write
+#                                  interactive | service | become | acl | clipboard | wayland | create | profile | env-write | inbox
 #   managed_has USER CAP           exit 0 when USER has the capability
 #   managed_field USER NAME        profile | flags | accent | note
 #   managed_validate OWNER         print one problem per line (empty output = valid)
@@ -47,9 +47,14 @@ managed_has() {
     wayland) [[ $flags == *,wayland,* || $flags == *,clipboard,* ]] ;;   # a clipboard user reaches the Wayland socket too
     create) [[ $flags == *,create,* ]] ;;
     env-write) [[ $user == td && $flags == *,env-write,* && $flags != *,service,* ]] ;;
+    inbox) [[ $flags != *,service,* ]] && profile="$(managed_field "$user" profile)" && [ -n "$profile" ] && [ "$profile" != - ] ;;
     profile) profile="$(managed_field "$user" profile)"; [ -n "$profile" ] && [ "$profile" != - ] ;;
     *) return 2 ;;
   esac
+}
+
+managed_inbox_users() {
+  managed_users inbox
 }
 
 managed_users() {

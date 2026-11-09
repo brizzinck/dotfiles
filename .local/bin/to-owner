@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# to-owner: copy files or directories from a managed child user to the workstation owner's inbox.
+# Target: /home/<owner>/Downloads/$USER/
+#
+# Rules:
+# - Never overwrites: adds a suffix " (1)", " (2)" on name collisions
+# - Symbolic links are refused (never dereferenced, never copied)
+# - Special files (FIFOs, sockets, block/char devices) are refused
+# - Directories are copied recursively; masks are set so the owner can read/write without world permissions
+# - --list shows current inbox contents
+# - --help prints usage
+# Test hook: TO_OWNER_DIR overrides the target directory; TO_OWNER_USER overrides the username.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: to-owner [--list] [--help] FILE|DIR...
+
+Copy files or directories to the workstation owner's inbox directory.
+Files are placed in /home/<owner>/Downloads/$USER/.
+
+Options:
+  --list, -l    list files currently in your inbox
+  --help, -h    show this help message
+
+Behavior:
+  - Existing files are never overwritten: collisions get a " (1)", " (2)" suffix.
+  - Symbolic links and special files (FIFOs, sockets) are refused.
+  - Directories are copied recursively.
+EOF
+}
+
+# Resolve target path avoiding collisions
+resolve_dest() {
+  local dir="$1" name="$2" target="$1/$2"
+  if [ ! -e "$target" ] && [ ! -L "$target" ]; then
+    printf '%s\n' "$target"
+    return 0
+  fi
+  local base ext
+  if [[ $name == .* && $name != *.*.* ]]; then
+    base="$name"
+    ext=""
+  elif [[ $name == *.* && $name != .* ]]; then
+    base="${name%.*}"
+    ext=".${name##*.}"
+  else
+    base="$name"
+    ext=""
+  fi
+  local i=1 cand
+  while true; do
+    cand="$dir/$base ($i)$ext"
+    if [ ! -e "$cand" ] && [ ! -L "$cand" ]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+    i=$((i + 1))
+  done
+}
+
+# Determine inbox destination
+if [ -n "${TO_OWNER_DIR:-}" ]; then
+  DEST_DIR="$TO_OWNER_DIR"
+else
+  OWNER=""
+  if [ -r /etc/usr-managed/devtools-owner ]; then
+    OWNER="$(cat /etc/usr-managed/devtools-owner 2>/dev/null || true)"
+  fi
+  if [ -z "$OWNER" ]; then
+    OWNER="$(getent passwd 1000 2>/dev/null | cut -d: -f1 || true)"
+  fi
+  [ -n "$OWNER" ] || OWNER="skalse"
+
+  OWNER_HOME="$(getent passwd "$OWNER" 2>/dev/null | cut -d: -f6 || true)"
+  [ -n "$OWNER_HOME" ] || OWNER_HOME="/home/$OWNER"
+
+  WHO="${TO_OWNER_USER:-$(id -un)}"
+  DEST_DIR="$OWNER_HOME/Downloads/$WHO"
+fi
+
+# Flags
+if [ $# -eq 0 ]; then
+  usage >&2
+  exit 2
+fi
+
+case "${1:-}" in
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  -l | --list)
+    if [ ! -d "$DEST_DIR" ] || [ ! -x "$DEST_DIR" ]; then
+      echo "to-owner: inbox directory '$DEST_DIR' does not exist or is not accessible." >&2
+      echo "Ask the workstation owner to run: sudo ./apply-system.sh --only users" >&2
+      exit 1
+    fi
+    echo "Inbox contents ($DEST_DIR):"
+    if [ -z "$(ls -A "$DEST_DIR" 2>/dev/null)" ]; then
+      echo "  (empty)"
+    else
+      ls -lh "$DEST_DIR"
+    fi
+    exit 0
+    ;;
+esac
+
+# Check that destination is accessible and writable
+if [ ! -d "$DEST_DIR" ] || [ ! -w "$DEST_DIR" ]; then
+  echo "to-owner: inbox directory '$DEST_DIR' does not exist or is not writable." >&2
+  echo "Ask the workstation owner to run: sudo ./apply-system.sh --only users" >&2
+  exit 1
+fi
+
+copied=0
+for src in "$@"; do
+  # Strip trailing slashes
+  src="${src%/}"
+  if [ ! -e "$src" ] && [ ! -L "$src" ]; then
+    echo "to-owner: cannot stat '$src': No such file or directory" >&2
+    exit 1
+  fi
+
+  if [ -L "$src" ]; then
+    echo "to-owner: refusal: '$src' is a symbolic link (symlinks are not permitted)" >&2
+    exit 1
+  fi
+
+  if [ -p "$src" ] || [ -S "$src" ] || [ -b "$src" ] || [ -c "$src" ]; then
+    echo "to-owner: refusal: '$src' is a special file (only regular files and directories permitted)" >&2
+    exit 1
+  fi
+
+  base_name="${src##*/}"
+  target="$(resolve_dest "$DEST_DIR" "$base_name")"
+
+  if [ -d "$src" ]; then
+    # Refuse if directory contains forbidden files (symlinks, sockets, pipes)
+    forbidden="$(find "$src" -type l -o -type p -o -type s -o -type b -o -type c 2>/dev/null | head -1 || true)"
+    if [ -n "$forbidden" ]; then
+      echo "to-owner: refusal: directory '$src' contains a forbidden file (symlink or special file): '$forbidden'" >&2
+      exit 1
+    fi
+
+    cp -R "$src" "$target"
+    chmod -R g+rwX "$target" 2>/dev/null || true
+    echo "copied directory: $src -> $target"
+    copied=$((copied + 1))
+  elif [ -f "$src" ]; then
+    cp "$src" "$target"
+    chmod g+rw "$target" 2>/dev/null || true
+    echo "copied file: $src -> $target"
+    copied=$((copied + 1))
+  else
+    echo "to-owner: refusal: '$src' has unsupported file type" >&2
+    exit 1
+  fi
+done
+
+exit 0

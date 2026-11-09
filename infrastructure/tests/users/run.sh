@@ -1107,5 +1107,144 @@ else
   bad "private/secrets regression suite"
 fi
 
+# ── inbox: to-owner, usr inbox, ACL isolation (Downloads/<user>) ──────────────────
+IB_BIN="$REPO/.local/bin/to-owner"
+expect "to-owner is executable" "true" "$([ -x "$IB_BIN" ] && echo true || echo false)"
+
+# 1. to-owner usage & help
+expect "to-owner --help exits 0" "0" "$("$IB_BIN" --help >/dev/null 2>&1; echo $?)"
+expect "to-owner without args exits 2" "2" "$("$IB_BIN" >/dev/null 2>&1; echo $?)"
+
+# 2. to-owner missing destination
+IB_TEST_DIR="$T/inbox_test"
+mkdir -p "$IB_TEST_DIR"
+missing_out="$(TO_OWNER_DIR="$IB_TEST_DIR/nonexistent" "$IB_BIN" "$T/m.tsv" 2>&1 || true)"
+case "$missing_out" in
+  *"inbox directory"*"does not exist"*"sudo ./apply-system.sh --only users"*) ok ;;
+  *) bad "to-owner missing dir error: $missing_out" ;;
+esac
+
+# 3. Setup fake inbox with default ACLs
+IB_DIR="$IB_TEST_DIR/inbox_td"
+mkdir -p "$IB_DIR"
+chmod 700 "$IB_DIR"
+setfacl -m "u:$ME:rwx,m::rwx" "$IB_DIR"
+setfacl -d -m "u:$ME:rwx,m::rwx,g::---,o::---" "$IB_DIR"
+
+# 4. to-owner --list on empty inbox
+list_out="$(TO_OWNER_DIR="$IB_DIR" "$IB_BIN" --list)"
+case "$list_out" in
+  *"(empty)"*) ok ;;
+  *) bad "to-owner --list empty: $list_out" ;;
+esac
+
+# 5. to-owner copies regular file
+printf 'hello world\n' >"$IB_TEST_DIR/test1.txt"
+chmod 600 "$IB_TEST_DIR/test1.txt"
+out="$(TO_OWNER_DIR="$IB_DIR" "$IB_BIN" "$IB_TEST_DIR/test1.txt" 2>&1)"
+expect "file copied successfully" "0" "$?"
+expect "copied file exists in inbox" "true" "$([ -f "$IB_DIR/test1.txt" ] && echo true || echo false)"
+expect "copied file content matches" "hello world" "$(cat "$IB_DIR/test1.txt")"
+facl_out="$(getfacl -p "$IB_DIR/test1.txt" 2>/dev/null)"
+case "$facl_out" in
+  *"user:$ME:rwx"*"effective:rw-"* | *"user::rw-"*) ok ;;
+  *) bad "to-owner: file permissions do not allow owner to read: $facl_out" ;;
+esac
+
+# 6. to-owner name collision handling (never overwrite, suffix (1), (2))
+printf 'second version\n' >"$IB_TEST_DIR/test1.txt"
+out="$(TO_OWNER_DIR="$IB_DIR" "$IB_BIN" "$IB_TEST_DIR/test1.txt" 2>&1)"
+expect "second copy creates test1 (1).txt" "true" "$([ -f "$IB_DIR/test1 (1).txt" ] && echo true || echo false)"
+expect "original test1.txt content preserved" "hello world" "$(cat "$IB_DIR/test1.txt")"
+expect "new file test1 (1).txt has new content" "second version" "$(cat "$IB_DIR/test1 (1).txt")"
+
+printf 'third version\n' >"$IB_TEST_DIR/test1.txt"
+out="$(TO_OWNER_DIR="$IB_DIR" "$IB_BIN" "$IB_TEST_DIR/test1.txt" 2>&1)"
+expect "third copy creates test1 (2).txt" "true" "$([ -f "$IB_DIR/test1 (2).txt" ] && echo true || echo false)"
+
+printf 'rules\n' >"$IB_TEST_DIR/Makefile"
+TO_OWNER_DIR="$IB_DIR" "$IB_BIN" "$IB_TEST_DIR/Makefile" >/dev/null 2>&1
+TO_OWNER_DIR="$IB_DIR" "$IB_BIN" "$IB_TEST_DIR/Makefile" >/dev/null 2>&1
+expect "extensionless collision suffix" "true" "$([ -f "$IB_DIR/Makefile (1)" ] && echo true || echo false)"
+
+# 7. to-owner refuses symbolic links
+ln -s "$IB_TEST_DIR/test1.txt" "$IB_TEST_DIR/symlink.txt"
+sym_err="$(TO_OWNER_DIR="$IB_DIR" "$IB_BIN" "$IB_TEST_DIR/symlink.txt" 2>&1 || true)"
+case "$sym_err" in
+  *"refusal"*"symbolic link"*) ok ;;
+  *) bad "to-owner did not refuse symlink: $sym_err" ;;
+esac
+expect "symlink was not copied into inbox" "false" "$([ -e "$IB_DIR/symlink.txt" ] && echo true || echo false)"
+
+# 8. to-owner refuses special files (FIFO)
+mkfifo "$IB_TEST_DIR/myfifo"
+fifo_err="$(TO_OWNER_DIR="$IB_DIR" "$IB_BIN" "$IB_TEST_DIR/myfifo" 2>&1 || true)"
+case "$fifo_err" in
+  *"refusal"*"special file"*) ok ;;
+  *) bad "to-owner did not refuse FIFO: $fifo_err" ;;
+esac
+expect "fifo was not copied into inbox" "false" "$([ -e "$IB_DIR/myfifo" ] && echo true || echo false)"
+
+# 9. to-owner copies directory recursively
+mkdir -p "$IB_TEST_DIR/mydir/sub"
+printf 'subfile\n' >"$IB_TEST_DIR/mydir/sub/file.txt"
+chmod 700 "$IB_TEST_DIR/mydir" "$IB_TEST_DIR/mydir/sub"
+chmod 600 "$IB_TEST_DIR/mydir/sub/file.txt"
+out="$(TO_OWNER_DIR="$IB_DIR" "$IB_BIN" "$IB_TEST_DIR/mydir" 2>&1)"
+expect "directory copied successfully" "0" "$?"
+expect "subfile exists in inbox" "true" "$([ -f "$IB_DIR/mydir/sub/file.txt" ] && echo true || echo false)"
+dir_facl="$(getfacl -p "$IB_DIR/mydir/sub/file.txt" 2>/dev/null)"
+case "$dir_facl" in
+  *"user:$ME:rwx"*"effective:rw-"* | *"user::rw-"*) ok ;;
+  *) bad "recursive directory copy permissions bad: $dir_facl" ;;
+esac
+
+# 10. to-owner refuses directory containing a symlink
+mkdir -p "$IB_TEST_DIR/baddir"
+ln -s /etc/hostname "$IB_TEST_DIR/baddir/escape"
+baddir_err="$(TO_OWNER_DIR="$IB_DIR" "$IB_BIN" "$IB_TEST_DIR/baddir" 2>&1 || true)"
+case "$baddir_err" in
+  *"refusal"*"contains a forbidden file"*) ok ;;
+  *) bad "to-owner did not refuse directory with symlink: $baddir_err" ;;
+esac
+expect "baddir was not copied" "false" "$([ -e "$IB_DIR/baddir" ] && echo true || echo false)"
+
+# 11. to-owner --list shows files
+list_out2="$(TO_OWNER_DIR="$IB_DIR" "$IB_BIN" --list)"
+case "$list_out2" in
+  *"test1.txt"* | *"test1 (1).txt"*) ok ;;
+  *) bad "to-owner --list did not show files: $list_out2" ;;
+esac
+
+# 12. usr inbox command
+mkdir -p "$IB_TEST_DIR/Downloads/td" "$IB_TEST_DIR/Downloads/yc"
+printf 'td file\n' >"$IB_TEST_DIR/Downloads/td/data.txt"
+usr_ib="$(USR_INBOX_BASE="$IB_TEST_DIR/Downloads" "$USR" inbox td)"
+case "$usr_ib" in
+  *"data.txt"*) ok ;;
+  *) bad "usr inbox td did not list data.txt: $usr_ib" ;;
+esac
+
+usr_ib_all="$(USR_INBOX_BASE="$IB_TEST_DIR/Downloads" "$USR" inbox)"
+if [[ "$usr_ib_all" == *"td"*"data.txt"* && "$usr_ib_all" == *"yc"* ]]; then
+  ok
+else
+  bad "usr inbox all did not list both: $usr_ib_all"
+fi
+
+# 13. ACL traversal & isolation simulation
+FH="$IB_TEST_DIR/fakehome"
+mkdir -p "$FH/Downloads/td" "$FH/Downloads/yc"
+chmod 700 "$FH" "$FH/Downloads" "$FH/Downloads/td" "$FH/Downloads/yc"
+setfacl -m "u:daemon:--x" "$FH"
+setfacl -m "u:daemon:--x" "$FH/Downloads"
+setfacl -m "u:daemon:rwx,m::rwx" "$FH/Downloads/td"
+setfacl -d -m "u:daemon:rwx,u:$ME:rwx,m::rwx,g::---,o::---" "$FH/Downloads/td"
+
+expect "fakehome traverse is --x" "user:daemon:--x" "$(getfacl -p "$FH" | grep "^user:daemon:")"
+expect "Downloads traverse is --x" "user:daemon:--x" "$(getfacl -p "$FH/Downloads" | grep "^user:daemon:")"
+expect "td inbox has rwx" "user:daemon:rwx" "$(getfacl -p "$FH/Downloads/td" | grep "^user:daemon:rwx")"
+expect "yc inbox has no daemon ACL" "" "$(getfacl -p "$FH/Downloads/yc" | grep "^user:daemon:" || true)"
+
 printf 'users tests: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]

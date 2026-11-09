@@ -1238,7 +1238,7 @@ users_home_acl_cleanup() {
     warn "users: $script is missing, the home ACL cleanup was skipped"
     return 0
   fi
-  local args=(--root "$root" --owner "$OWNER" --state "$USERS_STATE" --repo "$REPO" --managed "$(managed_users | paste -sd' ' -)")
+  local args=(--root "$root" --owner "$OWNER" --state "$USERS_STATE" --repo "$REPO" --managed "$(managed_users | paste -sd' ' -)" --inbox "$(managed_users inbox | paste -sd' ' -)")
   # streamed (the scan of a big home takes ~10 s and says so first), the full output is kept for the RESULT line; the script
   # changes the home as the owner (setpriv), root only writes the before-state
   outf="$(mktemp)"
@@ -1267,6 +1267,132 @@ users_home_acl_cleanup() {
     changed "would strip ${strip:-0} unintended extended ACLs and tighten ${tighten:-0} secret paths under $root"
   else
     changed "home ACL cleanup under $root: stripped ${strip:-0} unintended extended ACLs, tightened ${tighten:-0} secret paths (before-state in $USERS_STATE)"
+  fi
+}
+
+# users_inbox_setup: create and repair incoming inboxes for interactive managed users (Downloads/<user>)
+users_inbox_setup() {
+  local root="${USERS_ACL_ROOT:-$OWNER_HOME}" dl_dir="${USERS_ACL_ROOT:-$OWNER_HOME}/Downloads" u inbox h_acl path cand
+  [ -d "$root" ] || return 0
+
+  # Ensure Downloads exists and is 0700 owned by OWNER:grp so other users cannot list it
+  if [ -d "$dl_dir" ]; then
+    if [ "$(stat -c '%U:%G %a' "$dl_dir" 2>/dev/null)" != "$OWNER:$grp 700" ]; then
+      if [ "$DRY_RUN" -eq 1 ]; then
+        log "[dry-run] chmod 700 $dl_dir"
+      else
+        chmod 700 "$dl_dir"
+      fi
+      changed "tightened $dl_dir to mode 0700 (owner-only, traverse granted via ACL)"
+    else
+      log "unchanged: $dl_dir ($OWNER:$grp 700)"
+    fi
+  else
+    if [ "$DRY_RUN" -eq 1 ]; then
+      log "[dry-run] install -d -m 700 -o $OWNER -g $grp $dl_dir"
+    else
+      install -d -m 700 -o "$OWNER" -g "$grp" "$dl_dir"
+    fi
+    changed "created $dl_dir ($OWNER:$grp 700)"
+  fi
+
+  # Active inbox users
+  for u in $(managed_users inbox); do
+    getent passwd "$u" >/dev/null || { log "skip: inbox for $u: account does not exist"; continue; }
+    inbox="$dl_dir/$u"
+
+    # 1. Traverse on root (u:USER:--x)
+    if ! getfacl -p "$root" 2>/dev/null | grep -q "^user:$u:--x"; then
+      if [ "$DRY_RUN" -eq 1 ]; then
+        log "[dry-run] setfacl -m u:$u:--x $root"
+      else
+        setfacl -m "u:$u:--x" "$root"
+      fi
+      changed "granted traverse (--x) on $root to $u"
+    else
+      log "unchanged: $root carries traverse ACL for $u"
+    fi
+
+    # 2. Traverse on Downloads (u:USER:--x)
+    if ! getfacl -p "$dl_dir" 2>/dev/null | grep -q "^user:$u:--x"; then
+      if [ "$DRY_RUN" -eq 1 ]; then
+        log "[dry-run] setfacl -m u:$u:--x $dl_dir"
+      else
+        setfacl -m "u:$u:--x" "$dl_dir"
+      fi
+      changed "granted traverse (--x) on $dl_dir to $u"
+    else
+      log "unchanged: $dl_dir carries traverse ACL for $u"
+    fi
+
+    # 3. Inbox folder $dl_dir/$u
+    if [ ! -d "$inbox" ]; then
+      if [ "$DRY_RUN" -eq 1 ]; then
+        log "[dry-run] install -d -m 700 -o $OWNER -g $grp $inbox"
+      else
+        install -d -m 700 -o "$OWNER" -g "$grp" "$inbox"
+      fi
+      changed "created inbox directory $inbox"
+    fi
+
+    if [ "$(stat -c '%U:%G' "$inbox" 2>/dev/null)" != "$OWNER:$grp" ]; then
+      if [ "$DRY_RUN" -eq 1 ]; then
+        log "[dry-run] chown $OWNER:$grp $inbox"
+      else
+        chown "$OWNER:$grp" "$inbox"
+      fi
+      changed "set ownership $OWNER:$grp on $inbox"
+    fi
+
+    h_acl="$(getfacl -p "$inbox" 2>/dev/null)"
+    if ! grep -q "^user:$u:rwx" <<<"$h_acl" || \
+       ! grep -q "^default:user:$u:rwx" <<<"$h_acl" || \
+       ! grep -q "^default:user:$OWNER:rwx" <<<"$h_acl"; then
+      if [ "$DRY_RUN" -eq 1 ]; then
+        log "[dry-run] setfacl -m u:$u:rwx,m::rwx -d -m u:$u:rwx,u:$OWNER:rwx,m::rwx,g::---,o::--- $inbox"
+      else
+        chmod 700 "$inbox"
+        setfacl -m "u:$u:rwx,m::rwx" "$inbox"
+        setfacl -d -m "u:$u:rwx,u:$OWNER:rwx,m::rwx,g::---,o::---" "$inbox"
+      fi
+      changed "configured ACL on inbox $inbox (u:$u:rwx, d:u:$u:rwx, d:u:$OWNER:rwx)"
+    else
+      log "unchanged: $inbox ACLs intact"
+    fi
+  done
+
+  # Cleanup stale inboxes: any folder under Downloads whose name matches an existing or retired user but is not in managed_users inbox
+  if [ -d "$dl_dir" ]; then
+    for path in "$dl_dir"/*; do
+      [ -d "$path" ] || continue
+      cand="${path##*/}"
+      managed_has "$cand" inbox 2>/dev/null && continue
+      if getfacl -p -s "$path" 2>/dev/null | grep -q '^user:'; then
+        if [ "$DRY_RUN" -eq 1 ]; then
+          log "[dry-run] setfacl -b $path && chmod 700 $path (retired user $cand lost ACL, files kept)"
+        else
+          setfacl -b "$path"
+          chmod 700 "$path"
+        fi
+        changed "removed ACLs from retired inbox $path ($cand is no longer an inbox user; files kept)"
+      fi
+      if getfacl -p "$root" 2>/dev/null | grep -q "^user:$cand:"; then
+        if [ "$DRY_RUN" -eq 1 ]; then
+          log "[dry-run] setfacl -x u:$cand $root"
+        else
+          setfacl -x "u:$cand" "$root" 2>/dev/null || true
+        fi
+        changed "removed stale traverse ACL for $cand from $root"
+      fi
+      if getfacl -p "$dl_dir" 2>/dev/null | grep -q "^user:$cand:"; then
+        if [ "$DRY_RUN" -eq 1 ]; then
+          log "[dry-run] setfacl -x u:$cand $dl_dir"
+        else
+          setfacl -x "u:$cand" "$dl_dir" 2>/dev/null || true
+        fi
+        changed "removed stale traverse ACL for $cand from $dl_dir"
+      fi
+    done
   fi
 }
 
@@ -1411,13 +1537,17 @@ section_users() {
     fi
   done
 
-  # 2. no managed user reaches the owner's home
+  # 2. managed users without an inbox must have no ACL entries anywhere on the owner's home
   for u in $(managed_users); do
     getent passwd "$u" >/dev/null || { log "skip: account $u does not exist"; continue; }
+    managed_has "$u" inbox && continue
     users_acl_remove "$u"
   done
   # 2b. what no managed user owns any more: unintended extended ACLs of the owner's home, secret locations owner-only
   users_home_acl_cleanup
+
+  # 2c. incoming inboxes for interactive managed users (Downloads/<user>)
+  users_inbox_setup
 
   # 3. the owner reaches every managed home (unless flagged noacl)
   for u in $(managed_users acl); do

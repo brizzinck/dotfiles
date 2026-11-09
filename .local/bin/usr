@@ -9,6 +9,7 @@
 #   usr exec USER [-C DIR] [--] [CMD...]   run a command (or a login shell) as USER: sudo -n -u USER -i
 #   usr edit USER PATH             edit a file of USER with your own editor, written back as USER (sudoedit -u)
 #   usr files USER [--as]          yazi on /home/USER (as you, through the ACL); --as runs yazi as USER (0600 files visible)
+#   usr inbox [USER] [--open]      show incoming files from USER (or all inboxes if omitted)
 #   usr logs USER                  follow the journal of USER's processes
 #   usr link USER [--dry-run|--restore]   link USER's profile from /srv/dotfiles into its home (runs as USER)
 #   usr sync [--quiet] [--worktree] [--dry-run]   publish the committed ~/dotfiles to /srv/dotfiles (no secrets), relink on
@@ -209,9 +210,10 @@ cmd_menu() {
   export FZF_MENU_NORMAL_BINDS='a:become(printf "attach\n%s\n" {1})
 s:become(printf "alt-enter\n%s\n" {1})
 f:become(printf "files\n%s\n" {1})
+i:become(printf "inbox\n%s\n" {1})
 l:become(printf "logs\n%s\n" {1})'
   out=$(printf '%s\n' "$rows" | fzf-menu -p user --delimiter=$'\t' --with-nth=2.. --accept-nth=1 --ansi --expect=alt-enter \
-    --header='Enter terminal | a attach | s shell | f files | l logs') || exit 1
+    --header='Enter terminal | a attach | s shell | f files | i inbox | l logs') || exit 1
   key=$(printf '%s\n' "$out" | sed -n 1p)
   who=$(printf '%s\n' "$out" | sed -n 2p)
   [ -n "$who" ] || exit 1
@@ -219,6 +221,7 @@ l:become(printf "logs\n%s\n" {1})'
     attach) cmd_term "$who" --attach ;;
     alt-enter) cmd_term "$who" --shell ;;
     files) cmd_files "$who" ;;
+    inbox) cmd_inbox "$who" --open ;;
     logs) cmd_logs "$who" ;;
     *) cmd_term "$who" ;;
   esac
@@ -264,6 +267,45 @@ cmd_logs() {
   [ -n "$user" ] || die "logs: which user?"
   need_managed "$user"
   setsid -f "$term" --title="logs $user" -e journalctl -f -o short-iso "_UID=$(user_uid "$user")" >/dev/null 2>&1
+}
+
+cmd_inbox() {
+  local user="${1:-}" open=0 term="${TERMINAL:-ghostty}" base_dir="${USR_INBOX_BASE:-$HOME/Downloads}" dir
+  if [ "${2:-}" = --open ] || [ "${1:-}" = --open ]; then
+    open=1
+    [ "$user" = --open ] && user=""
+  fi
+
+  if [ -n "$user" ]; then
+    need_managed "$user"
+    dir="$base_dir/$user"
+    [ -d "$dir" ] || die "inbox: directory does not exist: $dir (sudo ./apply-system.sh --only users)"
+    if [ "$open" = 1 ]; then
+      setsid -f "$term" --title="inbox $user" -e yazi "$dir" >/dev/null 2>&1
+      return 0
+    fi
+    echo "=== Inbox: $user ($dir) ==="
+    if [ -z "$(ls -A "$dir" 2>/dev/null)" ]; then
+      echo "  (inbox is empty)"
+    else
+      ls -laht "$dir"
+    fi
+  else
+    local found=0
+    for u in $(managed_inbox_users 2>/dev/null || managed_users inbox 2>/dev/null || managed_users profile); do
+      dir="$base_dir/$u"
+      [ -d "$dir" ] || continue
+      found=1
+      echo "=== Inbox: $u ($dir) ==="
+      if [ -z "$(ls -A "$dir" 2>/dev/null)" ]; then
+        echo "  (inbox is empty)"
+      else
+        ls -laht "$dir" | head -n 15
+      fi
+      echo ""
+    done
+    [ "$found" -eq 1 ] || echo "No managed user inboxes found under $base_dir (sudo ./apply-system.sh --only users)"
+  fi
 }
 
 # ───────────────────────────── profile links ─────────────────────────────
@@ -603,7 +645,8 @@ cmd__link() {
   # the shared dev tools on PATH for NON-interactive and login shells too (M4: `zsh -c`, `zsh -lc`, `ssh td@host CMD`, `usr exec` and
   # `bash -lc` of an agent never read .zshrc): .zshenv is read by every zsh, .profile / .bash_profile by bash -l. Both only call
   # .config/zsh/devtools.zsh, the one place that decides whether the tree is trustworthy.
-  block_set "$home/.zshenv" devtools '[[ -r ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/devtools.zsh ]] && source ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/devtools.zsh'
+  block_set "$home/.zshenv" devtools '[[ -d $HOME/.local/bin ]] && export PATH="$HOME/.local/bin:$PATH"
+[[ -r ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/devtools.zsh ]] && source ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/devtools.zsh'
   for a in .profile .bash_profile .bash_login; do
     { [ "$a" = .profile ] || [ -e "$home/$a" ]; } || continue
     # shellcheck disable=SC2016
@@ -870,6 +913,7 @@ case "$cmd" in
   exec) cmd_exec "$@" ;;
   edit) cmd_edit "$@" ;;
   files) cmd_files "$@" ;;
+  inbox) cmd_inbox "$@" ;;
   logs) cmd_logs "$@" ;;
   link) cmd_link "$@" ;;
   _link) cmd__link "$@" ;;

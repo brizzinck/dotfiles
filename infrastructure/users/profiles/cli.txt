@@ -19,6 +19,7 @@
 .config/mise
 .local/bin/envs
 .local/bin/usr
+.local/bin/to-owner
 .local/bin/fzf-menu
 .local/bin/bw-setup
 .local/bin/vault-share
