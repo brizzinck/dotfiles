@@ -34,12 +34,12 @@
     "exclusive": false,
     "margin-top": -28,
     "on-sigusr1": "toggle",
-    "modules-left": ["clock", "hyprland/workspaces", "hyprland/submap"],
+    "modules-left": ["clock", "hyprland/workspaces", "hyprland/submap", "custom/media"],
     "modules-center": [],
     "modules-right": [
-      "privacy", "custom/recording", "custom/dictation", "custom/reminder", "custom/health", "custom/updates", "custom/media",
+      "privacy", "custom/recording", "custom/dictation", "custom/reminder", "custom/health", "custom/updates",
       "group/toggles", "group/net", "group/audio", "group/system",
-      "custom/ai", "custom/vault", "group/pinned", "hyprland/language", "group/trays",
+      "custom/ai", "custom/vault", "group/pinned", "hyprland/language", "tray",
       "battery", "custom/mode#full"
     ]
   }
