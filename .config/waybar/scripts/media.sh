@@ -25,12 +25,11 @@ render() { # status player artist title album
     *) echo "$EMPTY"; return ;;
   esac
   [[ -n $title ]] || { echo "$EMPTY"; return; }
-  if [[ -n $artist ]]; then text=$(trunc "$artist - $title" "$MAX"); else text=$(trunc "$title" "$MAX"); fi
-  tip="$title"
-  [[ -n $artist ]] && tip+=$'\n'"$artist"
+  if [[ -n $artist ]]; then text="$artist - $title"; else text="$title"; fi
+  tip="$text"
   [[ -n $album ]] && tip+=$'\n'"$album"
   tip+=$'\n'"$player ($status)"$'\n\n'"L: play/pause · M: next · R: menu · Scroll: next/previous"
-  jq -cn --arg t "$glyph $text" --arg c "$cls" --arg tip "$tip" '{text: $t, class: $c, tooltip: $tip}'
+  jq -cn --arg t "$glyph" --arg c "$cls" --arg tip "$tip" '{text: $t, class: $c, tooltip: $tip}'
 }
 
 follow() {

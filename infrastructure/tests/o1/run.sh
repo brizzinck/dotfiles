@@ -145,7 +145,7 @@ expect "lock resets the layout to us before locking" bash -c "grep -n 'switchxkb
 # ── media module ──
 out=$("$REPO/.config/waybar/scripts/media.sh" --follow 2>/dev/null | head -n 2)
 line1=$(sed -n 1p <<<"$out"); line2=$(sed -n 2p <<<"$out")
-expect "media: Playing shows artist - title" bash -c "jq -e '.class == \"normal\" and (.text | contains(\"Some Artist - A Song\"))' <<<'$line1'"
+expect "media: Playing shows glyph, tooltip has artist - title" bash -c "jq -e '.class == \"normal\" and .text == \"󰎆\" and (.tooltip | contains(\"Some Artist - A Song\"))' <<<'$line1'"
 expect "media: tooltip ends with the hint line" bash -c "jq -e '.tooltip | endswith(\"L: play/pause · M: next · R: menu · Scroll: next/previous\")' <<<'$line1'"
 expect "media: Paused hides the module" jq -e '.text == ""' <<<"$line2"
 
