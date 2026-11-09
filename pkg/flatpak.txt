@@ -1,6 +1,7 @@
 app.ytmdesktop.ytmdesktop
 app.zen_browser.zen
 com.brave.Browser
+com.freerdp.FreeRDP
 com.google.AndroidStudio
 com.google.Chrome
 com.microsoft.Edge

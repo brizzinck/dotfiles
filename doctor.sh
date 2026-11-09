@@ -336,7 +336,7 @@ if command -v hyprctl >/dev/null 2>&1 && [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}"
   errs="$(hyprctl configerrors 2>&1 | sed '/^[[:space:]]*$/d')"
   if [ -z "$errs" ]; then ok hypr-config "hyprctl configerrors is empty"; else bad hypr-config "$(printf '%s' "$errs" | head -1)"; fi
   binds_json="$(hyprctl binds -j 2>/dev/null)"
-  n_lua="$(printf '%s' "$binds_json" | jq '[.[] | select(.dispatcher == "__lua")] | length' 2>/dev/null || echo 0)"
+  n_lua="$(printf '%s' "$binds_json" | jq '[.[] | select(.dispatcher | test("^HL\\.Dispatcher|^function:|^__lua"))] | length' 2>/dev/null || echo 0)"
   n_all="$(printf '%s' "$binds_json" | jq 'length' 2>/dev/null || echo 0)"
   if [ "${n_all:-0}" -gt 0 ] && [ "$n_lua" = "$n_all" ]; then
     ok hypr-loaded "the running Hyprland loaded hyprland.lua ($n_all binds, all from Lua)"
@@ -564,7 +564,7 @@ fi
 if command -v ghostty >/dev/null 2>&1; then
   gh_keys="$(ghostty +list-keybinds 2>/dev/null)"
   gh_miss=""
-  for gh_k in ctrl+shift+key_a ctrl+shift+key_c ctrl+shift+key_v ctrl+shift+key_n ctrl+shift+key_t ctrl+shift+key_w ctrl+slash alt+key_b; do
+  for gh_k in ctrl+key_c ctrl+shift+key_a ctrl+shift+key_c ctrl+shift+key_v ctrl+shift+key_n ctrl+shift+key_t ctrl+shift+key_w ctrl+slash alt+key_b; do
     printf '%s\n' "$gh_keys" | grep -q "^keybind = $gh_k=" || gh_miss="$gh_miss $gh_k"
   done
   if [ -z "$gh_miss" ]; then ok ghostty-twins "ghostty has the physical-key twins (Ctrl+Shift+C/V/N/T/W/A, Ctrl+/, Alt+letter) in its live keybinds"; else bad ghostty-twins "missing from ghostty +list-keybinds:$gh_miss (layout.py gen ghostty; is layout-keys.conf included by ghostty/config?)"; fi

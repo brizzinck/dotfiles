@@ -22,8 +22,8 @@ after changing binds (`doctor.sh` fails when this file is stale). `SUPER` is the
 | Terminal | [tmux: stock prefix keys](#tmux-stock-prefix-keys) | 80 |
 | Terminal | [Terminal: ghostty](#terminal-ghostty) | 13 |
 | Terminal | [zsh line editor](#zsh-line-editor) | 36 |
-| Terminal | [zsh helpers](#zsh-helpers) | 16 |
-| Terminal | [zsh aliases](#zsh-aliases) | 42 |
+| Terminal | [zsh helpers](#zsh-helpers) | 15 |
+| Terminal | [zsh aliases](#zsh-aliases) | 41 |
 | Editor | [Neovim: AI agents](#neovim-ai-agents) | 25 |
 | Editor | [Neovim: find](#neovim-find) | 23 |
 | Editor | [Neovim: git](#neovim-git) | 9 |
@@ -726,7 +726,6 @@ Functions of .zshrc that carry a comment, plus the commands of this setup.
 
 | Keys | Action |
 |---|---|
-| `glab` | Glab with the GitLab token from Bitwarden (Env/global): the token never sits in the shell or in a glab config (`glab auth login` is not used); GITLAB_HOST comes from the same item. An agent is refused by envs, like for every secret. Only those two names are injected (`--only`: the other Env/global secrets, e.g. a database password, never reach glab) and /usr/bin/glab is the binary (no PATH lookup that a project's mise `_.path` could shadow). |
 | `er` | Run a command with the project's secrets of the active environment (envs: they live in Bitwarden and reach only the command, never this shell; a function or alias such as grun cannot be wrapped, use the real command: er go run .) |
 | `ere` | Run a command with the project's secrets of environment ENV (ere stage go test ./...) |
 | `ert` | Run a mise task with the project's secrets (ert test) |
@@ -785,7 +784,6 @@ Every alias of .zshrc with what it expands to.
 | `lg` | golangci-lint run --fix; go mod tidy |
 | `lgw` | golangci-lint run > lint.dev 2>&1 |
 | `lgr` | find . -name "go.mod" -execdir sh -c "golangci-lint run --fix; go mod tidy" \; |
-| `tg` | go test ./... |
 | `lf` | facad |
 | `wm` | workmux |
 | `ls` | eza --group-directories-first |

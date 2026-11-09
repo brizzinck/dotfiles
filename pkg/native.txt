@@ -137,6 +137,7 @@ protobuf
 python
 python-pip
 python-pipx
+qemu-base
 qrencode
 qt5ct
 qt6ct

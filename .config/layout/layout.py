@@ -284,7 +284,9 @@ def gen_ghostty(L, defaults=None, config_text=None):
     whatever layout is active, and ghostty tries the physical trigger before the character one, so on us it is the same
     key with the same action.
       1. Alt+<physical key> sends ESC + the us character (the shell / tmux / fzf / nvim M- bindings work on ua and ru).
-      2. Every effective ghostty keybind on a letter or punctuation key gets a physical twin with the same action:
+      2. Ctrl+<physical key> sends the C0 control byte (0x01..0x1a, 0x1b..0x1f), so Ctrl+C, Ctrl+D, Ctrl+Z, Ctrl+A,
+         Ctrl+R etc. work on ua and ru (Ghostty 1.4 sends Cyrillic unicode / CSI u on non-Latin layouts instead of C0 bytes).
+      3. Every effective ghostty keybind on a letter or punctuation key gets a physical twin with the same action:
          the defaults (`ghostty +list-keybinds --default`) plus the `keybind` lines of ghostty/config; unbound ones get none."""
     defaults = defaults if defaults is not None else ghostty_defaults()
     if defaults is None:
@@ -300,12 +302,36 @@ def gen_ghostty(L, defaults=None, config_text=None):
         out.append(f"keybind = alt+{ghostty_key(w3c)}=text:\\x1b{lit(us)}\n")
         if us.isalpha():
             out.append(f"keybind = alt+shift+{ghostty_key(w3c)}=text:\\x1b{r['us_shift']}\n")
-    # Ctrl+/ is the C0 byte 0x1f (readline undo, Claude Code undo) only where the Slash key types "/": ua and ru type "." there
-    # and ghostty then sends the plain "." / CSI u, so the physical Ctrl+Slash gets the byte itself (the same byte as on us)
+
     eff = ghostty_effective(defaults, config_text)
-    if not any(k == "slash" and set(m) == {"ctrl"} for _, s, _ in eff.values() for m, k in s):
-        out.append("\n# Ctrl+/ -> 0x1f on every layout (the Slash key types a dot on ua and ru)\n")
-        out.append("keybind = ctrl+slash=text:\\x1f\n")
+
+    # Ctrl+<physical key> -> C0 control bytes (0x01..0x1a, 0x1b..0x1f) so terminal/readline/tmux Ctrl shortcuts work on ua/ru.
+    # Ghostty 1.4+ does not convert Cyrillic letters to C0 control bytes; binding the physical keys ensures Ctrl+C (0x03),
+    # Ctrl+D (0x04), Ctrl+Z (0x1a), Ctrl+A (0x01), Ctrl+R (0x12), etc. work identically on us, ua and ru.
+    bound_ctrl = set()
+    for _, steps, _ in eff.values():
+        if len(steps) == 1:
+            mods, key = steps[0]
+            if set(mods) == {"ctrl"}:
+                bound_ctrl.add(key)
+
+    ctrl_keys = []
+    for r in L.rows:
+        us, w3c = r["us"], r["w3c"]
+        gk = ghostty_key(w3c)
+        if us.isalpha() and len(us) == 1:
+            code = ord(us.lower()) - ord("a") + 1
+            ctrl_keys.append((gk, us.lower(), f"\\x{code:02x}"))
+    ctrl_keys.append(("bracket_left", "[", "\\x1b"))
+    ctrl_keys.append(("backslash", "\\", "\\x1c"))
+    ctrl_keys.append(("bracket_right", "]", "\\x1d"))
+    ctrl_keys.append(("slash", "/", "\\x1f"))
+
+    out.append("\n# Ctrl+<physical key> -> C0 control bytes on every layout (Ctrl+C, Ctrl+D, Ctrl+Z, Ctrl+A...)\n")
+    for gk, us_char, byte_hex in ctrl_keys:
+        if gk not in bound_ctrl and us_char not in bound_ctrl:
+            out.append(f"keybind = ctrl+{gk}=text:{byte_hex}\n")
+
     taken = {(f, tuple((frozenset(m), k) for m, k in s)) for f, s, _ in eff.values()}
     twins = []
     for flags, steps, action in eff.values():
