@@ -1410,6 +1410,20 @@ PY_SECRET_CONFLICT
   elif [ -d /srv/devtools ]; then
     info users-devtools-anchor "/etc/usr-managed/devtools-owner is missing: the PATH rule still trusts /srv/devtools/.owner (sudo ./apply-system.sh --only users)"
   fi
+  # claude-unlocked: shared multi-user installation and settings
+  if [ -d /srv/claude-unlocked ]; then
+    cu_bad=""
+    [ "$(stat -c '%U %a' /srv/claude-unlocked 2>/dev/null)" = "$USER 755" ] || cu_bad="owner/mode not '$USER 755'"
+    [ -x /srv/claude-unlocked/app/bin/claude-unlocked ] || cu_bad="$cu_bad missing app/bin/claude-unlocked"
+    [ -r /etc/claude-unlocked/env ] || cu_bad="$cu_bad missing /etc/claude-unlocked/env"
+    if [ -z "$cu_bad" ]; then
+      ok users-claude-unlocked "/srv/claude-unlocked installed system-wide, settings in /etc/claude-unlocked/env (readable by all users)"
+    else
+      bad users-claude-unlocked "/srv/claude-unlocked: $cu_bad (claude-unlocked-update)"
+    fi
+  else
+    info users-claude-unlocked "/srv/claude-unlocked not set up yet (sudo ./apply-system.sh --only users, then claude-unlocked-update)"
+  fi
   # the clipboard: traverse-only on the runtime dir, rw on the Wayland socket, the other sockets closed
   users_clip=""
   for u in $(managed_users wayland); do

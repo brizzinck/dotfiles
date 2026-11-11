@@ -1124,6 +1124,8 @@ USERS_POLKIT=/etc/polkit-1/rules.d/50-usr-managed.rules
 USERS_SRV_DOTFILES=/srv/dotfiles
 USERS_SRV_NVIM=/srv/nvim-shared
 USERS_SRV_DEVTOOLS=/srv/devtools
+USERS_SRV_CLAUDE_UNLOCKED=/srv/claude-unlocked
+USERS_ETC_CLAUDE_UNLOCKED=/etc/claude-unlocked
 USERS_DEVTOOLS_ANCHOR=/etc/usr-managed/devtools-owner
 
 # Dedicated private group only; no change to wheel/docker or other policy.
@@ -1556,12 +1558,12 @@ section_users() {
   done
 
   # 4. published directories, owned by the owner: the commit hook writes them without a password
-  for u in "$USERS_SRV_DOTFILES" "$USERS_SRV_NVIM" "$USERS_SRV_DEVTOOLS"; do
+  for u in "$USERS_SRV_DOTFILES" "$USERS_SRV_NVIM" "$USERS_SRV_DEVTOOLS" "$USERS_SRV_CLAUDE_UNLOCKED" "$USERS_ETC_CLAUDE_UNLOCKED"; do
     if [ -d "$u" ] && [ "$(stat -c %U "$u")" = "$OWNER" ] && [ "$(stat -c %a "$u")" = 755 ]; then
       log "unchanged: $u ($OWNER:$grp 755)"
     else
       run install -d -o "$OWNER" -g "$grp" -m 755 "$u"
-      changed "$u created/fixed ($OWNER:$grp 755, read-only for the managed users)"
+      changed "$u created/fixed ($OWNER:$grp 755)"
     fi
   done
   # 4b. /srv/devtools/.owner: the account that fills the tool tree. The managed users put /srv/devtools/bin on their PATH and in
@@ -1583,6 +1585,46 @@ section_users() {
     run install -d -m 755 -o root -g root "$(dirname "$USERS_DEVTOOLS_ANCHOR")"
     run install -m 644 -o root -g root /dev/stdin "$USERS_DEVTOOLS_ANCHOR" <<<"$OWNER"
     changed "$USERS_DEVTOOLS_ANCHOR names $OWNER (root-owned anchor of the /srv/devtools PATH rule)"
+  fi
+
+  # 4d. claude-unlocked: system-wide binaries in /usr/local/bin and world-readable settings in /etc/claude-unlocked
+  if [ -f "$USERS_ETC_CLAUDE_UNLOCKED/env" ]; then
+    if [ "$(stat -c '%a' "$USERS_ETC_CLAUDE_UNLOCKED/env")" != "644" ]; then
+      run chmod 644 "$USERS_ETC_CLAUDE_UNLOCKED/env"
+      changed "$USERS_ETC_CLAUDE_UNLOCKED/env set to mode 644 (readable by all users)"
+    fi
+  fi
+  for b in claude-unlocked claude-unlocked-rea; do
+    if [ -x "$USERS_SRV_CLAUDE_UNLOCKED/app/bin/$b" ]; then
+      if [ -L "/usr/local/bin/$b" ] && [ "$(readlink -f "/usr/local/bin/$b")" = "$(readlink -f "$USERS_SRV_CLAUDE_UNLOCKED/app/bin/$b")" ]; then
+        log "unchanged: /usr/local/bin/$b"
+      else
+        run ln -sf "$USERS_SRV_CLAUDE_UNLOCKED/app/bin/$b" "/usr/local/bin/$b"
+        changed "linked /usr/local/bin/$b -> $USERS_SRV_CLAUDE_UNLOCKED/app/bin/$b"
+      fi
+    fi
+  done
+  for b in claude-unlocked-update unlocked-task; do
+    if [ -x "$REPO/.local/bin/$b" ]; then
+      if [ -L "/usr/local/bin/$b" ] && [ "$(readlink -f "/usr/local/bin/$b")" = "$(readlink -f "$REPO/.local/bin/$b")" ]; then
+        log "unchanged: /usr/local/bin/$b"
+      else
+        run ln -sf "$REPO/.local/bin/$b" "/usr/local/bin/$b"
+        changed "linked /usr/local/bin/$b -> $REPO/.local/bin/$b"
+      fi
+    fi
+  done
+  if [ -x "/home/$OWNER/.local/bin/claude" ]; then
+    local claude_bin
+    claude_bin="$(readlink -f "/home/$OWNER/.local/bin/claude")"
+    if [ -x "$claude_bin" ]; then
+      if [ -L "/usr/local/bin/claude" ] && [ "$(readlink -f "/usr/local/bin/claude")" = "$claude_bin" ]; then
+        log "unchanged: /usr/local/bin/claude"
+      else
+        run ln -sf "$claude_bin" /usr/local/bin/claude
+        changed "linked /usr/local/bin/claude -> $claude_bin (system-wide Claude Code)"
+      fi
+    fi
   fi
 
   users_private_setup || warn "users: private layer was not set up"

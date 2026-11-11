@@ -13,6 +13,7 @@ httptoolkit
 obs-cmd
 pacseek
 pandoc-bin
+rustdesk
 shellcheck-bin
 tmux-fingers
 v2raya

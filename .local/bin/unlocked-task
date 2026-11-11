@@ -1,0 +1,178 @@
+#!/usr/bin/python3 -I
+"""unlocked-task [OPTIONS] [--] PROMPT...   (or the prompt on stdin with "-")
+
+Runs one headless Claude Code worker on a claude-unlocked model and prints its final answer.
+Meant for the main (subscription) Claude session as the cheap worker that replaces Sonnet / Haiku
+subagents; the skill `unlocked-workers` is the manual. Docs: CLAUDE.md "Claude unlocked".
+
+  --model M      claude-unlocked model (default aigateway/qwen3.8-flash-next-abliterated)
+  --effort E     low|medium|high|xhigh|max (default high; the router passes it on as reasoning_effort)
+  --write        the worker may edit files in the current directory (acceptEdits); no Bash
+  --bash         the worker may run any tool without asking (bypassPermissions); use only for a
+                 bounded task in a scratch or project directory you would let the main session touch
+  --max-turns N  agent turns (default 40)
+  --wait         wait for a free worker slot instead of exiting 75 at once
+  --json         print Claude Code's JSON result instead of the plain answer
+  --slots        print "busy N/MAX" and exit (0 when a slot is free, 75 when all are busy)
+
+At most UNLOCKED_TASK_MAX workers (default 4) run at the same time, counted across every caller of
+this user: each holds one lock in $XDG_RUNTIME_DIR/unlocked-task/. When all are busy the command
+exits 75 with "all N Qwen worker slots are busy" (use a Sonnet subagent instead, or --wait).
+Default (no --write / --bash): read-only, the worker gets Read, Glob, Grep and read-only git.
+The worker starts in the current directory, without MCP servers (claude-unlocked slim mode).
+Exit 0 on success, 1 when the worker failed (its message is printed), 2 on usage errors,
+75 when no slot is free.
+"""
+import fcntl
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+BUSY = 75
+DEFAULT_MODEL = "aigateway/qwen3.8-flash-next-abliterated"
+READ_GIT = ["Bash(git log:*)", "Bash(git diff:*)", "Bash(git show:*)", "Bash(git status:*)"]
+
+
+def die(msg, code=2):
+    print(f"unlocked-task: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def slot_dir():
+    base = os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/unlocked-task-{os.getuid()}"
+    path = os.path.join(base, "unlocked-task")
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    return path
+
+
+def max_slots():
+    try:
+        return max(1, int(os.environ.get("UNLOCKED_TASK_MAX", "4")))
+    except ValueError:
+        return 4
+
+
+def try_slots(limit):
+    """Lock the first free slot; return its fd (not inherited by children) or None."""
+    d = slot_dir()
+    for i in range(1, limit + 1):
+        fd = os.open(os.path.join(d, f"slot{i}.lock"), os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            os.close(fd)
+    return None
+
+
+def busy_count(limit):
+    d = slot_dir()
+    busy = 0
+    for i in range(1, limit + 1):
+        fd = os.open(os.path.join(d, f"slot{i}.lock"), os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except BlockingIOError:
+            busy += 1
+        finally:
+            os.close(fd)
+    return busy
+
+
+def main(argv):
+    model, effort, mode, max_turns = DEFAULT_MODEL, "high", "read", "40"
+    as_json = wait = False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        def value():
+            nonlocal i
+            if "=" in a:
+                return a.split("=", 1)[1]
+            i += 1
+            if i >= len(argv):
+                die(f"{a} needs a value")
+            return argv[i]
+        if a in ("-h", "--help"):
+            print(__doc__.strip())
+            return 0
+        if a == "--":
+            i += 1
+            break
+        if a == "-":
+            break
+        if a.startswith("--model"):
+            model = value()
+        elif a.startswith("--effort"):
+            effort = value()
+        elif a.startswith("--max-turns"):
+            max_turns = value()
+        elif a == "--write":
+            mode = "write"
+        elif a == "--bash":
+            mode = "bash"
+        elif a == "--json":
+            as_json = True
+        elif a == "--wait":
+            wait = True
+        elif a == "--slots":
+            limit = max_slots()
+            n = busy_count(limit)
+            print(f"busy {n}/{limit}")
+            return BUSY if n >= limit else 0
+        elif a.startswith("-"):
+            die(f"unknown option {a}")
+        else:
+            break
+        i += 1
+    rest = argv[i:]
+    prompt = sys.stdin.read() if rest == ["-"] else " ".join(rest)
+    if not prompt.strip():
+        die("no prompt (see --help)")
+    exe = shutil.which("claude-unlocked")
+    if not exe:
+        die("claude-unlocked is not installed (claude-unlocked-update)", 1)
+
+    limit = max_slots()
+    fd = try_slots(limit)
+    while fd is None and wait:
+        time.sleep(3)
+        fd = try_slots(limit)
+    if fd is None:
+        die(f"all {limit} Qwen worker slots are busy: give this task to a Sonnet subagent "
+            f"(Agent, model sonnet, effort high) or rerun with --wait", BUSY)
+
+    if mode == "read":
+        perm = ["--permission-mode", "default", "--allowedTools", "Read", "Glob", "Grep", *READ_GIT]
+    elif mode == "write":
+        perm = ["--permission-mode", "acceptEdits", "--allowedTools", "Read", "Glob", "Grep", "Edit", "Write", *READ_GIT]
+    else:
+        perm = ["--permission-mode", "bypassPermissions"]
+    cmd = [exe, "-p", "--output-format", "json", "--effort", effort, "--max-turns", max_turns, *perm, "--", prompt]
+    env = dict(os.environ, CLAUDE_UNLOCKED_MODEL=model)
+    try:
+        out = subprocess.run(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, text=True).stdout
+    finally:
+        os.close(fd)
+    if as_json:
+        print(out)
+    try:
+        d = json.loads(out)
+    except ValueError:
+        die("the worker returned no result (router down? try: claude-unlocked -p ping)", 1)
+    if not as_json:
+        print(d.get("result") or "")
+    models = ",".join((d.get("modelUsage") or {}).keys()) or "?"
+    secs = round((d.get("duration_ms") or 0) / 1000)
+    state = ("error: " + str(d.get("subtype"))) if d.get("is_error") else "ok"
+    print(f"[unlocked-task: {models}, {d.get('num_turns', '?')} turns, {secs} s, {state}]", file=sys.stderr)
+    return 1 if d.get("is_error") else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

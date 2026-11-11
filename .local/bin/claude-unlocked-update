@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# claude-unlocked-update [INSTALL ARGS...]: update claude-unlocked from the team repo in one step.
+# Pulls ~/Programs/YaCodeDevAgents (clones it when missing; CU_REPO overrides the path), fetches
+# provider keys from Bitwarden where they lie (AIGatewayToken, Env/global), and runs
+# claude-unlocked/install.sh --yes --no-system-packages.
+#
+# When /srv/claude-unlocked and /etc/claude-unlocked exist and are writable (created by
+# sudo ./apply-system.sh --only users), it installs system-wide so all users on the system
+# (skalse, td, yc) have access to the tool and its settings. Otherwise falls back to user-level.
+# Docs: CLAUDE.md "Claude unlocked" (docs/agents/claude-unlocked.md).
+#
+# Two fixes for this machine are built in (see the topic file):
+# - the mise node shim breaks under the router's own HOME, so the installer runs with the mise
+#   entries removed from PATH and a dummy `node` first: it keeps its own Node in
+#   <DATA>/node, or downloads a new one when REA needs it;
+# - when better-sqlite3 has no native build, it is rebuilt with the installer's npm and the
+#   installer runs again.
+set -euo pipefail
+
+REPO=${CU_REPO:-$HOME/Programs/YaCodeDevAgents}
+URL=git@github.com:YaCodeDev/YaCodeDevAgents.git
+
+say() { printf 'claude-unlocked-update: %s\n' "$*" >&2; }
+
+fetch_bitwarden_keys() {
+  command -v rbw >/dev/null 2>&1 || return 0
+  rbw unlocked >/dev/null 2>&1 || { say "note: rbw is locked, existing keys in env file stay"; return 0; }
+
+  local k_gw="" k_arli="" k_exp=""
+  k_gw="$(rbw get AIGatewayToken 2>/dev/null || true)"
+  [ -n "$k_gw" ] || k_gw="$(rbw get AIGatewayToken -f notes 2>/dev/null || true)"
+  k_arli="$(rbw get default --folder Env/global -f ARLIAI_API_KEY 2>/dev/null || true)"
+  k_exp="$(rbw get default --folder Env/global -f EXPLABS_API_KEY 2>/dev/null || true)"
+
+  [ -n "$k_gw" ] && export AIGATEWAY_API_KEYS="$k_gw"
+  [ -n "$k_arli" ] && export ARLIAI_API_KEYS="$k_arli"
+  [ -n "$k_exp" ] && export EXPLABS_API_KEYS="$k_exp"
+  if [ -n "$k_gw" ] || [ -n "$k_arli" ] || [ -n "$k_exp" ]; then
+    say "fetched provider keys from Bitwarden (AIGatewayToken, Env/global)"
+  fi
+}
+
+fetch_bitwarden_keys
+
+if [ -d "/srv/claude-unlocked" ] && [ -w "/srv/claude-unlocked" ] && [ -d "/etc/claude-unlocked" ] && [ -w "/etc/claude-unlocked" ]; then
+  DATA="/srv/claude-unlocked"
+  CONF="/etc/claude-unlocked"
+  BIN_LINK="/usr/local/bin/claude-unlocked"
+  SYSTEM_MODE=1
+  say "target: system-wide ($DATA, $CONF)"
+else
+  DATA="${CLAUDE_UNLOCKED_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/claude-unlocked}"
+  CONF="${CLAUDE_UNLOCKED_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-unlocked}"
+  BIN_LINK="${CLAUDE_UNLOCKED_BIN_LINK:-$HOME/.local/bin/claude-unlocked}"
+  SYSTEM_MODE=0
+  if [ ! -d "/srv/claude-unlocked" ] || [ ! -d "/etc/claude-unlocked" ]; then
+    say "target: user-level ($DATA) (run 'sudo ./apply-system.sh --only users' to enable system-wide mode)"
+  else
+    say "target: user-level ($DATA)"
+  fi
+fi
+
+NODE_BIN=$DATA/node/bin
+ROUTER=$DATA/router
+
+if [[ ! -d $REPO/.git ]]; then
+  say "cloning $URL into $REPO"
+  mkdir -p "$(dirname "$REPO")"
+  git clone "$URL" "$REPO"
+else
+  say "pulling $REPO"
+  git -C "$REPO" pull --ff-only
+fi
+git -C "$REPO" log -1 --format='claude-unlocked-update: at %h %s' >&2
+
+# Seed system config from user config if migrating
+if [ "$SYSTEM_MODE" = 1 ] && [ ! -f "$CONF/env" ] && [ -f "$HOME/.config/claude-unlocked/env" ]; then
+  say "migrating initial settings from $HOME/.config/claude-unlocked/env to $CONF/env"
+  install -m 644 "$HOME/.config/claude-unlocked/env" "$CONF/env"
+fi
+
+guard=$(mktemp -d)
+trap 'rm -rf "$guard"' EXIT
+printf '#!/bin/sh\nexit 1\n' >"$guard/node"
+chmod +x "$guard/node"
+clean_path=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v -e '/mise/' -e '^$' | paste -sd: -)
+
+install() {
+  (
+    cd "$REPO/claude-unlocked" && \
+    CLAUDE_UNLOCKED_DATA_DIR="$DATA" \
+    CLAUDE_UNLOCKED_CONFIG_DIR="$CONF" \
+    CLAUDE_UNLOCKED_BIN_LINK="$BIN_LINK" \
+    PATH="$guard:$clean_path" \
+    ./install.sh --yes --no-system-packages "$@" </dev/null
+  )
+}
+
+sqlite_ok() {
+  [[ -x $NODE_BIN/node && -d $ROUTER/node_modules/better-sqlite3 ]] || return 1
+  (cd "$ROUTER" && "$NODE_BIN/node" -e 'require("better-sqlite3")(":memory:")' >/dev/null 2>&1)
+}
+
+rebuild_sqlite() {
+  say "better-sqlite3 has no native build: rebuilding it with the installer's npm"
+  (cd "$ROUTER" && PATH="$NODE_BIN:$clean_path" "$NODE_BIN/npm" rebuild better-sqlite3 \
+    --prefix "$ROUTER" --cache "${XDG_CACHE_HOME:-$HOME/.cache}/claude-unlocked/npm" \
+    --no-fund --no-audit --no-update-notifier --loglevel=error)
+}
+
+if install "$@"; then
+  sqlite_ok || rebuild_sqlite
+else
+  [[ -x $NODE_BIN/npm && -d $ROUTER/node_modules/better-sqlite3 ]] || { say "install failed, see the messages above"; exit 1; }
+  sqlite_ok || rebuild_sqlite
+  say "running the installer again"
+  install "$@"
+fi
+
+sqlite_ok || { say "better-sqlite3 still does not load; see docs/agents/claude-unlocked.md"; exit 1; }
+
+# Owner settings
+python3 "$REPO/claude-unlocked/lib/install-helper.py" env-write "$CONF/env" <<'JSON'
+{"set": {
+  "CLAUDE_UNLOCKED_DISALLOWED_TOOLS": "Artifact,DesignSync,Workflow,PushNotification,SendFeedback",
+  "CLAUDE_UNLOCKED_AUTO_COMPACT_MAX": "300000"
+}}
+JSON
+
+if [ "$SYSTEM_MODE" = 1 ]; then
+  chmod 644 "$CONF/env" 2>/dev/null || true
+  # Symlink tools into /usr/local/bin if writable
+  for b in claude-unlocked claude-unlocked-rea; do
+    [ -x "$DATA/app/bin/$b" ] && ln -sf "$DATA/app/bin/$b" "/usr/local/bin/$b" 2>/dev/null || true
+  done
+  for b in claude-unlocked-update unlocked-task; do
+    src="$(dirname "$(readlink -f "$0")")/$b"
+    [ -x "$src" ] && ln -sf "$src" "/usr/local/bin/$b" 2>/dev/null || true
+  done
+  # Also link into /srv/devtools/bin for managed accounts if writable
+  if [ -d "/srv/devtools/bin" ] && [ -w "/srv/devtools/bin" ]; then
+    for b in claude-unlocked claude-unlocked-rea; do
+      [ -x "$DATA/app/bin/$b" ] && ln -sf "$DATA/app/bin/$b" "/srv/devtools/bin/$b" 2>/dev/null || true
+    done
+    for b in claude-unlocked-update unlocked-task; do
+      src="$(dirname "$(readlink -f "$0")")/$b"
+      [ -x "$src" ] && ln -sf "$src" "/srv/devtools/bin/$b" 2>/dev/null || true
+    done
+  fi
+fi
+
+say "done"
