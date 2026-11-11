@@ -45,7 +45,7 @@ fetch_bitwarden_keys
 if [ -d "/srv/claude-unlocked" ] && [ -w "/srv/claude-unlocked" ] && [ -d "/etc/claude-unlocked" ] && [ -w "/etc/claude-unlocked" ]; then
   DATA="/srv/claude-unlocked"
   CONF="/etc/claude-unlocked"
-  BIN_LINK="/usr/local/bin/claude-unlocked"
+  BIN_LINK="$DATA/bin/claude-unlocked"
   SYSTEM_MODE=1
   say "target: system-wide ($DATA, $CONF)"
 else
@@ -129,6 +129,11 @@ JSON
 
 if [ "$SYSTEM_MODE" = 1 ]; then
   chmod 644 "$CONF/env" 2>/dev/null || true
+  # Symlink tools into ~/.local/bin for current user
+  mkdir -p "$HOME/.local/bin"
+  for b in claude-unlocked claude-unlocked-rea; do
+    [ -x "$DATA/app/bin/$b" ] && ln -sf "$DATA/app/bin/$b" "$HOME/.local/bin/$b" 2>/dev/null || true
+  done
   # Symlink tools into /usr/local/bin if writable
   for b in claude-unlocked claude-unlocked-rea; do
     [ -x "$DATA/app/bin/$b" ] && ln -sf "$DATA/app/bin/$b" "/usr/local/bin/$b" 2>/dev/null || true

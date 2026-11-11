@@ -1595,7 +1595,7 @@ section_users() {
     fi
   fi
   for b in claude-unlocked claude-unlocked-rea; do
-    if [ -x "$USERS_SRV_CLAUDE_UNLOCKED/app/bin/$b" ]; then
+    if [ -d "$USERS_SRV_CLAUDE_UNLOCKED" ]; then
       if [ -L "/usr/local/bin/$b" ] && [ "$(readlink -f "/usr/local/bin/$b")" = "$(readlink -f "$USERS_SRV_CLAUDE_UNLOCKED/app/bin/$b")" ]; then
         log "unchanged: /usr/local/bin/$b"
       else
